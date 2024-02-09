@@ -7,9 +7,9 @@ RPCortex is a lightweight open-source operating system written in C++ for the RP
 
 ## Installation
 
-Installing RPCortex is a straightforward process. Follow these steps:
+Installing RPCortex is a simple, straightforward process. Follow these steps:
 
-1. Download the latest release of RPCortex (`rpc[ver].zip`) from the [Releases](https://github.com/DaSh1101/RPCortex/releases) page.
+1. Download the latest release of RPCortex (`rpc[ver].uf2`) from the [Releases](https://github.com/DaSh1101/RPCortex/releases) page.
 2. Extract the downloaded ZIP file to your local machine.
 3. Connect your RP2040 device to your computer while holding the (`boot sel`) button.
 4. Drag and drop the (`rpc[ver].uf2`) file to the root directory of your Raspberry Pi Pico W.
@@ -54,27 +54,27 @@ To get started with RPCortex, follow the installation steps mentioned below. Onc
 ### File Management
 Use the built-in file manager to navigate, modify, and organize your files.
 
-`write "Filename"` Creates a new file with the given name, then allows you to write files contents
-`mkdir "Directory Name"` Creates a new directory with the given name
-`dir` Lists files in a given directory
-`ls` Lists files in a given directory
-`cd "Directory"` Changes current working directory
-`chdir "Directory"` changes current working directory
-`edit "Filename"` Reads a file, then opens it to make changes / overwrite
-`open "Filename"` Reads a file, and opens/runs code when given the arg -s, ex: `open -s "main.cpp"`
-- `cat "Filename` same as `open`
+- `write "Filename"` Creates a new file with the given name, then allows you to write files contents
+- `mkdir "Directory Name"` Creates a new directory with the given name
+- `dir` Lists files in a given directory
+- `ls` Lists files in a given directory
+- `cd "Directory"` Changes current working directory
+- `chdir "Directory"` changes current working directory
+- `edit "Filename"` Reads a file, then opens it to make changes / overwrite
+- `open "Filename"` Reads a file, and opens/runs code when given the arg -s, ex: `open -s "main.cpp"`
+-- `cat "Filename` same as `open`
 
 ### Networking
 Configure networking settings and take advantage of the pre-loaded capabilities.
 
-`download url://url.url "Filename"` Attempts to download file from given url
-`curl url://url.url "Filename"` Same as download
-`wget url://url.url "Filename"` Same as download
-`serve 'IP:Port' 'Filename.HTML'`
-`net connect` Starts WiFi connection process
-`net disconnect` Disconnects
-`net scan` Scans for nearby WiFi connections
-`net autoconnect` Automatically connects to nearby network connections that have been previously connected to
+- `download url://url.url "Filename"` Attempts to download file from given url
+- `curl url://url.url "Filename"` Same as download
+- `wget url://url.url "Filename"` Same as download
+- `serve 'IP:Port' 'Filename.HTML'`
+- `net connect` Starts WiFi connection process
+- `net disconnect` Disconnects
+- `net scan` Scans for nearby WiFi connections
+- `net autoconnect` Automatically connects to nearby network connections that have been previously connected to
 
 ### ST7796 Display
 The pinout for the ST7796 display is the following:
