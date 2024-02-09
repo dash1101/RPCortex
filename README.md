@@ -17,29 +17,35 @@ Installing RPCortex is a straightforward process. Follow these steps:
 
 ## Features
 
-### 1. User-Written Code
+### Terminal CLI
+- RPCortex currently is a CLI, but in the future, I plan to add a GUI with a desktop window manager, similar to some linux repos
+ 
+### User-Written Code
 - Execute custom code on your RP2040 using RPCortex.
-
-### 2. Built-in File Manager
+- Currently supported languages: C++, html (for serving only)
+  
+### File Management
 - Modify files and directories effortlessly.
 - Rename and move files with ease.
-
-### 3. Networking Capabilities
-- Pre-loaded networking capabilities for seamless connectivity.
+- Read files, and launch programs through the terminal.
+  
+### Networking
+- Pre-loaded networking drivers for Pico W.
 - Download files directly from the internet.
 - Host local files and public sites (requires port forwarding).
 - Toggle to scan through a list of saved networks and auto-connect.
 
-### 4. Display Support
-- Custom-made drivers to support ST7796 displays.
-- Support for communication thru serial
+### Display Support
+- Custom-made drivers to support ST7796 displays. TOUCH IS NOT SUPPORTED CURRENTLY!
+- Support for communication thru serial at 9600 baud
 - HDMI Support coming eventually...
 
 ## Getting Started
 
 To get started with RPCortex, follow the installation steps mentioned below. Once installed, explore the built-in features and customize your experience.
 - Upload (`rpc[ver].uf2`) to rp2040 device
-- Get connected via [ST7796 display](https://github.com/DaSh1101/RPCortex/?), Serial(`9600 baud`), and HDMI coming one day.
+- Get connected via [ST7796 display]([https://github.com/DaSh1101/RPCortex/?](http://www.lcdwiki.com/3.5inch_IPS_SPI_Module_ST7796)), Serial(`9600 baud`), and HDMI coming one day.
+- SD SUPPORT FOR THE ST7796 IS NOT ACTIVE AS OF NOW, should be in the future though.
 - Follow the setup process
 - Enjoy!
 
