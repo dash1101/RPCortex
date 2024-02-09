@@ -62,7 +62,7 @@ Use the built-in file manager to navigate, modify, and organize your files.
 - `chdir "Directory"` changes current working directory
 - `edit "Filename"` Reads a file, then opens it to make changes / overwrite
 - `open "Filename"` Reads a file, and opens/runs code when given the arg -s, ex: `open -s "main.cpp"`
--- `cat "Filename` same as `open`
+- - `cat "Filename` same as `open`
 
 ### Networking
 Configure networking settings and take advantage of the pre-loaded capabilities.
