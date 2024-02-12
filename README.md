@@ -1,7 +1,7 @@
 # RPCortex
 An open-source Operating System for the RP2040 processor written in C++.
 
-## Version: v0.1.0-a
+## Version: FUTURE PLANS!!!
 
 RPCortex is a lightweight open-source operating system written in C++ for the RP2040 processor. It provides a platform for running user-written code, along with many built-in features to enhance functionality.
 
