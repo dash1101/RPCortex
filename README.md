@@ -1,4 +1,4 @@
-![RPCortex](assets/RPCortex.png)
+![RPCortex](Assets/RPCortex.png)
 
 ## Version: FUTURE PLANS!!!
 
