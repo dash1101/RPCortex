@@ -75,16 +75,6 @@ Configure networking settings and take advantage of the pre-loaded capabilities.
 - `net scan` Scans for nearby WiFi connections
 - `net autoconnect` Automatically connects to nearby network connections that have been previously connected to
 
-### ST7796 Display
-The pinout for the ST7796 display is the following:
-| PIN | PIN  |
-| GP2 | SCLK |
-| GP3 | MOSI |
-| GP4 | MISO |
-| GP5 | CS   |
-| GP6 | DC   |
-| GP7 | RST  |
-
 ### Contributing
 If you'd like to contribute to the development of RPCortex, follow these steps:
 
@@ -96,4 +86,15 @@ If you'd like to contribute to the development of RPCortex, follow these steps:
 RPCortex is licensed under the MIT License.
 
 ### Release Notes
-**Version 0.1.0a**
+***v0.2.0-alpha!***
+✅ ALL THE COLORS!!!
+✅ Print drivers can print without line now
+✅ Morse code with beeper
+✅ More stable
+✅ Easier to setup
+✅ On the fly setup for some objects
+✅ Clear screen for TFT
+✅ Print command
+✅ beep command
+✅ More stable display adapter
+
