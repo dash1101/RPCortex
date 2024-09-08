@@ -1,80 +1,83 @@
-## Hyperion Commands:
+# Hyperion OS Documentation
+
+## Software Documentation
+
+### Hyperion Commands:
 
 #### Networking Commands:
-- `wlan`
-- `wlan connect`
-- `wlan disconnect`
-- `wlan scan`
-- `wlan info`
-- `wlan status`
-- `wlan autoconnect`
-- `ping [hostname]`
-- `ifconfig`
-- `dnslookup [hostname]`
-- `curl [options] [url]`
-- `wget [options] [url]`
+- `wlan` - Manage WLAN settings.
+- `wlan connect` - Connect to a WLAN network.
+- `wlan disconnect` - Disconnect from the current WLAN network.
+- `wlan scan` - Scan for available WLAN networks.
+- `wlan info` - Display WLAN information.
+- `wlan status` - Show WLAN connection status.
+- `wlan autoconnect` - Enable or disable automatic WLAN connection.
+- `ping [hostname]` - Ping a specified hostname.
+- `ifconfig` - Display network interface configuration.
+- `dnslookup [hostname]` - Perform a DNS lookup for a hostname.
+- `wget [options] [url]` - Retrieve files from the web.
+- `serve` - Host a file on a specific IP and port.
+- `download [url] [filename]` - Download a file from the internet.
+
 
 #### System Commands:
-- `temp` (Display temperature)
-- `system` (System information)
-- `reboot` (Reboot the OS)
-- `shutdown` (Enter a low-power state and turn off the display)
-- `uptime` (Show the system's uptime)
-- `sleep` (Enter sleep mode)
-- `exit` (Exit or safely crash the OS)
-- `sysinfo` (Display detailed system information)
-- `clear` (Clear the terminal screen)
-- `cls` (Clear the terminal screen)
+- `temp` - Display the current temperature.
+- `system` - Display general system information.
+- `reboot` - Reboot the OS.
+- `shutdown` - Enter a low-power state and turn off the display.
+- `uptime` - Show the system's uptime.
+- `sleep` - Enter sleep mode.
+- `exit` - Exit the OS or safely crash it.
+- `sysinfo` - Display detailed system information.
+- `clear` - Clear the terminal screen.
+- `cls` - Alias for `clear`.
 
 #### File System Commands:
-- `ls` (List files in the current directory)
-- `dir` (Alias for `ls`)
-- `ls -l` (Detailed file list view)
-- `write [filename]` (Write to a file)
-- `mkdir [path]` (Create a new directory)
-- `rmdir [path]` (Remove an empty directory)
-- `delete [file_name]` (Delete a file)
-- `del [file_name]` (Alias for `delete`)
-- `read [filename]` (Read and display a file)
-- `open [filename]` (Open and display a file)
-- `view [filename]` (View a file’s content)
-- `cat [filename]` (Display the content of a file)
-- `edit [filename]` (Edit a file)
-- `run [file]` (Run a script or executable file)
-- `exec [code]` (Execute inline code)
-- `launch [file]` (Launch a program)
-- `start [file]` (Alias for `launch`)
-- `rename [old_name] [new_name]` (Rename a file)
-- `ren [old_name] [new_name]` (Alias for `rename`)
-- `move [filename] [destination]` (Move a file)
-- `cp [source] [destination]` (Copy a file)
-- `copy [source] [destination]` (Alias for `cp`)
-- `mv [source] [destination]` (Move a file)
-- `rm [file]` (Remove a file)
-- `touch [file]` (Create an empty file or update its timestamp)
-- `pwd` (Print the current working directory)
-- `df` (Disk usage)
-- `free` (Show memory usage)
-- `chmod [permissions] [file]` (Change file permissions)
-- `chdir [directory]` (Change directory)
-- `cd [directory]` (Alias for `chdir`)
-- `cd..` (Move up one directory level)
+- `ls` - List files in the current directory.
+- `dir` - Alias for `ls`.
+- `ls -l` - Detailed file list view.
+- `write [filename]` - Write to a file.
+- `mkdir [path]` - Create a new directory.
+- `rmdir [path]` - Remove an empty directory.
+- `delete [file_name]` - Delete a file.
+- `del [file_name]` - Alias for `delete`.
+- `read [filename]` - Read and display a file.
+- `open [filename]` - Open and display a file.
+- `view [filename]` - View a file’s content.
+- `cat [filename]` - Display the content of a file.
+- `edit [filename]` - Edit a file.
+- `run [file]` - Run a script or executable file.
+- `exec [code]` - Execute inline code.
+- `launch [file]` - Launch a program.
+- `start [file]` - Alias for `launch`.
+- `rename [old_name] [new_name]` - Rename a file.
+- `ren [old_name] [new_name]` - Alias for `rename`.
+- `move [filename] [destination]` - Move a file.
+- `cp [source] [destination]` - Copy a file.
+- `copy [source] [destination]` - Alias for `cp`.
+- `mv [source] [destination]` - Move a file.
+- `rm [file]` - Remove a file.
+- `touch [file]` - Create an empty file or update its timestamp.
+- `pwd` - Print the current working directory.
+- `df` - Display disk usage.
+- `free` - Show memory usage.
+- `chmod [permissions] [file]` - Change file permissions.
+- `chdir [directory]` - Change the directory.
+- `cd [directory]` - Alias for `chdir`.
+- `cd..` - Move up one directory level.
 
 #### User Management Commands:
-- `relog [username]` (Logout and login with a specified username)
-- `mkacct [username]` (Create a new user account)
-- `userdel [username]` (Delete a user account)
+- `relog [username]` - Logout and login with a specified username.
+- `mkacct [username]` - Create a new user account.
+- `userdel [username]` - Delete a user account.
 
 #### Package Management Commands:
-- `apt-get [command] [options] [package]` (Package management, custom implementation)
-- `serve` (Host a file on IP and port)
-- `download [url] [filename]` (Download a file from the internet)
+- `apt-get [command] [options] [package]` - Manage software packages.
 
 #### Development and Utility Commands:
-- `help` (Show help information)
-- `print [message]` (Print a message to the terminal)
-- `echo [message]` (Alias for `print`)
-- `git [command] [options]` (Download from GitHub and save to a folder)
+- `help` - Show help information for commands.
+- `print [message]` - Print a message to the terminal.
+- `echo [message]` - Alias for `print`.
 
 ### Hyperion Features:
 
@@ -101,24 +104,33 @@
 - **Sandboxing**: Planned feature for running untrusted code safely.
 - **Debugging and Logging**: Python's native debugging with enhanced logging planned.
 
-## Dev-kit Hardware Docs:
+## Dev-Kit Hardware Documentation
+
 ### Interfaces
-Joystick(y = ADC1, x = ADC0)
-Button-left(gp15)
-Button-right(gp14)
-Beeper(gp13)
-Led-top(gp16)
-Led-bottom(gp17)
+- **Joystick**: 
+  - Y-axis: `ADC1`
+  - X-axis: `ADC0`
+- **Buttons**: 
+  - Left Button: `GP15`
+  - Right Button: `GP14`
+- **Beeper**: `GP13`
+- **LEDs**: 
+  - Top LED: `GP16`
+  - Bottom LED: `GP17`
 
 ### Display
-- SCLK(gp2)
-- MOSI(gp3)
-- MISO(gp4)
-- CS(gp5)
-- DC(gp6)
-- RST(gp7)
-- LED(gp8)
-- TPRST(gp10)
-- TPINT(gp11)
-- Touch-I2C0-SDA(gp8)
-- Touch-I2C0-SCL(gp9)
+- **TFT Screen Connections**:
+  - SCLK: `GP2`
+  - MOSI: `GP3`
+  - MISO: `GP4`
+  - CS: `GP5`
+  - DC: `GP6`
+  - RST: `GP7`
+  - LED: `GP8`
+- **Touch Panel Connections**:
+  - TPRST: `GP10`
+  - TPINT: `GP11`
+  - Touch I2C0 SDA: `GP8`
+  - Touch I2C0 SCL: `GP9`
+
+---
