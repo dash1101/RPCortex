@@ -1,83 +1,69 @@
-# Hyperion OS Documentation
+# Hyperion OS Devmap
 
 ## Software Documentation
 
 ### Hyperion Commands:
 
 #### Networking Commands:
-- `wlan` - Manage WLAN settings.
-- `wlan connect` - Connect to a WLAN network.
-- `wlan disconnect` - Disconnect from the current WLAN network.
-- `wlan scan` - Scan for available WLAN networks.
-- `wlan info` - Display WLAN information.
-- `wlan status` - Show WLAN connection status.
-- `wlan autoconnect` - Enable or disable automatic WLAN connection.
-- `ping [hostname]` - Ping a specified hostname.
-- `ifconfig` - Display network interface configuration.
-- `dnslookup [hostname]` - Perform a DNS lookup for a hostname.
-- `wget [options] [url]` - Retrieve files from the web.
-- `serve` - Host a file on a specific IP and port.
-- `download [url] [filename]` - Download a file from the internet.
+- `wlan connect` - Connect to a WLAN network. # Works
+- `wlan disconnect` - Disconnect from the current WLAN network. # Works
+- `wlan scan` - Scan for available WLAN networks. # Works
+- `wlan autoconnect` - Enable or disable automatic WLAN connection. # Works
+- `ping [hostname]` - Ping a specified hostname. # Works
+- `ifconfig` - Display network interface configuration. # Works
+- `dnslookup [hostname]` - Perform a DNS lookup for a hostname. # Works
+- `serve` - Host a file on a specific IP and port. # Sorta Works
+- `download [url] [filename]` - Download a file from the internet. # Not Functional
 
 
 #### System Commands:
-- `temp` - Display the current temperature.
-- `system` - Display general system information.
-- `reboot` - Reboot the OS.
-- `shutdown` - Enter a low-power state and turn off the display.
-- `uptime` - Show the system's uptime.
-- `sleep` - Enter sleep mode.
-- `exit` - Exit the OS or safely crash it.
-- `sysinfo` - Display detailed system information.
-- `clear` - Clear the terminal screen.
-- `cls` - Alias for `clear`.
-
+- `reboot` - Reboot the OS. # Works
+- `uptime` - Show the system's uptime. # Works
+- `sleep` - Enter sleep mode. # Works
+- `sysinfo` - Display detailed system information. # Works
+- `clear` - Clear the terminal screen. # Works
+- `cls` - Alias for `clear`. # Works
+- `neofetch` - Replication of neofetch program # Not Functional
 #### File System Commands:
-- `ls` - List files in the current directory.
-- `dir` - Alias for `ls`.
-- `ls -l` - Detailed file list view.
-- `write [filename]` - Write to a file.
-- `mkdir [path]` - Create a new directory.
-- `rmdir [path]` - Remove an empty directory.
-- `delete [file_name]` - Delete a file.
-- `del [file_name]` - Alias for `delete`.
-- `read [filename]` - Read and display a file.
-- `open [filename]` - Open and display a file.
-- `view [filename]` - View a file’s content.
-- `cat [filename]` - Display the content of a file.
-- `edit [filename]` - Edit a file.
-- `run [file]` - Run a script or executable file.
-- `exec [code]` - Execute inline code.
-- `launch [file]` - Launch a program.
-- `start [file]` - Alias for `launch`.
-- `rename [old_name] [new_name]` - Rename a file.
-- `ren [old_name] [new_name]` - Alias for `rename`.
-- `move [filename] [destination]` - Move a file.
-- `cp [source] [destination]` - Copy a file.
-- `copy [source] [destination]` - Alias for `cp`.
-- `mv [source] [destination]` - Move a file.
-- `rm [file]` - Remove a file.
-- `touch [file]` - Create an empty file or update its timestamp.
-- `pwd` - Print the current working directory.
-- `df` - Display disk usage.
-- `free` - Show memory usage.
-- `chmod [permissions] [file]` - Change file permissions.
-- `chdir [directory]` - Change the directory.
-- `cd [directory]` - Alias for `chdir`.
-- `cd..` - Move up one directory level.
+- `ls` - List files in the current directory. # Works
+- `dir` - Alias for `ls`. # Works
+- `write [filename]` - Write to a file. # Was working, not now
+- `mkdir [path]` - Create a new directory. # Works
+- `rmdir [path]` - Remove an empty directory. # Works
+- `delete [file_name]` - Delete a file. # Works
+- `del [file_name]` - Alias for `delete`. # Works
+- `read [filename]` - Read and display a file. # Works
+- `open [filename]` - Open and display a file. # Works
+- `view [filename]` - View a file’s content. # Works
+- `cat [filename]` - Display the content of a file. # Works
+- `edit [filename]` - Edit a file. # Was working, not now
+- `rename [old_name] [new_name]` - Rename a file. # Works
+- `ren [old_name] [new_name]` - Alias for `rename`. # Works
+- `move [filename] [destination]` - Move a file. # Was working, not now
+- `cp [source] [destination]` - Copy a file. # Was working, not now
+- `copy [source] [destination]` - Alias for `cp`. # Was working, not now
+- `mv [source] [destination]` - Move a file. # Was working, not now
+- `rm [file]` - Remove a file. # Works
+- `touch [file]` - Create an empty file or update its timestamp. # Was working, not now
+- `pwd` - Print the current working directory. # Works
+- `df` - Display disk usage. # Works
+- `free` - Show memory usage. # Was working, not now
+- `chdir [directory]` - Change the directory. # Works
+- `cd [directory]` - Alias for `chdir`. # Works
+- `cd..` - Move up one directory level. # Works
 
 #### User Management Commands:
-- `relog [username]` - Logout and login with a specified username.
-- `mkacct [username]` - Create a new user account.
-- `userdel [username]` - Delete a user account.
+- `relog [username]` - Logout and login with a specified username. # Works
+- `mkacct [username]` - Create a new user account. # Works
+- `userdel [username]` - Delete a user account. # Works
 
 #### Package Management Commands:
-- `apt-get [command] [options] [package]` - Manage software packages.
+- `pkg [command] [options] [package]` - Manage software packages.  # Not Functional
 
 #### Development and Utility Commands:
-- `help` - Show help information for commands.
-- `print [message]` - Print a message to the terminal.
-- `echo [message]` - Alias for `print`.
+- `help` - Show help information for commands. # Works
+- `print [message]` - Print a message to the terminal. # Works
+- `echo [message]` - Alias for `print`. # Works
 
 ### Hyperion Features:
 
