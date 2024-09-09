@@ -37,6 +37,7 @@
 - `view [filename]` - View a file’s content. # Works
 - `cat [filename]` - Display the content of a file. # Works
 - `edit [filename]` - Edit a file. # Was working, not now
+- `exec() [code]` - Runs code written. # Works
 - `rename [old_name] [new_name]` - Rename a file. # Works
 - `ren [old_name] [new_name]` - Alias for `rename`. # Works
 - `move [filename] [destination]` - Move a file. # Was working, not now
