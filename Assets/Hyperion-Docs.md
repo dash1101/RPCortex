@@ -27,8 +27,12 @@
 - ✅ `sysinfo` - Display detailed system information.
 - ✅ `clear` - Clear the terminal screen.
 - ✅ `cls` - Alias for `clear`.
+- 🟦 `meminfo` - Gives details on the system memory (RAM in bytes): Free, Used, Total
+- ❌ `release` - Attempts to free up system memory
+- 🟦 `validation` - Runs OS validation script
+- ❌ `eval` - Runs performance/system evaluation, and returns a score.
 - ❌ `neofetch` - Replication of neofetch program
-
+  
 #### File System Commands:
 - ✅ `ls` - List files in the current directory. # Works
 - ✅ `dir` - Alias for `ls`.
