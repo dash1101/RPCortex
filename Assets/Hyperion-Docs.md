@@ -3,10 +3,10 @@
 ## Software Documentation
 
 ### Hyperion Commands:
-✅ - Works normally
-🟨 - Functions, some issues
+✅ - Functions, and works as intended
+🟨 - Functions, some issues, does not function as intended
 ❌ - Not working at all
-🟦 - High Priority unfinished / Not working
+🟦 - High Priority
 
 #### Networking Commands:
 - ✅ `wlan connect` - Connect to a WLAN network.
@@ -27,11 +27,9 @@
 - ✅ `sysinfo` - Display detailed system information.
 - ✅ `clear` - Clear the terminal screen.
 - ✅ `cls` - Alias for `clear`.
-- 🟦 `meminfo` - Gives details on the system memory (RAM in bytes): Free, Used, Total
-- ❌ `release` - Attempts to free up system memory
-- 🟦 `validation` - Runs OS validation script
-- ❌ `eval` - Runs performance/system evaluation, and returns a score.
-- ❌ `neofetch` - Replication of neofetch program
+- ✅ `meminfo` - Gives details on the system memory (RAM in bytes): Free, Used, Total.
+- ✅ `clean` - Frees up system memory.
+- ✅ `validation` - Runs OS validation script.
   
 #### File System Commands:
 - ✅ `ls` - List files in the current directory. # Works
@@ -61,16 +59,12 @@
 - ✅ `chdir [directory]` - Change the directory.
 - ✅ `cd [directory]` - Alias for `chdir`.
 - ✅ `cd..` - Move up one directory level.
-- ❌ `deflate [file] [destination]` - Extracts tar files to a given directory.
-- ❌ `compress [source] [file]` - Compresses a file/folder to a tar archive.
 
 #### User Management Commands:
 - ✅ `relog [username]` - Logout and login with a specified username.
 - ✅ `mkacct [username]` - Create a new user account.
 - ✅ `userdel [username]` - Delete a user account.
 
-#### Package Management Commands:
-- 🟦 `pkg [options] [package]` - Manage software packages.
 
 #### Development and Utility Commands:
 - ✅ `help` - Show help information for commands.
@@ -84,12 +78,11 @@
 - ✅ **Button Functionality**: Interface API for buttons.
 - ✅ **Beeper Functionality**: Interface API for the onboard beeper.
 - ✅ **WiFi Functionality**: Networking support (Connect, Scan, Download, Serve, etc.)
-- 🟦 **Package Manager**: For handling software packages and dependencies.
 - ✅ **Serve Function**: Program to host files over IP and port.
 - ✅ **Flash Memory File System**: FS API for file management.
 - ✅ **Serial Support**: String input and output via serial interface.
 - ✅ **User Profiles**: Basic user management system.
-- 🟦 **OS Verification**: Planned feature for file integrity checks using hash codes.
+- ✅ **OS Verification**: Planned feature for file integrity checks using hash codes.
 - ✅ **System Redundancy**: System files are locked so no accidental OS deletions.
 
 ## Dev-Kit Hardware Documentation
