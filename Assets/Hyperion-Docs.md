@@ -16,8 +16,8 @@
 - ✅ `ping [hostname]` - Ping a specified hostname.
 - ✅ `ifconfig` - Display network interface configuration.
 - ✅ `dnslookup [hostname]` - Perform a DNS lookup for a hostname.
-- 🟨 `serve` - Host a file on a specific IP and port.
-- 🟨 `download [url] [filename]` - Download a file from the internet.
+- ✅ `serve` - Host a file on a specific IP and port.
+- ✅ `download [url] [filename]` - Download a file from the internet.
 
 
 #### System Commands:
@@ -34,7 +34,7 @@
 #### File System Commands:
 - ✅ `ls` - List files in the current directory. # Works
 - ✅ `dir` - Alias for `ls`.
-- 🟦 `write [filename]` - Write to a file.
+- ✅ `write [filename]` - Write to a file.
 - ✅ `mkdir [path]` - Create a new directory.
 - ✅ `rmdir [path]` - Remove an empty directory.
 - ✅ `delete [file_name]` - Delete a file.
@@ -43,19 +43,18 @@
 - ✅ `open [filename]` - Open and display a file.
 - ✅ `view [filename]` - View a file’s content.
 - ✅ `cat [filename]` - Display the content of a file.
-- ❌ `edit [filename]` - Edit a file.
+- ✅ `edit [filename]` - Edit a file.
 - ✅ `exec() [code]` - Runs code written.
 - ✅ `rename [old_name] [new_name]` - Rename a file.
 - ✅ `ren [old_name] [new_name]` - Alias for `rename`.
-- 🟦 `move [filename] [destination]` - Move a file.
-- ❌ `cp [source] [destination]` - Copy a file.
-- ❌ `copy [source] [destination]` - Alias for `cp`.
-- 🟦 `mv [source] [destination]` - Move a file.
+- ✅ `move [filename] [destination]` - Move a file.
+- ✅ `cp [source] [destination]` - Copy a file.
+- ✅ `copy [source] [destination]` - Alias for `cp`.
+- ✅ `mv [source] [destination]` - Move a file.
 - ✅ `rm [file]` - Remove a file.
-- ❌ `touch [file]` - Create a file, and write text to it.
+- ✅ `touch [file]` - Create a file, and write text to it.
 - ✅ `pwd` - Print the current working directory.
 - ✅ `df` - Display disk usage.
-- ❌ `free` - Show memory usage.
 - ✅ `chdir [directory]` - Change the directory.
 - ✅ `cd [directory]` - Alias for `chdir`.
 - ✅ `cd..` - Move up one directory level.
