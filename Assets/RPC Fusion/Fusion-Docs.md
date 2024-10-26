@@ -1,42 +1,65 @@
-# Fusion Devmap
+# Fusion Software Documentation
+*Written by dash1101*
 
-## Software Documentation
+---
 
-### Fusion Commands:
-##### ✅ - Functions, and works as intended
-##### 🟨 - Functions, some issues, does not function as intended
-##### ❌ - Not functional 'yet'
-##### 🟦 - High Priority
+## Fusion Commands
 
-#### Networking:
-- ❌ `wlan commands` Not yet working...
+Fusion OS is still in early development, so it’s tough to say exactly what all the commands will be. For now, you can assume most commands from Hyperion will work similarly, but expect things to change as Fusion evolves.
 
-#### System:
-- 🟨 `Post`, `Init`, `Pulse`, `Fusion`, `regedit` - Most these functions work.
-- ❌ `SocketIO` - Web terminal
-- ❌ `System` - Main system functions, 
-- ❌ `Network Utilities` - 
-- ❌ `pkg` - The package manager
-- ❌ `RPCortex` - Main API for accessing pretty much anything to do with Fusion
-- ❌ `Bundle` - Package bundler / creator
-- ❌ `Post` - Power On Self Test
-- ❌
-- ❌
-- ❌
-- ❌
-- ❌
-- ❌
+---
 
-#### File System:
-- ❌ Remaking for root user permissions
+## Error Codes
 
+Same story as with the commands—error codes aren’t fully set up yet. I’ll add more details here as they get implemented.
 
-#### User Management:
-- ❌ Remaking for root user permissions
-- ✅ Encrypt user profiles, aswell as added root support
+---
 
+## Startup Codes / `Settings.Note`
 
-#### Development and Utility Commands:
-- ❌ `help` - Show help information for commands.
-- ❌ `print [message]` - Print a message to the terminal.
+The `Settings.Note` setting in Fusion OS lets you know what’s happening during startup. Here’s a breakdown of each possible value:
 
+- **Settings.Note = 0**: First-time boot or in setup mode.
+- **Settings.Note = 1**: System is set up and ready for a normal boot.
+- **Settings.Note = 2**: Something went wrong, so the system has entered recovery mode.
+- **Settings.Note = 3**: System is unstable or missing critical files.
+- **Settings.Note = 4**: System update failed.
+- **Settings.Note = 5**: System update installed successfully; everything’s good to go!
+- **Settings.Note = 6**: System is booting into safe mode.
+- **Settings.Note = 7**: System failure due to a clock change; the processor does not support clock speed adjustments. 
+
+---
+
+## Pulse Software
+
+**What is it?**  
+Pulse is the hardware management script that keeps Fusion OS running smoothly on the hardware side. Here’s what it can do:
+
+- **Overclock** or **Underclock** the system as needed.
+- Run **full hardware diagnostics**, including system hardware checks and benchmarking.
+
+With Pulse, Fusion can:
+
+- **Benchmark system performance** to get an accurate read on speed and efficiency.
+- **Test memory** to check its status and functionality.
+- **Test processor** performance and health.
+- **Verify flash storage** capacity and functionality.
+
+---
+
+## Recovery Mode
+
+**What is it?**  
+Recovery mode is a system within Fusion OS that lets RPC Fusion make necessary changes if issues arise. Here’s what you can do in recovery mode:
+
+- **Reset Fusion** to its initial state.
+- **Repair Fusion** by fixing corrupted files or configurations.
+- **Flash the system** with a recovery file to restore functionality.
+- **Export current system flash** as a backup file.
+- **Remove users** (requires root password).
+- **Create or remove files** (also requires root password).
+- **Change system clock speeds**
+- 
+---
+
+As Fusion continues to grow, I’ll keep this documentation updated with more commands, error codes, and other info.
