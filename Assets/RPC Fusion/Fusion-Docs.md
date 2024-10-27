@@ -17,16 +17,15 @@ Same story as with the commands—error codes aren’t fully set up yet. I’ll 
 
 ## Startup Codes / `Settings.Note`
 
-The `Settings.Note` setting in Fusion OS lets you know what’s happening during startup. Here’s a breakdown of each possible value:
+The `Settings.Startup` setting in Fusion OS lets you know what’s happening during startup. Here’s a breakdown of each possible value:
 
-- **Settings.Note = 0**: First-time boot or in setup mode.
-- **Settings.Note = 1**: System is set up and ready for a normal boot.
-- **Settings.Note = 2**: Something went wrong, so the system has entered recovery mode.
-- **Settings.Note = 3**: System is unstable or missing critical files.
-- **Settings.Note = 4**: System update failed.
-- **Settings.Note = 5**: System update installed successfully; everything’s good to go!
-- **Settings.Note = 6**: System is booting into safe mode.
-- **Settings.Note = 7**: System failure due to a clock change; the processor does not support clock speed adjustments. 
+- **Settings.Startup = 0**: System is ready for a normal boot.
+- **Settings.Startup = 1**: Something went wrong, so the system has entered recovery mode.
+- **Settings.Startup = 2**: System is unstable or missing critical files.
+- **Settings.Startup = 3**: System update failed.
+- **Settings.Startup = 4**: System update installed successfully; everything’s good to go!
+- **Settings.Startup = 5**: System is booting into safe mode.
+- **Settings.Startup = 6**: System failure due to a clock change; the processor does not support clock speed adjustments. 
 
 ---
 
