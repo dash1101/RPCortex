@@ -94,4 +94,12 @@
 ### User Local Data
 - **Note:** Developers can create programs that retain essential user data even after upgrades by storing files in the user's "app.data" folder, which is accessible via the RPCortex API.
 
+## Symbols
+- [:] Info
+- [!] Error
+- [!!!] Fatal Error
+- [?] Warn
+- [@] Ok / Success
+- ••> Input
+
 More documentation will be available soon as the package manager continues to develop.
