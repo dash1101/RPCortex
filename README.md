@@ -1,4 +1,4 @@
-![RPCortex](Assets/RPCortex.png)
+![RPCortex](Assets/RPCortex/RPCortex.png)
 
 # What is RPCortex?
 RPCortex is a lightweight customizable and capable operating system written in MicroPython for the RP2040, and the RP2350 Processor
