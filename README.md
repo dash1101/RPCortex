@@ -39,9 +39,9 @@ For RPC β8X - Nebula release v0.8.0-beta:
 |---------------|---------|----------------|
 | **Initiation**   | ✅ Completed  | 3/2 - 3/4 |
 | **Planning**    | 🏗️ In Progress  | 3/5 - 3/22 |
-| **Development** | 📅 Projected  | 4/1 - 6/1 |
-| **Testing**     | 🧪 Projected  | 6/1 - 6/4 |
-| **Finalization**| 🚀 Projected  | 6/10 |
+| **Development** | 📅 Projected  | Q2 2025 |
+| **Testing**     | 🧪 Projected  | Q3 2025 |
+| **Finalization**| 🚀 Projected  | Q3 2025 |
 
 ## 📦 Package Management
 RPCortex β8X features a **built-in package manager** with:
