@@ -29,7 +29,7 @@ To install **RPCortex**, follow these steps:
 3. Boot into RPCortex and configure your user environment.
 
 ### 🔧 Recommended System Requirements
-- **MicroPython-supported RP2040 / RP2350 processor**
+- **MicroPython-supported RP2350 processor**
 - **MicroPython Version:** v1.25.X
 - **Storage:** 4MB Flash Memory
 - **RAM:** 256KB
