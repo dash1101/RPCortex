@@ -52,9 +52,6 @@ RPCortex β8X features a **built-in package manager** with:
 - **Automatic & manual package updates**
 - **Full package removal support**
 
-## 🛠️ Development & Contributions
-We welcome contributions! Please refer to our **[Contribution Guide](https://github.com/dash1101/RPCortex/blob/main/CONTRIBUTING.md)** before submitting a PR.
-
 ## 🔒 License
 RPCortex is open-source but requires **explicit credit** to **[@dash1101](https://github.com/dash1101)** for use in public projects. Read more in the **[LICENSE](https://github.com/dash1101/RPCortex/blob/main/LICENSE)** file.
 
