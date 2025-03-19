@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RPCortex Installer</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="underwater-bg">
+    <div class="light-ray"></div>
+    <div class="light-ray"></div>
+    <div class="light-ray"></div>
+    <div class="light-ray"></div>
+    <!-- Bubbles will be added via JavaScript -->
+  </div>
+
+  <div class="header-container">
+    <div class="header left" id="device-status">
+      <div class="status-text">Device not yet initialized...</div>
+    </div>
+    
+    <div class="header right">
+      <div class="status-text">RPCortex Installer</div>
+      <div class="status-text">Version 0.0-concept</div>
+      <div class="status-text">Chosen Flavor: Custom</div>
+    </div>
+  </div>
+  
+  <div class="main-content">
+    <div class="button-container">
+      <button id="connectButton">Connect</button>
+      <button id="fileButton">Load Custom Firmware</button>
+      <button id="githubButton" onclick="window.location.href='https://github.com/'">GitHub</button>
+    </div>
+  </div>
+
+  <div class="image-container"><img src="RPC-Short.png" alt="RPC Icon" /></div>
+  
+  <input type="file" id="fileInput" style="display: none" />
+
+  <script src="script.js"></script>
+  <script>
+    // Create bubbles
+    function createBubbles() {
+      const underwaterBg = document.querySelector('.underwater-bg');
+      const bubbleCount = 12; // Reduced number of bubbles
+      
+      for (let i = 0; i < bubbleCount; i++) {
+        const bubble = document.createElement('div');
+        bubble.className = 'bubble';
+        
+        // Larger sizes between 30px and 60px
+        const size = Math.random() * 30 + 30;
+        bubble.style.width = `${size}px`;
+        bubble.style.height = `${size}px`;
+        
+        // Random horizontal position
+        bubble.style.left = `${Math.random() * 100}%`;
+        
+        // Random fluctuation duration
+        const duration = Math.random() * 10 + 10;
+        bubble.style.animationDuration = `${duration}s`;
+        
+        // Random delay for more natural movement
+        const delay = Math.random() * 5;
+        bubble.style.animationDelay = `${delay}s`;
+        
+        underwaterBg.appendChild(bubble);
+      }
+    }
+    
+    // Initialize bubbles when the document is loaded
+    document.addEventListener('DOMContentLoaded', createBubbles);
+  </script>
+</body>
+</html>
