@@ -82,15 +82,6 @@ document.getElementById('fileButton').addEventListener('click', () => {
       const sendButton = document.querySelector('.terminal-send-button');
       const terminalTitle = document.getElementById('terminal-title');
   
-      // Add a button to run install.py
-      const installButton = document.createElement('button');
-      installButton.textContent = 'Run install.py';
-      installButton.id = 'installButton';
-      installButton.addEventListener('click', async () => {
-        await runInstallScript();
-      });
-      document.querySelector('.button-container').appendChild(installButton);
-  
       const logToTerminal = (message, isSystem = false) => {
         if (message === null || message === undefined || message.trim() === '') return; // Skip empty messages
         
@@ -100,14 +91,16 @@ document.getElementById('fileButton').addEventListener('click', () => {
         if (!isSystem) {
           // Replace raw characters with their proper representation
           processedMessage = processedMessage.replace(/\r/g, '');
-          
-          // For non-system messages, insert <br> for newlines and ensure they're properly rendered
-          const lines = processedMessage.split('\n');
-          processedMessage = lines.join('<br>');
+          processedMessage = processedMessage.replace(/\n/g, '<br>');
+          // Escape HTML to prevent code injection issues
+          processedMessage = processedMessage
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;');
         }
         
         const className = isSystem ? 'system' : 
-                       message.startsWith('>') ? 'command' : 'response';
+                         message.startsWith('>') ? 'command' : 'response';
         
         terminal.innerHTML += `<span class="${className}">${processedMessage}</span>${isSystem ? '<br>' : ''}`;
         terminal.scrollTop = terminal.scrollHeight;
@@ -116,7 +109,7 @@ document.getElementById('fileButton').addEventListener('click', () => {
       const decoder = new TextDecoder();
       const encoder = new TextEncoder();
   
-      // Update device status in header with memory info
+      // Update device status in header with simplified parsing
       const updateDeviceStatus = (portId, mpyVersion, memInfo) => {
         const statusElement = document.getElementById('device-status');
         if (!statusElement) return; // Skip if the element doesn't exist
@@ -142,31 +135,36 @@ document.getElementById('fileButton').addEventListener('click', () => {
               `<span class="status-warning">(Update recommended)</span>`;
           }
         }
-        
         let ramValue = '?';
         let romValue = '?';
         let ramStatus = '';
         let romStatus = '';
         
-        if (memInfo) {
-          [ramValue, romValue] = memInfo;
-          
-          ramStatus = parseInt(ramValue) >= 128 ? 
-            `<span class="status-good">(Good)</span>` : 
-            `<span class="status-warning">(Limited)</span>`;
-          
-          romStatus = parseInt(romValue) >= 4 ? 
-            `<span class="status-good">(Good)</span>` : 
-            `<span class="status-warning">(Limited)</span>`;
-        }
         
+        if (memInfo) {
+            [ramValue, romValue] = memInfo;
+            
+            ramStatus = parseInt(ramValue) >= 128 ? 
+              `<span class="status-good">(Good)</span>` : 
+              `<span class="status-warning">(Limited)</span>`;
+            
+            romStatus = parseInt(romValue) >= 4 ? 
+              `<span class="status-good">(Good)</span>` : 
+              `<span class="status-warning">(Limited)</span>`;
+          }
+          
+          statusElement.innerHTML = `
+            <div class="status-text">Device connected at ${portId}</div>
+            <div class="status-text">MPY: v${formattedVersion} ${mpyStatus}</div>
+            <div class="status-text">RAM / ROM: ${ramValue}KB / ${romValue}MB ${ramStatus} / ${romStatus}</div>
+          `;
         statusElement.innerHTML = `
           <div class="status-text">Device connected at ${portId}</div>
           <div class="status-text">MPY: v${formattedVersion} ${mpyStatus}</div>
           <div class="status-text">RAM / ROM: ${ramValue}KB / ${romValue}MB ${ramStatus} / ${romStatus}</div>
         `;
       };
-  
+
       // Update terminal title with progress percentage
       const updateProgressInTitle = (percentage = null) => {
         if (percentage !== null) {
@@ -188,43 +186,7 @@ document.getElementById('fileButton').addEventListener('click', () => {
         }
       };
   
-      // Check if a file exists on the device
-      const checkFileExists = async (filename) => {
-        try {
-          await sendCommand("import os\r\n", 200);
-          await sendCommand(`print("FILECHECK:", "${filename}" in os.listdir())\r\n`, 200);
-          
-          // Wait for response
-          await new Promise(resolve => setTimeout(resolve, 500));
-          
-          // Check if the file exists in the device's response
-          return rawBuffer.includes('FILECHECK: True');
-        } catch (error) {
-          console.error('Error checking file existence:', error);
-          return false;
-        }
-      };
-  
-      // Function to run install.py after file transfer
-      const runInstallScript = async () => {
-        logToTerminal(`Running install.py...`, true);
-        try {
-          // Make sure we're in regular REPL mode
-          await sendCommand('\x03\r\n', 500); // Ctrl+C to interrupt any running program
-          
-          // Execute the install.py script
-          await sendCommand('import install\r\n', 500);
-          logToTerminal(`install.py execution initiated`, true);
-          return true;
-        } catch (error) {
-          console.error('Error running install script:', error);
-          logToTerminal(`Error running install.py: ${error.message}`, true);
-          return false;
-        }
-      };
-  
       // Set up reading loop for receiving data from device
-      let rawBuffer = '';
       const readLoop = async () => {
         try {
           // Initial update with port info
@@ -244,14 +206,9 @@ document.getElementById('fileButton').addEventListener('click', () => {
           // Get version as a string to avoid parsing issues with the tuple
           await sendCommand('print("MPYVER:", ".".join([str(i) for i in sys.implementation.version[:3]]))\r\n', 500);
           
-          // Get memory information
-          await sendCommand('import gc\r\n', 300);
-          await sendCommand('gc.collect()\r\n', 500);
-          await sendCommand('print("MEMINFO:", gc.mem_free() // 1024, ", ", import os; os.statvfs("/")[0] * os.statvfs("/")[2] // 1048576)\r\n', 500);
-          
           // Variables to store extracted information
           let mpyVersion = null;
-          let memInfo = null;
+          let rawBuffer = '';
           let isProcessingInfo = true;
           
           while (true) {
@@ -269,7 +226,6 @@ document.getElementById('fileButton').addEventListener('click', () => {
             // Only log normal REPL output, not our detection commands
             if (!isProcessingInfo || !(
               rawBuffer.includes("MPYVER:") || 
-              rawBuffer.includes("MEMINFO:") ||
               rawBuffer.includes("import") ||
               rawBuffer.includes("try:")
             )) {
@@ -282,20 +238,9 @@ document.getElementById('fileButton').addEventListener('click', () => {
               mpyVersion = mpyMatch[1];
               logToTerminal(`Found MPY version: v${mpyVersion}`, true);
               rawBuffer = rawBuffer.replace(/MPYVER:\s*([0-9.]+)/, ''); // Remove from buffer
-            }
-            
-            // Extract memory info
-            const memMatch = rawBuffer.match(/MEMINFO:\s*(\d+),\s*(\d+)/);
-            if (memMatch) {
-              const ramFree = memMatch[1];
-              const romFree = memMatch[2];
-              logToTerminal(`Found memory info: RAM: ${ramFree}KB free, ROM: ${romFree}MB free`, true);
-              rawBuffer = rawBuffer.replace(/MEMINFO:\s*(\d+),\s*(\d+)/, ''); // Remove from buffer
               
-              memInfo = [ramFree, romFree];
-              
-              // Update the status with memory info
-              updateDeviceStatus(portInfo, mpyVersion, memInfo);
+              // Update the status with fixed port info
+              updateDeviceStatus(portInfo, mpyVersion);
               isProcessingInfo = false;
               logToTerminal("Device initialization complete", true);
               
@@ -510,11 +455,6 @@ document.getElementById('fileButton').addEventListener('click', () => {
             await sendCommand("import os\r\n", 200);
             await sendCommand("print('Files on device:')\r\n", 200);
             await sendCommand("print(os.listdir())\r\n", 200);
-            
-            // Run install.py if it exists
-            if (filename === 'install.py' || await checkFileExists('install.py')) {
-              await runInstallScript();
-            }
           } else {
             logToTerminal(`File transfer failed. Please try again with a smaller file.`, true);
           }
