@@ -129,6 +129,9 @@ document.getElementById('connectButton').addEventListener('click', async () => {
     const decoder = new TextDecoder();
     const encoder = new TextEncoder();
 
+    // Buffer to store incoming data
+    let rawBuffer = '';
+
     // Update device status in header with RAM and ROM info
     const updateDeviceStatus = (portId, mpyVersion, memInfo) => {
       const statusElement = document.getElementById('device-status');
@@ -189,15 +192,79 @@ document.getElementById('connectButton').addEventListener('click', async () => {
       }
     };
 
-    // Utility function to safely send commands with proper error handling
-    const sendCommand = async (command, timeout = 500) => {
+    // Wait for a specific response from the REPL
+    const waitForResponse = async (marker, timeout = 5000) => {
+      return new Promise((resolve, reject) => {
+        let responseTimeout = setTimeout(() => {
+          reject(new Error(`Timeout waiting for response: ${marker}`));
+        }, timeout);
+        
+        // Function to check if the marker is in the buffer
+        const checkBuffer = () => {
+          if (rawBuffer.includes(marker)) {
+            clearTimeout(responseTimeout);
+            resolve(true);
+            return true;
+          }
+          return false;
+        };
+        
+        // Check immediately if it's already there
+        if (checkBuffer()) return;
+        
+        // Set up a periodic check
+        const interval = setInterval(() => {
+          if (checkBuffer()) {
+            clearInterval(interval);
+          }
+        }, 100);
+        
+        // Clear interval on timeout
+        responseTimeout = setTimeout(() => {
+          clearInterval(interval);
+          reject(new Error(`Timeout waiting for response: ${marker}`));
+        }, timeout);
+      });
+    };
+
+    // Improved send command function with better wait mechanism
+    const sendCommand = async (command, waitTime = 300, waitForPrompt = false) => {
       try {
         await writer.write(encoder.encode(command));
-        return await new Promise(resolve => setTimeout(resolve, timeout));
+        
+        if (waitForPrompt) {
+          // Wait for the prompt to appear (>>> or ... )
+          await waitForResponse(/>>>|\.\.\./, waitTime);
+        } else {
+          // Just wait a fixed amount of time
+          await new Promise(resolve => setTimeout(resolve, waitTime));
+        }
+        
+        return true;
       } catch (error) {
         console.error('Command error:', error);
         logToTerminal(`Error sending command: ${error.message}`, true);
-        return Promise.reject(error);
+        return false;
+      }
+    };
+
+    // Function to reset the REPL to a known state
+    const resetREPL = async () => {
+      // Send multiple Ctrl+C characters to interrupt any running program
+      await writer.write(encoder.encode('\x03\x03\x03'));
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
+      // Clear the input line
+      await writer.write(encoder.encode('\r\n'));
+      await new Promise(resolve => setTimeout(resolve, 300));
+      
+      // Wait for the prompt to appear
+      try {
+        await waitForResponse('>>>', 2000);
+        return true;
+      } catch (error) {
+        console.warn('Could not reset REPL cleanly', error);
+        return false;
       }
     };
 
@@ -210,10 +277,7 @@ document.getElementById('connectButton').addEventListener('click', async () => {
         logToTerminal(`Connected to device. Initializing...`, true);
         
         // Reset device and clear any running programs
-        await sendCommand('\x03\x03\r\n', 1000); // Double Ctrl+C to ensure interruption
-        
-        // Clear any pending output
-        await sendCommand('\r\n', 300);
+        await resetREPL();
         
         // Extract MPY version using a more reliable approach
         await sendCommand('import sys\r\n', 500);
@@ -230,7 +294,6 @@ document.getElementById('connectButton').addEventListener('click', async () => {
         // Variables to store extracted information
         let mpyVersion = null;
         let memInfo = null;
-        let rawBuffer = '';
         let isProcessingInfo = true;
         
         while (true) {
@@ -278,7 +341,7 @@ document.getElementById('connectButton').addEventListener('click', async () => {
             logToTerminal("Device initialization complete", true);
             
             // Clear any remaining output from the initialization
-            await sendCommand('\r\n', 300);
+            await resetREPL();
           }
           
           // Keep buffer manageable
@@ -326,7 +389,7 @@ document.getElementById('connectButton').addEventListener('click', async () => {
         logToTerminal(`Executing install.py on the device...`, true);
         
         // Reset device and clear any running programs
-        await sendCommand('\x03\x03\r\n', 500); // Double Ctrl+C
+        await resetREPL();
         
         // Check if install.py exists
         await sendCommand('import os\r\n', 300);
@@ -345,6 +408,7 @@ document.getElementById('connectButton').addEventListener('click', async () => {
       }
     }
 
+    // IMPROVED FILE TRANSFER FUNCTION
     // Set up improved file upload functionality
     const fileInput = document.getElementById('fileInput');
     
@@ -371,122 +435,149 @@ document.getElementById('connectButton').addEventListener('click', async () => {
         
         logToTerminal(`Starting file transfer...`, true);
         
-        // Try two different approaches, in order of preference:
-        // 1. Paste mode (good balance of speed and compatibility)
-        // 2. Line-by-line mode (slow but most compatible)
+        // Reset the REPL to a known state
+        await resetREPL();
         
-        let transferMethod = '';
+        // Always clear the buffer before starting a transfer
+        rawBuffer = '';
+        
+        // IMPROVED TRANSFER METHODS
+        
+        // Method 1: RAW mode (most reliable for ESP32)
         let transferSuccessful = false;
         
-        // Reset device and clear any running programs
-        await sendCommand('\x03\x03\r\n', 500); // Double Ctrl+C
-        await sendCommand('\r\n', 300); // Clear line
-        
-        // Function to check device capability for advanced transfer modes
-        const checkCapabilities = async () => {
-          // Try paste mode as a test
-          logToTerminal(`Testing device capabilities...`, true);
+        try {
+          logToTerminal(`Attempting RAW mode transfer (fastest)`, true);
           
+          // Enter raw mode
+          await sendCommand('\x01', 500); // Ctrl+A to enter raw REPL
+          
+          // Wait for the raw REPL prompt
           try {
-            // See if paste mode is supported
-            await sendCommand('\x05', 1000); // Ctrl+E to enter paste mode
-            // If we get here without error, paste mode is supported
-            transferMethod = 'paste';
-            // Exit paste mode
-            await sendCommand('\x04', 500); // Ctrl+D
-            await sendCommand('\r\n', 300);
-            return true;
-          } catch (err) {
-            logToTerminal(`Paste mode not supported, falling back to line mode`, true);
-            transferMethod = 'line';
-            return false;
-          }
-        };
-        
-        await checkCapabilities();
-        
-        // METHOD 1: PASTE MODE TRANSFER (most devices support this)
-        if (transferMethod === 'paste') {
-          try {
-            logToTerminal(`Using paste mode transfer`, true);
+            await waitForResponse('raw REPL', 2000);
+            logToTerminal(`RAW mode activated`, true);
             
-            // Make sure we're in regular REPL mode
-            await sendCommand('\x03\r\n', 500); // Ctrl+C to interrupt any running program
-            await sendCommand('\r\n', 300); // Ensure clean prompt
+            // Prepare file write command
+            const writeCommand = `f = open('${filename}', 'w')\nf.write('''${fileContent.replace(/'''/g, "\\'\\'\\'")}''')\nf.close()\nprint('TRANSFER_COMPLETE')\n`;
+            
+            // Send the command
+            await writer.write(encoder.encode(writeCommand));
+            
+            // Send Ctrl+D to execute
+            await writer.write(encoder.encode('\x04'));
+            
+            // Wait for completion
+            try {
+              await waitForResponse('TRANSFER_COMPLETE', 30000);
+              transferSuccessful = true;
+              logToTerminal(`File transfer complete using RAW mode`, true);
+            } catch (error) {
+              logToTerminal(`RAW mode transfer timed out, trying alternative method`, true);
+            }
+          } catch (error) {
+            logToTerminal(`RAW mode not available, trying alternative method`, true);
+          }
+          
+          // Exit raw mode (if we entered it)
+          await writer.write(encoder.encode('\x02')); // Ctrl+B to exit raw REPL
+          await new Promise(resolve => setTimeout(resolve, 500));
+          
+          // Reset REPL state
+          await resetREPL();
+        } catch (error) {
+          console.error('RAW mode transfer error:', error);
+          logToTerminal(`Error in RAW mode transfer. Trying paste mode...`, true);
+          
+          // Reset REPL state
+          await resetREPL();
+        }
+        
+        // Method 2: PASTE mode (backup method)
+        if (!transferSuccessful) {
+          try {
+            logToTerminal(`Attempting paste mode transfer`, true);
             
             // Enter paste mode
-            await sendCommand('\x05', 1000); // Ctrl+E to enter paste mode
+            await writer.write(encoder.encode('\x05')); // Ctrl+E to enter paste mode
+            await new Promise(resolve => setTimeout(resolve, 100));
             
-            // Prepare file open code - with context manager to ensure file closure
-            await sendCommand(`with open('${filename}', 'w') as f:\n`, 500);
-            
-            // Split content into manageable chunks and prepare them
-            const CHUNK_SIZE = 512; // Much larger chunks possible with paste mode
-            let position = 0;
-            
-            // Process the content into chunks that are properly escaped
-            while (position < fileContent.length) {
-              // Get chunk and escape problematic characters
-              let chunk = fileContent.slice(position, position + CHUNK_SIZE)
-                .replace(/\\/g, '\\\\') // Escape backslashes
-                .replace(/'/g, "\\'")   // Escape single quotes
-                .replace(/\r?\n/g, '\\n'); // Handle all newline formats properly
+            // Check if we entered paste mode
+            if (rawBuffer.includes('paste mode')) {
+              logToTerminal(`Paste mode activated`, true);
               
-              // Add explicit newline to the write statement
-              await sendCommand(`    f.write('${chunk}')\n`, 10);
+              // Prepare chunked file write
+              await writer.write(encoder.encode(`f = open('${filename}', 'w')\n`));
               
-              // Update position
-              position += CHUNK_SIZE;
+              // Split content into manageable chunks
+              const CHUNK_SIZE = 512;
+              const totalChunks = Math.ceil(fileContent.length / CHUNK_SIZE);
               
-              // Show progress periodically
-              if (position % (CHUNK_SIZE * 10) === 0 || position >= fileContent.length) {
-                const percent = Math.min(100, Math.round((position / fileContent.length) * 100));
-                logToTerminal(`Transfer progress: ${percent}%`, true);
-                updateProgressInTitle(percent);
+              for (let i = 0; i < totalChunks; i++) {
+                const chunk = fileContent.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE)
+                  .replace(/\\/g, '\\\\')
+                  .replace(/'/g, "\\'")
+                  .replace(/\r\n/g, '\\n')
+                  .replace(/\n/g, '\\n');
+                
+                await writer.write(encoder.encode(`f.write('${chunk}')\n`));
+                
+                // Show progress
+                const percent = Math.min(100, Math.round(((i + 1) / totalChunks) * 100));
+                if (i % 10 === 0 || i === totalChunks - 1) {
+                  logToTerminal(`Transfer progress: ${percent}%`, true);
+                  updateProgressInTitle(percent);
+                }
+                
+                // Give the device time to process
+                await new Promise(resolve => setTimeout(resolve, 50));
               }
+              
+              // Close the file
+              await writer.write(encoder.encode('f.close()\n'));
+              
+              // Exit paste mode
+              await writer.write(encoder.encode('\x04')); // Ctrl+D to exit paste mode
+              await new Promise(resolve => setTimeout(resolve, 1000));
+              
+              transferSuccessful = true;
+              logToTerminal(`File transfer complete using paste mode`, true);
+              updateProgressInTitle();
+            } else {
+              logToTerminal(`Paste mode not available, trying line mode`, true);
             }
-            
-            // End paste mode
-            await sendCommand('\x04', 1000); // Ctrl+D to execute the pasted code
-            
-            // Check if transfer was successful (no error messages)
-            await sendCommand('\r\n', 500);
-            
-            transferSuccessful = true;
-            logToTerminal(`File transfer complete using paste mode`, true);
-            updateProgressInTitle(); // Remove progress from title
           } catch (error) {
             console.error('Paste mode transfer error:', error);
             logToTerminal(`Error in paste mode transfer. Trying line mode...`, true);
-            transferMethod = 'line';
           }
+          
+          // Reset REPL state
+          await resetREPL();
         }
         
-        // METHOD 2: LINE MODE TRANSFER (fallback method)
-        if (transferMethod === 'line' && !transferSuccessful) {
+        // Method 3: LINE mode (most compatible but slowest)
+        if (!transferSuccessful) {
           try {
-            logToTerminal(`Using line-by-line transfer (slower but more compatible)`, true);
+            logToTerminal(`Using line-by-line transfer (slow but most compatible)`, true);
             
             // Reset and clear any errors
-            await sendCommand('\x03\x03\r\n', 500); // Double Ctrl+C
-            await sendCommand('\r\n', 300); // Clear line
+            await resetREPL();
             
             // Open file
             await sendCommand(`f = open('${filename}', 'w')\r\n`, 500);
             
-            // Write content in small lines
-            const lines = fileContent.split(/\r?\n/); // Handle all newline formats
+            // Write content in small chunks
+            const lines = fileContent.split(/\r?\n/);
             for (let i = 0; i < lines.length; i++) {
               // Escape the line content
               const line = lines[i]
-                .replace(/\\/g, '\\\\') // Escape backslashes
-                .replace(/'/g, "\\'");   // Escape single quotes
+                .replace(/\\/g, '\\\\')
+                .replace(/'/g, "\\'");
               
               // Write the line with explicit newline character
               await sendCommand(`f.write('${line}${i < lines.length - 1 ? "\\n" : ""}')\r\n`, 100);
               
               // Show progress periodically
-              if (i % 10 === 0 || i >= lines.length - 1) {
+              if (i % 5 === 0 || i >= lines.length - 1) {
                 const percent = Math.min(100, Math.round(((i + 1) / lines.length) * 100));
                 logToTerminal(`Transfer progress: ${percent}%`, true);
                 updateProgressInTitle(percent);
@@ -498,14 +589,15 @@ document.getElementById('connectButton').addEventListener('click', async () => {
             
             transferSuccessful = true;
             logToTerminal(`File transfer complete using line mode`, true);
-            updateProgressInTitle(); // Remove progress from title
+            updateProgressInTitle();
           } catch (error) {
             console.error('Line mode transfer error:', error);
             logToTerminal(`Error in line mode transfer: ${error.message}`, true);
-            updateProgressInTitle(); // Remove progress from title
+            updateProgressInTitle();
           }
         }
         
+        // Verify transfer and handle post-transfer actions
         if (transferSuccessful) {
           logToTerminal(`File saved as ${filename} on the device.`, true);
           
@@ -515,45 +607,25 @@ document.getElementById('connectButton').addEventListener('click', async () => {
           await sendCommand("print(os.listdir())\r\n", 200);
           
           // Check if we should execute install.py
-          const shouldExecuteInstall = filename === 'install.py' || await checkIfInstallExists();
-          
-          if (shouldExecuteInstall) {
+          if (filename === 'install.py') {
             logToTerminal(`install.py detected. Executing...`, true);
             await executeInstallScript();
           }
         } else {
-          logToTerminal(`File transfer failed. Please try again with a smaller file.`, true);
+          logToTerminal(`All file transfer methods failed. Please try again with a smaller file or restart the device.`, true);
         }
       } catch (error) {
         console.error('File transfer error:', error);
         logToTerminal(`Error transferring file: ${error.message}`, true);
-        updateProgressInTitle(); // Remove progress from title
+        updateProgressInTitle();
         
         // Try to exit any modes we might be stuck in
-        await sendCommand('\x04', 200); // Ctrl+D to exit paste mode if we're in it
-        await sendCommand('\x03\r\n', 200); // Ctrl+C to interrupt
+        await writer.write(encoder.encode('\x03\x03\x02\x04')); // Ctrl+C, Ctrl+C, Ctrl+B, Ctrl+D
+        await new Promise(resolve => setTimeout(resolve, 500));
+        await resetREPL();
       }
     });
-
-    // Check if install.py exists on the device
-    async function checkIfInstallExists() {
-      try {
-        await sendCommand('import os\r\n', 200);
-        await sendCommand('print("CHECKINSTALL:", "install.py" in os.listdir())\r\n', 200);
-        
-        // Wait for a short time to check the response
-        await new Promise(resolve => setTimeout(resolve, 500));
-        
-        // Check if the install.py file exists in the raw buffer
-        const result = rawBuffer.includes('CHECKINSTALL: True');
-        
-        return result;
-      } catch (error) {
-        console.error('Install check error:', error);
-        return false;
-      }
-    }
-
+    
     function readFileAsText(file) {
       return new Promise((resolve, reject) => {
         const reader = new FileReader();
@@ -563,12 +635,8 @@ document.getElementById('connectButton').addEventListener('click', async () => {
       });
     }
 
-    // Also enable a way to execute install.py directly from the main application
-    const runInstallButton = document.createElement('button');
-    runInstallButton.textContent = 'Run install.py';
-    runInstallButton.id = 'runInstallButton';
-    runInstallButton.addEventListener('click', executeInstallScript);
-    document.querySelector('.button-container').appendChild(runInstallButton);
+    // Set up run install button
+    document.getElementById('runInstallButton').addEventListener('click', executeInstallScript);
 
     logToTerminal('Connected and ready for commands.', true);
 
