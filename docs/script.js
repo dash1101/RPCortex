@@ -836,40 +836,29 @@ document.getElementById('connectButton').addEventListener('click', async () => {
     // Function to fetch the firmware list from the JSON file
     async function fetchFirmwareList() {
       try {
-        const response = await fetch('./flavors.json');
+        const response = await fetch('firmware_list.json');
         if (!response.ok) {
-          throw new Error(`Failed to fetch firmware list: ${response.status} ${response.statusText}`);
+          throw new Error('Failed to fetch firmware list');
         }
-        const firmwareList = await response.json();
-        console.log('Firmware list fetched successfully:', firmwareList); // Debugging
-        return firmwareList;
+        return await response.json();
       } catch (error) {
         console.error('Error fetching firmware list:', error);
         return [];
       }
     }
-  
 
     // Function to populate the dropdown with firmware options
     function populateFirmwareDropdown(firmwareList) {
       const dropdown = document.getElementById('firmwareFlavorDropdown');
-      if (!dropdown) {
-        console.error('Dropdown element not found');
-        return;
-      }
-  
       dropdown.innerHTML = '<option value="">Select a Flavor</option>'; // Clear existing options
-  
+
       firmwareList.forEach(firmware => {
         const option = document.createElement('option');
         option.value = firmware.url;
         option.textContent = firmware.flavor;
         dropdown.appendChild(option);
       });
-  
-      console.log('Dropdown populated with firmware options'); // Debugging
     }
-  
 
     // Function to update the "Chosen Flavor" text
     function updateChosenFlavor(flavor) {
@@ -878,16 +867,15 @@ document.getElementById('connectButton').addEventListener('click', async () => {
         flavorText.textContent = `Chosen Flavor: ${flavor}`;
       }
     }
-  
 
     // Function to handle dropdown selection
     function handleFirmwareSelection(event) {
       const selectedUrl = event.target.value;
       const firmwareList = event.target.firmwareList; // Attach firmwareList to the dropdown
-  
+
       // Clear the custom firmware file input
       document.getElementById('fileInput').value = '';
-  
+
       if (selectedUrl) {
         const selectedFirmware = firmwareList.find(firmware => firmware.url === selectedUrl);
         if (selectedFirmware) {
@@ -898,13 +886,12 @@ document.getElementById('connectButton').addEventListener('click', async () => {
         updateChosenFlavor('Custom'); // Default flavor if nothing is selected
       }
     }
-  
 
     // Initialize the firmware dropdown
     async function initializeFirmwareDropdown() {
       const firmwareList = await fetchFirmwareList();
       const dropdown = document.getElementById('firmwareFlavorDropdown');
-  
+
       if (firmwareList.length > 0) {
         populateFirmwareDropdown(firmwareList);
         dropdown.firmwareList = firmwareList; // Attach firmwareList to the dropdown
@@ -913,20 +900,19 @@ document.getElementById('connectButton').addEventListener('click', async () => {
         console.error('No firmware options available');
       }
     }
-  
 
     // Call the initialization function when the document is loaded
-    initializeFirmwareDropdown();
+    document.addEventListener('DOMContentLoaded', initializeFirmwareDropdown);
 
     // Handle URL input changes
     document.getElementById('firmwareUrl').addEventListener('input', (event) => {
       const selectedUrl = event.target.value;
       const dropdown = document.getElementById('firmwareFlavorDropdown');
       const firmwareList = dropdown.firmwareList;
-  
+
       // Reset the dropdown menu
       dropdown.value = '';
-  
+
       if (firmwareList) {
         const selectedFirmware = firmwareList.find(firmware => firmware.url === selectedUrl);
         if (selectedFirmware) {
@@ -936,7 +922,6 @@ document.getElementById('connectButton').addEventListener('click', async () => {
         }
       }
     });
-  
 
     logToTerminal('Connected and ready for commands.', true);
 
