@@ -484,7 +484,62 @@ document.getElementById('connectButton').addEventListener('click', async () => {
         }
       }
     }
+    async function fetchFirmwareList() {
+      try {
+        const response = await fetch('flavors.json');
+        if (!response.ok) {
+          throw new Error('Failed to fetch firmware list');
+        }
+        return await response.json();
+      } catch (error) {
+        console.error('Error fetching firmware list:', error);
+        return [];
+      }
+    }
+    function populateFirmwareDropdown(firmwareList) {
+      const dropdown = document.getElementById('firmwareFlavorDropdown');
+      dropdown.innerHTML = '<option value="">Select a Flavor</option>'; // Clear existing options
     
+      firmwareList.forEach(firmware => {
+        const option = document.createElement('option');
+        option.value = firmware.url;
+        option.textContent = firmware.flavor;
+        dropdown.appendChild(option);
+      });
+    }
+    function handleFirmwareSelection(event) {
+      const selectedUrl = event.target.value;
+      const firmwareList = event.target.firmwareList; // Attach firmwareList to the dropdown
+    
+      if (selectedUrl) {
+        const selectedFirmware = firmwareList.find(firmware => firmware.url === selectedUrl);
+        if (selectedFirmware) {
+          updateChosenFlavor(selectedFirmware.flavor);
+          document.getElementById('firmwareUrl').value = selectedFirmware.url;
+        }
+      } else {
+        updateChosenFlavor('Custom'); // Default flavor if nothing is selected
+      }
+    }
+    
+    function updateChosenFlavor(flavor) {
+      const flavorText = document.querySelector('.header.right .status-text:nth-child(3)');
+      if (flavorText) {
+        flavorText.textContent = `Chosen Flavor: ${flavor}`;
+      }
+    }
+    async function initializeFirmwareDropdown() {
+      const firmwareList = await fetchFirmwareList();
+      const dropdown = document.getElementById('firmwareFlavorDropdown');
+    
+      if (firmwareList.length > 0) {
+        populateFirmwareDropdown(firmwareList);
+        dropdown.firmwareList = firmwareList; // Attach firmwareList to the dropdown
+        dropdown.addEventListener('change', handleFirmwareSelection);
+      } else {
+        console.error('No firmware options available');
+      }
+    }
     // Function to fetch remote firmware - FIXED to properly handle content types and sanitize content
     async function fetchFirmware(url) {
       logToTerminal(`Fetching firmware from ${url}...`, true);
@@ -843,4 +898,5 @@ document.getElementById('connectButton').addEventListener('click', async () => {
 // Make sure the uploadFirmwareBtn opens the file input
 document.getElementById('uploadFirmwareBtn').addEventListener('click', () => {
   document.getElementById('fileInput').click();
+document.addEventListener('DOMContentLoaded', initializeFirmwareDropdown);
 });
