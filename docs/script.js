@@ -1,7 +1,3 @@
-document.getElementById('fileButton').addEventListener('click', () => {
-  document.getElementById('fileInput').click();
-});
-
 document.getElementById('connectButton').addEventListener('click', async () => {
   if (!navigator.serial) {
     alert('Web Serial API not supported in this browser. Please use Chrome or Edge.');
@@ -82,62 +78,56 @@ document.getElementById('connectButton').addEventListener('click', async () => {
     const sendButton = document.querySelector('.terminal-send-button');
     const terminalTitle = document.getElementById('terminal-title');
 
-    // Improved terminal output - prevents HTML issues and handles special characters better
     const logToTerminal = (message, isSystem = false) => {
-      if (message === null || message === undefined || message === '') return;
+      if (message === null || message === undefined || message.trim() === '') return; // Skip empty messages
       
-      // Create a new element for the message
-      const messageElement = document.createElement('span');
+      // Create a new span element for this message
+      const span = document.createElement('span');
       
-      // Set the appropriate class
+      // Determine the appropriate class
       const className = isSystem ? 'system' : 
-                       message.startsWith('>') ? 'command' : 'response';
-      messageElement.className = className;
+                      message.startsWith('>') ? 'command' : 'response';
+      span.className = className;
       
-      // Process the message based on type
-      let content = message;
-      if (!isSystem) {
-        // Handle line endings for console output
-        content = content.replace(/\r/g, '');
-      }
-      
-      // Safely set content using textContent to avoid HTML injection
-      // For linebreaks we need to handle them specially after using textContent
-      if (content.includes('\n')) {
-        const lines = content.split('\n');
-        for (let i = 0; i < lines.length; i++) {
-          const lineSpan = document.createElement('span');
-          lineSpan.textContent = lines[i];
-          messageElement.appendChild(lineSpan);
-          
-          // Add line break between lines (but not after the last line)
-          if (i < lines.length - 1) {
-            messageElement.appendChild(document.createElement('br'));
-          }
-        }
-      } else {
-        messageElement.textContent = content;
-      }
-      
-      // Append to terminal
-      terminal.appendChild(messageElement);
-      
-      // Add a line break after system messages
+      // For system messages, just set the text directly
       if (isSystem) {
+        span.textContent = message;
+        terminal.appendChild(span);
         terminal.appendChild(document.createElement('br'));
+      } else {
+        // For normal output, we need to handle the text differently
+        // Remove carriage returns but preserve newlines
+        message = message.replace(/\r/g, '');
+        
+        // Split by newlines to add each line separately
+        const lines = message.split('\n');
+        for (let i = 0; i < lines.length; i++) {
+          if (i > 0) {
+            // Add a line break between lines
+            terminal.appendChild(document.createElement('br'));
+          }
+          
+          // Add the line text
+          const lineSpan = document.createElement('span');
+          lineSpan.className = className;
+          lineSpan.textContent = lines[i];
+          terminal.appendChild(lineSpan);
+        }
       }
       
-      // Auto-scroll to bottom
+      // Scroll to the bottom
       terminal.scrollTop = terminal.scrollHeight;
     };
+    
+    
 
     const decoder = new TextDecoder();
     const encoder = new TextEncoder();
 
-    // Update device status in header
+    // Update device status in header with simplified parsing
     const updateDeviceStatus = (portId, mpyVersion, memInfo) => {
       const statusElement = document.getElementById('device-status');
-      if (!statusElement) return;
+      if (!statusElement) return; // Skip if the element doesn't exist
       
       if (!portId) {
         statusElement.innerHTML = `<div class="status-text">Device not yet initialized...</div>`;
@@ -160,7 +150,6 @@ document.getElementById('connectButton').addEventListener('click', async () => {
             `<span class="status-warning">(Update recommended)</span>`;
         }
       }
-      
       let ramValue = '?';
       let romValue = '?';
       let ramStatus = '';
@@ -177,7 +166,7 @@ document.getElementById('connectButton').addEventListener('click', async () => {
           `<span class="status-good">(Good)</span>` : 
           `<span class="status-warning">(Limited)</span>`;
       }
-      
+        
       statusElement.innerHTML = `
         <div class="status-text">Device connected at ${portId}</div>
         <div class="status-text">MPY: v${formattedVersion} ${mpyStatus}</div>
@@ -194,26 +183,50 @@ document.getElementById('connectButton').addEventListener('click', async () => {
       }
     };
 
-    // Improved command sending with better error handling and timeout management
-    const sendCommand = async (command, timeout = 500) => {
+    // Improved utility function to send commands with proper error handling and response tracking
+    const sendCommand = async (command, timeout = 500, waitForResponse = false) => {
       try {
-        await writer.write(encoder.encode(command));
-        return await new Promise((resolve, reject) => {
-          const timer = setTimeout(() => {
-            resolve(); // Resolve anyway after timeout to prevent hanging
-          }, timeout);
-          
-          // Allow resolution before timeout if needed
-          resolve(timer);
-        });
+        // Split multi-line commands and send them one at a time
+        const lines = command.split('\n');
+        
+        if (lines.length > 1) {
+          // For multi-line commands, send each line separately
+          for (const line of lines) {
+            if (line.trim()) {
+              await writer.write(encoder.encode(line + '\r\n'));
+              // Small delay between lines
+              await new Promise(resolve => setTimeout(resolve, 100));
+            }
+          }
+        } else {
+          // Single line command
+          await writer.write(encoder.encode(command));
+        }
+        
+        if (waitForResponse) {
+          // Return a promise that will be resolved by the read loop when matching response is found
+          return new Promise(resolve => {
+            // Store command in the pending commands queue
+            pendingCommands.push({ command, resolver: resolve });
+          });
+        }
+        
+        return await new Promise(resolve => setTimeout(resolve, timeout));
       } catch (error) {
         console.error('Command error:', error);
         logToTerminal(`Error sending command: ${error.message}`, true);
-        return Promise.resolve(); // Continue execution despite errors
+        return Promise.reject(error);
       }
     };
+    
 
-    // Set up reading loop with improved MPY version extraction
+    // Queue for tracking commands waiting for responses
+    const pendingCommands = [];
+    
+    // Buffer for accumulating response data
+    let responseBuffer = '';
+
+    // Set up reading loop for receiving data from device
     const readLoop = async () => {
       try {
         // Initial update with port info
@@ -221,92 +234,23 @@ document.getElementById('connectButton').addEventListener('click', async () => {
         
         logToTerminal(`Connected to device. Initializing...`, true);
         
-        // Reset device with more reliable approach
-        await sendCommand('\x03', 300); // First Ctrl+C
-        await sendCommand('\x03', 300); // Second Ctrl+C
-        await sendCommand('\r\n', 300); // Clear line
+        // Reset device and clear any running programs
+        await sendCommand('\x03\x03\r\n', 1000); // Double Ctrl+C to ensure interruption
         
-        // More robust MPY version detection with timeout protection
-        let versionDetectionSuccess = false;
-        let mpyVersion = null;
-        let attempts = 0;
-        const maxAttempts = 3;
-        
-        while (!versionDetectionSuccess && attempts < maxAttempts) {
-          attempts++;
-          logToTerminal(`Detecting MPY version (attempt ${attempts})...`, true);
-          
-          try {
-            // Clear any pending input
-            await sendCommand('\r\n', 200);
-            
-            // Simple, direct version check that's more likely to succeed
-            await sendCommand('import sys\r\n', 500);
-            await sendCommand('print("MPYVER:" + ".".join([str(x) for x in sys.implementation.version]))\r\n', 1000);
-            
-            // Set a timeout for version detection
-            const versionDetectionTimeout = 3000; // 3 seconds
-            const versionPromise = new Promise(async (resolve) => {
-              let buffer = '';
-              let versionFound = false;
-              
-              const checkInterval = setInterval(() => {
-                const mpyMatch = buffer.match(/MPYVER:([0-9.]+)/);
-                if (mpyMatch) {
-                  mpyVersion = mpyMatch[1];
-                  clearInterval(checkInterval);
-                  versionFound = true;
-                  resolve(true);
-                }
-              }, 100);
-              
-              setTimeout(() => {
-                clearInterval(checkInterval);
-                if (!versionFound) {
-                  resolve(false);
-                }
-              }, versionDetectionTimeout);
-              
-              // Read data during the timeout period
-              try {
-                while (!versionFound) {
-                  const { value, done } = await reader.read();
-                  if (done) break;
-                  const text = decoder.decode(value);
-                  buffer += text;
-                }
-              } catch (e) {
-                // Continue even if read errors occur
-              }
-            });
-            
-            versionDetectionSuccess = await versionPromise;
-            
-            if (versionDetectionSuccess) {
-              logToTerminal(`MPY version detected: v${mpyVersion}`, true);
-              updateDeviceStatus(portInfo, mpyVersion);
-              break;
-            } else {
-              logToTerminal(`Version detection timed out, retrying...`, true);
-              await sendCommand('\x03', 300); // Ctrl+C to interrupt any hanging process
-            }
-          } catch (error) {
-            logToTerminal(`Error detecting version: ${error.message}`, true);
-          }
-        }
-        
-        if (!versionDetectionSuccess) {
-          logToTerminal(`Could not detect MPY version after ${maxAttempts} attempts. Continuing with limited functionality.`, true);
-          updateDeviceStatus(portInfo, '?.?.?');
-        }
-        
-        logToTerminal("Device initialization complete. Ready for commands.", true);
-        
-        // Clear any remaining output from the initialization
+        // Clear any pending output
         await sendCommand('\r\n', 300);
         
-        // Main read loop for normal operation
-        let readBuffer = '';
+        // Extract MPY version using a more reliable approach
+        await sendCommand('import sys\r\n', 500);
+        
+        // Get version as a string to avoid parsing issues with the tuple
+        await sendCommand('print("MPYVER:", ".".join([str(i) for i in sys.implementation.version[:3]]))\r\n', 500);
+        
+        // Variables to store extracted information
+        let mpyVersion = null;
+        let rawBuffer = '';
+        let isProcessingInfo = true;
+        
         while (true) {
           const { value, done } = await reader.read();
           if (done) {
@@ -317,18 +261,47 @@ document.getElementById('connectButton').addEventListener('click', async () => {
           
           // Decode incoming data
           const text = decoder.decode(value);
+          rawBuffer += text;
+          responseBuffer += text;
           
-          // Filter out noise that might confuse users
-          if (!text.includes("import sys") && !text.includes("MPYVER:")) {
+          // Only log normal REPL output, not our detection commands
+          if (!isProcessingInfo || !(
+            rawBuffer.includes("MPYVER:") || 
+            rawBuffer.includes("import") ||
+            rawBuffer.includes("try:")
+          )) {
             logToTerminal(text);
           }
           
-          // Add to buffer for potential processing
-          readBuffer += text;
+          // Extract MPY version
+          const mpyMatch = rawBuffer.match(/MPYVER:\s*([0-9.]+)/);
+          if (mpyMatch) {
+            mpyVersion = mpyMatch[1];
+            logToTerminal(`Found MPY version: v${mpyVersion}`, true);
+            rawBuffer = rawBuffer.replace(/MPYVER:\s*([0-9.]+)/, ''); // Remove from buffer
+            
+            // Update the status with fixed port info
+            updateDeviceStatus(portInfo, mpyVersion);
+            isProcessingInfo = false;
+            logToTerminal("Device initialization complete", true);
+            
+            // Clear any remaining output from the initialization
+            await sendCommand('\r\n', 300);
+          }
+          
+          // Check for pending command responses
+          if (pendingCommands.length > 0 && responseBuffer.includes('>>>')) {
+            // We have a complete response to process
+            const command = pendingCommands.shift();
+            if (command && command.resolver) {
+              command.resolver(responseBuffer);
+              responseBuffer = ''; // Clear the buffer after processing
+            }
+          }
           
           // Keep buffer manageable
-          if (readBuffer.length > 2000) {
-            readBuffer = readBuffer.slice(-1000);
+          if (rawBuffer.length > 5000) {
+            rawBuffer = rawBuffer.slice(-2000);
           }
         }
       } catch (error) {
@@ -365,7 +338,329 @@ document.getElementById('connectButton').addEventListener('click', async () => {
       }
     }
 
-    // Completely rewritten file upload functionality with more robust error handling
+    // Helper function to detect device capabilities
+    const checkDeviceCapabilities = async () => {
+      try {
+        // Check if we can use memory-efficient base64 decoding
+        const testResult = await sendCommand('import binascii\r\n', 300);
+        await sendCommand('import gc\r\n', 300);
+        return { hasBase64: true };
+      } catch (error) {
+        return { hasBase64: false };
+      }
+    };
+
+    // New function for chunked base64 file writing
+    async function writeBase64ChunkedFile(filename, base64Data) {
+      logToTerminal(`Starting base64 file transfer for ${filename}...`, true);
+      
+      try {
+        // Generate a random number for the filename
+        const randomNum = Math.floor(Math.random() * 10000);
+        const actualFilename = filename.replace('{random-int}', randomNum);
+        
+        // Reset device state
+        await sendCommand('\x03\x03\r\n', 1000); // Double Ctrl+C with longer timeout
+        await sendCommand('\r\n', 500); // Clear line with longer timeout
+        
+        // Check capabilities
+        const capabilities = await checkDeviceCapabilities();
+        
+        // Memory-efficient approach - process base64 in chunks
+        const CHUNK_SIZE = 256; // Reduce chunk size for better reliability
+        let position = 0;
+        let fileOpened = false;
+        
+        // Initial file creation
+        await sendCommand(`f = open('${actualFilename}', 'wb')\r\n`, 1000);
+        fileOpened = true;
+        
+        // Process in chunks to avoid memory issues
+        while (position < base64Data.length) {
+          // Calculate actual chunk size to ensure we don't cut base64 padding
+          const end = Math.min(position + CHUNK_SIZE, base64Data.length);
+          const chunk = base64Data.substring(position, end);
+          
+          // Write the chunk
+          if (capabilities.hasBase64) {
+            // More efficient method
+            await sendCommand(`f.write(binascii.a2b_base64('${chunk}'))\r\n`, 1000); // Longer timeout
+            // Force garbage collection after each chunk to prevent memory issues
+            await sendCommand('gc.collect()\r\n', 300);
+          } else {
+            // Fallback method
+            await sendCommand(`f.write(bytes([int(x) for x in '${chunk}'.encode('utf-8')]))\r\n`, 1500);
+          }
+          
+          // Update position and progress
+          position = end;
+          const percent = Math.min(100, Math.round((position / base64Data.length) * 100));
+          
+          if (position % (CHUNK_SIZE * 5) === 0 || position >= base64Data.length) {
+            logToTerminal(`Transfer progress: ${percent}%`, true);
+            updateProgressInTitle(percent);
+          }
+          
+          // Add a small delay between chunks to prevent overloading the device
+          await new Promise(resolve => setTimeout(resolve, 100));
+        }
+        
+        // Add a delay before closing the file
+        await new Promise(resolve => setTimeout(resolve, 500));
+        
+        // Close file
+        await sendCommand('f.close()\r\n', 1000);
+        
+        // Additional delay before returning
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        
+        logToTerminal(`Base64 file transferred and saved as ${actualFilename}`, true);
+        updateProgressInTitle();
+        
+        return actualFilename;
+      } catch (error) {
+        console.error('Base64 file transfer error:', error);
+        logToTerminal(`Error in base64 file transfer: ${error.message}`, true);
+        updateProgressInTitle();
+        
+        // Try to clean up if there was an error
+        await sendCommand('\x03\r\n', 500); // Ctrl+C to interrupt any running process
+        await sendCommand('try:\n    f.close()\nexcept:\n    pass\r\n', 500);
+        
+        return null;
+      }
+    }
+
+    // New function to execute a file
+    async function executeFile(filename) {
+      try {
+        logToTerminal(`Executing ${filename}...`, true);
+        
+        // Reset the device to ensure a clean state
+        await sendCommand('\x03\x03\r\n', 1000); // Double Ctrl+C
+        await new Promise(resolve => setTimeout(resolve, 500));
+        
+        // Clear any pending output
+        await sendCommand('\r\n', 500);
+        await new Promise(resolve => setTimeout(resolve, 500));
+        
+        // Use a one-liner command with try/except structure
+        // This avoids the indentation issues with the REPL
+        const execCommand = `try: exec(open('${filename}').read())\nexcept Exception as e: print('Execution error:', repr(e))\r\n`;
+        await sendCommand(execCommand, 5000);
+        
+        // Wait for execution to complete
+        await new Promise(resolve => setTimeout(resolve, 3000));
+        
+        logToTerminal(`Execution of ${filename} complete`, true);
+        return true;
+      } catch (error) {
+        console.error('Execution error:', error);
+        logToTerminal(`Error executing ${filename}: ${error.message}`, true);
+        
+        // Try alternate approach as a fallback
+        try {
+          logToTerminal(`Trying alternate execution method...`, true);
+          await sendCommand('\x03\r\n', 500); // Ctrl+C to interrupt any running process
+          await sendCommand('\r\n', 500); // Clear line
+          
+          // Execute using the most direct method
+          await sendCommand(`exec(open('${filename}').read())\r\n`, 5000);
+          
+          // Wait for execution to complete
+          await new Promise(resolve => setTimeout(resolve, 3000));
+          
+          logToTerminal(`Alternate execution complete`, true);
+          return true;
+        } catch (altError) {
+          console.error('Alternate execution error:', altError);
+          logToTerminal(`Error with alternate execution: ${altError.message}`, true);
+          
+          // Try to recover
+          await sendCommand('\x03\r\n', 500); // Ctrl+C to interrupt
+          await sendCommand('\r\n', 500); // Clear line
+          
+          return false;
+        }
+      }
+    }
+    
+    // Function to fetch remote firmware - FIXED to properly handle content types and sanitize content
+    async function fetchFirmware(url) {
+      logToTerminal(`Fetching firmware from ${url}...`, true);
+      
+      try {
+        const response = await fetch(url);
+        
+        if (!response.ok) {
+          throw new Error(`Network response was not ok: ${response.status}`);
+        }
+        
+        // Get content type to determine how to process the response
+        const contentType = response.headers.get('content-type');
+        let data;
+        
+        if (contentType && contentType.includes('application/json')) {
+          // Handle JSON responses
+          data = await response.json();
+          // Extract text content from the JSON if it exists
+          if (typeof data === 'object') {
+            // Look for common fields that might contain the actual code
+            if (data.code || data.content || data.text || data.data) {
+              data = data.code || data.content || data.text || data.data;
+            } else {
+              // If no obvious text field, stringify the JSON
+              data = JSON.stringify(data);
+            }
+          }
+        } else {
+          // Default to text for all other content types
+          data = await response.text();
+        }
+        
+        // Sanitize data - remove BOM and normalize line endings
+        if (typeof data === 'string') {
+          // Remove UTF-8 BOM if present
+          if (data.charCodeAt(0) === 0xFEFF) {
+            data = data.substring(1);
+          }
+          
+          // Normalize line endings
+          data = data.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+          
+          // Check if the content is base64 encoded
+          if (/^[A-Za-z0-9+/=]+$/.test(data.trim())) {
+            logToTerminal('Content is base64 encoded. Decoding...', true);
+            data = atob(data); // Decode base64
+          }
+        }
+        
+        logToTerminal(`Firmware downloaded successfully (${typeof data === 'string' ? data.length : 'unknown'} bytes)`, true);
+        return data;
+      } catch (error) {
+        console.error('Firmware fetch error:', error);
+        logToTerminal(`Error fetching firmware: ${error.message}`, true);
+        return null;
+      }
+    }
+    
+    // Function to handle file processing - works with both base64 and normal files - IMPROVED
+    async function processFileContent(filename, fileContent) {
+      try {
+        // First check if content is actually a JSON string that needs parsing
+        let processedContent = fileContent;
+        
+        try {
+          // Try to parse as JSON in case it's a JSON response
+          if (typeof fileContent === 'string' && 
+             (fileContent.trim().startsWith('{') || fileContent.trim().startsWith('['))) {
+            const jsonData = JSON.parse(fileContent);
+            // If we parsed successfully, look for code/content fields
+            if (typeof jsonData === 'object') {
+              if (jsonData.code || jsonData.content || jsonData.script || jsonData.data) {
+                processedContent = jsonData.code || jsonData.content || jsonData.script || jsonData.data;
+                logToTerminal('Extracted code from JSON response', true);
+              }
+            }
+          }
+        } catch (jsonError) {
+          // Not JSON or invalid JSON, continue with original content
+        }
+        
+        // Now check if content is likely base64
+        const isBase64 = typeof processedContent === 'string' && 
+                         /^[A-Za-z0-9+/=]+$/.test(processedContent.trim());
+        
+        let processedFilename = null;
+        
+        if (isBase64) {
+          logToTerminal(`Content appears to be base64 encoded. Processing...`, true);
+          
+          // Transfer as base64 and decode on device
+          processedFilename = await writeBase64ChunkedFile('RPC-install_{random-int}.py', processedContent);
+          
+          if (processedFilename) {
+            // Wait a bit before executing
+            logToTerminal(`Waiting for device to stabilize before execution...`, true);
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            
+            // Execute the file
+            logToTerminal(`Starting execution of ${processedFilename}...`, true);
+            await executeFile(processedFilename);
+            
+            // Additional delay after execution
+            await new Promise(resolve => setTimeout(resolve, 2000));
+          }
+        } else {
+          logToTerminal(`Content does not appear to be base64 encoded. Using regular transfer...`, true);
+          
+          // Generate a filename based on the original
+          const sanitizedName = filename.replace(/[^a-zA-Z0-9._-]/g, '_');
+          
+          // Call existing code for regular file transfer
+          processedFilename = await transferNormalFile(sanitizedName, processedContent);
+          
+          if (processedFilename && processedFilename.endsWith('.py')) {
+            // Wait a bit before executing
+            logToTerminal(`Waiting for device to stabilize before execution...`, true);
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            
+            // Execute the file
+            logToTerminal(`Starting execution of ${processedFilename}...`, true);
+            await executeFile(processedFilename);
+            
+            // Additional delay after execution
+            await new Promise(resolve => setTimeout(resolve, 2000));
+          }
+        }
+        
+        // List files to confirm
+        await sendCommand('\r\n', 300);
+        await sendCommand("import os\r\n", 500);
+        await sendCommand("print('Files on device:')\r\n", 500);
+        await sendCommand("print(os.listdir())\r\n", 500);
+        
+        return processedFilename;
+      } catch (error) {
+        console.error('File processing error:', error);
+        logToTerminal(`Error processing file: ${error.message}`, true);
+        
+        // Try to exit any modes we might be stuck in
+        await sendCommand('\x04', 500); // Ctrl+D to exit paste mode if we're in it
+        await sendCommand('\x03\r\n', 500); // Ctrl+C to interrupt
+        
+        return null;
+      }
+    }
+    
+    // Setup Install button to fetch and install firmware from the URL
+    const installButton = document.getElementById('installButton');
+    installButton.addEventListener('click', async () => {
+      const firmwareUrl = document.getElementById('firmwareUrl').value;
+      
+      if (!firmwareUrl) {
+        alert('Please enter a firmware URL in the settings menu.');
+        return;
+      }
+      
+      // Fetch the firmware
+      const firmwareContent = await fetchFirmware(firmwareUrl);
+      if (!firmwareContent) {
+        alert('Failed to fetch firmware. Check the URL and try again.');
+        return;
+      }
+      
+      // Process and install the firmware
+      const filename = await processFileContent('firmware.py', firmwareContent);
+      
+      if (filename) {
+        logToTerminal(`Firmware installation complete!`, true);
+      } else {
+        logToTerminal(`Firmware installation failed.`, true);
+      }
+    });
+
+    // Set up file upload functionality
     const fileInput = document.getElementById('fileInput');
     
     fileInput.addEventListener('change', async () => {
@@ -374,227 +669,159 @@ document.getElementById('connectButton').addEventListener('click', async () => {
         logToTerminal('No file selected.', true);
         return;
       }
-
-      // Sanitize filename - only allow safe characters
-      const safeFilename = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
-      
+    
       logToTerminal(`Selected file: ${file.name}`, true);
-      logToTerminal(`Preparing to transfer as: ${safeFilename}`, true);
+      
+      // Read file content
+      const fileContent = await readFileAsText(file);
+      
+      // Process the file using our unified function
+      const filename = await processFileContent(file.name, fileContent);
+      
+      if (filename) {
+        logToTerminal(`Custom firmware installed as ${filename}`, true);
+      } else {
+        logToTerminal(`Custom firmware installation failed.`, true);
+      }
+    });
+
+    // Original file transfer logic refactored into a function
+    async function transferNormalFile(filename, fileContent) {
+      if (fileContent.length > 200000) { // ~200KB limit
+        logToTerminal(`Warning: File is large (${Math.round(fileContent.length/1024)}KB). Transfer may take a while.`, true);
+      }
+      
+      logToTerminal(`Starting regular file transfer...`, true);
+      
+      let transferMethod = '';
+      let transferSuccessful = false;
+      
+      // Reset device and clear any running programs
+      await sendCommand('\x03\x03\r\n', 500); // Double Ctrl+C
+      await sendCommand('\r\n', 300); // Clear line
+      
+      // Try paste mode as a test
+      logToTerminal(`Testing device capabilities...`, true);
       
       try {
-        // Read file content
-        const fileContent = await readFileAsText(file);
-        const fileSize = Math.round(fileContent.length/1024);
-        
-        logToTerminal(`File size: ${fileSize}KB`, true);
-        
-        // Reset device before transfer
-        await sendCommand('\x03\x03', 500); // Double Ctrl+C to interrupt any running program
-        await sendCommand('\r\n', 300); // Clear line
-        
-        // Try upload method detection
-        logToTerminal(`Testing device capabilities...`, true);
-        
-        // Attempt file transfer with 3 different methods, in order of preference
-        const transferMethods = [
-          { name: 'chunked', tryFunction: tryChunkedTransfer },
-          { name: 'paste', tryFunction: tryPasteTransfer },
-          { name: 'line', tryFunction: tryLineTransfer }
-        ];
-        
-        let transferSuccess = false;
-        
-        for (const method of transferMethods) {
-          if (!transferSuccess) {
-            logToTerminal(`Attempting ${method.name} mode transfer...`, true);
-            transferSuccess = await method.tryFunction(fileContent, safeFilename);
-            
-            if (transferSuccess) {
-              logToTerminal(`File transfer successful using ${method.name} mode!`, true);
-              break;
-            } else {
-              logToTerminal(`${method.name} mode transfer failed, trying next method...`, true);
-              // Reset device between attempts
-              await sendCommand('\x03\x03', 500);
-              await sendCommand('\r\n', 300);
-            }
-          }
-        }
-        
-        if (transferSuccess) {
-          // Confirm file exists
-          logToTerminal(`Verifying file...`, true);
-          await sendCommand('import os\r\n', 500);
-          await sendCommand(`'${safeFilename}' in os.listdir()\r\n`, 1000);
-          
-          // List files as confirmation
-          await sendCommand("print('Files on device:')\r\n", 500);
-          await sendCommand("print(os.listdir())\r\n", 1000);
-        } else {
-          logToTerminal(`All transfer methods failed. Try reducing file size or simplifying content.`, true);
-        }
-        
-        // Clear progress from title
-        updateProgressInTitle();
-        
-      } catch (error) {
-        console.error('File transfer error:', error);
-        logToTerminal(`Error transferring file: ${error.message}`, true);
-        updateProgressInTitle(); // Clear progress
-        
-        // Emergency recovery
-        await sendCommand('\x04', 300); // Ctrl+D to exit any modes
-        await sendCommand('\x03', 300); // Ctrl+C to interrupt
+        // See if paste mode is supported
+        await sendCommand('\x05', 1000); // Ctrl+E to enter paste mode
+        // If we get here without error, paste mode is supported
+        transferMethod = 'paste';
+        // Exit paste mode
+        await sendCommand('\x04', 500); // Ctrl+D
         await sendCommand('\r\n', 300);
+      } catch (err) {
+        logToTerminal(`Paste mode not supported, falling back to line mode`, true);
+        transferMethod = 'line';
       }
       
-      // Reset file input
-      fileInput.value = '';
-      
-      // TRANSFER METHOD 1: CHUNKED WRITE
-      async function tryChunkedTransfer(content, filename) {
+      // METHOD 1: PASTE MODE TRANSFER (most devices support this)
+      if (transferMethod === 'paste') {
         try {
-          // This method uses a more efficient chunked approach
-          // Step 1: Create empty file first
-          await sendCommand(`f = open('${filename}', 'w')\r\n`, 500);
-          await sendCommand(`f.close()\r\n`, 500);
+          logToTerminal(`Using paste mode transfer`, true);
           
-          // Step 2: Reopen for append
-          await sendCommand(`f = open('${filename}', 'a')\r\n`, 500);
-          
-          // Step 3: Write in larger chunks with proper escaping
-          const CHUNK_SIZE = 1024; // Larger chunks for efficiency
-          const chunks = [];
-          
-          // Pre-process content into escaped chunks
-          for (let i = 0; i < content.length; i += CHUNK_SIZE) {
-            let chunk = content.slice(i, i + CHUNK_SIZE)
-              .replace(/\\/g, '\\\\') // Escape backslashes first
-              .replace(/'/g, "\\'")   // Escape single quotes
-              .replace(/\r\n/g, '\\n') // Windows line endings
-              .replace(/\n/g, '\\n');  // Unix line endings
-              
-            chunks.push(chunk);
-          }
-          
-          // Write chunks with progress updates
-          for (let i = 0; i < chunks.length; i++) {
-            const percent = Math.round(((i + 1) / chunks.length) * 100);
-            
-            // Write chunk with error checking
-            const writeCmd = `f.write('${chunks[i]}')\r\n`;
-            await sendCommand(writeCmd, 500);
-            
-            // Update progress every few chunks or on completion
-            if (i % 5 === 0 || i === chunks.length - 1) {
-              updateProgressInTitle(percent);
-              logToTerminal(`Transfer progress: ${percent}%`, true);
-            }
-          }
-          
-          // Close file and sync
-          await sendCommand(`f.close()\r\n`, 500);
-          
-          return true;
-        } catch (error) {
-          console.error('Chunked transfer error:', error);
-          return false;
-        }
-      }
-      
-      // TRANSFER METHOD 2: PASTE MODE
-      async function tryPasteTransfer(content, filename) {
-        try {
           // Enter paste mode
-          await sendCommand('\x05', 1000); // Ctrl+E
+          await sendCommand('\x05', 1000); // Ctrl+E to enter paste mode
           
-          // Check if we entered paste mode successfully
-          // Give a brief delay to see if we get the paste mode indicator
-          await new Promise(resolve => setTimeout(resolve, 500));
+          // Prepare file open code - with context manager to ensure file closure
+          await sendCommand(`with open('${filename}', 'w') as f:\n`, 500);
           
-          // Start with file open command
-          await sendCommand(`with open('${filename}', 'w') as f:\n`, 200);
-          
-          // Process content in manageable chunks
-          const CHUNK_SIZE = 480; // Smaller for paste mode reliability
+          // Split content into manageable chunks and prepare them
+          const CHUNK_SIZE = 512; // Much larger chunks possible with paste mode
           let position = 0;
           
-          while (position < content.length) {
-            // Get and escape chunk
-            let chunk = content.slice(position, position + CHUNK_SIZE)
+          // Process the content into chunks that are properly escaped
+          while (position < fileContent.length) {
+            // Get chunk and escape problematic characters
+            let chunk = fileContent.slice(position, position + CHUNK_SIZE)
               .replace(/\\/g, '\\\\') // Escape backslashes
               .replace(/'/g, "\\'")   // Escape single quotes
-              .replace(/\r?\n/g, '\\n'); // Handle all newline formats
+              .replace(/\r?\n/g, '\\n'); // Handle all newline formats properly
             
-            // Send with proper indentation for the with block
-            await sendCommand(`    f.write('${chunk}')\n`, 100);
+            // Add explicit newline to the write statement
+            await sendCommand(`    f.write('${chunk}')\n`, 10);
             
             // Update position
             position += CHUNK_SIZE;
             
             // Show progress periodically
-            if (position % (CHUNK_SIZE * 5) === 0 || position >= content.length) {
-              const percent = Math.min(100, Math.round((position / content.length) * 100));
+            if (position % (CHUNK_SIZE * 10) === 0 || position >= fileContent.length) {
+              const percent = Math.min(100, Math.round((position / fileContent.length) * 100));
+              logToTerminal(`Transfer progress: ${percent}%`, true);
               updateProgressInTitle(percent);
-              // Don't log in paste mode as it can interfere
             }
           }
           
           // End paste mode
-          await sendCommand('\x04', 1000); // Ctrl+D
+          await sendCommand('\x04', 1000); // Ctrl+D to execute the pasted code
           
-          // Check for errors by sending a simple command
+          // Check if transfer was successful (no error messages)
           await sendCommand('\r\n', 500);
           
-          return true;
+          transferSuccessful = true;
+          logToTerminal(`File transfer complete using paste mode`, true);
+          updateProgressInTitle(); // Remove progress from title
         } catch (error) {
-          console.error('Paste mode error:', error);
-          return false;
+          console.error('Paste mode transfer error:', error);
+          logToTerminal(`Error in paste mode transfer. Trying line mode...`, true);
+          transferMethod = 'line';
         }
       }
       
-      // TRANSFER METHOD 3: LINE BY LINE (most compatible)
-      async function tryLineTransfer(content, filename) {
+      
+      // METHOD 2: LINE MODE TRANSFER (fallback method)
+      if (transferMethod === 'line' && !transferSuccessful) {
         try {
-          // First create and immediately close the file
-          await sendCommand(`open('${filename}', 'w').close()\r\n`, 500);
+          logToTerminal(`Using line-by-line transfer (slower but more compatible)`, true);
           
-          // Then open for append - more reliable for large files
-          await sendCommand(`f = open('${filename}', 'a')\r\n`, 500);
+          // Reset and clear any errors
+          await sendCommand('\x03\x03\r\n', 500); // Double Ctrl+C
+          await sendCommand('\r\n', 300); // Clear line
           
-          // Split content into lines
-          const lines = content.split(/\r?\n/);
+          // Open file
+          await sendCommand(`f = open('${filename}', 'w')\r\n`, 500);
           
-          // Process each line safely
+          // Write content in small lines
+          const lines = fileContent.split(/\r?\n/); // Handle all newline formats
           for (let i = 0; i < lines.length; i++) {
-            // Properly escape the line content
+            // Escape the line content
             const line = lines[i]
-              .replace(/\\/g, '\\\\')
-              .replace(/'/g, "\\'")
-              .replace(/"/g, '\\"');
+              .replace(/\\/g, '\\\\') // Escape backslashes
+              .replace(/'/g, "\\'");   // Escape single quotes
             
-            // Write with explicit newline for all but last line
-            const newline = i < lines.length - 1 ? '\\n' : '';
-            await sendCommand(`f.write('${line}${newline}')\r\n`, 100);
+            // Write the line with explicit newline character
+            await sendCommand(`f.write('${line}${i < lines.length - 1 ? "\\n" : ""}')\r\n`, 100);
             
-            // Update progress every 10 lines
-            if (i % 10 === 0 || i === lines.length - 1) {
+            // Show progress periodically
+            if (i % 10 === 0 || i >= lines.length - 1) {
               const percent = Math.min(100, Math.round(((i + 1) / lines.length) * 100));
-              updateProgressInTitle(percent);
               logToTerminal(`Transfer progress: ${percent}%`, true);
+              updateProgressInTitle(percent);
             }
           }
           
-          // Close file
+          // Close the file
           await sendCommand(`f.close()\r\n`, 500);
           
-          return true;
+          transferSuccessful = true;
+          logToTerminal(`File transfer complete using line mode`, true);
+          updateProgressInTitle(); // Remove progress from title
         } catch (error) {
-          console.error('Line transfer error:', error);
-          return false;
+          console.error('Line mode transfer error:', error);
+          logToTerminal(`Error in line mode transfer: ${error.message}`, true);
+          updateProgressInTitle(); // Remove progress from title
         }
       }
-    });
+      
+      if (transferSuccessful) {
+        logToTerminal(`File saved as ${filename} on the device.`, true);
+        return filename;
+      } else {
+        logToTerminal(`File transfer failed. Please try again with a smaller file.`, true);
+        return null;
+      }
+    }
 
     function readFileAsText(file) {
       return new Promise((resolve, reject) => {
@@ -611,4 +838,9 @@ document.getElementById('connectButton').addEventListener('click', async () => {
     console.error('Connection error:', error);
     alert(`Failed to connect to the device: ${error.message}`);
   }
+});
+
+// Make sure the uploadFirmwareBtn opens the file input
+document.getElementById('uploadFirmwareBtn').addEventListener('click', () => {
+  document.getElementById('fileInput').click();
 });
