@@ -500,3 +500,19 @@ button:hover {
   border-color: rgba(0, 180, 220, 0.8);
   box-shadow: 0 0 8px rgba(0, 180, 220, 0.4);
 }
+.settings-option select {
+  width: 100%;
+  padding: 10px;
+  background: rgba(0, 30, 60, 0.5);
+  border: 1px solid rgba(0, 180, 220, 0.4);
+  border-radius: 6px;
+  color: #fff;
+  font-family: 'Consolas', 'Courier New', monospace;
+  font-size: 14px;
+  outline: none;
+}
+
+.settings-option select:focus {
+  border-color: rgba(0, 180, 220, 0.8);
+  box-shadow: 0 0 8px rgba(0, 180, 220, 0.4);
+}
