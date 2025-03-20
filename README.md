@@ -39,7 +39,7 @@ For RPC β8X - Nebula release v0.8.0-beta:
 | Phase          | Status  | Estimated Dates |
 |---------------|---------|----------------|
 | **Initiation**   | ✅ Completed  | 3/2 - 3/4 |
-| **Planning**    | ✅ Semi-Completed  | 3/5 - 3/13 |
+| **Planning**    | ✅ Completed  | 3/5 - 3/20 |
 | **Development** | 🏗️ In-Progress  | Q2 - Q3 2025 |
 | **Testing**     | 🧪 Projected  | Q3 2025 |
 | **Finalization**| 🚀 Projected  | Q3 2025 |
