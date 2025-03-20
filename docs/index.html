@@ -18,14 +18,13 @@
     <div class="header left" id="device-status">
       <div class="status-text">Device not yet initialized...</div>
     </div>
-    
     <div class="header right">
       <div class="status-text">RPCortex Installer</div>
-      <div class="status-text">Version 0.0-concept</div>
+      <div class="status-text">Version 0.2-concept</div>
       <div class="status-text">Chosen Flavor: Custom</div>
     </div>
   </div>
-  
+
   <div class="main-content">
     <div class="button-container">
       <button id="connectButton">Connect</button>
@@ -35,11 +34,9 @@
   </div>
 
   <div class="image-container"><img src="RPC-Short.png" alt="RPC Icon" /></div>
-  
-  <!-- Settings gear icon -->
+
   <div class="settings-icon" id="settingsIcon">⚙️</div>
-  
-  <!-- Settings popup -->
+
   <div class="settings-popup" id="settingsPopup">
     <div class="settings-header">
       <h3>Settings</h3>
@@ -47,67 +44,63 @@
     </div>
     <div class="settings-content">
       <div class="settings-section">
-        <h4>Firmware</h4>
+        <h4>Firmware Flavor</h4>
         <div class="settings-option">
-          <button id="uploadFirmwareBtn">Upload Custom Firmware</button>
-          <div class="option-description">Install your own firmware file</div>
+          <select id="firmwareFlavor">
+            <option value="custom">Custom</option>
+          </select>
+          <div class="option-description">Choose a firmware flavor to install.</div>
         </div>
       </div>
       <div class="settings-section">
         <h4>Firmware Source URL</h4>
         <div class="settings-option">
-          <input type="text" id="firmwareUrl" placeholder="https://raw.githubusercontent.com/dash1101/RPCortex/refs/heads/main/docs/RPC-v0.8.0.pkg" value="https://raw.githubusercontent.com/dash1101/RPCortex/refs/heads/main/docs/RPC-v0.8.0.pkg">
-          <div class="option-description">URL for remote firmware installation</div>
+          <input type="text" id="firmwareUrl" placeholder="Enter custom URL">
+          <div class="option-description">URL for remote firmware installation.</div>
+        </div>
+      </div>
+      <div class="settings-section">
+        <h4>Upload Custom Firmware</h4>
+        <div class="settings-option">
+          <button id="uploadFirmwareBtn">Upload Custom Firmware</button>
+          <div class="option-description">Install your own firmware file.</div>
         </div>
       </div>
     </div>
   </div>
-  
+
   <input type="file" id="fileInput" style="display: none" />
 
   <script src="script.js"></script>
   <script>
-    // Create bubbles
     function createBubbles() {
       const underwaterBg = document.querySelector('.underwater-bg');
-      const bubbleCount = 12; // Reduced number of bubbles
-      
+      const bubbleCount = 12;
       for (let i = 0; i < bubbleCount; i++) {
         const bubble = document.createElement('div');
         bubble.className = 'bubble';
-        
-        // Larger sizes between 30px and 60px
         const size = Math.random() * 30 + 30;
         bubble.style.width = `${size}px`;
         bubble.style.height = `${size}px`;
-        
-        // Random horizontal position
         bubble.style.left = `${Math.random() * 100}%`;
-        
-        // Random fluctuation duration
         const duration = Math.random() * 10 + 10;
         bubble.style.animationDuration = `${duration}s`;
-        
-        // Random delay for more natural movement
         const delay = Math.random() * 5;
         bubble.style.animationDelay = `${delay}s`;
-        
         underwaterBg.appendChild(bubble);
       }
     }
-    
-    // Initialize bubbles when the document is loaded
+
     document.addEventListener('DOMContentLoaded', createBubbles);
-    
-    // Settings popup functionality
+
     document.getElementById('settingsIcon').addEventListener('click', () => {
       document.getElementById('settingsPopup').classList.toggle('show');
     });
-    
+
     document.getElementById('closeSettings').addEventListener('click', () => {
       document.getElementById('settingsPopup').classList.remove('show');
     });
-    
+
     document.getElementById('uploadFirmwareBtn').addEventListener('click', () => {
       document.getElementById('fileInput').click();
     });
