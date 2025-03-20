@@ -1,26 +1,29 @@
 [
-  {
-    "url": "https://raw.githubusercontent.com/dash1101/RPCortex/refs/heads/main/docs/RPC-v0.8.0.pkg",
-    "flavor": "RPC-β8X Installer Concept",
-    "min_micropython": "1.24",
-    "min_ram": "64",
-    "file_size": "200KB",
-    "compatible_boards": ["RP2040", "ESP32"]
-  },
-  {
-    "url": "https://raw.githubusercontent.com/dash1101/RPCortex/refs/heads/main/docs/RPC-v0.8.0.pkg",
-    "flavor": "RPC-β8X Nova",
-    "min_micropython": "1.25",
-    "min_ram": "128",
-    "file_size": "150KB",
-    "compatible_boards": ["ESP32-S3"]
-  },
-  {
-    "url": "https://raw.githubusercontent.com/dash1101/RPCortex/refs/heads/main/docs/RPC-v0.8.0.pkg",
-    "flavor": "Experimental",
-    "min_micropython": "1.25",
-    "min_ram": "256",
-    "file_size": "300KB",
-    "compatible_boards": ["RP2350"]
-  }
+    {
+      "url": "https://raw.githubusercontent.com/dash1101/RPCortex/refs/heads/main/docs/RPC-v0.8.0.pkg",
+      "flavor": "RPC-β8X Installer Concept",
+      "min_micropython": "1.24",
+      "min_ram": "64",
+      "file_size": "200KB",
+      "compatible_boards": ["RP2040", "ESP32"],
+      "version": "0.8.0"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/dash1101/RPCortex/refs/heads/main/docs/RPC-v0.8.0.pkg",
+      "flavor": "RPC-β8X Nova",
+      "min_micropython": "1.25",
+      "min_ram": "128",
+      "file_size": "150KB",
+      "compatible_boards": ["ESP32-S3"],
+      "version": "0.8.0"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/dash1101/RPCortex/refs/heads/main/docs/RPC-v0.8.0.pkg",
+      "flavor": "Experimental",
+      "min_micropython": "1.25",
+      "min_ram": "256",
+      "file_size": "300KB",
+      "compatible_boards": ["RP2350"],
+      "version": "0.8.0"
+    }
 ]
