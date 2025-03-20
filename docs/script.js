@@ -836,7 +836,7 @@ document.getElementById('connectButton').addEventListener('click', async () => {
     // Function to fetch the firmware list from the JSON file
     async function fetchFirmwareList() {
       try {
-        const response = await fetch('firmware_list.json');
+        const response = await fetch('flavors.json');
         if (!response.ok) {
           throw new Error('Failed to fetch firmware list');
         }
