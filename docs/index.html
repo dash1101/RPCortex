@@ -5,9 +5,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>RPCortex Installer</title>
   <link rel="stylesheet" href="style.css" />
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Asap:ital,wght@0,100..900;1,100..900&display=swap" rel="stylesheet">
 </head>
 <body>
   <div class="underwater-bg">
@@ -33,13 +30,39 @@
   <div class="main-content">
     <div class="button-container">
       <button id="connectButton">Connect</button>
-      <button id="fileButton">Load Custom Firmware</button>
-      <button id="runInstallButton">Run install.py</button>
-      <button id="githubButton" onclick="window.location.href='https://github.com/dash1101/RPCortex'">GitHub</button>
+      <button id="installButton">Install Default Firmware</button>
+      <button id="githubButton" onclick="window.location.href='https://github.com/dash1101/RPCortex/'">GitHub</button>
     </div>
   </div>
 
   <div class="image-container"><img src="RPC-Short.png" alt="RPC Icon" /></div>
+  
+  <!-- Settings gear icon -->
+  <div class="settings-icon" id="settingsIcon">⚙️</div>
+  
+  <!-- Settings popup -->
+  <div class="settings-popup" id="settingsPopup">
+    <div class="settings-header">
+      <h3>Settings</h3>
+      <span class="close-btn" id="closeSettings">×</span>
+    </div>
+    <div class="settings-content">
+      <div class="settings-section">
+        <h4>Firmware</h4>
+        <div class="settings-option">
+          <button id="uploadFirmwareBtn">Upload Custom Firmware</button>
+          <div class="option-description">Install your own firmware file</div>
+        </div>
+      </div>
+      <div class="settings-section">
+        <h4>Firmware Source URL</h4>
+        <div class="settings-option">
+          <input type="text" id="firmwareUrl" placeholder="https://raw.githubusercontent.com/dash1101/RPCortex/refs/heads/main/docs/RPC-v0.8.0.pkg" value="https://raw.githubusercontent.com/dash1101/RPCortex/refs/heads/main/docs/RPC-v0.8.0.pkg">
+          <div class="option-description">URL for remote firmware installation</div>
+        </div>
+      </div>
+    </div>
+  </div>
   
   <input type="file" id="fileInput" style="display: none" />
 
@@ -76,6 +99,19 @@
     
     // Initialize bubbles when the document is loaded
     document.addEventListener('DOMContentLoaded', createBubbles);
+    
+    // Settings popup functionality
+    document.getElementById('settingsIcon').addEventListener('click', () => {
+      document.getElementById('settingsPopup').classList.toggle('show');
+    });
+    
+    document.getElementById('closeSettings').addEventListener('click', () => {
+      document.getElementById('settingsPopup').classList.remove('show');
+    });
+    
+    document.getElementById('uploadFirmwareBtn').addEventListener('click', () => {
+      document.getElementById('fileInput').click();
+    });
   </script>
 </body>
 </html>
