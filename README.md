@@ -7,16 +7,17 @@
    <a href="https://github.com/dash1101/RPCortex"><img src="https://img.shields.io/github/v/release/dash1101/RPCortex?include_prereleases&label=Latest%20Release"></a>
    <a href="https://github.com/dash1101/RPCortex/issues"><img src="https://img.shields.io/github/issues/dash1101/RPCortex"></a>
    <a href="https://github.com/dash1101/RPCortex/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-orange"></a>
+# ***ARCHIVED UNTIL FURTHER NOTICE***
 
 # RPCortex - Lightweight Customizable OS 🖥️
 
 RPCortex is an **open-source** operating system designed for **RP2040** and **RP2350 processors**. It provides a **CLI-based** environment with an optional GUI and an ecosystem of packages, including **networking tools, development utilities, and system management features**.
 
 ## 🌟 Features
-- **CLI Interface** 🖥️
+- **Intuitive CLI (Dos-Like) Interface** 🖥️
 - **Modular Package Management** 📦
 - **Networking Tools & Development Utilities** 🌐
-- **User & System Process Management** ⚙️
+- **Encrypted User Management** ⚙️
 - **Lightweight & Customizable** 🛠️
 - **OS Updating System & Recovery** 🔃
 - **Modular Directory System** 📂
@@ -29,8 +30,8 @@ To install **RPCortex**, follow these steps:
 3. Boot into RPCortex and configure your user environment.
 
 ### 🔧 Recommended System Requirements
-- **MicroPython-supported RP2350 processor**
-- **MicroPython Version:** v1.25.X
+- **MicroPython on RP2350 SOC**
+- **MPY Ver:** v1.28.X
 - **Storage:** 4MB Flash Memory
 - **RAM:** 256KB
 
@@ -38,11 +39,11 @@ To install **RPCortex**, follow these steps:
 For RPC β8X - Nebula release v0.8.0-beta:
 | Phase          | Status  | Estimated Dates |
 |---------------|---------|----------------|
-| **Initiation**   | ✅ Completed  | 3/2 - 3/4 |
-| **Planning**    | ✅ Completed  | 3/5 - 3/20 |
-| **Development** | 🏗️ In-Progress  | Q2 - Q3 2025 |
-| **Testing**     | 🧪 Projected  | Q3 2025 |
-| **Finalization**| 🚀 Projected  | Q3 2025 |
+| **Initiation**   | ✅ Completed  | 3/2 - 3/4 2025 |
+| **Planning**    | ✅ Completed  | 3/5 - 3/20 2025 |
+| **Development** | 🏗️ In-Progress  | UNKNOWN |
+| **Testing**     | 🧪 Projected  | UNKNOWN |
+| **Finalization**| 🚀 Projected  | UNKNOWN |
 
 ## 📦 Package Management
 RPCortex β8X features a **built-in package manager** with:
