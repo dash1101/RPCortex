@@ -7,8 +7,11 @@
    <a href="https://github.com/dash1101/RPCortex"><img src="https://img.shields.io/github/v/release/dash1101/RPCortex?include_prereleases&label=Latest%20Release"></a>
    <a href="https://github.com/dash1101/RPCortex/issues"><img src="https://img.shields.io/github/issues/dash1101/RPCortex"></a>
    <a href="https://github.com/dash1101/RPCortex/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-orange"></a>
-# ***ARCHIVED UNTIL FURTHER NOTICE***
+# ***UNDER MAINTAINENCE***
+## What does this mean?
+Currently I am brushing some old dust off this project. I haven't really touched it for ~1.5 years so I'm giving it some much needed love. Right now I'm working on revising some stuff and cleaning everything up. Some stuff will be different around here but it's not like that matters since this project has flown under the radar for as long as its existed pretty much.
 
+---
 # RPCortex - Lightweight Customizable OS 🖥️
 
 RPCortex is an **open-source** operating system designed for **RP2040** and **RP2350 processors**. It provides a **CLI-based** environment with an optional GUI and an ecosystem of packages, including **networking tools, development utilities, and system management features**.
