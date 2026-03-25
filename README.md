@@ -82,8 +82,8 @@ pkg install HelloWorld
 
 ## Documentation
 
-- **[NebulaDocs.md](NebulaDocs.md)** — full command reference, shell controls, registry keys, networking guide, package format
-- **[release.md](release.md)** — what's in this version
+- **[NebulaDocs.md](https://rpc.novalabs.app/NebulaDocs.html)** — full command reference, shell controls, registry keys, networking guide, package format
+- **[Release](https://github.com/dash1101/RPCortex/releases/tag/RPC-%CE%B28X)** — what's in this version
 - **[Issues](https://github.com/dash1101/RPCortex/issues)** — bug reports and feature requests
 - **[Discussions](https://github.com/dash1101/RPCortex/discussions)** — questions and ideas
 
