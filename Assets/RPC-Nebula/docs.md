@@ -1,5 +1,5 @@
 # RPCortex Nebula — Documentation
-### v0.8.1
+### v0.8.0-rc
 
 ---
 
@@ -475,17 +475,17 @@ settings           # toggle via panel
 
 | Board | Status | RAM |
 |-------|--------|-----|
-| Raspberry Pi Pico (RP2040) | ✅ Primary target | 264 KB |
-| Raspberry Pi Pico W (RP2040 + WiFi) | ✅ Full support | 264 KB |
-| Raspberry Pi Pico 2 (RP2350) | ✅ Supported | 520 KB |
-| Raspberry Pi Pico 2 W (RP2350 + WiFi) | ✅ Supported | 520 KB |
-| ESP32 / ESP32-S2 / ESP32-S3 | ✅ Confirmed working | Varies |
+| Raspberry Pi Pico (RP2040) | Recommended | 264 KB |
+| Raspberry Pi Pico W (RP2040 + WiFi) | Recommended | 264 KB |
+| Raspberry Pi Pico 2 (RP2350) | Supported | 520 KB |
+| Raspberry Pi Pico 2 W (RP2350 + WiFi) | Supported | 520 KB |
+| ESP32 / ESP32-S2 / ESP32-S3 | Supported | Varies |
 
 ---
 
 ## Security
 
-- **Passwords** use salted SHA256. Each account has a unique random salt — rainbow tables don't apply. Accounts created before v0.8.1 used unsalted SHA256 and upgrade on the next password change.
+- **Passwords** use salted SHA256. Each account has a unique random salt — rainbow tables don't apply. Accounts created before v0.8.0-rc used unsalted SHA256 and upgrade on the next password change.
 - **WiFi credentials** are stored in plaintext in `registry.cfg`. There is no secure storage mechanism on this hardware.
 - **Home directories** provide logical separation at `/Users/<username>/`. There is no kernel-enforced permission model.
 
@@ -493,6 +493,7 @@ settings           # toggle via panel
 
 ## Known Limitations
 
+- **MemoryError in the shell** — may occur after heavy use due to heap fragmentation. Run `freeup` to compact the heap. If it persists, `reboot` clears it. Being actively worked on.
 - **No real-time clock on base Pico** — `date` shows time since boot epoch until the RTC is set manually
 - **HTTPS on Pico 1 W** — TLS needs ~9.5KB contiguous heap; run `freeup` first if the heap is fragmented
 - **Editor requires a real terminal** — Thonny REPL won't render it
@@ -503,4 +504,4 @@ settings           # toggle via panel
 
 ---
 
-*RPCortex Nebula v0.8.1 — by dash1101*
+*RPCortex Nebula v0.8.0-rc — by dash1101*
