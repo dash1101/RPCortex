@@ -14,7 +14,7 @@
 
 A lightweight CLI operating system for the Raspberry Pi Pico and RP2040/RP2350-based boards, written entirely in MicroPython. Think of it as a Linux-flavored shell running on a $4 microcontroller — real user accounts, a package manager, WiFi, a text editor, and a proper boot sequence, all on hardware with 264KB of RAM.
 
-> **v0.8.1-alpha** — Active development. Most features work. Some rough edges remain. Targeting a release candidate in mid-2026.
+> **v0.8.0-rc** — Approaching release candidate. Core features are stable. Targeting RC in mid-2026.
 
 ---
 
@@ -24,7 +24,7 @@ A lightweight CLI operating system for the Raspberry Pi Pico and RP2040/RP2350-b
 - **Full filesystem commands** — `ls`, `cd`, `mv`, `cp`, `rm`, `tree`, `df`, and more
 - **User accounts** — salted SHA256 passwords, multi-user support, account creation/removal from the shell
 - **WiFi networking** — scan, connect, saved networks, autoconnect on boot (Pico W and ESP32)
-- **HTTP/HTTPS downloads** — `wget` streams directly to flash; `runurl` downloads and executes a Python file immediately
+- **HTTP/HTTPS networking** — `wget` streams to flash, `curl` fetches to screen, `runurl` downloads and executes, `ping` + `nslookup` for diagnostics
 - **Apt-style package manager** — install/remove/upgrade packages, configure repos, search the repo cache
 - **Built-in text editor** — nano-style editor via `edit` or `nano` (requires serial terminal)
 - **POST (Power-On Self Test)** — registry check, CPU test, RAM stress test, clock detection, WiFi autoconnect
@@ -103,7 +103,7 @@ dash@nebula:/> hello
 |-------|--------|-------|
 | Initiation | ✅ Complete | March 2025 |
 | Planning | ✅ Complete | March 2025 |
-| Development | 🏗️ In Progress | Active — March 2026 |
+| Development | 🏗️ In Progress | Active — March 2026 (approaching RC) |
 | Testing | 🧪 Upcoming | TBD |
 | Release Candidate | 🚀 Targeted | Mid-2026 |
 
@@ -111,9 +111,9 @@ dash@nebula:/> hello
 
 ## Recommended System Requirements
 
-- **MicroPython** v1.20 or newer
+- **MicroPython** v1.27 or newer recommended
 - **Flash:** 4MB (2MB minimum)
-- **RAM:** 264KB (Pico 1) or better
+- **RAM:** 520KB (Pico 1 minimum) or better
 
 ---
 
@@ -132,4 +132,4 @@ RPCortex is open-source. Explicit credit to **[@dash1101](https://github.com/das
 
 ---
 
-###### RPC-β8X (v0.8.1-alpha) — Nebula
+###### RPC-β8X (v0.8.0-rc) — Nebula
