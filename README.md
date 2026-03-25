@@ -95,4 +95,4 @@ Open source. Explicit credit to **[@dash1101](https://github.com/dash1101)** is 
 
 ---
 
-###### RPCortex Nebula β8X — v0.8.1
+###### RPCortex Nebula β8X — v0.8.0-rc
