@@ -52,20 +52,20 @@ It's not trying to be Linux. It's a $4 microcontroller running MicroPython. But 
 
 | Board | Status |
 |-------|--------|
-| Raspberry Pi Pico (RP2040) | ✅ Supported |
-| Raspberry Pi Pico W (RP2040 + WiFi) | ✅ Supported |
+| Raspberry Pi Pico (RP2040) | ✅ Minimum - Supported |
+| Raspberry Pi Pico W (RP2040 + WiFi) | ✅ Minimum - Supported |
 | Raspberry Pi Pico 2 (RP2350) | ✅ Supported |
 | Raspberry Pi Pico 2 W (RP2350 + WiFi) | ✅ Recommended |
 | ESP32 / ESP32-S2 / ESP32-S3 | ✅ Recommended |
 
-Requires MicroPython v1.20 or newer. v1.27+ recommended. 4MB flash minimum.
+Requires MicroPython v1.20 or newer. v1.27+ recommended. 2MB flash minimum.
 
 ---
 
 ## Getting Started
 
 1. Flash MicroPython to your board
-2. Copy all files from this repo to the board's filesystem
+2. Copy all files from the release to the board's filesystem
 3. Open a serial terminal at **115200 baud** — PuTTY on Windows, minicom or screen on Linux/macOS
 4. Reboot — `main.py` runs automatically
 5. Set your root password on first boot, then log in
