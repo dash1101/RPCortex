@@ -7,64 +7,129 @@
    <a href="https://github.com/dash1101/RPCortex"><img src="https://img.shields.io/github/v/release/dash1101/RPCortex?include_prereleases&label=Latest%20Release"></a>
    <a href="https://github.com/dash1101/RPCortex/issues"><img src="https://img.shields.io/github/issues/dash1101/RPCortex"></a>
    <a href="https://github.com/dash1101/RPCortex/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-orange"></a>
-# ***UNDER MAINTAINENCE***
-## What does this mean?
-Currently I am brushing some old dust off this project. I haven't really touched it for ~1.5 years so I'm giving it some much needed love. Right now I'm working on revising some stuff and cleaning everything up. Some stuff will be different around here but it's not like that matters since this project has flown under the radar for as long as its existed pretty much.
-
----
-# RPCortex - Lightweight Customizable OS 🖥️
-
-RPCortex is an **open-source** operating system designed for **RP2040** and **RP2350 processors**. It provides a **CLI-based** environment with an optional GUI and an ecosystem of packages, including **networking tools, development utilities, and system management features**.
-
-## 🌟 Features
-- **Intuitive CLI (Dos-Like) Interface** 🖥️
-- **Modular Package Management** 📦
-- **Networking Tools & Development Utilities** 🌐
-- **Encrypted User Management** ⚙️
-- **Lightweight & Customizable** 🛠️
-- **OS Updating System & Recovery** 🔃
-- **Modular Directory System** 📂
-- **Nova D1 Support** 🛜
-
-## 🚀 Getting Started
-To install **RPCortex**, follow these steps:
-1. Download the latest release from [GitHub Releases](https://github.com/dash1101/RPCortex/releases).
-2. Copy the OS files onto your target device.
-3. Boot into RPCortex and configure your user environment.
-
-### 🔧 Recommended System Requirements
-- **MicroPython on RP2350 SOC**
-- **MPY Ver:** v1.28.X
-- **Storage:** 4MB Flash Memory
-- **RAM:** 256KB
-
-## 📋 Status & Roadmap
-For RPC β8X - Nebula release v0.8.0-beta:
-| Phase          | Status  | Estimated Dates |
-|---------------|---------|----------------|
-| **Initiation**   | ✅ Completed  | 3/2 - 3/4 2025 |
-| **Planning**    | ✅ Completed  | 3/5 - 3/20 2025 |
-| **Development** | 🏗️ In-Progress  | UNKNOWN |
-| **Testing**     | 🧪 Projected  | UNKNOWN |
-| **Finalization**| 🚀 Projected  | UNKNOWN |
-
-## 📦 Package Management
-RPCortex β8X features a **built-in package manager** with:
-- **Local package installation**
-- **Online package repositories**
-- **Remote URL-based installation**
-- **Automatic & manual package updates**
-- **Full package removal support**
-
-## 🔒 License
-RPCortex is open-source but requires **explicit credit** to **[@dash1101](https://github.com/dash1101)** for use in public projects. Read more in the **[LICENSE](https://github.com/dash1101/RPCortex/blob/main/LICENSE)** file.
-
-## 🌐 Resources
-- 📖 **[Documentation](https://github.com/dash1101/RPCortex/wiki)**
-- 🐛 **[Issue Tracker](https://github.com/dash1101/RPCortex/issues)**
-- 💬 **[Community Discussions](https://github.com/dash1101/RPCortex/discussions)**
-- 🔥 **[Latest Releases](https://github.com/dash1101/RPCortex/releases)**
 
 ---
 
-###### Footnote: This is describing RPC-β8X (v0.8.0) which has not yet released.
+# RPCortex — Nebula β8X
+
+A lightweight CLI operating system for the Raspberry Pi Pico and RP2040/RP2350-based boards, written entirely in MicroPython. Think of it as a Linux-flavored shell running on a $4 microcontroller — real user accounts, a package manager, WiFi, a text editor, and a proper boot sequence, all on hardware with 264KB of RAM.
+
+> **v0.8.1-alpha** — Active development. Most features work. Some rough edges remain. Targeting a release candidate in mid-2026.
+
+---
+
+## Features
+
+- **Interactive CLI shell** — colored prompt, command history, up/down arrow navigation, session logging
+- **Full filesystem commands** — `ls`, `cd`, `mv`, `cp`, `rm`, `tree`, `df`, and more
+- **User accounts** — salted SHA256 passwords, multi-user support, account creation/removal from the shell
+- **WiFi networking** — scan, connect, saved networks, autoconnect on boot (Pico W and ESP32)
+- **HTTP/HTTPS downloads** — `wget` streams directly to flash; `runurl` downloads and executes a Python file immediately
+- **Apt-style package manager** — install/remove/upgrade packages, configure repos, search the repo cache
+- **Built-in text editor** — nano-style editor via `edit` or `nano` (requires serial terminal)
+- **POST (Power-On Self Test)** — registry check, CPU test, RAM stress test, clock detection, WiFi autoconnect
+- **Registry** — INI-style persistent config for system settings, network credentials, hardware info
+- **Session logging** — every boot session logged to `/Nebula/Logs/`, rotated up to 10 logs
+- **Recovery shell** — unauthenticated fallback shell if the main boot sequence fails
+- **Neofetch-style system info** — `fetch` shows board, CPU, RAM, flash, uptime, UID
+
+---
+
+## Supported Hardware
+
+| Board | Status |
+|-------|--------|
+| Raspberry Pi Pico (RP2040) | ✅ Primary target |
+| Raspberry Pi Pico W (RP2040 + WiFi) | ✅ WiFi supported |
+| Raspberry Pi Pico 2 (RP2350) | ✅ Supported |
+| Raspberry Pi Pico 2 W (RP2350 + WiFi) | ✅ Should work |
+| ESP32 / ESP32-S2 / ESP32-S3 | 🔶 Partial support |
+
+---
+
+## Getting Started
+
+1. Flash MicroPython firmware to your board
+2. Copy all files from this repo onto the board's filesystem
+3. Connect via serial terminal at **115200 baud** (PuTTY recommended)
+4. Reboot — `main.py` runs automatically
+5. POST runs, then you're prompted to create an account on first boot
+6. Log in and you're in the shell
+
+**Note:** Thonny's REPL works but has quirks (no arrow key history, double-printed input). Use PuTTY or a similar terminal for the best experience.
+
+---
+
+## Package Manager
+
+Packages are `.pkg` files (standard ZIP archives). Install from a local file or directly by name from a configured repo:
+
+```
+pkg repo add https://raw.githubusercontent.com/dash1101/RPCortex/main/repo/index.json
+pkg update
+pkg search hello
+pkg install HelloWorld
+pkg list
+pkg upgrade
+```
+
+A `make_pkg.py` build script is included in `repo/` for creating packages from a source directory on your PC.
+
+---
+
+## Shell Preview
+
+```
+dash@nebula:/>
+dash@nebula:/> wifi status
+[i] Connected  SSID: MyNetwork  IP: 192.168.1.42
+dash@nebula:/> pkg search hello
+  NAME                 VERSION    AUTHOR       DESCRIPTION
+  ---------------------------------------------------------------
+  HelloWorld           1.0.0      dash1101     Sample demo package
+dash@nebula:/> pkg install HelloWorld
+[i] Found 'HelloWorld'. Downloading...
+[OK] Package 'HelloWorld' v1.0.0 installed.
+dash@nebula:/> hello
+  Hello from HelloWorld!
+  RPCortex package system is working correctly.
+```
+
+---
+
+## Status & Roadmap
+
+| Phase | Status | Notes |
+|-------|--------|-------|
+| Initiation | ✅ Complete | March 2025 |
+| Planning | ✅ Complete | March 2025 |
+| Development | 🏗️ In Progress | Active — March 2026 |
+| Testing | 🧪 Upcoming | TBD |
+| Release Candidate | 🚀 Targeted | Mid-2026 |
+
+---
+
+## Recommended System Requirements
+
+- **MicroPython** v1.20 or newer
+- **Flash:** 4MB (2MB minimum)
+- **RAM:** 264KB (Pico 1) or better
+
+---
+
+## License
+
+RPCortex is open-source. Explicit credit to **[@dash1101](https://github.com/dash1101)** is required for use in public projects. See the [LICENSE](https://github.com/dash1101/RPCortex/blob/main/LICENSE) file for details.
+
+---
+
+## Resources
+
+- 📖 [Documentation / Wiki](https://github.com/dash1101/RPCortex/wiki)
+- 🐛 [Issue Tracker](https://github.com/dash1101/RPCortex/issues)
+- 💬 [Discussions](https://github.com/dash1101/RPCortex/discussions)
+- 🔥 [Releases](https://github.com/dash1101/RPCortex/releases)
+
+---
+
+###### RPC-β8X (v0.8.1-alpha) — Nebula
