@@ -329,7 +329,7 @@ Run `settings` to open an interactive panel:
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│  RPCortex Settings               125 MHz  27.4C  92 KB      │
+│  RPCortex Settings               125 MHz  27.4C  92 KB       │
 ├──────────────────────────────────────────────────────────────┤
 │                                                              │
 │  SYSTEM                                                      │
@@ -475,11 +475,12 @@ settings           # toggle via panel
 
 | Board | Status | RAM |
 |-------|--------|-----|
-| Raspberry Pi Pico (RP2040) | Recommended | 264 KB |
-| Raspberry Pi Pico W (RP2040 + WiFi) | Recommended | 264 KB |
+| Raspberry Pi Pico 2 W (RP2350 + WiFi) | Recommended | 520 KB |
+| ESP32-S3 | Recommended | Varies |
+| Raspberry Pi Pico (RP2040) | Supported | 264 KB |
+| Raspberry Pi Pico W (RP2040 + WiFi) | Supported | 264 KB |
 | Raspberry Pi Pico 2 (RP2350) | Supported | 520 KB |
-| Raspberry Pi Pico 2 W (RP2350 + WiFi) | Supported | 520 KB |
-| ESP32 / ESP32-S2 / ESP32-S3 | Supported | Varies |
+| ESP32 / ESP32-S2 | Supported | Varies |
 
 ---
 
@@ -494,6 +495,7 @@ settings           # toggle via panel
 ## Known Limitations
 
 - **MemoryError in the shell** — may occur after heavy use due to heap fragmentation. Run `freeup` to compact the heap. If it persists, `reboot` clears it. Being actively worked on.
+- **ESP32-S3 temperature sensor** — the onboard temperature sensor on ESP32-S3 is not calibrated the same way as RP2040. `fetch` shows unrealistic values (typically 300–450 °C). Hardware/firmware limitation, not an RPCortex bug. RP2040/RP2350 temperature is accurate.
 - **No real-time clock on base Pico** — `date` shows time since boot epoch until the RTC is set manually
 - **HTTPS on Pico 1 W** — TLS needs ~9.5KB contiguous heap; run `freeup` first if the heap is fragmented
 - **Editor requires a real terminal** — Thonny REPL won't render it
