@@ -52,11 +52,11 @@ It's not trying to be Linux. It's a $4 microcontroller running MicroPython. But 
 
 | Board | Status |
 |-------|--------|
-| Raspberry Pi Pico (RP2040) | ✅ Primary target |
-| Raspberry Pi Pico W (RP2040 + WiFi) | ✅ Full WiFi support |
+| Raspberry Pi Pico (RP2040) | ✅ Supported |
+| Raspberry Pi Pico W (RP2040 + WiFi) | ✅ Supported |
 | Raspberry Pi Pico 2 (RP2350) | ✅ Supported |
-| Raspberry Pi Pico 2 W (RP2350 + WiFi) | ✅ Supported |
-| ESP32 / ESP32-S2 / ESP32-S3 | ✅ Confirmed working |
+| Raspberry Pi Pico 2 W (RP2350 + WiFi) | ✅ Recommended |
+| ESP32 / ESP32-S2 / ESP32-S3 | ✅ Recommended |
 
 Requires MicroPython v1.20 or newer. v1.27+ recommended. 4MB flash minimum.
 
