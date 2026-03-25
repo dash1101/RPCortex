@@ -1,0 +1,13 @@
+{
+  "name": "RPCortex Main Repo",
+  "maintainer": "dash1101",
+  "packages": [
+    {
+      "name": "HelloWorld",
+      "ver": "1.0.0",
+      "desc": "Sample demo package for RPCortex",
+      "author": "dash1101",
+      "url": "https://raw.githubusercontent.com/dash1101/RPCortex/main/repo/packages/helloworld.pkg"
+    }
+  ]
+}
