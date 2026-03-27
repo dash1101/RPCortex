@@ -261,7 +261,7 @@ Commands installed by packages are available immediately after install. They dis
 ### Quick start
 
 ```
-pkg repo add http://rpc.novalabs.app/repo/index.json
+pkg repo add https://raw.githubusercontent.com/dash1101/RPCortex-repo/main/repo/index.json
 pkg update
 pkg available
 pkg install HelloWorld

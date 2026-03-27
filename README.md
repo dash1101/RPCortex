@@ -79,7 +79,7 @@ Requires MicroPython v1.25 or newer. v1.28 recommended. 4MB flash minimum.
 
 ```
 wifi connect
-pkg repo add http://rpc.novalabs.app/repo/index.json
+pkg repo add https://raw.githubusercontent.com/dash1101/RPCortex-repo/main/repo/index.json
 pkg update
 pkg available
 pkg install HelloWorld
@@ -89,8 +89,8 @@ pkg install HelloWorld
 
 ## Documentation
 
-- **[NebulaDocs.md](NebulaDocs.md)** — full command reference, shell controls, registry keys, networking guide, package format
-- **[release (v0.8.1-beta2).md](release%20(v0.8.1-beta2).md)** — what's in this version
+- **[CHANGELOG.md](CHANGELOG.md)** — version history and release notes
+- **[rpc.novalabs.app](https://rpc.novalabs.app)** — website with web installer, package browser, and HTML docs
 - **[Package Dev Guide](https://rpc.novalabs.app/PackageDev.html)** — build and publish your own packages
 - **[Issues](https://github.com/dash1101/RPCortex/issues)** — bug reports and feature requests
 

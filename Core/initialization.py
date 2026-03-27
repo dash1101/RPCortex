@@ -104,7 +104,7 @@ def setup_seq():
         add_user('guest', '', nopass=True)
 
     # --- Silent: add official package repo ---
-    _REPO = 'http://rpc.novalabs.app/repo/index.json'
+    _REPO = 'https://raw.githubusercontent.com/dash1101/RPCortex-repo/main/repo/index.json'
     try:
         for _d in ('/Nebula/pkg', '/Nebula/pkg/cache'):
             try:
