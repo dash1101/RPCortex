@@ -89,6 +89,7 @@ pkg install HelloWorld
 
 ## Documentation
 
+- **[Documentation.md](Documentation.md)** — full command reference, shell controls, registry keys, networking guide, package format
 - **[CHANGELOG.md](CHANGELOG.md)** — version history and release notes
 - **[rpc.novalabs.app](https://rpc.novalabs.app)** — website with web installer, package browser, and HTML docs
 - **[Package Dev Guide](https://rpc.novalabs.app/PackageDev.html)** — build and publish your own packages

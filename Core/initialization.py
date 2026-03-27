@@ -10,7 +10,7 @@ import Core.regedit as regedit
 from Core.launchpad import launchpad_init as _boot
 from Core.launchpad import recovery_init  as _recovery
 from Core.usrmgmt  import decode, add_user, is_nopass
-import uos, utime
+import uos, utime, sys
 
 # ---------------------------------------------------------------------------
 # System file integrity (populated in a future release)
@@ -181,6 +181,94 @@ def start(arg):
         recovery_mode(errStr=str(e))
 
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# _xfer at login — receive a file over serial without being logged in.
+# Same base64 protocol as _crit_xfer in launchpad.py.
+# Called when the username field contains "_xfer <path>".
+# ---------------------------------------------------------------------------
+
+def _login_xfer(dest):
+    """Run the _xfer receive protocol at the login prompt (no session needed)."""
+    if not dest:
+        sys.stdout.write("XFER_ERR:no path\r\n")
+        sys.stdout.write("XFER_COMPLETE\r\n")
+        return
+
+    # Create parent directories
+    parts = [p for p in dest.split('/') if p]
+    cur = ''
+    for p in parts[:-1]:
+        cur += '/' + p
+        try:
+            uos.mkdir(cur)
+        except OSError:
+            pass
+
+    sys.stdout.write("XFER_READY\r\n")
+
+    total = 0
+    first_chunk = True
+    line_buf = []
+
+    while True:
+        try:
+            ch = sys.stdin.read(1)
+        except Exception:
+            sys.stdout.write("XFER_ERR:read_error\r\n")
+            sys.stdout.write("XFER_COMPLETE\r\n")
+            return
+
+        if ch in ('\r', '\n'):
+            s = ''.join(line_buf).strip()
+            line_buf = []
+            if not s:
+                continue
+            if s == 'XFER_END':
+                break
+            try:
+                import ubinascii
+                chunk = ubinascii.a2b_base64(s)
+            except ImportError:
+                try:
+                    import binascii
+                    chunk = binascii.a2b_base64(s)
+                except Exception as e:
+                    sys.stdout.write("XFER_ERR:{}\r\n".format(e))
+                    sys.stdout.write("XFER_COMPLETE\r\n")
+                    return
+            except Exception as e:
+                sys.stdout.write("XFER_ERR:{}\r\n".format(e))
+                sys.stdout.write("XFER_COMPLETE\r\n")
+                return
+            try:
+                mode = 'wb' if first_chunk else 'ab'
+                first_chunk = False
+                with open(dest, mode) as f:
+                    f.write(chunk)
+                total += len(chunk)
+            except Exception as e:
+                sys.stdout.write("XFER_ERR:{}\r\n".format(e))
+                sys.stdout.write("XFER_COMPLETE\r\n")
+                return
+        else:
+            line_buf.append(ch)
+
+    sys.stdout.write("XFER_OK:{}\r\n".format(total))
+
+    if dest.endswith('.pkg'):
+        sys.stdout.write("XFER_INSTALLING\r\n")
+        try:
+            import pkgmgr
+            result = pkgmgr.install(dest)
+            if result:
+                sys.stdout.write("XFER_INSTALLED\r\n")
+            else:
+                sys.stdout.write("XFER_INSTALL_FAILED\r\n")
+        except Exception as e:
+            sys.stdout.write("XFER_INSTALL_ERR:{}\r\n".format(e))
+
+    sys.stdout.write("XFER_COMPLETE\r\n")
+
 # Login sequence
 # ---------------------------------------------------------------------------
 
@@ -198,6 +286,12 @@ def login_seq():
 
         if not username:
             warn("Please enter a username.")
+            continue
+
+        # _xfer at login — file transfer without an active session.
+        # Allows the web package browser to push files even after a device reset.
+        if username.startswith('_xfer'):
+            _login_xfer(username[5:].strip())
             continue
 
         if not decode(username, silent=True):
