@@ -1,4 +1,10 @@
-# RPCortex Reinstall Stub
+# Desc: Reinstall boot stub for RPCortex — copied to /main.py by `reinstall`
+# File: /Core/rpc_stub.py
+# Last Updated: 3/27/2026
+# Lang: MicroPython, English
+# Version: v0.8.1-beta2
+# Author: dash1101
+#
 # ─────────────────────────────────────────────────────────────────────────
 # This file is copied to /main.py by the `reinstall` shell command.
 # It runs on the NEXT BOOT after a full system wipe.

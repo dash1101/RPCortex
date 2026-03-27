@@ -1,0 +1,41 @@
+# ── Claude Code internal files (never commit) ─────────────────────
+.claude/
+CLAUDE.md
+
+# ── Runtime data — generated on device, not source code ───────────
+# POST and setup_seq() recreate all of this on first boot.
+# Do not include these directories in the repo.
+/Nebula/
+/Users/
+
+# ── Packages: track built-in stubs only ───────────────────────────
+# /Packages/Launchpad/package.cfg and /Packages/Editor/package.cfg
+# are built-in stubs that must exist. Everything else is runtime-installed.
+/Packages/*
+!/Packages/Launchpad
+!/Packages/Editor
+
+# ── Python bytecode ───────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# ── OS / editor junk ──────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*.swo
+*~
+
+# ── IDE project files ─────────────────────────────────────────────
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace
+
+# ── Secrets / environment ─────────────────────────────────────────
+.env
+.env.*
+secrets.*

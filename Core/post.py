@@ -1,6 +1,6 @@
 # Desc: Power-On Self Test (POST) for RPCortex - Nebula OS
 # File: /Core/post.py
-# Last Updated: 3/25/2026
+# Last Updated: 3/27/2026
 # Lang: MicroPython, English
 # Version: v0.8.1-beta2
 # Author: dash1101
@@ -38,6 +38,7 @@ Verbose_Boot: false
 [Features]
 Program_Execution: true
 Serial: true
+beeper: false
 SD_Support: false
 Nova: false
 
