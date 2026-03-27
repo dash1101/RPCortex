@@ -1,5 +1,5 @@
 # RPCortex Nebula — Documentation
-### v0.8.0-rc
+### v0.8.1-beta2
 
 ---
 
@@ -97,7 +97,7 @@ Built-in commands (`sys_fs`, `sys_sys`, `sys_net`, `sys_user`, `wifi`, `settings
 
 ### Critical commands
 
-`reboot`, `sreboot`, `freeup`, and `gc` are implemented as inline functions that bypass the loader entirely. They always work regardless of heap state.
+`reboot`, `sreboot`, `freeup`, `gc`, and `_xfer` are implemented as inline functions that bypass the loader entirely. They always work regardless of heap state.
 
 ### Heap management
 
@@ -154,11 +154,13 @@ The RP2040 has 264KB of RAM. After loading several commands or running HTTPS req
 
 | Command | Description |
 |---------|-------------|
-| `pulse status` | Current CPU frequency and temperature |
-| `pulse oc [MHz]` | Overclock to MHz |
-| `pulse uc [MHz]` | Underclock to MHz |
-| `pulse boot on` | Enable boot overclocking |
-| `pulse boot off` | Disable boot overclocking |
+| `pulse` | Show clock info and usage |
+| `pulse status` | Current CPU frequency, boot clock, min/max |
+| `pulse set <MHz>` | Set clock now (e.g. `pulse set 220`) |
+| `pulse min <MHz>` | Save minimum clock value |
+| `pulse max <MHz>` | Save maximum clock value |
+| `pulse boot <MHz>` | Set boot clock and enable |
+| `pulse boot on/off` | Enable/disable boot overclocking |
 
 ---
 
@@ -364,7 +366,7 @@ Run `settings` to open an interactive panel:
 
 ## Registry
 
-The registry lives at `/Nebula/Registry/registry.cfg` — a plain INI file. It's created from an embedded template on first boot if missing.
+The registry lives at `/Nebula/Registry/registry.cfg` — a plain INI file. It's created from an embedded template on first boot if missing. The config is cached in memory after first load for fast access; writes go through to disk immediately and update the cache.
 
 ### Key reference
 
@@ -377,7 +379,7 @@ The registry lives at `/Nebula/Registry/registry.cfg` — a plain INI file. It's
 | `Verbose_Boot` | `true/false` | Show POST info messages |
 | `Network_Autoconnect` | `true/false` | WiFi autoconnect on boot |
 | `Active_User` | string | Current session user |
-| `Startup` | `0 / 6` | Crash sentinel for clock calibration |
+| `Startup` | `0 / 1 / 6 / 7` | Crash sentinel (0=clean, 1=active session, 6=clock cal, 7=boot clock) |
 | `Version` | string | OS version |
 
 **[Hardware]**
@@ -441,11 +443,7 @@ Log rotation on each boot:
 latest.log → log_1.log → log_2.log → ... → log_9.log (dropped)
 ```
 
-Up to 10 logs are kept. The `/Nebula/Logs/` directory must exist — create it manually if log writes fail:
-
-```
-mkdir /Nebula/Logs
-```
+Up to 10 logs are kept. The `/Nebula/Logs/` directory is created automatically by POST on first boot.
 
 ---
 
@@ -456,7 +454,7 @@ mkdir /Nebula/Logs
 RPCortex detects the CPU's safe clock range on first boot. For RP2040/RP2350 the stored max is 220 MHz.
 
 ```
-pulse oc 220       # overclock for this session
+pulse set 220      # overclock for this session
 pulse boot on      # apply on every boot
 settings           # toggle via panel
 ```
@@ -494,16 +492,14 @@ settings           # toggle via panel
 
 ## Known Limitations
 
-- **MemoryError in the shell** — may occur after heavy use due to heap fragmentation. Run `freeup` to compact the heap. If it persists, `reboot` clears it. Being actively worked on.
-- **ESP32-S3 temperature sensor** — the onboard temperature sensor on ESP32-S3 is not calibrated the same way as RP2040. `fetch` shows unrealistic values (typically 300–450 °C). Hardware/firmware limitation, not an RPCortex bug. RP2040/RP2350 temperature is accurate.
+- **MemoryError in the shell** — may occur after heavy use due to heap fragmentation. Run `freeup` to compact the heap. If it persists, `reboot` clears it.
+- **ESP32-S3 temperature sensor** — the onboard temperature sensor on ESP32-S3 is not calibrated the same way as RP2040. `fetch` shows unrealistic values (typically 300-450 C). Hardware/firmware limitation, not an RPCortex bug. RP2040/RP2350 temperature is accurate.
 - **No real-time clock on base Pico** — `date` shows time since boot epoch until the RTC is set manually
 - **HTTPS on Pico 1 W** — TLS needs ~9.5KB contiguous heap; run `freeup` first if the heap is fragmented
 - **Editor requires a real terminal** — Thonny REPL won't render it
-- **Log directory** — `/Nebula/Logs/` is not created automatically; log writes silently fail if it's missing
-- **Dual user store** — `usrmgmt.py` (active) and `regedit.py` (unused legacy XOR store) are separate; unification is planned
 - **No tab completion** — planned
 - **SD card support** — registry key exists, implementation pending
 
 ---
 
-*RPCortex Nebula v0.8.0-rc — by dash1101*
+*RPCortex Nebula v0.8.1-beta2 — by dash1101*
