@@ -29,7 +29,7 @@
 
 **What you need:**
 - Raspberry Pi Pico, Pico W, Pico 2, or compatible ESP32 board
-- MicroPython firmware v1.20 or newer (v1.27+ recommended)
+- MicroPython firmware v1.25 or newer (v1.28 recommended)
 - A serial terminal at **115200 baud** — PuTTY on Windows, minicom or screen on Linux/macOS
 
 **Thonny note:** Thonny's built-in REPL works for basic use but arrow key navigation, history, and the editor all require a proper terminal emulator. Use PuTTY for the full experience.
