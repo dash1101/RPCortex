@@ -10,9 +10,9 @@
 
 ---
 
-# RPCortex — Nebula β8X
+# RPCortex — Nebula β81
 
-RPCortex is a CLI operating system for the Raspberry Pi Pico, written entirely in MicroPython. It turns a microcontroller into something that actually behaves like a computer — a real interactive shell, user accounts with passwords, a package manager, WiFi, a text editor, and a structured boot process with hardware checks.
+RPCortex is a CLI operating system for the Raspberry Pi Pico, ESP32, and compatible boards, written entirely in MicroPython. It turns a microcontroller into something that actually behaves like a computer — a real interactive shell, user accounts with passwords, a package manager, WiFi, a text editor, and a structured boot process with hardware checks.
 
 It runs on hardware with 264KB of RAM. That constraint is the point.
 
@@ -40,9 +40,11 @@ It's not trying to be Linux. It's a $4 microcontroller running MicroPython. But 
 
 **Install software.** The package manager works like you'd expect: `pkg install <name>`, `pkg remove <name>`, `pkg upgrade`. Packages are listed in repo indexes — add the official repo, run `pkg update`, and everything in the index is a single command away. Installed commands show up in the shell immediately.
 
+**Install packages from your browser.** The [web package browser](https://rpc.novalabs.app/packages.html) lets you install packages directly to a connected device over USB — no WiFi, no REPL, no reboot required. Connect your device, click Install, done.
+
 **Manage users.** Create accounts with `mkacct`, change passwords with `chpswd`, remove accounts with `rmuser`. Each user gets their own home directory. The `guest` account requires no password.
 
-**Tune the hardware.** `pulse oc 220` overclocks to 220 MHz. `pulse uc 80` underclocks. `bench` runs NebulaMark. `freeup` compacts the heap when things get fragmented after heavy use.
+**Tune the hardware.** `pulse set 220` overclocks to 220 MHz. `pulse boot 200` sets a boot clock. `bench` runs NebulaMark. `freeup` compacts the heap when things get fragmented after heavy use.
 
 **Configure the system.** `settings` opens an interactive panel where you toggle boot overclocking, WiFi autoconnect, verbose boot, the beeper, and SD card support. `reg get`/`reg set` writes directly to the registry if you need something the panel doesn't cover.
 
@@ -52,17 +54,22 @@ It's not trying to be Linux. It's a $4 microcontroller running MicroPython. But 
 
 | Board | Status |
 |-------|--------|
-| Raspberry Pi Pico (RP2040) | ✅ Primary target |
-| Raspberry Pi Pico W (RP2040 + WiFi) | ✅ Full WiFi support |
-| Raspberry Pi Pico 2 (RP2350) | ✅ Supported |
-| Raspberry Pi Pico 2 W (RP2350 + WiFi) | ✅ Supported |
-| ESP32 / ESP32-S2 / ESP32-S3 | ✅ Confirmed working |
+| Raspberry Pi Pico 2 W (RP2350 + WiFi) | Recommended |
+| ESP32-S3 | Recommended |
+| Raspberry Pi Pico (RP2040) | Supported |
+| Raspberry Pi Pico W (RP2040 + WiFi) | Supported |
+| Raspberry Pi Pico 2 (RP2350) | Supported |
+| ESP32 / ESP32-S2 | Supported |
 
 Requires MicroPython v1.20 or newer. v1.27+ recommended. 4MB flash minimum.
 
 ---
 
 ## Getting Started
+
+**Easiest:** Use the [Web Installer](https://rpc.novalabs.app/install.html) — flashes RPCortex directly from your browser over USB. No desktop software required (Chrome/Edge only).
+
+**Manual:**
 
 1. Flash MicroPython to your board
 2. Copy all files from this repo to the board's filesystem
@@ -84,8 +91,8 @@ pkg install HelloWorld
 
 - **[NebulaDocs.md](NebulaDocs.md)** — full command reference, shell controls, registry keys, networking guide, package format
 - **[release.md](release.md)** — what's in this version
+- **[Package Dev Guide](https://rpc.novalabs.app/PackageDev.html)** — build and publish your own packages
 - **[Issues](https://github.com/dash1101/RPCortex/issues)** — bug reports and feature requests
-- **[Discussions](https://github.com/dash1101/RPCortex/discussions)** — questions and ideas
 
 ---
 
@@ -95,4 +102,4 @@ Open source. Explicit credit to **[@dash1101](https://github.com/dash1101)** is 
 
 ---
 
-###### RPCortex Nebula β8X — v0.8.0-rc
+###### RPCortex Nebula β81 — v0.8.1-beta2
