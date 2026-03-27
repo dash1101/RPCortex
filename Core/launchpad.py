@@ -426,13 +426,52 @@ def execute_file(name, args):
 # Shell input  — interactive line reader with history navigation
 # ---------------------------------------------------------------------------
 
-def _tab_complete(partial):
-    """Return the unique completion suffix for partial, or '' if ambiguous."""
-    if not partial:
+def _complete_path(partial):
+    """Return the unique completion suffix for a partial filesystem path."""
+    try:
+        if '/' in partial:
+            sep = partial.rfind('/')
+            dir_part  = partial[:sep + 1]   # includes trailing /
+            file_part = partial[sep + 1:]
+            if dir_part.startswith('/'):
+                sd = dir_part.rstrip('/') or '/'
+            else:
+                sd = uos.getcwd().rstrip('/') + '/' + dir_part.rstrip('/')
+        else:
+            dir_part  = ''
+            file_part = partial
+            sd        = uos.getcwd()
+        entries = uos.listdir(sd)
+        matches = [e for e in entries if e.startswith(file_part)]
+        if len(matches) != 1:
+            return ''
+        suffix = matches[0][len(file_part):]
+        fp = ('/' + matches[0]) if sd == '/' else (sd.rstrip('/') + '/' + matches[0])
+        try:
+            uos.listdir(fp)
+            suffix += '/'   # is a directory
+        except OSError:
+            pass
+        return suffix
+    except Exception:
         return ''
-    matches = [c for c in list(commands.keys()) + list(_CRITICAL.keys()) + list(_aliases.keys())
-               if c.startswith(partial) and len(c) > len(partial)]
-    return matches[0][len(partial):] if len(matches) == 1 else ''
+
+
+def _tab_complete(buf_str):
+    """Complete command name (single word) or filesystem path (after first word)."""
+    if not buf_str:
+        return ''
+    has_space = ' ' in buf_str
+    words = buf_str.split()
+    if not has_space:
+        # Command completion — only when no space typed yet
+        partial = words[0] if words else ''
+        all_names = list(commands.keys()) + list(_CRITICAL.keys()) + list(_aliases.keys())
+        matches = [c for c in all_names if c.startswith(partial) and len(c) > len(partial)]
+        return matches[0][len(partial):] if len(matches) == 1 else ''
+    # Path completion — complete the last word as a filesystem path
+    last = '' if buf_str.endswith(' ') else words[-1]
+    return _complete_path(last)
 
 
 def _shell_input(prompt):
@@ -466,11 +505,11 @@ def _shell_input(prompt):
             sys.stdout.write('\x1b[K')
 
     def _ghost_update():
-        # Compute and display new ghost.  Only meaningful when cursor is at
-        # end of a single-word partial (no spaces typed yet).
+        # Compute and display new ghost: command completion on the first word,
+        # path completion on subsequent words (cursor must be at end of line).
         nonlocal ghost
         new_ghost = ''
-        if cursor == len(buf) and ' ' not in ''.join(buf):
+        if cursor == len(buf):
             new_ghost = _tab_complete(''.join(buf))
         ghost = new_ghost
         if ghost:
