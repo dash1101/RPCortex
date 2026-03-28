@@ -2,7 +2,7 @@
 # File: /Core/launchpad.py
 # Last Updated: 3/27/2026
 # Lang: MicroPython, English
-# Version: v0.8.1-beta2
+# Version: v0.8.1-beta3
 # Author: dash1101
 
 import sys
@@ -346,12 +346,6 @@ def _get_scope(file_path):
         if scope is None:
             return None
         _cmd_cache[file_path] = scope
-    else:
-        # Re-inject references in case _cmd_cache was cleared and the module
-        # was re-used from sys.modules without going through _lp_import again.
-        scope = _cmd_cache[file_path]
-        is_mod = not isinstance(scope, dict)
-        _inject(scope, is_mod)
     return _cmd_cache[file_path]
 
 # ---------------------------------------------------------------------------
@@ -421,6 +415,37 @@ def execute_file(name, args):
         error("Cannot open '{}': {}".format(path, e))
     except Exception as e:
         error("Error running '{}': {}".format(path, e))
+
+# ---------------------------------------------------------------------------
+# Multi-command splitting  (';' separator, quote-aware)
+# ---------------------------------------------------------------------------
+
+def _split_cmds(raw):
+    """Split a command line on ';', respecting single and double quotes."""
+    cmds = []
+    cur  = []
+    in_q = False
+    qchar = None
+    for ch in raw:
+        if ch in ('"', "'"):
+            if not in_q:
+                in_q  = True
+                qchar = ch
+            elif ch == qchar:
+                in_q  = False
+                qchar = None
+            cur.append(ch)
+        elif ch == ';' and not in_q:
+            s = ''.join(cur).strip()
+            if s:
+                cmds.append(s)
+            cur = []
+        else:
+            cur.append(ch)
+    s = ''.join(cur).strip()
+    if s:
+        cmds.append(s)
+    return cmds
 
 # ---------------------------------------------------------------------------
 # Shell input  — interactive line reader with history navigation
@@ -741,39 +766,20 @@ def launchpad_init(username, password):
             if not raw:
                 continue
 
-            _parts  = raw.split(None, 1)
-            command = _parts[0]
-            args    = _parts[1] if len(_parts) > 1 else None
-            # Alias expansion — re-parse if the command matches an alias
-            if command in _aliases:
-                expanded = _aliases[command]
-                if args:
-                    expanded = expanded + ' ' + args
-                _eparts = expanded.split(None, 1)
-                command = _eparts[0]
-                args    = _eparts[1] if len(_eparts) > 1 else None
-            try:
-                if command in _CRITICAL:
-                    _CRITICAL[command](args)
-                elif command in commands:
-                    execute_command(command, args)
-                else:
-                    execute_file(command, args)
-            except MemoryError:
-                import gc as _gc
-                _cmd_cache.clear()
-                _gc.collect()
-                # Heap-consolidation nudge: allocating then freeing a large
-                # block forces MicroPython to compact small free regions into
-                # one contiguous span before the retry.
-                try:
-                    _nudge = bytearray(4096)
-                    del _nudge
-                    _gc.collect()
-                except MemoryError:
-                    pass
-                warn("Heap fragmented — cache cleared ({} KB free). Retrying...".format(
-                    _gc.mem_free() // 1024))
+            for sub_raw in _split_cmds(raw):
+                if not _shell_state['running']:
+                    break
+                _parts  = sub_raw.split(None, 1)
+                command = _parts[0]
+                args    = _parts[1] if len(_parts) > 1 else None
+                # Alias expansion — re-parse if the command matches an alias
+                if command in _aliases:
+                    expanded = _aliases[command]
+                    if args:
+                        expanded = expanded + ' ' + args
+                    _eparts = expanded.split(None, 1)
+                    command = _eparts[0]
+                    args    = _eparts[1] if len(_eparts) > 1 else None
                 try:
                     if command in _CRITICAL:
                         _CRITICAL[command](args)
@@ -782,11 +788,33 @@ def launchpad_init(username, password):
                     else:
                         execute_file(command, args)
                 except MemoryError:
-                    error("Allocation failed ({} KB free) — heap is fragmented.".format(
+                    import gc as _gc
+                    _cmd_cache.clear()
+                    _gc.collect()
+                    # Heap-consolidation nudge: allocating then freeing a large
+                    # block forces MicroPython to compact small free regions into
+                    # one contiguous span before the retry.
+                    try:
+                        _nudge = bytearray(4096)
+                        del _nudge
+                        _gc.collect()
+                    except MemoryError:
+                        pass
+                    warn("Heap fragmented — cache cleared ({} KB free). Retrying...".format(
                         _gc.mem_free() // 1024))
-                    info("Run 'freeup' to consolidate heap, or 'reboot'.")
-                except Exception as e2:
-                    error("Command error after cleanup: {}".format(e2))
+                    try:
+                        if command in _CRITICAL:
+                            _CRITICAL[command](args)
+                        elif command in commands:
+                            execute_command(command, args)
+                        else:
+                            execute_file(command, args)
+                    except MemoryError:
+                        error("Allocation failed ({} KB free) — heap is fragmented.".format(
+                            _gc.mem_free() // 1024))
+                        info("Run 'freeup' to consolidate heap, or 'reboot'.")
+                    except Exception as e2:
+                        error("Command error after cleanup: {}".format(e2))
 
         except KeyboardInterrupt:
             warn("Use 'exit' or 'logout' to leave the shell.")
@@ -833,22 +861,25 @@ def recovery_init(errStr):
             raw = raw.strip()
             if not raw:
                 continue
-            _parts  = raw.split(None, 1)
-            command = _parts[0]
-            args    = _parts[1] if len(_parts) > 1 else None
-            if command in _aliases:
-                expanded = _aliases[command]
-                if args:
-                    expanded = expanded + ' ' + args
-                _eparts = expanded.split(None, 1)
-                command = _eparts[0]
-                args    = _eparts[1] if len(_eparts) > 1 else None
-            if command in _CRITICAL:
-                _CRITICAL[command](args)
-            elif command in commands:
-                execute_command(command, args)
-            else:
-                execute_file(command, args)
+            for sub_raw in _split_cmds(raw):
+                if not _shell_state['running']:
+                    break
+                _parts  = sub_raw.split(None, 1)
+                command = _parts[0]
+                args    = _parts[1] if len(_parts) > 1 else None
+                if command in _aliases:
+                    expanded = _aliases[command]
+                    if args:
+                        expanded = expanded + ' ' + args
+                    _eparts = expanded.split(None, 1)
+                    command = _eparts[0]
+                    args    = _eparts[1] if len(_eparts) > 1 else None
+                if command in _CRITICAL:
+                    _CRITICAL[command](args)
+                elif command in commands:
+                    execute_command(command, args)
+                else:
+                    execute_file(command, args)
         except KeyboardInterrupt:
             warn("Use 'reboot' to restart the system.")
         except MemoryError:

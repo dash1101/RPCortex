@@ -2,7 +2,7 @@
 # File: /Core/RPCortex.py
 # Last Updated: 3/24/2026
 # Lang: MicroPython, English
-# Version: v0.8.1-beta2
+# Version: v0.8.1-beta3
 # Author: dash1101
 
 import os

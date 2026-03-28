@@ -2,7 +2,7 @@
 # File: /Core/post.py
 # Last Updated: 3/27/2026
 # Lang: MicroPython, English
-# Version: v0.8.1-beta2
+# Version: v0.8.1-beta3
 # Author: dash1101
 
 import uos, gc, sys, utime, machine
@@ -27,7 +27,7 @@ Session: 0
 
 [Settings]
 Startup: 0
-Version: v0.8.1-beta2
+Version: v0.8.1-beta3
 Note: 0
 Active_User:
 Setup: false

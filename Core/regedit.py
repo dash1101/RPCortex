@@ -2,7 +2,7 @@
 # File: /Core/regedit.py
 # Last Updated: 3/26/2026
 # Lang: MicroPython, English
-# Version: v0.8.1-beta2
+# Version: v0.8.1-beta3
 # Author: dash1101
 #
 # The registry is an INI-style config file at /Nebula/Registry/registry.cfg.
