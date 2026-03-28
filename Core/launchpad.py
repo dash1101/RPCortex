@@ -14,7 +14,7 @@ if "/Core" not in sys.path:
 import regedit
 from usrmgmt import decode
 from RPCortex import (
-    fatal, error, info, warn, ok,
+    fatal, error, info, warn, ok, multi,
     init_session_log, close_session_log
 )
 
@@ -142,6 +142,29 @@ def _crit_unalias(args=None):
         ok("Alias '{}' removed.".format(name))
     else:
         warn("No alias named '{}'.".format(name))
+
+
+def _crit_rawrepl(args=None):
+    """Exit the entire OS and return to MicroPython REPL.
+
+    Use this when you want to flash a fresh install via the Web Installer
+    without doing a full reinstall. After this command:
+      1. MicroPython REPL becomes active  (>>> prompt)
+      2. Open install.html in Chrome/Edge
+      3. Click Connect Device and flash normally
+
+    SystemExit (BaseException) propagates through all except-Exception
+    handlers and is not caught by the shell loop, initialization.py, or
+    main.py — MicroPython drops to REPL after main.py returns.
+    """
+    info("Exiting to MicroPython REPL...")
+    multi("  Connect with the Web Installer: rpc.novalabs.app/install.html")
+    close_session_log()
+    try:
+        regedit.save("Settings.Startup", "0")
+    except Exception:
+        pass
+    raise SystemExit(0)
 
 
 def _crit_freeup(args=None):
@@ -274,6 +297,7 @@ _CRITICAL = {
     '_xfer':     _crit_xfer,
     'alias':     _crit_alias,
     'unalias':   _crit_unalias,
+    'rawrepl':   _crit_rawrepl,
 }
 
 

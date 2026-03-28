@@ -739,19 +739,67 @@ def history(args=None):
         multi("  {:>4}  {}".format(i, cmd))
 
 
+# ---------------------------------------------------------------------------
+# sleep / which
+# ---------------------------------------------------------------------------
+
+def sleep_cmd(args):
+    """sleep <seconds>  — pause the shell for the given number of seconds."""
+    if not args:
+        warn("Usage: sleep <seconds>")
+        return
+    try:
+        secs = float(args.strip().split()[0])
+    except ValueError:
+        warn("Invalid number: '{}'".format(args.strip()))
+        return
+    utime.sleep(secs)
+
+
+def which(args):
+    """which <command>  — show where a command is defined."""
+    if not args:
+        warn("Usage: which <command>")
+        return
+    name = args.strip().split()[0]
+
+    _CRIT = ('reboot', 'sreboot', 'softreset', 'freeup', 'gc',
+             '_xfer', 'alias', 'unalias', 'rawrepl')
+
+    found = False
+
+    if name in _CRIT:
+        multi("  {} : built-in critical command".format(name))
+        found = True
+
+    cmds = globals().get('_commands', {})
+    if name in cmds:
+        multi("  {} : {}".format(name, cmds[name]))
+        found = True
+
+    aliases = globals().get('_aliases', {})
+    if name in aliases:
+        multi("  {} = {}  (alias)".format(name, aliases[name]))
+        found = True
+
+    if not found:
+        warn("'{}': not found.".format(name))
+
+
 def help(args=None):
     if not args:
         info("=== RPCortex Nebula — Launchpad ===")
         multi("  Filesystem : ls  cd  pwd  touch  mkdir  rm  read  head  tail  exec  rename  mv  cp  df  tree")
-        multi("  System     : sysinfo  meminfo  uptime  date  ver  reboot  sreboot  clear  pulse  bench  fetch  edit  env  reg  freeup  settings")
+        multi("  Text       : grep  wc  find  sort  uniq  hex  basename  dirname")
+        multi("  System     : sysinfo  meminfo  uptime  date  ver  reboot  sreboot  rawrepl  sleep  which  clear  pulse  bench  fetch  edit  env  reg  freeup  settings")
         multi("  OS Mgmt    : update  factoryreset  reinstall")
         multi("  Network    : wifi  wget  curl  runurl  ping  nslookup")
         multi("  Packages   : pkg install|remove|list|info|search|update|upgrade|repo")
         multi("  Users      : whoami  mkacct  rmuser  chpswd  logout  exit")
-        multi("  Misc       : help  echo  history")
+        multi("  Misc       : help  echo  history  alias  unalias")
         multi("")
         multi("  Type 'help <category>' for details.")
-        multi("  Categories: filesystem  system  network  packages  users  misc  osmgmt")
+        multi("  Categories: filesystem  text  system  network  packages  users  misc  osmgmt")
         return
 
     a = args.strip().lower()
@@ -784,6 +832,17 @@ def help(args=None):
         multi("  df                   Disk usage")
         multi("  tree [path]          Directory tree")
 
+    elif a == "text":
+        info("=== Text Processing Commands ===")
+        multi("  grep <pattern> <file>   Search file for pattern (substring)")
+        multi("  wc <file>               Line / word / byte count")
+        multi("  find [dir] [pattern]    Recursive file search by name")
+        multi("  sort <file>             Print lines sorted alphabetically")
+        multi("  uniq <file>             Remove consecutive duplicate lines")
+        multi("  hex <file> [n]          Hexdump first n bytes  (default 256)")
+        multi("  basename <path>         File name portion of a path")
+        multi("  dirname <path>          Directory portion of a path")
+
     elif a == "system":
         info("=== System Commands ===")
         multi("  sysinfo              System overview")
@@ -793,6 +852,9 @@ def help(args=None):
         multi("  ver                  Show OS version")
         multi("  reboot               Hard restart")
         multi("  sreboot              Soft reboot")
+        multi("  rawrepl              Exit OS → MicroPython REPL (for Web Installer)")
+        multi("  sleep <secs>         Pause for the given number of seconds")
+        multi("  which <cmd>          Show where a command is defined")
         multi("  clear / cls          Clear the screen")
         multi("  pulse set|min|max|boot  CPU clock management")
         multi("  bench                Run NebulaMark benchmark")
@@ -845,7 +907,9 @@ def help(args=None):
         multi("  help [category]      This help message")
         multi("  echo / print <txt>   Print text")
         multi("  history              Command history")
+        multi("  alias [name=cmd]     Define or list aliases")
+        multi("  unalias <name>       Remove an alias")
         multi("  freeup               Free cached RAM")
 
     else:
-        warn("Unknown category '{}'.  Try: filesystem, system, network, packages, users, misc".format(a))
+        warn("Unknown category '{}'.  Try: filesystem, text, system, network, packages, users, misc, osmgmt".format(a))

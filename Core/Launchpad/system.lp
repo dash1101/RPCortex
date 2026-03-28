@@ -84,9 +84,25 @@ logout:/Core/Launchpad/sys_user.py:logout
 exit:/Core/Launchpad/sys_user.py:exit
 
 # ---------------------------------------------------------------------------
+# Text processing  (sys_text.py)
+# ---------------------------------------------------------------------------
+grep:/Core/Launchpad/sys_text.py:grep
+wc:/Core/Launchpad/sys_text.py:wc
+count:/Core/Launchpad/sys_text.py:wc
+find:/Core/Launchpad/sys_text.py:find
+sort:/Core/Launchpad/sys_text.py:sort
+uniq:/Core/Launchpad/sys_text.py:uniq
+hex:/Core/Launchpad/sys_text.py:hex_dump
+hexdump:/Core/Launchpad/sys_text.py:hex_dump
+basename:/Core/Launchpad/sys_text.py:basename
+dirname:/Core/Launchpad/sys_text.py:dirname
+
+# ---------------------------------------------------------------------------
 # Misc  (now in sys_sys.py)
 # ---------------------------------------------------------------------------
 help:/Core/Launchpad/sys_sys.py:help
 echo:/Core/Launchpad/sys_sys.py:say
 print:/Core/Launchpad/sys_sys.py:say
 history:/Core/Launchpad/sys_sys.py:history
+sleep:/Core/Launchpad/sys_sys.py:sleep_cmd
+which:/Core/Launchpad/sys_sys.py:which
