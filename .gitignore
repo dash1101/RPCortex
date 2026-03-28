@@ -1,7 +1,3 @@
-# ── Claude Code internal files (never commit) ─────────────────────
-.claude/
-CLAUDE.md
-
 # ── Runtime data — generated on device, not source code ───────────
 # POST and setup_seq() recreate all of this on first boot.
 # Do not include these directories in the repo.
