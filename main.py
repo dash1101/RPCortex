@@ -66,15 +66,4 @@ def main():
         print(ex)
 
 if __name__ == "__main__":
-    while True:
-        try:
-            main()
-            break  # clean exit from main()
-        except KeyboardInterrupt:
-            # USB CDC disconnect (or unhandled Ctrl+C) — restart OS silently.
-            pass
-        except Exception as ex:
-            print("[!!!] Unhandled crash:", ex)
-            import utime as _ut
-            _ut.sleep(2)
-            break
+    main()

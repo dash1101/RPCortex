@@ -448,8 +448,8 @@ def _complete_path(partial):
         suffix = matches[0][len(file_part):]
         fp = ('/' + matches[0]) if sd == '/' else (sd.rstrip('/') + '/' + matches[0])
         try:
-            uos.listdir(fp)
-            suffix += '/'   # is a directory
+            if uos.stat(fp)[0] & 0x4000:
+                suffix += '/'
         except OSError:
             pass
         return suffix

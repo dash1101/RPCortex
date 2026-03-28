@@ -77,9 +77,6 @@ def logout(args=None):
     state = globals().get('_shell_state')
     if state:
         state['running'] = False
-    else:
-        from usrmgmt import login_seq as _ls
-        _ls()
 
 
 def exit(args=None):

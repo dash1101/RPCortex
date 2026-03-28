@@ -724,7 +724,7 @@ def freeup(args=None):
 
 def say(args):
     if not args:
-        warn("Usage: echo <text>")
+        warn("Usage: echo <text>  (aliases: print)")
         return
     multi(args)
 

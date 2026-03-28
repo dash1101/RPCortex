@@ -109,7 +109,6 @@ def pkg(args=None):
         except NameError:
             pass
         gc.collect()
-        gc.collect()
         import pkgmgr
         pkgmgr.update()
 

@@ -128,28 +128,77 @@ def delete(args):
         error("'{}' does not exist.".format(path))
         return
 
-    def _del(p):
+    def _del(p, _mode=None):
+        # Returns: 'y' deleted, 'n' skipped, 'a' all-delete mode, 'c' cancel all
+        if _mode == 'c':
+            return 'c'
         try:
-            if uos.stat(p)[0] & 0x4000:
-                for entry in uos.listdir(p):
-                    _del(p.rstrip('/') + '/' + entry)
-                uos.rmdir(p)
-                info("Removed dir: {}".format(p))
-            else:
-                while True:
-                    r = inpt("Delete '{}' ? (y/n/a/c)".format(p)).strip().lower()
-                    if r == 'y':
-                        uos.remove(p); info("Deleted: {}".format(p)); break
-                    elif r == 'n':
-                        info("Skipped: {}".format(p)); break
-                    elif r == 'a':
-                        uos.remove(p); info("Deleted: {}".format(p)); return 'a'
-                    elif r == 'c':
-                        info("Cancelled."); return 'c'
-                    else:
-                        warn("Enter y, n, a, or c.")
+            st = uos.stat(p)
         except OSError as e:
-            error("Error: {}".format(e))
+            error("Cannot access '{}': {}".format(p, e))
+            return 'n'
+        if st[0] & 0x4000:
+            # Directory — recurse, then rmdir only if every entry was deleted
+            cur_mode = _mode
+            can_rmdir = True
+            try:
+                entries = uos.listdir(p)
+            except OSError as e:
+                error("Cannot list '{}': {}".format(p, e))
+                return 'n'
+            for entry in entries:
+                child = p.rstrip('/') + '/' + entry
+                result = _del(child, cur_mode)
+                if result == 'c':
+                    return 'c'
+                if result == 'a':
+                    cur_mode = 'a'
+                if result == 'n':
+                    can_rmdir = False
+            if can_rmdir:
+                try:
+                    uos.rmdir(p)
+                    info("Removed dir: {}".format(p))
+                except OSError as e:
+                    warn("Could not remove '{}': {}".format(p, e))
+                    return 'n'
+                return cur_mode if cur_mode else 'y'
+            else:
+                info("'{}' kept — some entries were skipped.".format(p))
+                return 'n'
+        else:
+            # File
+            if _mode == 'a':
+                try:
+                    uos.remove(p)
+                    info("Deleted: {}".format(p))
+                except OSError as e:
+                    error("Error: {}".format(e))
+                return 'a'
+            while True:
+                r = inpt("Delete '{}' ? (y/n/a/c)".format(p)).strip().lower()
+                if r == 'y':
+                    try:
+                        uos.remove(p)
+                        info("Deleted: {}".format(p))
+                    except OSError as e:
+                        error("Error: {}".format(e))
+                    return 'y'
+                elif r == 'n':
+                    info("Skipped: {}".format(p))
+                    return 'n'
+                elif r == 'a':
+                    try:
+                        uos.remove(p)
+                        info("Deleted: {}".format(p))
+                    except OSError as e:
+                        error("Error: {}".format(e))
+                    return 'a'
+                elif r == 'c':
+                    info("Cancelled.")
+                    return 'c'
+                else:
+                    warn("Enter y, n, a, or c.")
     _del(path)
 
 
