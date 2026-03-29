@@ -5,7 +5,6 @@
 # Version: v0.8.1-beta3
 # Author: dash1101
 
-
 # RPC β81
 
 VERSION = "β81"
