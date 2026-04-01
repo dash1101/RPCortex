@@ -723,10 +723,51 @@ def freeup(args=None):
 # ---------------------------------------------------------------------------
 
 def say(args):
+    """echo / say — print text; optionally redirect to a file.
+
+    Usage:
+      echo Hello World          — print to terminal
+      echo "text" > file.txt    — write (overwrite) to file
+      echo "text" >> file.txt   — append to file
+    """
     if not args:
-        warn("Usage: echo <text>  (aliases: print)")
+        warn("Usage: echo <text>  |  echo <text> > file  |  echo <text> >> file")
         return
-    multi(args)
+
+    # Detect redirect operators (search right-to-left to find the last one)
+    out_file = None
+    append   = False
+    text     = args
+
+    dbl = args.rfind(' >> ')
+    sgl = args.rfind(' > ')
+
+    if dbl != -1 and (sgl == -1 or dbl > sgl - 1):
+        # '>>' found and is after (or no) '>'
+        text     = args[:dbl]
+        out_file = args[dbl + 4:].strip()
+        append   = True
+    elif sgl != -1:
+        text     = args[:sgl]
+        out_file = args[sgl + 3:].strip()
+        append   = False
+
+    # Strip matching outer quotes from text (single or double)
+    text = text.strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in ('"', "'"):
+        text = text[1:-1]
+
+    if out_file:
+        if not out_file.startswith('/'):
+            out_file = uos.getcwd().rstrip('/') + '/' + out_file
+        try:
+            mode = 'a' if append else 'w'
+            with open(out_file, mode) as f:
+                f.write(text + '\n')
+        except OSError as e:
+            error("Cannot write to '{}': {}".format(out_file, e))
+    else:
+        multi(text)
 
 
 def history(args=None):

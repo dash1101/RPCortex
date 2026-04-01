@@ -80,8 +80,27 @@ def cd(args):
         target = uos.getcwd().rstrip('/') + '/' + args
     try:
         uos.chdir(target)
+        return
     except OSError:
-        error("Cannot find path '{}'".format(args or '~'))
+        pass
+    # Case-insensitive fallback: scan parent directory for a matching name
+    sep = target.rfind('/')
+    parent = target[:sep] if sep > 0 else '/'
+    name_lower = target[sep + 1:].lower()
+    try:
+        entries = uos.listdir(parent)
+        for e in entries:
+            if e.lower() == name_lower:
+                candidate = parent.rstrip('/') + '/' + e
+                try:
+                    if uos.stat(candidate)[0] & 0x4000:
+                        uos.chdir(candidate)
+                        return
+                except OSError:
+                    pass
+    except OSError:
+        pass
+    error("Cannot find path '{}'".format(args or '~'))
 
 
 def pwd(args=None):
@@ -123,9 +142,22 @@ def delete(args):
         return
     path = args if args.startswith('/') else uos.getcwd().rstrip('/') + '/' + args
     try:
-        uos.stat(path)
+        st_top = uos.stat(path)
     except OSError:
         error("'{}' does not exist.".format(path))
+        return
+
+    # For a single plain file (not a directory) ask y/n only — (a) is meaningless.
+    if not (st_top[0] & 0x4000):
+        r = inpt("Delete '{}' ? (y/n)".format(path)).strip().lower()
+        if r == 'y':
+            try:
+                uos.remove(path)
+                info("Deleted: {}".format(path))
+            except OSError as e:
+                error("Error: {}".format(e))
+        else:
+            info("Skipped.")
         return
 
     def _del(p, _mode=None):

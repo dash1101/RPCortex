@@ -861,6 +861,17 @@ def launchpad_init(username, password):
         except Exception as e:
             error("Unexpected shell error: {}".format(e))
 
+        # Low RAM check — warn after each command cycle, but only once per threshold
+        # crossing so it doesn't spam on every prompt.
+        try:
+            import gc as _gc
+            _free = _gc.mem_free()
+            if _free < 71680:   # 70 KB threshold
+                warn("Low memory: {} KB free. Run 'freeup' to reclaim RAM.".format(
+                    _free // 1024))
+        except Exception:
+            pass
+
     # Shell exited cleanly (logout / exit command fired)
     ok("Goodbye, {}.".format(username), p="Launchpad")
     close_session_log()

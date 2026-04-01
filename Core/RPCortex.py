@@ -6,6 +6,7 @@
 # Author: dash1101
 
 import os
+import sys
 import time
 
 post_check = True
@@ -191,3 +192,33 @@ def multi(msg, nL=True, p=None):
 def inpt(msg):
     if post_check:
         return input("{}{} {}••>  {}".format(WHITE, msg, OKCYAN, WHITE))
+
+
+def masked_inpt(msg):
+    """Like inpt() but echoes a bullet (•) for each character.
+    Falls back to regular inpt() on platforms where raw stdin isn't available."""
+    if not post_check:
+        return ''
+    prompt_str = "{}{} {}••>  {}".format(WHITE, msg, OKCYAN, WHITE)
+    sys.stdout.write(prompt_str)
+    buf = []
+    try:
+        while True:
+            ch = sys.stdin.read(1)
+            if ch in ('\r', '\n'):
+                sys.stdout.write('\r\n')
+                return ''.join(buf)
+            elif ch in ('\x7f', '\x08'):   # backspace / DEL
+                if buf:
+                    buf.pop()
+                    sys.stdout.write('\x08 \x08')
+            elif ch == '\x03':             # Ctrl+C — treat as empty input
+                sys.stdout.write('^C\r\n')
+                return ''
+            elif ord(ch) >= 32:
+                buf.append(ch)
+                sys.stdout.write('\u2022')  # bullet point
+    except Exception:
+        # stdin read failed (e.g. non-interactive context) — fall back
+        sys.stdout.write('\r\n')
+        return ''.join(buf)

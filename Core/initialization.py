@@ -5,7 +5,7 @@
 # Version: v0.8.1-beta3
 # Author: dash1101
 
-from Core.RPCortex import multi, fatal, error, info, warn, ok, inpt
+from Core.RPCortex import multi, fatal, error, info, warn, ok, inpt, masked_inpt
 import Core.regedit as regedit
 from Core.launchpad import launchpad_init as _boot
 from Core.launchpad import recovery_init  as _recovery
@@ -34,7 +34,7 @@ def get_exist():
 
 _STARTUP_MSGS = {
     "0": None,
-    "1": ("warn", "Previous boot entered recovery mode."),
+    "1": ("warn", "Previous session ended unexpectedly (power loss or crash)."),
     "2": ("warn", "System is unstable or has missing files."),
     "3": ("warn", "A system update failed on the last boot."),
     "4": ("ok",   "System update installed successfully — all good!"),
@@ -68,11 +68,11 @@ def setup_seq():
         info("  Root account already exists — skipping.")
     else:
         while True:
-            pw = inpt("  Set root password")
+            pw = masked_inpt("  Set root password")
             if not pw.strip():
                 warn("  Password cannot be blank.")
                 continue
-            confirm = inpt("  Confirm password")
+            confirm = masked_inpt("  Confirm password")
             if pw != confirm:
                 error("  Passwords do not match.  Try again.")
                 continue
@@ -310,7 +310,7 @@ def login_seq():
         # Normal password authentication
         attempts = 0
         while True:
-            password = inpt("Password")
+            password = masked_inpt("Password")
             if not password:
                 warn("Password cannot be blank.")
                 continue

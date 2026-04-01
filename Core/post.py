@@ -57,22 +57,26 @@ except Exception as err:
     print(err)
 
 def check_core():
-    try:
-        uos.stat("/Core/RPCortex.py")
-        return True
-    except OSError as err:
-        core.fatal("RPCORTEX CORE LIBRARY NOT FOUND!")
-        core.fatal("PLEASE REINSTALL RPCORTEX! {}".format(err))
-        return False
+    for ext in ('.py', '.mpy'):
+        try:
+            uos.stat("/Core/RPCortex" + ext)
+            return True
+        except OSError:
+            pass
+    core.fatal("RPCORTEX CORE LIBRARY NOT FOUND!")
+    core.fatal("PLEASE REINSTALL RPCORTEX!")
+    return False
 
 def check_pulse():
-    try:
-        uos.stat("/Core/pulse.py")
-        return True
-    except OSError as err:
-        core.fatal("RPCORTEX PULSE SOFTWARE NOT FOUND!")
-        core.fatal("PLEASE REINSTALL RPCORTEX! {}".format(err))
-        return False
+    for ext in ('.py', '.mpy'):
+        try:
+            uos.stat("/Core/pulse" + ext)
+            return True
+        except OSError:
+            pass
+    core.fatal("RPCORTEX PULSE SOFTWARE NOT FOUND!")
+    core.fatal("PLEASE REINSTALL RPCORTEX!")
+    return False
 
 def check_registry():
     try:
