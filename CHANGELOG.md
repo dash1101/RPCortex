@@ -16,6 +16,92 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
 ---
 
+## [v0.8.1] - 2026-04-02
+
+### Added
+- **`--help` / `-h` flag** — passing `--help` or `-h` to any built-in command redirects to `help <command>`; individual command hints added to `help` as well
+- **Unlimited saved WiFi networks** — saved networks moved from the 2-slot registry to `/Nebula/Registry/networks.cfg` (tab-separated, no limit)
+- **Auto-save WiFi on connect** — `wifi connect` now automatically adds the network to saved networks; idempotent (updates existing entry)
+- **`pkg commands` subcommand** — lists all shell commands registered by installed packages (reads `programs.lp`)
+- **`recovery` command** — enter recovery mode (unauthenticated shell) from a running session without triggering a boot error
+- **Extraction progress in `update from-file`** — pre-counts wanted files and shows `[n/total]` progress counter during archive extraction
+- **`Device_ID` in registry and `fetch`** — `System.Device_ID` added to factory registry template; shown in `fetch` / `picofetch` output
+
+### Changed
+- `_cmd_hints` lookup added to `help` — `help <command>` now shows a one-line description for any known command name (not just category names)
+
+---
+
+## [v0.8.1-rc1] - 2026-04-01
+
+### Added
+- **Tilde expansion everywhere** — `~` and `~/path` now expand to the user home in all command arguments, not just `cd`
+- **`Program_Execution` setting is functional** — when set to `false` via `settings` or `reg set`, the `exec` command and script fall-through are blocked; clear error shown with re-enable instructions
+
+### Fixed
+- **Boot clock disabled after every boot** — `_apply_boot_clock()` never cleared the `"7"` crash sentinel on success; every clean boot was mistakenly treated as a crash on the *next* boot, silently disabling `OC_On_Boot`. Sentinel is now cleared immediately after `machine.freq()` succeeds.
+- **NOPASS login (guest) left crash sentinel alive** — logging in as a NOPASS account (e.g. `guest`) did not save `Settings.Startup = "0"`; any pending sentinel from POST clock setup persisted to the next boot. Fixed.
+
+---
+
+## [v0.8.1-beta4] - 2026-03-31
+
+### Added
+- **Password masking** — `masked_inpt()` in `RPCortex.py`; login and setup prompts now echo `•` instead of characters
+- **Case-insensitive `cd`** — on `OSError`, scans parent directory for a case-insensitive match before giving up
+- **`echo` output redirection** — `echo text > file` (overwrite) and `echo text >> file` (append)
+- **`.mpy` fallback in POST** — `check_core()` and `check_pulse()` accept `.mpy` for compiled builds
+- **Low-RAM warning** — shell warns once when free RAM drops below 70 KB after a command dispatch
+- **`pulse boot` improvements** — `pulse boot <MHz>` sets and enables in one step; `on`/`off`/`MHz` all handled
+
+### Fixed
+- `rm` single-file prompt is now `y/n` only (no `(a)` option for non-recursive deletes)
+- Recovery mode startup message corrected — mode `"1"` now says "unexpected shutdown" not "recovery requested"
+
+---
+
+## [v0.8.1-beta3] - 2026-03-28
+
+### Added
+- **Tab completion** — ghost text (dim gray suffix) for single-match command prefixes; Tab accepts; path completion on arguments after first word
+- **Shell aliases** — `alias name=cmd` / `unalias` / bare `alias` lists all; session-local, in `_CRITICAL` so always available regardless of heap state
+- **Multi-command lines** — `cmd1; cmd2; cmd3` on one line; `_split_cmds()` is quote-aware
+- **`grep`, `wc`, `find`, `sort`, `uniq`, `hex`, `basename`, `dirname`** — new text-processing commands in `sys_text.py`
+- **`sleep <secs>`** — pause shell; supports decimal values
+- **`which <cmd>`** — show where a command is defined (critical built-in, registered command, or alias)
+- **`rawrepl`** — raises `SystemExit(0)` to exit OS to MicroPython REPL; use before Web Installer without a full wipe
+- **`settings` TUI** — ANSI box-drawing panel; toggles Verbose Boot, OC on Boot, Autoconnect, beeper, SD Support, Program Execution
+- **`_xfer` serial protocol** — built-in base64 file transfer from browser; no raw REPL, no WiFi required
+- **`update from-file <path>`** — apply a `.rpc` update archive preserving user accounts, WiFi, and config
+- **`factoryreset`** — wipe users/packages/logs, reset registry; reboots into first-run setup (type `CONFIRM`)
+- **`reinstall [path.rpc]`** — full OS wipe + optional auto-install stub (type `WIPE`)
+- **Browser update page** (`update.html`) — push a `.rpc` update from a browser tab over USB; no WiFi, no raw REPL
+- **Roadmap page** (`roadmap.html`) — linked from all nav bars
+- **Web installer version picker** — driven by `releases/releases.json`; add new releases via JSON, no HTML edit needed
+- **OS Update page version picker** — driven by `releases/updates.json`
+
+### Changed
+- Shell built-in commands loaded via `__import__()` instead of `exec()` — cached in `sys.modules`, zero re-compile cost on retry
+- `_get_scope` no longer re-injects shell state on every cached command call — 6 setattr calls saved per dispatch
+- `MemoryError` recovery nudge added (alloc 4 KB → free → gc) to consolidate fragmented heap before retry
+- `rm` y/n/a/c fixed — `a` applies to all subsequent, `c` cancels all, `n` correctly prevents parent dir removal
+- Tab completion dir-detection uses `uos.stat()` not `uos.listdir()`
+
+### Fixed
+- `logout()` dead fallback branch importing from wrong module — removed
+- `echo`/`say` usage message corrected
+- Duplicate `gc.collect()` removed from `pkg update`
+- CTRL+C at login no longer reboots (removed outer restart loop from `main.py`)
+- Shell starts in user home dir; prompt shows `~` / `~/sub` Linux-style
+- `ls` path argument no longer permanently changes CWD
+
+### Removed
+- XOR-encrypted user store dead code from `regedit.py` (~115 lines)
+- `/Core/Launchpad/system.py` legacy stub
+- `Core/PMS.py` dead file with broken imports
+
+---
+
 ## [v0.8.1-beta2] - 2026-03-27
 
 ### Added

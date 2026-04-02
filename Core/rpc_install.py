@@ -2,7 +2,7 @@
 # File: /Core/rpc_install.py
 # Last Updated: 4/1/2026
 # Lang: MicroPython, English
-# Version: v0.8.1-beta4
+# Version: v0.8.1
 # Author: dash1101
 #
 # .rpc files are standard ZIP archives (renamed).  Used by:
@@ -195,6 +195,14 @@ def install_rpc(archive_path):
     # ── Extract wanted files ───────────────────────────────────────
     info("Preserving: /Users/  /Nebula/  programs.lp (user packages)", p="Update")
 
+    # Pre-count wanted files so we can show progress as [n/total]
+    n_wanted = 0
+    for (fname, _cm, _cs, _lo) in entries:
+        rel = fname[len(prefix):] if (prefix and fname.startswith(prefix)) else fname
+        if rel and not rel.endswith('/') and _want(rel):
+            n_wanted += 1
+    info("Installing {} file(s)...".format(n_wanted), p="Update")
+
     n_ok   = 0
     n_skip = 0
     n_fail = 0
@@ -284,8 +292,8 @@ def install_rpc(archive_path):
         try:
             with open(device_path, 'wb') as out:
                 out.write(file_data)
-            info("  + {}".format(device_path), p="Update")
             n_ok += 1
+            info("  [{}/{}] {}".format(n_ok, n_wanted, device_path), p="Update")
         except OSError as e:
             warn("  Write failed '{}': {}".format(device_path, e), p="Update")
             n_fail += 1

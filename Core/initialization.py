@@ -2,7 +2,7 @@
 # File: /Core/initialization.py
 # Last Updated: 4/1/2026
 # Lang: MicroPython, English
-# Version: v0.8.1-beta4
+# Version: v0.8.1
 # Author: dash1101
 
 from Core.RPCortex import multi, fatal, error, info, warn, ok, inpt, masked_inpt
@@ -53,7 +53,7 @@ def setup_seq():
     Creates root + guest accounts, adds the official repo, applies boot prefs.
     """
     multi("")
-    info("=== RPCortex v0.8.1-beta4 — First Run Setup ===")
+    info("=== RPCortex v0.8.1 — First Run Setup ===")
     multi("")
     info("Welcome! Let's get your device configured.")
     multi("  Everything here can be changed later from the shell.")
@@ -302,6 +302,7 @@ def login_seq():
         # NOPASS account (e.g. guest) — skip password prompt
         if is_nopass(username):
             info("No password required for '{}'.".format(username))
+            regedit.save("Settings.Startup", "0")
             regedit.save("Settings.Active_User", username)
             ok("Welcome, {}!".format(username))
             Startup_Process(username, '')
@@ -342,6 +343,12 @@ def recovery_mode(errStr=None):
 # ---------------------------------------------------------------------------
 
 def Startup_Process(username, password):
+    # Clear startup sentinel now that login was successful
+    try:
+        regedit.save("Settings.Startup", "0")
+    except Exception:
+        pass
+
     # Show pending one-shot notifications (e.g. post-update confirmation)
     _note = regedit.read("Settings.Note")
     if _note and _note != "0":

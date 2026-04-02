@@ -2,7 +2,7 @@
 # File: /Core/picofetch.py
 # Last Updated: 4/1/2026
 # Lang: MicroPython, English
-# Version: v0.8.1-beta4
+# Version: v0.8.1
 # Author: dash1101
 
 import sys
@@ -259,8 +259,11 @@ def fetch(color='bright_cyan', show_ascii=True):
     )
     separator = accent + ('\u2500' * 28) + reset
 
+    device_id = _reg('System.Device_ID') or 'nebula'
+
     info_rows = [
         ('OS',      'RPCortex {}  ({})'.format(os_ver, sys.platform)),
+        ('Device',  device_id),
         ('Board',   board),
         ('CPU',     cpu),
         ('Freq',    freq),

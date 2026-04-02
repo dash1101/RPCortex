@@ -2,7 +2,7 @@
 # File: /Core/Launchpad/sys_net.py
 # Last Updated: 4/1/2026
 # Lang: MicroPython, English
-# Version: v0.8.1-beta4
+# Version: v0.8.1
 
 import sys
 import uos

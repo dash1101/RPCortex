@@ -2,7 +2,7 @@
 # File: /Core/net.py
 # Last Updated: 4/1/2026
 # Lang: MicroPython, English
-# Version: v0.8.1-beta4
+# Version: v0.8.1
 # Author: dash1101
 #
 # Supported hardware:
@@ -23,8 +23,9 @@ if '/Core' not in sys.path:
 
 from RPCortex import ok, warn, error, info, multi
 
-# Maximum saved network slots in the registry
-_MAX_SLOTS = 2
+# Saved networks file — one "ssid\tpassword" per line (unlimited entries).
+# Replaces the old 2-slot registry approach (Networks.WiFi_SSID_1/2).
+_NETWORKS_FILE = '/Nebula/Registry/networks.cfg'
 
 # ---------------------------------------------------------------------------
 # Detection helpers
@@ -175,22 +176,28 @@ def connect(ssid, password, timeout=20):
 
     cfg = wlan.ifconfig()
     ok("Connected!  IP: {}  Gateway: {}".format(cfg[0], cfg[2]))
+
+    # Auto-save on successful connection (idempotent — updates if already saved)
+    try:
+        add_saved(ssid, password)
+    except Exception:
+        pass
+
     return True
 
 
 def connect_saved(timeout=20):
     """
-    Attempt to connect to saved networks from the registry (tries all slots).
+    Attempt to connect to saved networks (tries each in order).
     Returns True if a connection was established.
     """
-    import regedit
-    for slot in range(1, _MAX_SLOTS + 1):
-        ssid = regedit.read('Networks.WiFi_SSID_{}'.format(slot))
-        pw   = regedit.read('Networks.WiFi_Password_{}'.format(slot))
-        if ssid and ssid.strip():
-            info("Trying saved network [{}]: {}".format(slot, ssid))
-            if connect(ssid.strip(), (pw or '').strip(), timeout=timeout):
-                return True
+    nets = _read_networks()
+    if not nets:
+        return False
+    for i, (ssid, pw) in enumerate(nets):
+        info("Trying saved network [{}]: {}".format(i + 1, ssid))
+        if connect(ssid, pw, timeout=timeout):
+            return True
     return False
 
 
@@ -214,52 +221,68 @@ def disconnect():
 # Saved network management
 # ---------------------------------------------------------------------------
 
+def _read_networks():
+    """Read saved networks from file. Returns list of (ssid, password) tuples."""
+    try:
+        with open(_NETWORKS_FILE, 'r') as f:
+            nets = []
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                parts = line.split('\t', 1)
+                ssid = parts[0].strip()
+                pw   = parts[1].strip() if len(parts) > 1 else ''
+                if ssid:
+                    nets.append((ssid, pw))
+            return nets
+    except OSError:
+        return []
+
+
+def _write_networks(nets):
+    """Write list of (ssid, password) tuples to file."""
+    try:
+        with open(_NETWORKS_FILE, 'w') as f:
+            for ssid, pw in nets:
+                f.write('{}\t{}\n'.format(ssid, pw))
+    except OSError as e:
+        error("Cannot write networks file: {}".format(e))
+
+
 def list_saved():
-    """Return list of (slot, ssid) tuples for saved networks."""
-    import regedit
-    saved = []
-    for slot in range(1, _MAX_SLOTS + 1):
-        ssid = regedit.read('Networks.WiFi_SSID_{}'.format(slot))
-        if ssid and ssid.strip():
-            saved.append((slot, ssid.strip()))
-    return saved
+    """Return list of (index, ssid) tuples for saved networks."""
+    nets = _read_networks()
+    return [(i + 1, ssid) for i, (ssid, _) in enumerate(nets)]
 
 
 def add_saved(ssid, password):
-    """
-    Save a new network to an empty slot.
-    Returns True on success, or an error message string if no slot is available.
-    """
-    import regedit
-    for slot in range(1, _MAX_SLOTS + 1):
-        existing = regedit.read('Networks.WiFi_SSID_{}'.format(slot))
-        if not existing or not existing.strip():
-            regedit.save('Networks.WiFi_SSID_{}'.format(slot), ssid)
-            regedit.save('Networks.WiFi_Password_{}'.format(slot), password)
-            ok("Network '{}' saved to slot {}.".format(ssid, slot))
+    """Save a network. Replaces existing entry if SSID already saved."""
+    nets = _read_networks()
+    # Replace if already exists
+    for i, (s, _) in enumerate(nets):
+        if s.lower() == ssid.lower():
+            nets[i] = (ssid, password)
+            _write_networks(nets)
+            ok("Network '{}' updated.".format(ssid))
             return True
-    # All slots full — overwrite slot 1
-    warn("All {} slots full. Overwriting slot 1.".format(_MAX_SLOTS))
-    regedit.save('Networks.WiFi_SSID_1', ssid)
-    regedit.save('Networks.WiFi_Password_1', password)
-    ok("Network '{}' saved to slot 1.".format(ssid))
+    nets.append((ssid, password))
+    _write_networks(nets)
+    ok("Network '{}' saved.".format(ssid))
     return True
 
 
 def forget_saved(ssid):
     """Remove a saved network by SSID. Returns True if found and removed."""
-    import regedit
-    removed = False
-    for slot in range(1, _MAX_SLOTS + 1):
-        stored = regedit.read('Networks.WiFi_SSID_{}'.format(slot))
-        if stored and stored.strip().lower() == ssid.lower():
-            regedit.save('Networks.WiFi_SSID_{}'.format(slot), '')
-            regedit.save('Networks.WiFi_Password_{}'.format(slot), '')
-            ok("Removed '{}' from slot {}.".format(ssid, slot))
-            removed = True
-    if not removed:
-        warn("'{}' not found in saved networks.".format(ssid))
-    return removed
+    nets = _read_networks()
+    before = len(nets)
+    nets = [(s, p) for s, p in nets if s.lower() != ssid.lower()]
+    if len(nets) < before:
+        _write_networks(nets)
+        ok("Removed '{}'.".format(ssid))
+        return True
+    warn("'{}' not found in saved networks.".format(ssid))
+    return False
 
 # ---------------------------------------------------------------------------
 # HTTP client

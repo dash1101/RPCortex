@@ -2,7 +2,7 @@
 # File: /Core/post.py
 # Last Updated: 4/1/2026
 # Lang: MicroPython, English
-# Version: v0.8.1-beta4
+# Version: v0.8.1
 # Author: dash1101
 
 import uos, gc, sys, utime, machine
@@ -21,13 +21,14 @@ Clockable: false
 
 [System]
 Codename: RPCortex B81 - Nebula
+Device_ID: nebula
 State: 0
 Time: 0
 Session: 0
 
 [Settings]
 Startup: 0
-Version: v0.8.1-beta4
+Version: v0.8.1
 Note: 0
 Active_User:
 Setup: false
@@ -143,9 +144,7 @@ def wlan_check():
         return True   # hardware available, not an error
 
     # Autoconnect: try saved networks
-    ssid1 = regedit.read('Networks.WiFi_SSID_1') or ''
-    ssid2 = regedit.read('Networks.WiFi_SSID_2') or ''
-    if not ssid1.strip() and not ssid2.strip():
+    if not net._read_networks():
         core.warn("Autoconnect enabled but no networks saved. Use 'wifi add'.", p="POST")
         return True
 
@@ -230,8 +229,10 @@ def _apply_boot_clock():
     regedit.save("Settings.Startup", "7")  # OC boot crash sentinel
     try:
         machine.freq(hz)
+        regedit.save("Settings.Startup", "0")  # clear sentinel — clock is safe
         core.ok("Boot clock applied: {} MHz".format(hz // 1_000_000), p="POST")
     except Exception as e:
+        # Leave sentinel "7" — next boot will disable OC_On_Boot automatically
         core.warn("Boot clock failed: {}. Running at default.".format(e), p="POST")
 
 def check_cores():

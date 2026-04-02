@@ -17,6 +17,7 @@
 #   pkg search  <query>            Search repo cache
 #   pkg update                     Refresh repo cache from network
 #   pkg upgrade                    Upgrade outdated packages
+#   pkg commands                   List commands added by installed packages
 #   pkg repo list                  List configured repos
 #   pkg repo add    <url>          Add a repo
 #   pkg repo remove <url>          Remove a repo
@@ -123,6 +124,10 @@ def pkg(args=None):
             except Exception:
                 pass
 
+    # --- commands ---
+    elif sub in ('commands', 'cmds'):
+        _pkg_commands()
+
     # --- repo ---
     elif sub == 'repo':
         _pkg_repo(rest)
@@ -130,6 +135,36 @@ def pkg(args=None):
     else:
         warn("Unknown subcommand '{}'. Run 'pkg' for usage.".format(sub))
         _pkg_help()
+
+
+def _pkg_commands():
+    """List shell commands registered by installed packages (from programs.lp)."""
+    lp_path = '/Core/Launchpad/programs.lp'
+    entries = []
+    try:
+        with open(lp_path, 'r') as f:
+            for raw in f:
+                line = raw.strip()
+                if not line or line.startswith('#'):
+                    continue
+                parts = line.split(':', 1)
+                if len(parts) != 2:
+                    continue
+                cmd = parts[0].strip()
+                entries.append(cmd)
+    except OSError:
+        info("No package commands registered yet.")
+        return
+
+    if not entries:
+        info("No package commands registered yet.")
+        return
+
+    info("=== Installed Package Commands ===")
+    for cmd in sorted(entries):
+        multi("  {}".format(cmd))
+    multi("")
+    multi("  {} command(s) total.".format(len(entries)))
 
 
 def _pkg_repo(args):
@@ -169,6 +204,7 @@ def _pkg_help():
     multi("    pkg remove  <name>         Remove an installed package")
     multi("    pkg list                   List installed packages")
     multi("    pkg info    <name>         Show package details")
+    multi("    pkg commands               List commands added by installed packages")
     multi("")
     multi("  Repo commands:")
     multi("    pkg available              List all packages in the repo cache")

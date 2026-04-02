@@ -2,7 +2,7 @@
 # File: /Core/Launchpad/sys_sys.py
 # Last Updated: 4/1/2026
 # Lang: MicroPython, English
-# Version: v0.8.1-beta4
+# Version: v0.8.1
 
 import sys
 import uos
@@ -805,7 +805,7 @@ def which(args):
     name = args.strip().split()[0]
 
     _CRIT = ('reboot', 'sreboot', 'softreset', 'freeup', 'gc',
-             '_xfer', 'alias', 'unalias', 'rawrepl')
+             '_xfer', 'alias', 'unalias', 'rawrepl', 'recovery')
 
     found = False
 
@@ -832,7 +832,7 @@ def help(args=None):
         info("=== RPCortex Nebula — Launchpad ===")
         multi("  Filesystem : ls  cd  pwd  touch  mkdir  rm  read  head  tail  exec  rename  mv  cp  df  tree")
         multi("  Text       : grep  wc  find  sort  uniq  hex  basename  dirname")
-        multi("  System     : sysinfo  meminfo  uptime  date  ver  reboot  sreboot  rawrepl  sleep  which  clear  pulse  bench  fetch  edit  env  reg  freeup  settings")
+        multi("  System     : sysinfo  meminfo  uptime  date  ver  reboot  sreboot  rawrepl  recovery  sleep  which  clear  pulse  bench  fetch  edit  env  reg  freeup  settings")
         multi("  OS Mgmt    : update  factoryreset  reinstall")
         multi("  Network    : wifi  wget  curl  runurl  ping  nslookup")
         multi("  Packages   : pkg install|remove|list|info|search|update|upgrade|repo")
@@ -894,6 +894,7 @@ def help(args=None):
         multi("  reboot               Hard restart")
         multi("  sreboot              Soft reboot")
         multi("  rawrepl              Exit OS → MicroPython REPL (for Web Installer)")
+        multi("  recovery             Enter recovery mode (limited shell, no auth)")
         multi("  sleep <secs>         Pause for the given number of seconds")
         multi("  which <cmd>          Show where a command is defined")
         multi("  clear / cls          Clear the screen")
@@ -953,4 +954,84 @@ def help(args=None):
         multi("  freeup               Free cached RAM")
 
     else:
-        warn("Unknown category '{}'.  Try: filesystem, text, system, network, packages, users, misc, osmgmt".format(a))
+        # Try looking up as an individual command name
+        _CMD_HINTS = {
+            'ls':           'ls [path]           List directory contents',
+            'cd':           'cd [path]           Change directory (no arg / ~ = home)',
+            'pwd':          'pwd                 Print working directory',
+            'touch':        'touch <file>        Create an empty file',
+            'mkdir':        'mkdir <dir>         Create a directory',
+            'rm':           'rm <path>           Delete file or directory (interactive)',
+            'read':         'read/cat <file>     Print file contents',
+            'cat':          'read/cat <file>     Print file contents',
+            'head':         'head <f> [n]        First n lines (default 10)',
+            'tail':         'tail <f> [n]        Last n lines (default 10)',
+            'exec':         'exec <f.py>         Execute a Python script',
+            'rename':       'rename <old> <new>  Rename a file',
+            'mv':           'mv <src> <dst>      Move a file',
+            'cp':           'cp <src> <dst>      Copy a file',
+            'df':           'df                  Disk usage',
+            'tree':         'tree [path]         Directory tree',
+            'grep':         'grep <pat> <file>   Search file contents',
+            'wc':           'wc <file>           Count lines/words/bytes',
+            'find':         'find [path] <name>  Search for files by name',
+            'sort':         'sort <file>         Sort lines of a file',
+            'uniq':         'uniq <file>         Remove duplicate lines',
+            'hex':          'hex <file>          Hex dump of a file',
+            'basename':     'basename <path>     Strip directory and suffix',
+            'dirname':      'dirname <path>      Parent directory of a path',
+            'reboot':       'reboot              Hard restart',
+            'sreboot':      'sreboot             Soft reboot',
+            'softreset':    'softreset           Alias for sreboot',
+            'rawrepl':      'rawrepl             Exit OS to MicroPython REPL',
+            'recovery':     'recovery            Enter recovery shell (no auth)',
+            'sysinfo':      'sysinfo             Print system information',
+            'meminfo':      'meminfo             Show RAM usage',
+            'uptime':       'uptime              Time since boot',
+            'date':         'date                Current date / time',
+            'ver':          'ver                 Show OS version',
+            'clear':        'clear / cls         Clear the screen',
+            'cls':          'clear / cls         Clear the screen',
+            'sleep':        'sleep <secs>        Pause for given seconds',
+            'which':        'which <cmd>         Show where a command is defined',
+            'pulse':        'pulse set|min|max|boot  CPU clock management',
+            'bench':        'bench               Run NebulaMark benchmark',
+            'fetch':        'fetch / neofetch    System info display',
+            'neofetch':     'fetch / neofetch    System info display',
+            'edit':         'edit [file]         Open the text editor',
+            'nano':         'nano [file]         Open the text editor',
+            'vi':           'vi [file]           Open the text editor',
+            'env':          'env [section]       Dump registry contents',
+            'reg':          'reg get|set <key>   Read/write a registry key',
+            'freeup':       'freeup              Clear command cache + GC',
+            'gc':           'gc / freeup         Clear command cache + GC',
+            'settings':     'settings            Open settings TUI panel',
+            'update':       'update from-file <f>  Apply a .rpc OS update',
+            'factoryreset': 'factoryreset        Restore factory defaults',
+            'reinstall':    'reinstall [f.rpc]   Full system wipe + stub',
+            'wifi':         'wifi status|scan|connect|disconnect|list|add|forget',
+            'wget':         'wget <url> [dest]   Download a file',
+            'curl':         'curl <url>          Fetch URL and print response',
+            'runurl':       'runurl <url>        Download and execute a .py',
+            'ping':         'ping <host>         TCP connectivity test',
+            'nslookup':     'nslookup <host>     DNS lookup',
+            'pkg':          'pkg install|remove|list|info|search|update|upgrade|commands',
+            'whoami':       'whoami              Show current user',
+            'mkacct':       'mkacct              Create a new user account',
+            'rmuser':       'rmuser <user>       Remove a user account',
+            'chpswd':       'chpswd <user>       Change a user\'s password',
+            'logout':       'logout              Log out of this session',
+            'exit':         'exit                Log out of this session',
+            'echo':         'echo <text>         Print text',
+            'say':          'say <text>          Print text',
+            'history':      'history             Show command history',
+            'alias':        'alias [name=cmd]    Define or list aliases',
+            'unalias':      'unalias <name>      Remove an alias',
+            'help':         'help [category]     Show help (categories: filesystem text system network packages users misc osmgmt)',
+        }
+        hint = _CMD_HINTS.get(a)
+        if hint:
+            info("=== {} ===".format(a))
+            multi("  " + hint)
+        else:
+            warn("Unknown category or command '{}'.  Try: filesystem, text, system, network, packages, users, misc, osmgmt".format(a))

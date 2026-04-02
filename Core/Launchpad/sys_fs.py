@@ -2,7 +2,7 @@
 # File: /Core/Launchpad/sys_fs.py
 # Last Updated: 4/1/2026
 # Lang: MicroPython, English
-# Version: v0.8.1-beta4
+# Version: v0.8.1
 
 import sys
 import uos
@@ -298,6 +298,14 @@ def execute(args):
     if not args:
         warn("Usage: exec <file.py>")
         return
+    try:
+        import regedit as _rg
+        if _rg.read('Features.Program_Execution') == 'false':
+            error("Program execution is disabled.")
+            info("Enable it: reg set Features.Program_Execution true  (or via 'settings')")
+            return
+    except Exception:
+        pass
     path = args if args.startswith('/') else uos.getcwd().rstrip('/') + '/' + args
     try:
         uos.stat(path)

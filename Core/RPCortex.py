@@ -2,7 +2,7 @@
 # File: /Core/RPCortex.py
 # Last Updated: 4/1/2026
 # Lang: MicroPython, English
-# Version: v0.8.1-beta4
+# Version: v0.8.1
 # Author: dash1101
 
 import os
@@ -202,10 +202,17 @@ def masked_inpt(msg):
     prompt_str = "{}{} {}••>  {}".format(WHITE, msg, OKCYAN, WHITE)
     sys.stdout.write(prompt_str)
     buf = []
+    skip_lf = False
     try:
         while True:
             ch = sys.stdin.read(1)
+            if skip_lf:
+                skip_lf = False
+                if ch == '\n':
+                    continue
             if ch in ('\r', '\n'):
+                if ch == '\r':
+                    skip_lf = True
                 sys.stdout.write('\r\n')
                 return ''.join(buf)
             elif ch in ('\x7f', '\x08'):   # backspace / DEL

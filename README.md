@@ -14,7 +14,7 @@
 
 RPCortex is a CLI operating system for the Raspberry Pi Pico, ESP32, and compatible boards, written entirely in MicroPython. It turns a microcontroller into something that actually behaves like a computer — a real interactive shell, user accounts with passwords, a package manager, WiFi, a text editor, and a structured boot process with hardware checks.
 
-It runs on hardware with 264KB of RAM. That constraint is the point.
+It runs on hardware with 264 KB of RAM. That constraint is the point.
 
 ---
 
@@ -34,7 +34,7 @@ It's not trying to be Linux. It's a $4 microcontroller running MicroPython. But 
 
 ## What you can do with it
 
-**Use it as a shell environment.** Browse and manage files, run scripts, edit configs. The filesystem commands cover everything standard: `ls`, `cd`, `cp`, `mv`, `rm`, `tree`, `df`. The text editor opens any file over serial.
+**Use it as a shell environment.** Browse and manage files, run scripts, edit configs. The filesystem commands cover everything standard: `ls`, `cd`, `cp`, `mv`, `rm`, `tree`, `df`. Text processing with `grep`, `find`, `sort`, `wc`, and `hex`. The text editor opens any file over serial. `~` expands to your home directory in any argument — `cd ~/docs`, `cp ~/config.txt /tmp/`, all of it.
 
 **Connect to the internet.** WiFi connects on any Pico W or ESP32. `wget` streams files directly to flash. `curl` fetches APIs. `runurl` downloads and executes a Python file in one step. Autoconnect on boot if you want it.
 
@@ -46,7 +46,7 @@ It's not trying to be Linux. It's a $4 microcontroller running MicroPython. But 
 
 **Tune the hardware.** `pulse set 220` overclocks to 220 MHz. `pulse boot 200` sets a boot clock. `bench` runs NebulaMark. `freeup` compacts the heap when things get fragmented after heavy use.
 
-**Configure the system.** `settings` opens an interactive panel where you toggle boot overclocking, WiFi autoconnect, verbose boot, the beeper, and SD card support. `reg get`/`reg set` writes directly to the registry if you need something the panel doesn't cover.
+**Configure the system.** `settings` opens an interactive panel where you toggle boot overclocking, WiFi autoconnect, verbose boot, the beeper, SD card support, and program execution. `reg get`/`reg set` writes directly to the registry if you need something the panel doesn't cover. Shell aliases (`alias ll=ls`) let you build your own shortcuts — they survive across commands for the whole session.
 
 ---
 
@@ -103,4 +103,4 @@ Open source. Explicit credit to **[@dash1101](https://github.com/dash1101)** is 
 
 ---
 
-###### RPCortex Nebula β81 — v0.8.1-beta2
+###### RPCortex Nebula β81 — v0.8.1

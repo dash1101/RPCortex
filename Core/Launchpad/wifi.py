@@ -2,7 +2,7 @@
 # File: /Core/Launchpad/wifi.py
 # Last Updated: 4/1/2026
 # Lang: MicroPython, English
-# Version: v0.8.1-beta4
+# Version: v0.8.1
 # Author: dash1101
 #
 # Loaded once into a cached exec scope by launchpad.py.
@@ -13,7 +13,7 @@ import sys
 if '/Core' not in sys.path:
     sys.path.append('/Core')
 
-from RPCortex import ok, warn, error, info, multi, inpt
+from RPCortex import ok, warn, error, info, multi, inpt, masked_inpt
 
 # ---------------------------------------------------------------------------
 # Shell entry point
@@ -160,7 +160,7 @@ def _connect(ssid_arg):
         multi("Using saved password for '{}'.".format(ssid))
         password = saved_pw
     else:
-        password = inpt("Password (blank for open network)").strip()
+        password = masked_inpt("Password (blank for open network)").strip()
 
     net.connect(ssid, password)
 

@@ -2,7 +2,7 @@
 # File: /Core/launchpad.py
 # Last Updated: 4/1/2026
 # Lang: MicroPython, English
-# Version: v0.8.1-beta4
+# Version: v0.8.1
 # Author: dash1101
 
 import sys
@@ -288,6 +288,14 @@ def _crit_xfer(args=None):
     sys.stdout.write("XFER_COMPLETE\r\n")
 
 
+def _crit_recovery(args=None):
+    """Enter recovery mode manually from a running shell session."""
+    info("Entering recovery mode...")
+    close_session_log()
+    _shell_state['running'] = False
+    recovery_init("Manual entry via 'recovery' command.")
+
+
 _CRITICAL = {
     'reboot':    _crit_reboot,
     'sreboot':   _crit_sreboot,
@@ -298,6 +306,7 @@ _CRITICAL = {
     'alias':     _crit_alias,
     'unalias':   _crit_unalias,
     'rawrepl':   _crit_rawrepl,
+    'recovery':  _crit_recovery,
 }
 
 
@@ -408,6 +417,13 @@ def execute_command(command, args):
 
 def execute_file(name, args):
     """Fall-through handler: try to run a .py script by name."""
+    try:
+        if regedit.read('Features.Program_Execution') == 'false':
+            error("Program execution is disabled.")
+            info("Enable it: reg set Features.Program_Execution true  (or via 'settings')")
+            return
+    except Exception:
+        pass
     cwd = uos.getcwd().rstrip('/')
     candidates = [
         name,
@@ -443,6 +459,35 @@ def execute_file(name, args):
 # ---------------------------------------------------------------------------
 # Multi-command splitting  (';' separator, quote-aware)
 # ---------------------------------------------------------------------------
+
+def _tilde_expand(s, home):
+    """Expand ~ tokens in an argument string.
+
+    Rules (matches sh behaviour):
+      ~/...   → home/...
+      ~        (alone, or followed by space)  → home
+      ~word   → left untouched  (no user-dir expansion)
+    """
+    if not s or '~' not in s:
+        return s
+    home = (home or '/').rstrip('/')
+    result = []
+    i = 0
+    n = len(s)
+    while i < n:
+        if s[i] == '~':
+            nxt = i + 1
+            if nxt == n or s[nxt] in (' ', '\t'):
+                result.append(home)   # bare ~
+            elif s[nxt] == '/':
+                result.append(home)   # ~/path  — the / stays as next char
+            else:
+                result.append('~')    # ~word — leave alone
+        else:
+            result.append(s[i])
+        i += 1
+    return ''.join(result)
+
 
 def _split_cmds(raw):
     """Split a command line on ';', respecting single and double quotes."""
@@ -523,6 +568,9 @@ def _tab_complete(buf_str):
     return _complete_path(last)
 
 
+_skip_lf = False   # CRLF pairing: skip a \n that follows a \r
+
+
 def _shell_input(prompt):
     """
     Interactive line reader with full cursor navigation.
@@ -539,6 +587,7 @@ def _shell_input(prompt):
     that has exactly one completion, the suffix is shown in dim gray.
     Pressing Tab accepts it; any other key clears it first.
     """
+    global _skip_lf
     sys.stdout.write(prompt)
     buf      = []
     hist_pos = len(_history)   # past the end = 'new input'
@@ -572,6 +621,12 @@ def _shell_input(prompt):
         except Exception:
             return ''
 
+        # CRLF handling: if the last line ended with \r, skip a paired \n
+        if _skip_lf:
+            _skip_lf = False
+            if ch == '\n':
+                continue
+
         # --- Tab — accept completion ---
         if ch == '\t':
             if ghost and cursor == len(buf):
@@ -588,6 +643,8 @@ def _shell_input(prompt):
 
         # --- Confirm input ---
         if ch in ('\r', '\n'):
+            if ch == '\r':
+                _skip_lf = True   # consume paired \n from CRLF (Thonny etc.)
             _ghost_clear()
             # Move terminal cursor to end of line before newline
             if cursor < len(buf):
@@ -787,6 +844,7 @@ def launchpad_init(username, password):
         try:
             raw = _shell_input(_prompt(username))
             raw = raw.strip()
+            # Skip empty lines (common when using Thonny or other serial emulators)
             if not raw:
                 continue
 
@@ -804,6 +862,13 @@ def launchpad_init(username, password):
                     _eparts = expanded.split(None, 1)
                     command = _eparts[0]
                     args    = _eparts[1] if len(_eparts) > 1 else None
+                # Tilde expansion in args
+                if args and '~' in args:
+                    args = _tilde_expand(args, _shell_state.get('home', '/'))
+                # --help / -h flag: redirect to 'help <command>'
+                if args in ('--help', '-h') and command not in ('help',):
+                    execute_command('help', command)
+                    continue
                 try:
                     if command in _CRITICAL:
                         _CRITICAL[command](args)
@@ -909,6 +974,12 @@ def recovery_init(errStr):
                     _eparts = expanded.split(None, 1)
                     command = _eparts[0]
                     args    = _eparts[1] if len(_eparts) > 1 else None
+                if args and '~' in args:
+                    args = _tilde_expand(args, _shell_state.get('home', '/'))
+                # --help / -h flag: redirect to 'help <command>'
+                if args in ('--help', '-h') and command not in ('help',):
+                    execute_command('help', command)
+                    continue
                 if command in _CRITICAL:
                     _CRITICAL[command](args)
                 elif command in commands:

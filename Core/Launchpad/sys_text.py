@@ -2,7 +2,7 @@
 # File: /Core/Launchpad/sys_text.py
 # Last Updated: 4/1/2026
 # Lang: MicroPython, English
-# Version: v0.8.1-beta4
+# Version: v0.8.1
 # Author: dash1101
 #
 # Provides grep, wc, find, sort, uniq, hex, basename, dirname.

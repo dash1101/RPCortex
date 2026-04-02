@@ -11,11 +11,15 @@
 !/Packages/Launchpad
 !/Packages/Editor
 
-# ── Python bytecode ───────────────────────────────────────────────
+# ── Python / MicroPython bytecode ────────────────────────────────
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
+*.mpy
+
+# ── Build outputs (local .rpc release archives) ───────────────────
+*.rpc
 
 # ── OS / editor junk ──────────────────────────────────────────────
 .DS_Store
