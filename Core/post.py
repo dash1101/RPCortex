@@ -1,8 +1,8 @@
 # Desc: Power-On Self Test (POST) for RPCortex - Nebula OS
 # File: /Core/post.py
-# Last Updated: 3/27/2026
+# Last Updated: 4/1/2026
 # Lang: MicroPython, English
-# Version: v0.8.1-beta3
+# Version: v0.8.1-beta4
 # Author: dash1101
 
 import uos, gc, sys, utime, machine
@@ -27,7 +27,7 @@ Session: 0
 
 [Settings]
 Startup: 0
-Version: v0.8.1-beta3
+Version: v0.8.1-beta4
 Note: 0
 Active_User:
 Setup: false
@@ -79,38 +79,45 @@ def check_pulse():
     return False
 
 def check_registry():
-    try:
-        uos.stat("/Core/regedit.py")
+    # Check that regedit module exists (.py or .mpy for compiled builds)
+    for ext in ('.py', '.mpy'):
         try:
-            uos.stat("/Nebula/Registry/registry.cfg")
-            core.ok("Registry found!")
-        except OSError as err:
-            core.warn("File not found: '/Nebula/Registry/registry.cfg'")
-            core.info("Creating /Nebula/Registry/")
-            try:
-                uos.mkdir("/Nebula")
-            except OSError:
-                pass   # already exists — fine
-            try:
-                uos.mkdir("/Nebula/Registry")
-                core.ok("Registry directory created")
-            except OSError:
-                pass   # already exists — fine
-            
-            core.info("Building Registry '/Nebula/Registry/registry.cfg'")
-            try:
-                with open("/Nebula/Registry/registry.cfg", "w") as f:
-                    f.write(registry_content)
-                    core.ok("Registry created")
-            except OSError as err:
-                core.fatal("AN UNEXPECTED ISSUE IS CAUSING RPCORTEX TO NOT BOOT!")
-                core.fatal("PLEASE REINSTALL RPCORTEX! {}".format(err))
-                return False
-        return True
-    except OSError as err:
+            uos.stat("/Core/regedit" + ext)
+            break
+        except OSError:
+            pass
+    else:
         core.fatal("AN UNEXPECTED ISSUE IS CAUSING RPCORTEX TO NOT BOOT!")
-        core.fatal("PLEASE REINSTALL RPCORTEX! {}".format(err))
+        core.fatal("PLEASE REINSTALL RPCORTEX!")
         return False
+
+    # Check/create the registry config file
+    try:
+        uos.stat("/Nebula/Registry/registry.cfg")
+        core.ok("Registry found!")
+    except OSError:
+        core.warn("File not found: '/Nebula/Registry/registry.cfg'")
+        core.info("Creating /Nebula/Registry/")
+        try:
+            uos.mkdir("/Nebula")
+        except OSError:
+            pass   # already exists — fine
+        try:
+            uos.mkdir("/Nebula/Registry")
+            core.ok("Registry directory created")
+        except OSError:
+            pass   # already exists — fine
+
+        core.info("Building Registry '/Nebula/Registry/registry.cfg'")
+        try:
+            with open("/Nebula/Registry/registry.cfg", "w") as f:
+                f.write(registry_content)
+            core.ok("Registry created")
+        except OSError as err:
+            core.fatal("AN UNEXPECTED ISSUE IS CAUSING RPCORTEX TO NOT BOOT!")
+            core.fatal("PLEASE REINSTALL RPCORTEX! {}".format(err))
+            return False
+    return True
 
 def wlan_check():
     """

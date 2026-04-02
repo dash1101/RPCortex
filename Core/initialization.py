@@ -1,8 +1,8 @@
 # Desc: Boot initialization and login sequence for RPCortex - Nebula OS
 # File: /Core/initialization.py
-# Last Updated: 3/26/2026
+# Last Updated: 4/1/2026
 # Lang: MicroPython, English
-# Version: v0.8.1-beta3
+# Version: v0.8.1-beta4
 # Author: dash1101
 
 from Core.RPCortex import multi, fatal, error, info, warn, ok, inpt, masked_inpt
@@ -53,7 +53,7 @@ def setup_seq():
     Creates root + guest accounts, adds the official repo, applies boot prefs.
     """
     multi("")
-    info("=== RPCortex v0.8.1-beta3 — First Run Setup ===")
+    info("=== RPCortex v0.8.1-beta4 — First Run Setup ===")
     multi("")
     info("Welcome! Let's get your device configured.")
     multi("  Everything here can be changed later from the shell.")

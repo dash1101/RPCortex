@@ -1,8 +1,8 @@
 # Desc: User management shell commands - RPCortex Nebula OS
 # File: /Core/Launchpad/sys_user.py
-# Last Updated: 3/25/2026
+# Last Updated: 4/1/2026
 # Lang: MicroPython, English
-# Version: v0.8.1-beta3
+# Version: v0.8.1-beta4
 
 import sys
 if '/Core' not in sys.path:

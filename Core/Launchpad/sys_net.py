@@ -1,8 +1,8 @@
 # Desc: Network shell commands (wget, curl, runurl, ping, nslookup) - RPCortex Nebula OS
 # File: /Core/Launchpad/sys_net.py
-# Last Updated: 3/25/2026
+# Last Updated: 4/1/2026
 # Lang: MicroPython, English
-# Version: v0.8.1-beta3
+# Version: v0.8.1-beta4
 
 import sys
 import uos

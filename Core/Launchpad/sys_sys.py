@@ -1,8 +1,8 @@
 # Desc: System info/control shell commands - RPCortex Nebula OS
 # File: /Core/Launchpad/sys_sys.py
-# Last Updated: 3/26/2026
+# Last Updated: 4/1/2026
 # Lang: MicroPython, English
-# Version: v0.8.1-beta3
+# Version: v0.8.1-beta4
 
 import sys
 import uos

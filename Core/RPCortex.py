@@ -1,8 +1,8 @@
 # Desc: Core output utilities and session logging for RPCortex - Nebula OS
 # File: /Core/RPCortex.py
-# Last Updated: 3/24/2026
+# Last Updated: 4/1/2026
 # Lang: MicroPython, English
-# Version: v0.8.1-beta3
+# Version: v0.8.1-beta4
 # Author: dash1101
 
 import os

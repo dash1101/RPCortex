@@ -1,8 +1,8 @@
 # Desc: Entry point for RPCortex - Nebula OS
 # File: /main.py
-# Last Updated: 3/26/2026
+# Last Updated: 4/1/2026
 # Lang: MicroPython, English
-# Version: v0.8.1-beta3
+# Version: v0.8.1-beta4
 # Author: dash1101
 
 # RPC β81

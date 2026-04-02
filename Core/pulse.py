@@ -1,8 +1,8 @@
 # Desc: Hardware management, clock tuning, and benchmarking for RPCortex - Nebula OS
 # File: /Core/pulse.py
-# Last Updated: 3/25/2026
+# Last Updated: 4/1/2026
 # Lang: MicroPython, English
-# Version: v0.8.1-beta3
+# Version: v0.8.1-beta4
 # Author: dash1101
 
 import gc, sys, machine
