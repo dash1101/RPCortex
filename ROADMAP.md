@@ -41,6 +41,41 @@ real per-command exit-code / stdout-capture convention first. They lead v0.9.1.
 
 ---
 
+## 📊 Retrospective — Pulsar vs. the original "v0.9.0" plan
+
+The first draft of v0.9.0 (archived in early planning notes) was an ambitious
+*major* release: scripting language, pipes, scheduling, the first uasyncio pass,
+TUI framework, SSH, deep memory work. **That plan was rescoped.** Pulsar shipped
+as a stability + QoL release instead — lower risk, and it delivered a large batch
+of items the original plan never mentioned. The big-ticket original items weren't
+dropped; they were re-sequenced into v0.9.1 → v1.0 behind the foundations they
+actually depend on (an exit-code convention for pipes; uasyncio for SSH /
+multitasking).
+
+**From the original plan, what landed in v0.9.0:**
+
+| Original v0.9.0 item | Outcome |
+|----------------------|---------|
+| Tilde expansion everywhere | ✅ Shipped (actually v0.8.1-rc1) |
+| Compile OS to `.mpy` + build script | ✅ Shipped |
+| Chunked file I/O throughout | 🟡 Partial — `cp`/`mv` only; rest in v0.9.1 |
+| OS personalisation (owner / device / timezone) | 🟡 Partial — device name done; owner + timezone in v0.9.1 |
+| Module eviction on memory pressure + `gc` | 🟡 Partial — shell `MemoryError` auto-recovery clears cache + GCs; true eviction in v0.9.1 |
+| Shell pipes · scripting · startup/scheduled/unattended tasks | ❌ → **v0.9.1** |
+| Recovery tools · download progress · extended `curl` | ❌ → **v0.9.1** |
+| uasyncio · TUI framework · SSH · `git`/`speedtest` pkgs · frozen modules · Windows stubs · extended benchmark | ❌ → **v1.0** |
+
+**Shipped in v0.9.0 that the original plan never listed (bonus):** OTA updates,
+persistent aliases, `watch`, `du`, `date set`, multi-file `cat`, streamed
+`cp`/`mv` with relative paths, configurable prompt hostname, fetch/bench as
+upgradeable packages, and the typing/output-lag fixes.
+
+Net: ~2 of the original headline items fully shipped and ~3 partially, but ~11
+*unplanned* improvements landed alongside. The original plan is now, effectively,
+the v0.9.1 + v1.0 roadmap below.
+
+---
+
 ## 🟡 v0.9.1 — next
 
 Shell power + automation: turning RPCortex from an interactive shell into
@@ -172,7 +207,8 @@ Tentative; most of this depends on the multitasking foundation landing first.
 ### Apps & developer tools
 - ⚪ **TUI framework** — reusable adaptive box-draw components for terminal apps.
 - ⚪ **Rebuild system apps on the TUI framework** — `settings`, `edit`, etc.
-- ⚪ **Dev packages** — `git` (clone/fetch/push), `speedtest`, more.
+- ⚪ **Dev packages** — `git` (clone/fetch/push), `speedtest`, more (see Package ideas).
+- ⚪ **Extended benchmark** — NebulaMark gains mem / ROM / SD throughput tests.
 - ⚪ **SD card support** — init package surfaced as a startup task.
 
 ### Build & portability
@@ -201,21 +237,51 @@ re-implemented.
 | Check-for-updates | ✅ Done | `update check` (v0.9.0) |
 | Remove WiFi 2-connection limit | ✅ Done | `networks.cfg`, unlimited (v0.8.1) |
 | Compile OS to `.mpy` + script | ✅ Done | `build_images.py`, `compile.bat` (v0.9.0) |
+| Tilde expansion everywhere | ✅ Done | `_tilde_expand()` on all args (v0.8.1-rc1) |
 | README rewrite | ✅ Done | (v0.9.0) |
+| OS personalisation (device name) | ✅ Done | `System.Device_ID` (v0.9.0) |
+| OS personalisation (owner / timezone) | 🟡 Next | v0.9.1 — `System.Owner`, `System.TZ_Offset` |
 | Startup tasks | 🟡 Next | v0.9.1 — feasible, self-contained |
 | Scheduled tasks | 🟡 Next | v0.9.1 — software uptime timing |
-| Recovery mode tools (expand) | 🟡 Next | v0.9.1 |
+| Unattended / background mode | 🟡 Next | v0.9.1 polling form; full version needs uasyncio |
+| Recovery mode tools (expand) | 🟡 Next | v0.9.1 — `recovery.lp` |
 | Custom shell scripting language | 🟡 Next (first cut) | v0.9.1, after pipes/exit-codes |
 | Shell pipes / `&&` / `||` | 🟡 Next | v0.9.1 — needs exit-code convention |
 | GPIO via registry | 🟡 Next | v0.9.1 |
+| Download progress bars | 🟡 Next | v0.9.1 — `Content-Length` in `net.py` |
+| Extended `curl` flags | 🟡 Next | v0.9.1 — `-X/-d/-H/-o/-s/-I/--timeout` |
+| Lazy / ephemeral imports | 🟡 Next | v0.9.1 — evict `net`/`pkgmgr` after use |
 | Multitasking (uasyncio) | ⚪ Future | v1.0 foundation |
 | Multiple terminals / tabbing | ⚪ Future | needs multitasking |
 | SSH access | ⚪ Future | needs uasyncio |
-| TUI framework | ⚪ Future | v1.0-era |
+| TUI framework + redesign of `settings`/`edit` | ⚪ Future | v1.0-era |
+| Extended benchmark (mem/ROM/SD) | ⚪ Future | NebulaMark add-on |
 | SD card support | ⚪ Future | package + startup task |
-| git package | ⚪ Future | dev tooling |
+| Candidate packages (`ntp`/`dht`/`mqtt`/…) | ⚪ Anytime | see Package ideas — don't gate releases |
+| `git` package | ⚪ Future | dev tooling |
 | Frozen modules / `.uf2` | ⚪ Future | feasibility |
-| Windows debugging stubs | ⚪ Future | conditional imports |
+| Windows debugging stubs / non-absolute paths | ⚪ Future | conditional imports |
+
+---
+
+## 📦 Package ideas — candidate add-ons
+
+Packages ship independently of the OS, so these don't gate any release — they can
+land whenever someone builds them. Roughly ordered by usefulness × ease. The OS
+already has the networking and hardware primitives most of these need.
+
+| Package | What it does | Notes |
+|---------|--------------|-------|
+| `ntp` | `ntp sync` → set RTC from `pool.ntp.org` over UDP | Solves RTC-resets-on-power-loss; pairs with `date` + startup tasks. ~60 lines. **Best first package.** |
+| `dht` | `dht read <pin>` → temp + humidity from DHT11/DHT22 | The most common Pico add-on sensor; tiny driver (~40 lines). |
+| `i2cscan` | Scan I2C buses, print detected addresses with known-device names | First thing anyone does with a new sensor. Pure debug value. |
+| `gpio` | `gpio set/read/pwm <pin>` from the shell | Overlaps with the planned built-in `gpio`; could be the package form, or fold into core. |
+| `calc` | `calc "3*(4+2)/1.5"`, `calc hex 255`, `calc bin 42` | Quick math/unit/base conversions without leaving the prompt. |
+| `backup` | `backup create/restore <archive>` for home + registry | Safety net before `factoryreset` / `reinstall` / board migration. |
+| `httpd` | `httpd start [port]` → live status page (CPU/RAM/uptime/temp) over WiFi | Opens remote-monitoring + basic REST use cases. Shell already has the data. |
+| `mqtt` | `mqtt connect/pub/sub` | Makes RPCortex a real IoT node (Home Assistant / Node-RED speak MQTT). |
+| `speedtest` | Measure up/down throughput, show Mbps/KBps | From the original roadmap; ships as a package so it updates independently. |
+| `git` | `git clone` / `fetch` (read-mostly) | Dev tooling; heaviest of the set — needs careful RAM handling. |
 
 ---
 
