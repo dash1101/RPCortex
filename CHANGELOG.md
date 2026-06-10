@@ -18,10 +18,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
 ## [v0.9.0] "Pulsar" - 2026-06-10
 
-First release of the **Pulsar** (β9) series, succeeding β8 "Nebula". A
-stability-and-quality-of-life release: every new feature is self-contained and
-low-risk. Shell pipes and `&&`/`||` were intentionally deferred — they require a
-per-command exit-code convention that would be bug-prone to bolt on now.
+First release of the **Pulsar** (β9) series and the first public release since
+v0.8.1 — it supersedes v0.8.1 directly. (The v0.8.2 work was an internal
+milestone that was never published as its own release; all of it is folded in
+here.) A stability-and-quality-of-life release: every new feature is
+self-contained and low-risk. Shell pipes and `&&`/`||` were intentionally
+deferred — they require a per-command exit-code convention that would be
+bug-prone to bolt on now.
 
 ### Added
 - **Persistent aliases** — aliases now survive reboots, stored in `/Nebula/Registry/aliases.cfg` (one `name=command` per line). Loaded at shell start; saved on every `alias`/`unalias`. Critical built-ins still cannot be shadowed.
@@ -29,51 +32,36 @@ per-command exit-code convention that would be bug-prone to bolt on now.
 - **`watch [-n <secs>] <command>`** — re-run a command periodically (default every 2 s) until Ctrl+C; clears the screen between runs.
 - **`date set YYYY-MM-DD [HH:MM:SS]`** — set the hardware RTC via `machine.RTC()`, so session-log timestamps are finally correct. Bare `date` still prints the current time.
 - **Configurable prompt hostname** — the shell prompt host (`user@<host>`) now reads `System.Device_ID`; change it with `reg set System.Device_ID <name>`. Defaults to `pulsar`.
-- **`OS_CODENAME` constant** (`Core/RPCortex.py`) — single source of truth for the release name; `initialization.start()` syncs `System.Codename` to it on every boot (mirrors the `OS_VERSION`/`Settings.Version` sync), so `ver`/`fetch` stay correct after an OTA update.
+- **OTA update system** — `update check` downloads `rpc.novalabs.app/releases/latest.json` and compares against the running version; `update online` streams and installs the latest `.rpc` over WiFi; `update online --force` reinstalls even if already current.
+- **`OS_VERSION` and `OS_CODENAME` constants** (`Core/RPCortex.py`) — single source of truth for the running version and release name; `initialization.start()` syncs `Settings.Version` and `System.Codename` to them on every boot, so the registry can never drift after an OTA update and `ver`/`fetch` stay correct.
+- **`_repair_programs_lp()`** in `launchpad.py` — called at shell init; re-adds any missing built-in `programs.lp` entries (fetch, neofetch, bench, pkg, wifi) if the target file exists; prevents silent loss of built-in commands after an edge-case clear.
+- **PicoFetch package** (`/Packages/PicoFetch/`) — `fetch` / `neofetch` moved out of `Core/` into a proper package; now upgradeable via `pkg upgrade PicoFetch`.
+- **NebulaMark package** (`/Packages/NebulaMark/`) — `bench` extracted from `pulse.py` into a proper package; now upgradeable via `pkg upgrade NebulaMark`.
+- **Build tooling** — `build_v090.py` builds the `.rpc` + `.pkg` artifacts; `temp_claude/build_images.py` stages source and portable-`.mpy` deploy images.
 
 ### Changed
 - **`cp` and `mv` stream large files** — `_copy_chunked()` copies in 1 KB chunks instead of reading the whole file into RAM, fixing OOM on large files on a 264 KB Pico. `mv` now tries `uos.rename()` first (zero-copy, instant on the same filesystem) and only falls back to streamed copy + delete across filesystems.
 - **`cp`/`mv`/`rename` accept relative paths** — resolved against the current directory via `_abspath()`; absolute paths still work. All three guard against identical source and destination.
 - **`read`/`cat` accept multiple files** — `cat a.txt b.txt` prints each with a `==> name <==` header.
-- **Rebrand to β9 "Pulsar"** — boot banner, registry template (`System.Codename`, `Settings.Version`), and `system.lp` header updated. Built-in packages Launchpad and Editor bumped to 0.9.0.
-- **Release artifact** is now `RPC-Pulsar-b9-Stable.rpc`, built by `build_v090.py`.
+- **Ghost (inline) completion** — per-keystroke completion now only scans the command dict (zero I/O); full path completion (`uos.listdir`) only fires on an explicit Tab press; eliminates typing lag at 115200 baud.
+- **Batched log flushing** — `_log_write()` flushes every 8 writes; ERROR/FATAL/WARN still flush immediately for crash-log safety; eliminates serial output lag (~10 ms per flush on LittleFS).
+- **`pkg upgrade`** — calls `uninstall(force=True)` so builtin-tagged packages can be upgraded and registry keys are preserved across the uninstall/reinstall cycle.
+- **`make_pkg.py`** — now filters `__pycache__/` and `.pyc` files from `.pkg` archives.
+- **`compile.bat`** — now also copies the PicoFetch and NebulaMark package dirs into compiled builds (they were silently omitted before).
+- **Rebrand β8 "Nebula" → β9 "Pulsar"** — boot banner, registry template (`System.Codename`, `Settings.Version`), `system.lp` header. Built-in packages Launchpad and Editor bumped to 0.9.0; `programs.lp`/`system.lp` realigned for the packaged `fetch`/`bench`.
+- **`.rpc` format** — now includes full `Packages/**` source (not just `package.cfg` stubs). Release artifact is `RPC-Pulsar-b9-Stable.rpc`.
+- **Release hosting** — `.rpc` release assets are GitHub Release assets; `latest.json` `url` points to `github.com/dash1101/RPCortex/releases/download/...`. The website (`rpc.novalabs.app`) is GitHub Pages, so a push deploys it.
 
 ### Fixed
-- `watch` reaches the running shell engine via `sys.modules['Core.launchpad']` rather than a bare `import launchpad`, which would have created a second module instance with an empty command table.
-
----
-
-## [v0.8.2] - 2026-06-10
-
-### Added
-- **OTA update system** — `update check` downloads `rpc.novalabs.app/releases/latest.json` and compares against running version; `update online` streams and installs the latest `.rpc` over WiFi; `update online --force` reinstalls even if already current
-- **`OS_VERSION` constant** (`Core/RPCortex.py`) — single source of truth for the running code version; `initialization.start()` syncs `Settings.Version` in the registry on every boot so it can never drift after an update
-- **`_repair_programs_lp()`** in `launchpad.py` — called at shell init; re-adds any missing built-in `programs.lp` entries (fetch, neofetch, bench, pkg, wifi) if the target file exists; prevents silent loss of built-in commands after edge-case clears
-- **PicoFetch package** (`/Packages/PicoFetch/`) — `fetch` / `neofetch` commands moved from `Core/picofetch.py` into a proper package with `package.cfg`; now upgradeable via `pkg upgrade PicoFetch`
-- **NebulaMark package** (`/Packages/NebulaMark/`) — `bench` command extracted from `pulse.py` into a proper package with `package.cfg`; now upgradeable via `pkg upgrade NebulaMark`
-- **Build script** (`build_v082.py`) — PC-side script to build `.pkg` files and the `.rpc` release archive in one step
-
-### Changed
-- **Ghost (inline) completion** — per-keystroke completion now only scans the command dict (zero I/O); full path completion (`uos.listdir`) only fires on explicit Tab press; eliminates typing lag at 115200 baud
-- **Batched log flushing** — `_log_write()` flushes every 8 writes; ERROR/FATAL/WARN still flush immediately for crash log safety; eliminates serial output lag (~10ms per flush on LittleFS)
-- **`pkg upgrade`** — calls `uninstall(force=True)` so builtin-tagged packages can be upgraded and registry keys are preserved across the uninstall/reinstall cycle
-- **`make_pkg.py`** — now filters `__pycache__/` and `.pyc` files from `.pkg` archives
-- **`programs.lp`** — updated to include `fetch`, `neofetch`, `bench` entries pointing to new package paths
-- **`system.lp`** — `bench`, `fetch`, `neofetch` entries removed (now in `programs.lp` via packages)
-- **Package versions** — Launchpad `0.8.1→0.8.2`, Editor `0.8.1→0.8.2`, PicoFetch `1.0.0`, NebulaMark `2.0.0`
-- **`.rpc` format** — now includes full `Packages/**` source files (not just `package.cfg` stubs); built with `build_v082.py`
-- **Release hosting** — v0.8.2+ `.rpc` files are GitHub Release assets; `latest.json` `url` points to `github.com/dash1101/RPCortex/releases/download/...`
-
-### Fixed
-- **`wifi connect <ssid>` never used saved passwords** — `_connect()` in `wifi.py` still looked up the old 2-slot registry keys (`Networks.WiFi_SSID_1/2`) removed in v0.8.1; it now reads `/Nebula/Registry/networks.cfg` via `net._read_networks()`, so known networks connect without re-prompting
-- **"Previous session ended unexpectedly" warning shown on every boot** — POST arms `Settings.Startup = "1"` (session-active sentinel) at its end, and `initialization.start()` then read that same key for the startup banner, so the crash warning fired on every boot, clean or not. The banner now uses the pre-POST value captured in `post.boot_startup_mode`; this also makes the update-failed / safe-mode banners (modes 3/4/5) reachable for the first time
-- **Built-in package stubs restored** — `/Packages/Launchpad/package.cfg` and `/Packages/Editor/package.cfg` were deleted in an old history rewrite and never re-added; fresh installs showed no built-ins in `pkg list`
-- **`masked_inpt` on all password flows** — `mkacct`, `rmuser`, `chpswd`, `change_password`, `wifi add` all use `masked_inpt`; login in `usrmgmt.login_seq()` also masked
+- **`wifi connect <ssid>` never used saved passwords** — `_connect()` in `wifi.py` still looked up the old 2-slot registry keys (`Networks.WiFi_SSID_1/2`) removed in v0.8.1; it now reads `/Nebula/Registry/networks.cfg` via `net._read_networks()`, so known networks connect without re-prompting.
+- **"Previous session ended unexpectedly" warning shown on every boot** — POST arms `Settings.Startup = "1"` (session-active sentinel) at its end, and `initialization.start()` then read that same key for the startup banner, so the crash warning fired on every boot, clean or not. The banner now uses the pre-POST value captured in `post.boot_startup_mode`; this also makes the update-failed / safe-mode banners (modes 3/4/5) reachable for the first time.
+- **Built-in package stubs restored** — `/Packages/Launchpad/package.cfg` and `/Packages/Editor/package.cfg` were deleted in an old history rewrite and never re-added; fresh installs showed no built-ins in `pkg list`.
+- **`masked_inpt` on all password flows** — `mkacct`, `rmuser`, `chpswd`, `change_password`, and `wifi add` all use masked input now; `usrmgmt.login_seq()` login is masked too.
+- **`watch` reaches the running shell engine** via `sys.modules['Core.launchpad']` rather than a bare `import launchpad`, which would have created a second module instance with an empty command table.
 
 ### Removed
-- `bench` and `fetch` hard-coded functions removed from `sys_sys.py` and `pulse.py` respectively (moved to packages)
-- Orphaned color constants (`HEADER`, `OKBLUE` etc.) and `tr = []` removed from `pulse.py`
-- `NebulaMark()` body removed from `pulse.py` (now in `/Packages/NebulaMark/nebulamark.py`)
+- `bench` and `fetch` hard-coded functions removed from `sys_sys.py` and `pulse.py` respectively (moved to packages).
+- Orphaned color constants (`HEADER`, `OKBLUE`, …) and `tr = []` removed from `pulse.py`; the old `NebulaMark()` body now lives in `/Packages/NebulaMark/nebulamark.py`.
 
 ---
 

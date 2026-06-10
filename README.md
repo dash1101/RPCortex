@@ -10,9 +10,9 @@
 
 ---
 
-# RPCortex — Nebula β81
+# RPCortex — Pulsar β9
 
-RPCortex is a CLI operating system for the Raspberry Pi Pico, ESP32, and compatible boards, written entirely in MicroPython. It turns a microcontroller into something that actually behaves like a computer — a real interactive shell, user accounts with passwords, a package manager, WiFi, a text editor, and a structured boot process with hardware checks.
+RPCortex is a CLI operating system for the Raspberry Pi Pico, ESP32, and compatible boards, written entirely in MicroPython. It turns a microcontroller into something that actually behaves like a computer — a real interactive shell, user accounts with passwords, a package manager, WiFi, over-the-air updates, a text editor, and a structured boot process with hardware checks.
 
 It runs on hardware with 264 KB of RAM. That constraint is the point.
 
@@ -23,10 +23,10 @@ It runs on hardware with 264 KB of RAM. That constraint is the point.
 You flash MicroPython, copy the files, open PuTTY at 115200 baud, and reboot. POST runs — registry check, CPU test, memory verification, clock calibration, WiFi probe. You set a root password. You log in. The prompt comes up:
 
 ```
-root@nebula:~>
+root@pulsar:~>
 ```
 
-From there you have a shell that works. `ls` shows your files with sizes and timestamps. `cd ~` takes you home. Up/down arrows scroll your last 50 commands. Left/right arrows move the cursor so you can edit a command mid-line. You can open a file, edit it, save it. You can connect to WiFi and download a package by name. You can overclock the CPU, benchmark it, and check the temperature — all from the same prompt.
+From there you have a shell that works. `ls` shows your files with sizes and timestamps. `cd ~` takes you home. Up/down arrows scroll your last 50 commands. Left/right arrows move the cursor so you can edit a command mid-line. Tab completes commands and paths. You can open a file, edit it, save it. You can connect to WiFi, update the OS over the air, and install a package by name. You can overclock the CPU, benchmark it, and check the temperature — all from the same prompt.
 
 It's not trying to be Linux. It's a $4 microcontroller running MicroPython. But within those constraints, it behaves like a real system.
 
@@ -34,19 +34,21 @@ It's not trying to be Linux. It's a $4 microcontroller running MicroPython. But 
 
 ## What you can do with it
 
-**Use it as a shell environment.** Browse and manage files, run scripts, edit configs. The filesystem commands cover everything standard: `ls`, `cd`, `cp`, `mv`, `rm`, `tree`, `df`. Text processing with `grep`, `find`, `sort`, `wc`, and `hex`. The text editor opens any file over serial. `~` expands to your home directory in any argument — `cd ~/docs`, `cp ~/config.txt /tmp/`, all of it.
+**Use it as a shell environment.** Browse and manage files, run scripts, edit configs. The filesystem commands cover everything standard: `ls`, `cd`, `cp`, `mv`, `rm`, `tree`, `df`, `du`. Copies and moves stream large files safely without exhausting RAM, and accept relative paths. Read several files at once with `cat a.txt b.txt`. Text processing with `grep`, `find`, `sort`, `wc`, and `hex`. The text editor opens any file over serial. `~` expands to your home directory in any argument — `cd ~/docs`, `cp ~/config.txt /tmp/`, all of it.
 
-**Connect to the internet.** WiFi connects on any Pico W or ESP32. `wget` streams files directly to flash. `curl` fetches APIs. `runurl` downloads and executes a Python file in one step. Autoconnect on boot if you want it.
+**Connect to the internet.** WiFi connects on any Pico W or ESP32 — and remembers your networks and passwords. `wget` streams files directly to flash. `curl` fetches APIs. `runurl` downloads and executes a Python file in one step. Autoconnect on boot if you want it.
 
-**Install software.** The package manager works like you'd expect: `pkg install <name>`, `pkg remove <name>`, `pkg upgrade`. Packages are listed in repo indexes — add the official repo, run `pkg update`, and everything in the index is a single command away. Installed commands show up in the shell immediately.
+**Update over the air.** `update check` tells you if a newer release is out; `update online` downloads and installs it over WiFi and reboots — your accounts, settings, and installed packages are preserved. No cable, no browser required. Prefer a wire? `update from-file` and the browser update page still work.
 
-**Install packages from your browser.** The [web package browser](https://rpc.novalabs.app/packages.html) lets you install packages directly to a connected device over USB — no WiFi, no REPL, no reboot required. Connect your device, click Install, done.
+**Install software.** The package manager works like you'd expect: `pkg install <name>`, `pkg remove <name>`, `pkg upgrade`. Add the official repo, run `pkg update`, and everything in the index is a single command away. Installed commands show up in the shell immediately — no reboot. Even the built-in `fetch` and `bench` tools are packages now, so they update independently.
 
-**Manage users.** Create accounts with `mkacct`, change passwords with `chpswd`, remove accounts with `rmuser`. Each user gets their own home directory. The `guest` account requires no password.
+**Install packages from your browser.** The [web package browser](https://rpc.novalabs.app/packages.html) installs packages directly to a connected device over USB — no WiFi, no REPL, no reboot. Connect, click Install, done.
+
+**Manage users.** Create accounts with `mkacct`, change passwords with `chpswd`, remove accounts with `rmuser`. Each user gets a home directory; every password prompt is masked. The `guest` account requires no password.
 
 **Tune the hardware.** `pulse set 220` overclocks to 220 MHz. `pulse boot 200` sets a boot clock. `bench` runs NebulaMark. `freeup` compacts the heap when things get fragmented after heavy use.
 
-**Configure the system.** `settings` opens an interactive panel where you toggle boot overclocking, WiFi autoconnect, verbose boot, the beeper, SD card support, and program execution. `reg get`/`reg set` writes directly to the registry if you need something the panel doesn't cover. Shell aliases (`alias ll=ls`) let you build your own shortcuts — they survive across commands for the whole session.
+**Make it yours.** `settings` opens an interactive panel to toggle boot overclocking, WiFi autoconnect, verbose boot, the beeper, SD support, and program execution. `reg get`/`reg set` writes the registry directly. Aliases (`alias ll=ls -l`) build your own shortcuts — and they now survive reboots. `watch -n 5 sysinfo` keeps a live readout on screen. `date set` fixes the clock so your logs are timestamped correctly. `reg set System.Device_ID mypico` even renames the host in your prompt.
 
 ---
 
@@ -61,7 +63,7 @@ It's not trying to be Linux. It's a $4 microcontroller running MicroPython. But 
 | Raspberry Pi Pico 2 (RP2350) | Supported |
 | ESP32 / ESP32-S2 | Supported |
 
-Requires MicroPython v1.25 or newer. v1.28 recommended. 4MB flash minimum.
+Requires MicroPython v1.25 or newer. v1.28 recommended. 4 MB flash minimum.
 
 ---
 
@@ -79,19 +81,21 @@ Requires MicroPython v1.25 or newer. v1.28 recommended. 4MB flash minimum.
 
 ```
 wifi connect
-pkg repo add https://raw.githubusercontent.com/dash1101/RPCortex-repo/main/repo/index.json
 pkg update
-pkg available
 pkg install HelloWorld
+update check
 ```
+
+**Smaller, faster image:** a precompiled `.mpy` build (architecture-neutral — one image for RP2040, RP2350, and ESP32) is ~44% smaller and imports faster. Build it with `compile.bat` / `build_images.py` and deploy with `deploy.bat --compiled`.
 
 ---
 
 ## Documentation
 
-- **[Documentation.md](Documentation.md)** — full command reference, shell controls, registry keys, networking guide, package format
+- **[NebulaDocs](https://rpc.novalabs.app/NebulaDocs.html)** — full command reference, shell controls, registry keys, networking, and package format
 - **[CHANGELOG.md](CHANGELOG.md)** — version history and release notes
-- **[rpc.novalabs.app](https://rpc.novalabs.app)** — website with web installer, package browser, and HTML docs
+- **[ROADMAP.md](ROADMAP.md)** — what's shipped, what's next, and where ideas land
+- **[rpc.novalabs.app](https://rpc.novalabs.app)** — web installer, package browser, OS updater, and HTML docs
 - **[Package Dev Guide](https://rpc.novalabs.app/PackageDev.html)** — build and publish your own packages
 - **[Issues](https://github.com/dash1101/RPCortex/issues)** — bug reports and feature requests
 
@@ -103,4 +107,4 @@ Open source. Explicit credit to **[@dash1101](https://github.com/dash1101)** is 
 
 ---
 
-###### RPCortex Nebula β81 — v0.8.1
+###### RPCortex Pulsar β9 — v0.9.0

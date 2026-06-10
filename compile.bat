@@ -169,14 +169,13 @@ for %%F in ("%REPO_DIR%\Core\Launchpad\*.lp") do (
     call :copy_file "%%F" "Core\Launchpad\%%~nxF"
 )
 
-if exist "%REPO_DIR%\Packages\Launchpad\" (
-    for %%F in ("%REPO_DIR%\Packages\Launchpad\*.*") do (
-        call :copy_file "%%F" "Packages\Launchpad\%%~nxF"
-    )
-)
-if exist "%REPO_DIR%\Packages\Editor\" (
-    for %%F in ("%REPO_DIR%\Packages\Editor\*.*") do (
-        call :copy_file "%%F" "Packages\Editor\%%~nxF"
+:: Built-in package directories are copied as SOURCE (the shell loads package
+:: command files with exec(), which needs text — they must NOT be compiled).
+for %%P in (Launchpad Editor PicoFetch NebulaMark) do (
+    if exist "%REPO_DIR%\Packages\%%P\" (
+        for %%F in ("%REPO_DIR%\Packages\%%P\*.*") do (
+            call :copy_file "%%F" "Packages\%%P\%%~nxF"
+        )
     )
 )
 
