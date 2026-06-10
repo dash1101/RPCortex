@@ -1,15 +1,15 @@
 # Desc: User management shell commands - RPCortex Nebula OS
 # File: /Core/Launchpad/sys_user.py
-# Last Updated: 4/1/2026
+# Last Updated: 6/9/2026
 # Lang: MicroPython, English
-# Version: v0.8.1
+# Version: v0.8.2
 
 import sys
 if '/Core' not in sys.path:
     sys.path.append('/Core')
 
 import regedit
-from RPCortex import warn, error, info, ok, multi, inpt
+from RPCortex import warn, error, info, ok, multi, inpt, masked_inpt
 
 
 def whoami(args=None):
@@ -24,11 +24,11 @@ def mkacct(args=None):
     if not username:
         warn("Username cannot be blank.")
         return
-    password = inpt("Password")
+    password = masked_inpt("Password")
     if not password.strip():
         warn("Password cannot be blank.")
         return
-    confirm = inpt("Confirm password")
+    confirm = masked_inpt("Confirm password")
     if password != confirm:
         error("Passwords do not match.")
         return
@@ -54,7 +54,7 @@ def rmuser(args):
     # Non-root must verify the target account's password
     if active != 'root':
         if not _is_nopass(target):
-            pw = inpt("Enter password for '{}' to confirm".format(target))
+            pw = masked_inpt("Enter password for '{}' to confirm".format(target))
             if not _decode(target, pw, silent=True):
                 error("Incorrect password. Cannot remove user.")
                 return

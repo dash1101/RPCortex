@@ -1,4 +1,4 @@
-# RPCortex Nebula — Launchpad system command registry
+# RPCortex Pulsar — Launchpad system command registry
 # Format: command_name:/path/to/file.py:function_name
 
 # ---------------------------------------------------------------------------
@@ -30,6 +30,7 @@ move:/Core/Launchpad/sys_fs.py:move
 cp:/Core/Launchpad/sys_fs.py:copy
 copy:/Core/Launchpad/sys_fs.py:copy
 df:/Core/Launchpad/sys_fs.py:diskfree
+du:/Core/Launchpad/sys_fs.py:du
 tree:/Core/Launchpad/sys_fs.py:tree
 
 # ---------------------------------------------------------------------------
@@ -42,14 +43,12 @@ sysinfo:/Core/Launchpad/sys_sys.py:sysinfo
 meminfo:/Core/Launchpad/sys_sys.py:meminfo
 uptime:/Core/Launchpad/sys_sys.py:uptime
 date:/Core/Launchpad/sys_sys.py:date
+watch:/Core/Launchpad/sys_sys.py:watch
 ver:/Core/Launchpad/sys_sys.py:ver
 version:/Core/Launchpad/sys_sys.py:ver
 clear:/Core/Launchpad/sys_sys.py:clear
 cls:/Core/Launchpad/sys_sys.py:clear
 pulse:/Core/Launchpad/sys_sys.py:pulse
-bench:/Core/Launchpad/sys_sys.py:bench
-fetch:/Core/Launchpad/sys_sys.py:fetch
-neofetch:/Core/Launchpad/sys_sys.py:fetch
 edit:/Core/Launchpad/sys_sys.py:edit
 nano:/Core/Launchpad/sys_sys.py:edit
 vi:/Core/Launchpad/sys_sys.py:edit

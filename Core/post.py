@@ -1,8 +1,8 @@
 # Desc: Power-On Self Test (POST) for RPCortex - Nebula OS
 # File: /Core/post.py
-# Last Updated: 4/1/2026
+# Last Updated: 6/9/2026
 # Lang: MicroPython, English
-# Version: v0.8.1
+# Version: v0.8.2
 # Author: dash1101
 
 import uos, gc, sys, utime, machine
@@ -20,15 +20,15 @@ Boot_Clock:
 Clockable: false
 
 [System]
-Codename: RPCortex B81 - Nebula
-Device_ID: nebula
+Codename: RPCortex B9 - Pulsar
+Device_ID: pulsar
 State: 0
 Time: 0
 Session: 0
 
 [Settings]
 Startup: 0
-Version: v0.8.1
+Version: v0.9.0
 Note: 0
 Active_User:
 Setup: false
@@ -51,6 +51,8 @@ programs_dir: /Programs/
 
 errors = []
 beeper = False   # module-level default; set by beeper_check()
+boot_startup_mode = "0"   # Settings.Startup as it was BEFORE POST armed it;
+                          # read by initialization.py for the startup banner
 
 try:
     core.post_check = True
@@ -312,7 +314,12 @@ def script():
 
     # --- Shutdown sentinel check ---
     # "1" means a session was active and never cleanly shut down.
+    # Capture the pre-arm value for initialization.py — script() overwrites
+    # Settings.Startup with "1" at its end, so the registry value is useless
+    # for the post-POST startup banner.
+    global boot_startup_mode
     startup_val = regedit.read("Settings.Startup") or "0"
+    boot_startup_mode = startup_val
     if startup_val == "1":
         _warn_unexpected_shutdown()
 

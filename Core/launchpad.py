@@ -1,8 +1,8 @@
 # Desc: Launchpad CLI shell engine for RPCortex - Nebula OS
 # File: /Core/launchpad.py
-# Last Updated: 4/1/2026
+# Last Updated: 6/9/2026
 # Lang: MicroPython, English
-# Version: v0.8.1
+# Version: v0.8.2
 # Author: dash1101
 
 import sys
@@ -24,6 +24,41 @@ from RPCortex import (
 
 commands = {}
 
+# Commands that ship with the OS but live in programs.lp (package-provided).
+# programs.lp is preserved across OS updates and emptied by factoryreset, so
+# load_commands() self-heals any missing entry whose target file exists.
+_BUILTIN_LP = (
+    ('pkg',      '/Core/Launchpad/pkg.py:pkg'),
+    ('wifi',     '/Core/Launchpad/wifi.py:wifi'),
+    ('fetch',    '/Packages/PicoFetch/picofetch.py:fetch'),
+    ('neofetch', '/Packages/PicoFetch/picofetch.py:fetch'),
+    ('bench',    '/Packages/NebulaMark/nebulamark.py:bench'),
+)
+
+
+def _repair_programs_lp():
+    """Re-add missing built-in entries to programs.lp (and the live dict)."""
+    missing = []
+    for cmd, mapping in _BUILTIN_LP:
+        if cmd in commands:
+            continue
+        path = mapping.split(':', 1)[0]
+        try:
+            uos.stat(path)
+        except OSError:
+            continue   # target file gone — don't register a dead command
+        missing.append((cmd, mapping))
+    if not missing:
+        return
+    try:
+        with open('/Core/Launchpad/programs.lp', 'a') as f:
+            for cmd, mapping in missing:
+                f.write('{}:{}\n'.format(cmd, mapping))
+                commands[cmd] = mapping
+    except OSError:
+        pass
+
+
 def load_commands():
     """Load all .lp command definition files from /Core/Launchpad/."""
     base = "/Core/Launchpad/"
@@ -34,6 +69,39 @@ def load_commands():
                 _load_lp(base + name)
     except OSError:
         pass
+    _repair_programs_lp()
+    _load_aliases()
+
+def _load_aliases():
+    """Load persisted aliases from aliases.cfg into the live _aliases dict.
+
+    Format: one 'name=command' per line. Lost aliases are harmless; a missing
+    file just means no aliases yet. Critical built-ins are never shadowed.
+    """
+    try:
+        with open(_ALIAS_CFG, 'r') as f:
+            for raw in f:
+                line = raw.strip()
+                if not line or line.startswith('#') or '=' not in line:
+                    continue
+                idx  = line.index('=')
+                name = line[:idx].strip()
+                val  = line[idx + 1:].strip()
+                if name and name not in _CRITICAL:
+                    _aliases[name] = val
+    except OSError:
+        pass   # no aliases.cfg yet — nothing to load
+
+
+def _save_aliases():
+    """Persist the live _aliases dict to aliases.cfg (best-effort)."""
+    try:
+        lines = ["{}={}\n".format(n, v) for n, v in sorted(_aliases.items())]
+        with open(_ALIAS_CFG, 'w') as f:
+            f.write(''.join(lines))
+    except OSError:
+        pass   # persistence is best-effort; session aliases still work
+
 
 def _load_lp(path):
     try:
@@ -74,8 +142,9 @@ def _load_lp(path):
 _cmd_cache   = {}               # file_path -> module or scope dict
 _history     = []               # command history (most recent last)
 _HIST_MAX    = 50
-_shell_state = {'running': False, 'home': '/'}  # mutable; cached scopes hold a reference
-_aliases     = {}               # name -> expanded command string (session-local)
+_shell_state = {'running': False, 'home': '/', 'host': 'pulsar'}  # mutable; cached scopes hold a reference
+_aliases     = {}               # name -> expanded command string (persisted to aliases.cfg)
+_ALIAS_CFG   = '/Nebula/Registry/aliases.cfg'
 
 # ---------------------------------------------------------------------------
 # Critical built-in commands — inline handlers that NEVER go through exec().
@@ -129,6 +198,7 @@ def _crit_alias(args=None):
         warn("Cannot shadow a critical built-in: {}".format(name))
         return
     _aliases[name] = val
+    _save_aliases()
     ok("alias {} = {}".format(name, val))
 
 
@@ -139,6 +209,7 @@ def _crit_unalias(args=None):
     name = args.strip()
     if name in _aliases:
         del _aliases[name]
+        _save_aliases()
         ok("Alias '{}' removed.".format(name))
     else:
         warn("No alias named '{}'.".format(name))
@@ -603,12 +674,16 @@ def _shell_input(prompt):
             sys.stdout.write('\x1b[K')
 
     def _ghost_update():
-        # Compute and display new ghost: command completion on the first word,
-        # path completion on subsequent words (cursor must be at end of line).
+        # Compute and display new ghost.  Only COMMAND completion (cheap dict
+        # scan) runs per-keystroke — path completion hits the filesystem with
+        # uos.listdir() and caused visible typing lag at high serial input
+        # speeds, so it now only runs on an explicit Tab press.
         nonlocal ghost
         new_ghost = ''
         if cursor == len(buf):
-            new_ghost = _tab_complete(''.join(buf))
+            s = ''.join(buf)
+            if s and ' ' not in s:
+                new_ghost = _tab_complete(s)
         ghost = new_ghost
         if ghost:
             sys.stdout.write('\033[2m\033[90m' + ghost + '\033[0m')
@@ -627,18 +702,23 @@ def _shell_input(prompt):
             if ch == '\n':
                 continue
 
-        # --- Tab — accept completion ---
+        # --- Tab — accept ghost, or compute path completion on demand ---
         if ch == '\t':
-            if ghost and cursor == len(buf):
+            if cursor == len(buf):
+                suffix = ghost
+                if not suffix:
+                    # No ghost shown — compute the full completion now.
+                    # This is where (potentially slow) path completion runs.
+                    suffix = _tab_complete(''.join(buf))
                 _ghost_clear()
-                for c in ghost:
+                for c in suffix:
                     buf.append(c)
                     cursor += 1
                     sys.stdout.write(c)
                 ghost = ''
                 # Recompute in case there's a further unique suffix
                 _ghost_update()
-            # Else: no completion available — silently ignore
+            # Else: cursor mid-line — silently ignore
             continue
 
         # --- Confirm input ---
@@ -803,13 +883,14 @@ _BLUE = '\033[94m'
 def _prompt(username):
     cwd  = uos.getcwd()
     home = _shell_state.get('home', '').rstrip('/')
+    host = _shell_state.get('host', 'pulsar')
     if home and (cwd == home or cwd.startswith(home + '/')):
         display = '~' + cwd[len(home):]
     else:
         display = cwd
     return "{}{}{}{}{}{} ".format(
         _CYAN,  username,
-        _GRAY + '@nebula' + _RST + ':',
+        _GRAY + '@' + host + _RST + ':',
         _BLUE,  display,
         _RST + _CYAN + '>' + _RST,
     )
@@ -830,6 +911,11 @@ def launchpad_init(username, password):
     # Set home directory and start there
     home = '/Users/{}'.format(username)
     _shell_state['home'] = home
+    # Hostname shown in the prompt — configurable via 'reg set System.Device_ID'
+    try:
+        _shell_state['host'] = regedit.read('System.Device_ID') or 'pulsar'
+    except Exception:
+        _shell_state['host'] = 'pulsar'
     try:
         uos.chdir(home)
     except OSError:

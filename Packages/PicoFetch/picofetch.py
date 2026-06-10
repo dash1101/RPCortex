@@ -1,9 +1,12 @@
 # Desc: System information display for RPCortex - Nebula OS  (neofetch style)
-# File: /Core/picofetch.py
-# Last Updated: 4/1/2026
+# File: /Packages/PicoFetch/picofetch.py
+# Last Updated: 6/9/2026
 # Lang: MicroPython, English
-# Version: v0.8.1
+# Version: v1.0.0
 # Author: dash1101
+#
+# Package-managed since v0.8.2 — shell commands `fetch` / `neofetch` are
+# registered via programs.lp and updatable through `pkg upgrade`.
 
 import sys
 import os

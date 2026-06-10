@@ -1,8 +1,8 @@
 # Desc: Package manager for RPCortex - Nebula OS
 # File: /Core/pkgmgr.py
-# Last Updated: 4/1/2026
+# Last Updated: 6/9/2026
 # Lang: MicroPython, English
-# Version: v0.8.1
+# Version: v0.8.2
 # Author: dash1101
 #
 # Package format:  .pkg  (standard ZIP archive renamed)
@@ -163,17 +163,30 @@ def _parse_cfg(text):
 # ---------------------------------------------------------------------------
 
 def _register_command(cmd_entry):
+    """Register one or more shell commands from pkg.cmd.
+
+    Multiple commands (e.g. a command plus an alias) are separated by ';':
+      pkg.cmd: fetch:/Packages/X/x.py:fetch; neofetch:/Packages/X/x.py:fetch
+    """
     try:
         try:
             with open(PROGRAMS_LP, 'r') as f:
                 existing = f.read()
         except OSError:
             existing = ''
-        if cmd_entry in existing:
+        added = []
+        for entry in cmd_entry.split(';'):
+            entry = entry.strip()
+            if not entry or entry in existing:
+                continue
+            added.append(entry)
+        if not added:
             return
         with open(PROGRAMS_LP, 'a') as f:
-            f.write(cmd_entry + '\n')
-        ok("Registered command: {}".format(cmd_entry.split(':')[0]))
+            for entry in added:
+                f.write(entry + '\n')
+        ok("Registered command(s): {}".format(
+            ', '.join(e.split(':')[0] for e in added)))
     except Exception as e:
         warn("Could not register command: {}".format(e))
 
@@ -636,7 +649,7 @@ def upgrade():
 
         if avail and _ver_gt(avail['ver'], cur_ver):
             info("Upgrading {} {} -> {}...".format(name, cur_ver, avail['ver']))
-            if uninstall(name):
+            if uninstall(name, force=True):
                 import net
                 tmp = PKG_BASE + '/tmp_upgrade.pkg'
                 _ensure_dirs()
@@ -666,8 +679,13 @@ def upgrade():
 # Remove
 # ---------------------------------------------------------------------------
 
-def uninstall(pkg_name):
-    """Remove an installed package by name."""
+def uninstall(pkg_name, force=False):
+    """Remove an installed package by name.
+
+    force=True is used internally by upgrade(): it allows removing built-in
+    packages (so they can be reinstalled at a newer version) and preserves
+    the package's registry keys (pkg.reg_keys) across the reinstall.
+    """
     if not pkg_name:
         warn("Usage: pkg remove <name>")
         return False
@@ -697,8 +715,9 @@ def uninstall(pkg_name):
     try:
         with open(target_dir + '/package.cfg', 'r') as f:
             meta_check = _parse_cfg(f.read())
-        if meta_check.get('pkg.builtin') == 'true':
+        if meta_check.get('pkg.builtin') == 'true' and not force:
             error("'{}' is a built-in package and cannot be removed.".format(pkg_name))
+            info("Built-in packages can still be upgraded: pkg upgrade")
             return False
         reg_keys = meta_check.get('pkg.reg_keys', '')
     except OSError:
@@ -708,7 +727,9 @@ def uninstall(pkg_name):
     _rmtree(target_dir)
     _unregister_commands(pkg_name)
 
-    if reg_keys:
+    # During an upgrade (force=True) the registry keys are kept so the
+    # package's settings survive the reinstall.
+    if reg_keys and not force:
         _clear_reg_keys(reg_keys)
 
     ok("Package '{}' removed.".format(pkg_name))

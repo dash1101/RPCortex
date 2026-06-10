@@ -1,14 +1,14 @@
 # Desc: Entry point for RPCortex - Nebula OS
 # File: /main.py
-# Last Updated: 4/1/2026
+# Last Updated: 6/9/2026
 # Lang: MicroPython, English
-# Version: v0.8.1
+# Version: v0.8.2
 # Author: dash1101
 
-# RPC β81
+# RPC β9
 
-VERSION = "β81"
-CODENAME = "Nebula"
+VERSION = "β9"
+CODENAME = "Pulsar"
 
 _R = "\033[0m"
 

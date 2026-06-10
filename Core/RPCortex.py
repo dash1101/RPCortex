@@ -1,13 +1,20 @@
 # Desc: Core output utilities and session logging for RPCortex - Nebula OS
 # File: /Core/RPCortex.py
-# Last Updated: 4/1/2026
+# Last Updated: 6/9/2026
 # Lang: MicroPython, English
-# Version: v0.8.1
+# Version: v0.8.2
 # Author: dash1101
 
 import os
 import sys
 import time
+
+# Single source of truth for the running code's version and codename.
+# initialization.start() syncs Settings.Version and System.Codename in the
+# registry to these values on every boot, so the registry can never drift
+# after an OS update.
+OS_VERSION  = "v0.9.0"
+OS_CODENAME = "RPCortex B9 - Pulsar"
 
 post_check = True
 
@@ -35,12 +42,14 @@ LOG_DIR    = '/Nebula/Logs'
 LATEST_LOG = LOG_DIR + '/latest.log'
 MAX_LOGS   = 10
 
-_log_file = None   # open file handle during a session; None otherwise
+_log_file    = None   # open file handle during a session; None otherwise
+_log_pending = 0      # lines written since last flush (batched to cut flash latency)
 
 
 def init_session_log():
     """Open a new session log file. Call once after successful login."""
-    global _log_file
+    global _log_file, _log_pending
+    _log_pending = 0
     try:
         try:
             os.mkdir(LOG_DIR)
@@ -80,7 +89,13 @@ def close_session_log():
 
 
 def _log_write(level, msg):
-    """Internal: append one line to the open session log."""
+    """Internal: append one line to the open session log.
+
+    Flushes are batched — flushing flash on every line caused visible lag
+    between rapid output calls. Errors and warnings flush immediately so
+    the crash log stays useful; routine lines flush every 8 writes.
+    """
+    global _log_pending
     if not _log_file:
         return
     try:
@@ -90,7 +105,10 @@ def _log_write(level, msg):
                 t[0], t[1], t[2], t[3], t[4], t[5], level, msg
             )
         )
-        _log_file.flush()
+        _log_pending += 1
+        if _log_pending >= 8 or level in ('ERROR', 'FATAL', 'WARN'):
+            _log_file.flush()
+            _log_pending = 0
     except Exception:
         pass
 

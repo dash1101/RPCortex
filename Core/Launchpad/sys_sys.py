@@ -1,8 +1,8 @@
 # Desc: System info/control shell commands - RPCortex Nebula OS
 # File: /Core/Launchpad/sys_sys.py
-# Last Updated: 4/1/2026
+# Last Updated: 6/9/2026
 # Lang: MicroPython, English
-# Version: v0.8.1
+# Version: v0.8.2
 
 import sys
 import uos
@@ -94,9 +94,98 @@ def meminfo(args=None):
 
 
 def date(args=None):
+    if args:
+        sp = args.strip().split(None, 1)
+        if sp[0].lower() == 'set':
+            if len(sp) < 2:
+                warn("Usage: date set YYYY-MM-DD [HH:MM:SS]")
+                return
+            _set_rtc(sp[1].strip())
+            return
+        warn("Usage: date   |   date set YYYY-MM-DD [HH:MM:SS]")
+        return
     t = utime.localtime()
     multi("{:04d}-{:02d}-{:02d}  {:02d}:{:02d}:{:02d}".format(
         t[0], t[1], t[2], t[3], t[4], t[5]))
+
+
+def _set_rtc(s):
+    """Set the hardware RTC from 'YYYY-MM-DD [HH:MM:SS]'."""
+    try:
+        dt = s.split(None, 1)
+        ymd = dt[0].split('-')
+        y, mo, d = int(ymd[0]), int(ymd[1]), int(ymd[2])
+        hh = mm = ss = 0
+        if len(dt) > 1 and dt[1].strip():
+            hms = dt[1].strip().split(':')
+            hh = int(hms[0])
+            mm = int(hms[1]) if len(hms) > 1 else 0
+            ss = int(hms[2]) if len(hms) > 2 else 0
+    except (ValueError, IndexError):
+        error("Bad format. Use: date set YYYY-MM-DD HH:MM:SS")
+        return
+    try:
+        # RTC.datetime() tuple: (year, month, day, weekday, hours, min, sec, subsec)
+        # weekday is recomputed from the timestamp by localtime(), so 0 is fine.
+        machine.RTC().datetime((y, mo, d, 0, hh, mm, ss, 0))
+        ok("Clock set: {:04d}-{:02d}-{:02d} {:02d}:{:02d}:{:02d}".format(
+            y, mo, d, hh, mm, ss))
+    except Exception as e:
+        error("Could not set RTC: {}".format(e))
+
+
+def watch(args):
+    """watch [-n <secs>] <command>  — re-run a command periodically (Ctrl+C to stop)."""
+    if not args:
+        warn("Usage: watch [-n <secs>] <command>")
+        return
+    interval = 2.0
+    cmdline  = args.strip()
+    if cmdline.startswith('-n'):
+        rest = cmdline[2:].strip()
+        sp   = rest.split(None, 1)
+        if len(sp) < 2:
+            warn("Usage: watch -n <secs> <command>")
+            return
+        try:
+            interval = float(sp[0])
+        except ValueError:
+            warn("Invalid interval: '{}'".format(sp[0]))
+            return
+        cmdline = sp[1].strip()
+    if not cmdline:
+        warn("No command to watch.")
+        return
+
+    # Reach the *running* shell engine, not a fresh import.  The live shell is
+    # registered as 'Core.launchpad'; a bare `import launchpad` would build a
+    # second instance with an empty command table.
+    _lp = sys.modules.get('Core.launchpad') or sys.modules.get('launchpad')
+    if _lp is None:
+        error("watch: shell engine not available.")
+        return
+
+    cp = cmdline.split(None, 1)
+    c  = cp[0]
+    a  = cp[1] if len(cp) > 1 else None
+    try:
+        while True:
+            sys.stdout.write("\x1b[2J\x1b[H")
+            multi("\033[96mwatch\033[0m every {}s: {}   (Ctrl+C to stop)".format(interval, cmdline))
+            multi("")
+            try:
+                if c in _lp._CRITICAL:
+                    _lp._CRITICAL[c](a)
+                elif c in _lp.commands:
+                    _lp.execute_command(c, a)
+                else:
+                    _lp.execute_file(c, a)
+            except Exception as e:
+                error("watch: command error: {}".format(e))
+            utime.sleep(interval)
+    except KeyboardInterrupt:
+        multi("")
+        info("watch stopped.")
 
 
 def clear(args=None):
@@ -274,10 +363,9 @@ def pulse(args):
         error("Unknown subcommand '{}'. Run 'pulse' for usage.".format(sub))
 
 
-def bench(args=None):
-    info("Starting NebulaMark benchmark — this will take a while...")
-    from pulse import NebulaMark
-    NebulaMark()
+# `bench` moved to the NebulaMark package (/Packages/NebulaMark/) in v0.8.2.
+# `fetch` moved to the PicoFetch package (/Packages/PicoFetch/) in v0.8.2.
+# Both are registered via programs.lp and self-healed by launchpad.load_commands().
 
 
 # ---------------------------------------------------------------------------
@@ -537,13 +625,124 @@ def reinstall(args=None):
 # OS update  (apply a .rpc archive to the running OS)
 # ---------------------------------------------------------------------------
 
+_LATEST_URL = 'https://rpc.novalabs.app/releases/latest.json'
+_OTA_TMP    = '/update.rpc'
+
+
+def _vt(v):
+    """Parse 'v0.8.2' / '0.8.2-rc1' into a comparable tuple."""
+    try:
+        return tuple(int(x) for x in v.strip().lstrip('vV').split('-')[0].split('.'))
+    except Exception:
+        return (0,)
+
+
+def _fetch_manifest():
+    """Download and parse the OTA manifest. Returns dict or None."""
+    import net
+    if not net.is_available():
+        error("WiFi not available. Connect first with: wifi connect")
+        return None
+    if not net.status().get('connected'):
+        error("Not connected to WiFi. Run: wifi connect")
+        return None
+    # Free as much contiguous heap as possible before TLS
+    cache = globals().get('_cmd_cache')
+    if cache:
+        cache.clear()
+    gc.collect()
+    try:
+        status, body = net.wget(_LATEST_URL, verbose=False)
+    except Exception as e:
+        error("Could not reach update server: {}".format(e))
+        return None
+    if status != 200:
+        error("Update server returned HTTP {}.".format(status))
+        return None
+    try:
+        import ujson
+        return ujson.loads(body.decode('utf-8') if isinstance(body, (bytes, bytearray)) else body)
+    except Exception as e:
+        error("Bad update manifest: {}".format(e))
+        return None
+
+
+def _update_check():
+    """Check for a newer OS version. Returns the manifest if newer, else None."""
+    cur = regedit.read('Settings.Version') or 'v0.0.0'
+    info("Current version : {}".format(cur), p="Update")
+    info("Checking {} ...".format(_LATEST_URL), p="Update")
+    manifest = _fetch_manifest()
+    if manifest is None:
+        return None
+    latest = manifest.get('version', '?')
+    info("Latest version  : {}".format(latest), p="Update")
+    if _vt(latest) > _vt(cur):
+        notes = manifest.get('notes', '')
+        ok("Update available: {} -> {}".format(cur, latest), p="Update")
+        if notes:
+            multi("  Changes: {}".format(notes))
+        multi("  Install over the air:  update online")
+        multi("  Or from a file:        update from-file <path.rpc>")
+        return manifest
+    ok("You are up to date.", p="Update")
+    return None
+
+
+def _update_online(force=False):
+    """OTA: download the latest .rpc and apply it via _update_from_file."""
+    manifest = _update_check()
+    if manifest is None:
+        if not force:
+            return
+        manifest = _fetch_manifest()
+        if manifest is None:
+            return
+    url = manifest.get('url')
+    if not url:
+        error("Manifest has no download URL.")
+        return
+    sz_hint = manifest.get('size')
+    multi("")
+    info("Downloading {} ...".format(url), p="Update")
+    if sz_hint:
+        info("Size: {} KB — this may take a minute.".format(int(sz_hint) // 1024), p="Update")
+    gc.collect()
+    import net
+    try:
+        status, written = net.wget(url, dest=_OTA_TMP, verbose=False)
+    except MemoryError as e:
+        error("Not enough RAM for download: {}".format(e), p="Update")
+        info("Run 'freeup', or reboot and retry from a fresh shell.")
+        return
+    except Exception as e:
+        error("Download failed: {}".format(e), p="Update")
+        return
+    if status != 200:
+        error("HTTP {} — aborting.".format(status), p="Update")
+        try:
+            uos.remove(_OTA_TMP)
+        except OSError:
+            pass
+        return
+    ok("Downloaded {} KB to {}.".format(written // 1024, _OTA_TMP), p="Update")
+    _update_from_file(_OTA_TMP)
+    # Only reached if the update was cancelled or failed (success reboots)
+    try:
+        uos.remove(_OTA_TMP)
+        info("Removed temporary {}.".format(_OTA_TMP))
+    except OSError:
+        pass
+
+
 def update(args=None):
     """
-    Apply an OS update from a .rpc archive.
+    OS update management.
 
     Subcommands:
-      update from-file <path>   Extract .rpc to device, preserve user data, reboot
-      update check              (stub) Check for updates via network
+      update check               Check the update server for a newer version
+      update online [--force]    Download the latest release and install it (OTA)
+      update from-file <path>    Extract a .rpc to device, preserve user data, reboot
     """
     if not args:
         _update_help()
@@ -560,9 +759,10 @@ def update(args=None):
         _update_from_file(rest)
 
     elif sub == 'check':
-        info("Network-based update check is not yet available.", p="Update")
-        info("Download a .rpc release from rpc.novalabs.app/install.html", p="Update")
-        multi("  then run:  update from-file /path/to/os.rpc")
+        _update_check()
+
+    elif sub == 'online':
+        _update_online(force=(rest == '--force'))
 
     else:
         warn("Unknown subcommand '{}'. Run 'update' for usage.".format(sub))
@@ -666,6 +866,14 @@ def _update_from_file(archive_path):
     except Exception:
         pass
 
+    # Remove the OTA temp archive — the update is applied, no need to keep
+    # ~300 KB on flash through the reboot.
+    if archive_path == _OTA_TMP:
+        try:
+            uos.remove(_OTA_TMP)
+        except OSError:
+            pass
+
     ok("Update complete: {} file(s) installed.".format(n_installed), p="Update")
     multi("")
     info("Rebooting in 3 seconds to apply the update...", p="Update")
@@ -681,19 +889,16 @@ def _update_from_file(archive_path):
 def _update_help():
     info("=== OS Update ===")
     multi("")
-    multi("  update from-file <path>   Apply a .rpc archive as an OS update")
-    multi("                            User data and registry are preserved.")
+    multi("  update check               Check the update server for a newer version")
+    multi("  update online              Download + install the latest release (OTA)")
+    multi("  update online --force      Reinstall even if already up to date")
+    multi("  update from-file <path>    Apply a local .rpc archive")
     multi("")
-    multi("  update check              Check for available updates (coming soon)")
+    multi("  All update paths preserve user data:")
+    multi("    /Users/  /Nebula/  programs.lp (installed packages)")
     multi("")
-    multi("  You can also update from the browser (no WiFi needed):")
+    multi("  You can also update from the browser (no WiFi needed on device):")
     multi("    rpc.novalabs.app/update.html")
-    multi("    Connect your device and select a .rpc file.")
-
-
-def fetch(args=None):
-    from picofetch import fetch as _fetch
-    _fetch()
 
 
 def edit(args=None):
@@ -830,9 +1035,9 @@ def which(args):
 def help(args=None):
     if not args:
         info("=== RPCortex Nebula — Launchpad ===")
-        multi("  Filesystem : ls  cd  pwd  touch  mkdir  rm  read  head  tail  exec  rename  mv  cp  df  tree")
+        multi("  Filesystem : ls  cd  pwd  touch  mkdir  rm  read  head  tail  exec  rename  mv  cp  df  du  tree")
         multi("  Text       : grep  wc  find  sort  uniq  hex  basename  dirname")
-        multi("  System     : sysinfo  meminfo  uptime  date  ver  reboot  sreboot  rawrepl  recovery  sleep  which  clear  pulse  bench  fetch  edit  env  reg  freeup  settings")
+        multi("  System     : sysinfo  meminfo  uptime  date  watch  ver  reboot  sreboot  rawrepl  recovery  sleep  which  clear  pulse  bench  fetch  edit  env  reg  freeup  settings")
         multi("  OS Mgmt    : update  factoryreset  reinstall")
         multi("  Network    : wifi  wget  curl  runurl  ping  nslookup")
         multi("  Packages   : pkg install|remove|list|info|search|update|upgrade|repo")
@@ -847,8 +1052,9 @@ def help(args=None):
 
     if a == 'osmgmt':
         info("=== OS Management ===")
-        multi("  update from-file <f>  Apply a .rpc archive as an OS update")
-        multi("  update check          Check for available updates (coming soon)")
+        multi("  update check          Check the update server for a newer version")
+        multi("  update online         Download + install latest release (OTA)")
+        multi("  update from-file <f>  Apply a local .rpc archive as an OS update")
         multi("  factoryreset          Restore factory defaults + reboot")
         multi("  reinstall [f.rpc]     Full system wipe + reinstall stub")
         multi("")
@@ -863,14 +1069,15 @@ def help(args=None):
         multi("  touch <file>         Create empty file")
         multi("  mkdir <dir>          Create directory")
         multi("  rm  <path>           Delete file or directory (interactive)")
-        multi("  read/cat/view <f>    Print file contents")
+        multi("  read/cat/view <f>... Print file contents (multiple files ok)")
         multi("  head <f> [n]         First n lines  (default 10)")
         multi("  tail <f> [n]         Last n lines   (default 10)")
         multi("  exec <f.py>          Execute a Python script")
-        multi("  rename <old> <new>   Rename  (absolute paths)")
-        multi("  mv  <src> <dst>      Move    (absolute paths)")
-        multi("  cp  <src> <dst>      Copy    (absolute paths)")
-        multi("  df                   Disk usage")
+        multi("  rename <old> <new>   Rename  (relative or absolute)")
+        multi("  mv  <src> <dst>      Move    (relative or absolute)")
+        multi("  cp  <src> <dst>      Copy    (streamed; relative or absolute)")
+        multi("  df                   Disk usage (whole filesystem)")
+        multi("  du [path]            Size of a file or directory tree")
         multi("  tree [path]          Directory tree")
 
     elif a == "text":
@@ -889,7 +1096,8 @@ def help(args=None):
         multi("  sysinfo              System overview")
         multi("  meminfo              RAM usage")
         multi("  uptime               Time since boot")
-        multi("  date                 Current date/time")
+        multi("  date [set ...]       Show date/time, or 'date set YYYY-MM-DD HH:MM:SS'")
+        multi("  watch [-n s] <cmd>   Re-run a command every s seconds (Ctrl+C stops)")
         multi("  ver                  Show OS version")
         multi("  reboot               Hard restart")
         multi("  sreboot              Soft reboot")
@@ -905,7 +1113,8 @@ def help(args=None):
         multi("  env [section]        Dump registry contents")
         multi("  reg get|set <key>    Read/write a registry key")
         multi("  freeup               Free cached RAM (clear cmd cache + GC)")
-        multi("  update from-file <f>  Apply a .rpc archive as an OS update")
+        multi("  update check|online  Check for / install OS updates (OTA)")
+        multi("  update from-file <f>  Apply a local .rpc archive as an OS update")
         multi("  factoryreset         Restore factory defaults and reboot")
         multi("  reinstall [f.rpc]    Full wipe + reinstall stub (recovery)")
 
@@ -949,7 +1158,7 @@ def help(args=None):
         multi("  help [category]      This help message")
         multi("  echo / print <txt>   Print text")
         multi("  history              Command history")
-        multi("  alias [name=cmd]     Define or list aliases")
+        multi("  alias [name=cmd]     Define or list aliases (saved across reboots)")
         multi("  unalias <name>       Remove an alias")
         multi("  freeup               Free cached RAM")
 
@@ -962,15 +1171,16 @@ def help(args=None):
             'touch':        'touch <file>        Create an empty file',
             'mkdir':        'mkdir <dir>         Create a directory',
             'rm':           'rm <path>           Delete file or directory (interactive)',
-            'read':         'read/cat <file>     Print file contents',
-            'cat':          'read/cat <file>     Print file contents',
+            'read':         'read/cat <file>...  Print file contents (multiple ok)',
+            'cat':          'read/cat <file>...  Print file contents (multiple ok)',
             'head':         'head <f> [n]        First n lines (default 10)',
             'tail':         'tail <f> [n]        Last n lines (default 10)',
             'exec':         'exec <f.py>         Execute a Python script',
-            'rename':       'rename <old> <new>  Rename a file',
-            'mv':           'mv <src> <dst>      Move a file',
-            'cp':           'cp <src> <dst>      Copy a file',
-            'df':           'df                  Disk usage',
+            'rename':       'rename <old> <new>  Rename a file (relative or absolute)',
+            'mv':           'mv <src> <dst>      Move a file (relative or absolute)',
+            'cp':           'cp <src> <dst>      Copy a file (streamed, large-file safe)',
+            'df':           'df                  Disk usage (whole filesystem)',
+            'du':           'du [path]           Size of a file or directory tree',
             'tree':         'tree [path]         Directory tree',
             'grep':         'grep <pat> <file>   Search file contents',
             'wc':           'wc <file>           Count lines/words/bytes',
@@ -988,7 +1198,8 @@ def help(args=None):
             'sysinfo':      'sysinfo             Print system information',
             'meminfo':      'meminfo             Show RAM usage',
             'uptime':       'uptime              Time since boot',
-            'date':         'date                Current date / time',
+            'date':         'date [set ...]      Show or set date/time (date set YYYY-MM-DD HH:MM:SS)',
+            'watch':        'watch [-n s] <cmd>  Re-run a command periodically (Ctrl+C stops)',
             'ver':          'ver                 Show OS version',
             'clear':        'clear / cls         Clear the screen',
             'cls':          'clear / cls         Clear the screen',
@@ -1006,7 +1217,7 @@ def help(args=None):
             'freeup':       'freeup              Clear command cache + GC',
             'gc':           'gc / freeup         Clear command cache + GC',
             'settings':     'settings            Open settings TUI panel',
-            'update':       'update from-file <f>  Apply a .rpc OS update',
+            'update':       'update check|online|from-file <f>  Check for / apply OS updates',
             'factoryreset': 'factoryreset        Restore factory defaults',
             'reinstall':    'reinstall [f.rpc]   Full system wipe + stub',
             'wifi':         'wifi status|scan|connect|disconnect|list|add|forget',
@@ -1025,7 +1236,7 @@ def help(args=None):
             'echo':         'echo <text>         Print text',
             'say':          'say <text>          Print text',
             'history':      'history             Show command history',
-            'alias':        'alias [name=cmd]    Define or list aliases',
+            'alias':        'alias [name=cmd]    Define or list aliases (saved across reboots)',
             'unalias':      'unalias <name>      Remove an alias',
             'help':         'help [category]     Show help (categories: filesystem text system network packages users misc osmgmt)',
         }

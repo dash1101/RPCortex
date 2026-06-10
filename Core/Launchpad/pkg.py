@@ -1,8 +1,8 @@
 # Desc: Package manager shell command handler for RPCortex - Nebula OS
 # File: /Core/Launchpad/pkg.py
-# Last Updated: 4/1/2026
+# Last Updated: 6/9/2026
 # Lang: MicroPython, English
-# Version: v0.3.0
+# Version: v0.8.2
 # Author: dash1101
 #
 # Loaded once into a cached exec scope by launchpad.py.

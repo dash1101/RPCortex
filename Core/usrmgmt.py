@@ -1,8 +1,8 @@
 # Desc: User management — accounts, passwords, authentication for RPCortex - Nebula OS
 # File: /Core/usrmgmt.py
-# Last Updated: 4/1/2026
+# Last Updated: 6/9/2026
 # Lang: MicroPython, English
-# Version: v0.8.1
+# Version: v0.8.2
 # Author: dash1101
 #
 # Password storage format (user.cfg):
@@ -130,6 +130,14 @@ def _inpt(prompt):
     except Exception:
         return input(prompt + ": ")
 
+def _minpt(prompt):
+    """Masked input for password prompts; falls back to plain input."""
+    try:
+        from RPCortex import masked_inpt
+        return masked_inpt(prompt)
+    except Exception:
+        return input(prompt + ": ")
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -206,15 +214,15 @@ def change_password(username):
                 found = True
                 stored_hash = parts[1][1:-1]   # strip surrounding quotes
                 if stored_hash != 'NOPASS':
-                    old_pw = _inpt("Current password")
+                    old_pw = _minpt("Current password")
                     if not verify_password(old_pw, stored_hash):
                         _error("Incorrect current password.")
                         return
-                new_pw = _inpt("New password")
+                new_pw = _minpt("New password")
                 if not new_pw.strip():
                     _warn("Password cannot be blank.")
                     return
-                confirm = _inpt("Confirm new password")
+                confirm = _minpt("Confirm new password")
                 if new_pw != confirm:
                     _error("Passwords do not match.")
                     return

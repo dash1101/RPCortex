@@ -1,8 +1,8 @@
 # Desc: Filesystem shell commands - RPCortex Nebula OS
 # File: /Core/Launchpad/sys_fs.py
-# Last Updated: 4/1/2026
+# Last Updated: 6/9/2026
 # Lang: MicroPython, English
-# Version: v0.8.1
+# Version: v0.8.2
 
 import sys
 import uos
@@ -28,6 +28,43 @@ def _fmt_size(n):
     else:
         m = n / 1048576.0
         return "{:.0f}M".format(m) if m >= 10 else "{:.1f}M".format(m)
+
+
+def _abspath(p):
+    """Resolve a path against the current working directory if it's relative."""
+    return p if p.startswith('/') else uos.getcwd().rstrip('/') + '/' + p
+
+
+def _copy_chunked(src, dst, chunk=1024):
+    """Stream-copy src -> dst in fixed-size chunks (never loads the whole file).
+
+    Returns True on success.  Streaming avoids the OOM that whole-file reads
+    caused on large files on a 264 KB Pico.
+    """
+    try:
+        sf = open(src, 'rb')
+    except OSError as e:
+        error("Cannot open source '{}': {}".format(src, e))
+        return False
+    try:
+        df = open(dst, 'wb')
+    except OSError as e:
+        sf.close()
+        error("Cannot open destination '{}': {}".format(dst, e))
+        return False
+    try:
+        while True:
+            buf = sf.read(chunk)
+            if not buf:
+                break
+            df.write(buf)
+        return True
+    except OSError as e:
+        error("Copy failed: {}".format(e))
+        return False
+    finally:
+        sf.close()
+        df.close()
 
 
 def ls(args=None):
@@ -236,17 +273,22 @@ def delete(args):
 
 def read(args):
     if not args:
-        warn("Usage: read <file>")
+        warn("Usage: read <file> [file2 ...]")
         return
-    path = args if args.startswith('/') else uos.getcwd().rstrip('/') + '/' + args
-    try:
-        if uos.stat(path)[0] & 0x4000:
-            error("'{}' is a directory.".format(path))
-            return
-        with open(path, 'r') as f:
-            multi(f.read())
-    except OSError as e:
-        error("Cannot read '{}': {}".format(path, e))
+    files    = args.split()
+    multiple = len(files) > 1
+    for fp in files:
+        path = _abspath(fp)
+        try:
+            if uos.stat(path)[0] & 0x4000:
+                error("'{}' is a directory.".format(path))
+                continue
+            if multiple:
+                multi(_CD + "==> {} <==".format(fp) + _CR)
+            with open(path, 'r') as f:
+                multi(f.read())
+        except OSError as e:
+            error("Cannot read '{}': {}".format(path, e))
 
 
 def head(args):
@@ -326,11 +368,11 @@ def rename(args):
         return
     parts = _split_two(args)
     if parts is None:
-        error("Provide exactly two absolute paths.")
+        error("Usage: rename <old_path> <new_path>")
         return
-    old, new = parts
-    if not old.startswith('/') or not new.startswith('/'):
-        error("Both paths must be absolute.")
+    old, new = _abspath(parts[0]), _abspath(parts[1])
+    if old == new:
+        warn("Source and destination are the same.")
         return
     try:
         uos.rename(old, new)
@@ -345,26 +387,33 @@ def move(args):
         return
     parts = _split_two(args)
     if parts is None:
-        error("Provide exactly two absolute paths.")
+        error("Usage: mv <source> <dest>")
         return
-    src, dst = parts
-    if not src.startswith('/') or not dst.startswith('/'):
-        error("Both paths must be absolute.")
+    src, dst = _abspath(parts[0]), _abspath(parts[1])
+    # If dest is a directory, move into it under the source's basename.
+    try:
+        if uos.stat(dst)[0] & 0x4000:
+            dst = dst.rstrip('/') + '/' + src.rstrip('/').split('/')[-1]
+    except OSError:
+        pass
+    if src == dst:
+        warn("Source and destination are the same.")
+        return
+    # Fast path: same-filesystem rename — no data copy, no RAM used.
+    try:
+        uos.rename(src, dst)
+        ok("Moved '{}' to '{}'".format(src, dst))
+        return
+    except OSError:
+        pass   # cross-fs or rename unsupported — fall back to streamed copy
+    if not _copy_chunked(src, dst):
         return
     try:
-        try:
-            if uos.stat(dst)[0] & 0x4000:
-                dst = dst.rstrip('/') + '/' + src.split('/')[-1]
-        except OSError:
-            pass
-        with open(src, 'rb') as sf:
-            data = sf.read()
-        with open(dst, 'wb') as df:
-            df.write(data)
         uos.remove(src)
-        ok("Moved '{}' to '{}'".format(src, dst))
     except OSError as e:
-        error("Cannot move: {}".format(e))
+        warn("Copied, but could not remove source '{}': {}".format(src, e))
+        return
+    ok("Moved '{}' to '{}'".format(src, dst))
 
 
 def copy(args):
@@ -373,25 +422,20 @@ def copy(args):
         return
     parts = _split_two(args)
     if parts is None:
-        error("Provide exactly two absolute paths.")
+        error("Usage: cp <source> <dest>")
         return
-    src, dst = parts
-    if not src.startswith('/') or not dst.startswith('/'):
-        error("Both paths must be absolute.")
-        return
+    src, dst = _abspath(parts[0]), _abspath(parts[1])
+    # If dest is a directory, copy into it under the source's basename.
     try:
-        try:
-            if uos.stat(dst)[0] & 0x4000:
-                dst = dst.rstrip('/') + '/' + src.split('/')[-1]
-        except OSError:
-            pass
-        with open(src, 'rb') as sf:
-            data = sf.read()
-        with open(dst, 'wb') as df:
-            df.write(data)
+        if uos.stat(dst)[0] & 0x4000:
+            dst = dst.rstrip('/') + '/' + src.rstrip('/').split('/')[-1]
+    except OSError:
+        pass
+    if src == dst:
+        error("Source and destination are the same.")
+        return
+    if _copy_chunked(src, dst):
         ok("Copied '{}' to '{}'".format(src, dst))
-    except OSError as e:
-        error("Cannot copy: {}".format(e))
 
 
 def diskfree(args=None):
@@ -406,6 +450,34 @@ def diskfree(args=None):
         multi("  Free  : {} KB".format(free // 1024))
     except OSError as e:
         error("Cannot retrieve disk info: {}".format(e))
+
+
+def du(args=None):
+    """du [path]  — total size of a file or directory tree (recursive)."""
+    target = _abspath(args.strip()) if args else uos.getcwd()
+    try:
+        uos.stat(target)
+    except OSError:
+        error("'{}' does not exist.".format(target))
+        return
+
+    def _size(p):
+        try:
+            st = uos.stat(p)
+        except OSError:
+            return 0
+        if st[0] & 0x4000:
+            tot = 0
+            try:
+                for e in uos.listdir(p):
+                    tot += _size(p.rstrip('/') + '/' + e)
+            except OSError:
+                pass
+            return tot
+        return st[6]
+
+    total = _size(target)
+    multi("  {:>8}  {}".format(_fmt_size(total), target))
 
 
 def tree(args=None):

@@ -1,8 +1,8 @@
 # Desc: Reinstall boot stub for RPCortex — copied to /main.py by `reinstall`
 # File: /Core/rpc_stub.py
-# Last Updated: 4/1/2026
+# Last Updated: 6/9/2026
 # Lang: MicroPython, English
-# Version: v0.8.1
+# Version: v0.8.2
 # Author: dash1101
 #
 # ─────────────────────────────────────────────────────────────────────────

@@ -1,8 +1,8 @@
 # Desc: Terminal text editor (nano-style) for RPCortex - Nebula OS
 # File: /Core/editor.py
-# Last Updated: 4/1/2026
+# Last Updated: 6/9/2026
 # Lang: MicroPython, English
-# Version: v1.0.0
+# Version: v0.8.2
 # Author: dash1101
 #
 # Invoked via the shell: edit <filename>

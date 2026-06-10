@@ -1,8 +1,8 @@
 # Desc: WiFi management shell commands for RPCortex - Nebula OS
 # File: /Core/Launchpad/wifi.py
-# Last Updated: 4/1/2026
+# Last Updated: 6/9/2026
 # Lang: MicroPython, English
-# Version: v0.8.1
+# Version: v0.8.2
 # Author: dash1101
 #
 # Loaded once into a cached exec scope by launchpad.py.
@@ -147,14 +147,15 @@ def _connect(ssid_arg):
                 warn("No SSID entered.")
                 return
 
-    # Check if this SSID has a saved password
+    # Check if this SSID has a saved password (networks.cfg)
     saved_pw = None
-    import regedit
-    for slot in range(1, 3):
-        stored_ssid = regedit.read('Networks.WiFi_SSID_{}'.format(slot))
-        if stored_ssid and stored_ssid.strip() == ssid:
-            saved_pw = regedit.read('Networks.WiFi_Password_{}'.format(slot)) or ''
-            break
+    try:
+        for s, p in net._read_networks():
+            if s.lower() == ssid.lower():
+                saved_pw = p
+                break
+    except Exception:
+        pass
 
     if saved_pw is not None:
         multi("Using saved password for '{}'.".format(ssid))
@@ -199,7 +200,7 @@ def _add(ssid_arg):
     if not ssid:
         warn("No SSID entered.")
         return
-    password = inpt("Password (blank for open network)").strip()
+    password = masked_inpt("Password (blank for open network)").strip()
     net.add_saved(ssid, password)
 
 

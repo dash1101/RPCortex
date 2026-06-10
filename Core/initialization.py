@@ -1,11 +1,11 @@
 # Desc: Boot initialization and login sequence for RPCortex - Nebula OS
 # File: /Core/initialization.py
-# Last Updated: 4/1/2026
+# Last Updated: 6/9/2026
 # Lang: MicroPython, English
-# Version: v0.8.1
+# Version: v0.8.2
 # Author: dash1101
 
-from Core.RPCortex import multi, fatal, error, info, warn, ok, inpt, masked_inpt
+from Core.RPCortex import multi, fatal, error, info, warn, ok, inpt, masked_inpt, OS_VERSION, OS_CODENAME
 import Core.regedit as regedit
 from Core.launchpad import launchpad_init as _boot
 from Core.launchpad import recovery_init  as _recovery
@@ -53,7 +53,7 @@ def setup_seq():
     Creates root + guest accounts, adds the official repo, applies boot prefs.
     """
     multi("")
-    info("=== RPCortex v0.8.1 — First Run Setup ===")
+    info("=== RPCortex {} — First Run Setup ===".format(OS_VERSION))
     multi("")
     info("Welcome! Let's get your device configured.")
     multi("  Everything here can be changed later from the shell.")
@@ -140,6 +140,21 @@ def start(arg):
             warn("Unknown start argument: '{}'".format(arg))
             return
 
+        # Sync the registry version + codename with the running code.  After an
+        # OS update the new code boots against the old registry values — without
+        # this the post-update banner, `ver`, and `fetch` would keep reporting
+        # the old release name.
+        if regedit.read("Settings.Version") != OS_VERSION:
+            try:
+                regedit.save("Settings.Version", OS_VERSION)
+            except Exception:
+                pass
+        if regedit.read("System.Codename") != OS_CODENAME:
+            try:
+                regedit.save("System.Codename", OS_CODENAME)
+            except Exception:
+                pass
+
         version = regedit.read("Settings.Version") or "Unknown"
         info("RPCortex {} — starting up...".format(version))
 
@@ -159,8 +174,15 @@ def start(arg):
         ok("  Clockable     : {}".format(regedit.read("Hardware.Clockable")   or "?"))
         ok("  Nova GUI      : {}".format(regedit.read("Features.Nova")        or "false"))
 
-        # Startup mode banner
-        mode = regedit.read("Settings.Startup") or "0"
+        # Startup mode banner — use the pre-POST value captured by post.py.
+        # POST arms Settings.Startup to "1" at its end (session-active
+        # sentinel), so reading the registry here would show the unexpected-
+        # shutdown warning on every boot, clean or not.
+        try:
+            import Core.post as _post
+            mode = getattr(_post, 'boot_startup_mode', '0') or '0'
+        except Exception:
+            mode = regedit.read("Settings.Startup") or "0"
         entry = _STARTUP_MSGS.get(mode)
         if entry:
             level, msg = entry
