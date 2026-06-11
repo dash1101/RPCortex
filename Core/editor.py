@@ -1,4 +1,4 @@
-# Desc: Terminal text editor (nano-style) for RPCortex - Nebula OS
+# Desc: Terminal text editor (nano-style) for RPCortex - Pulsar OS
 # File: /Core/editor.py
 # Last Updated: 6/9/2026
 # Lang: MicroPython, English

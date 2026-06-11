@@ -1,4 +1,4 @@
-# Desc: System information display for RPCortex - Nebula OS  (neofetch style)
+# Desc: System information display for RPCortex - Pulsar OS  (neofetch style)
 # File: /Packages/PicoFetch/picofetch.py
 # Last Updated: 6/9/2026
 # Lang: MicroPython, English
@@ -254,30 +254,33 @@ def fetch(color='bright_cyan', show_ascii=True):
     wifi    = _get_wifi()
     swatch1, swatch2 = _color_swatches()
 
-    # Header line:  user@nebula
+    device_id = _reg('System.Device_ID') or 'pulsar'
+    codename  = _reg('System.Codename')  or 'Pulsar'
+    owner     = _reg('System.Owner')
+
+    # Header line:  user@device
     host_line = (
-        accent + bold + user   + reset +
-        white  + '@'           + reset +
-        accent + bold + 'nebula' + reset
+        accent + bold + user      + reset +
+        white  + '@'              + reset +
+        accent + bold + device_id + reset
     )
     separator = accent + ('\u2500' * 28) + reset
 
-    device_id = _reg('System.Device_ID') or 'nebula'
-
     info_rows = [
-        ('OS',      'RPCortex {}  ({})'.format(os_ver, sys.platform)),
-        ('Device',  device_id),
-        ('Board',   board),
-        ('CPU',     cpu),
-        ('Freq',    freq),
-        ('Runtime', mpy),
-        ('RAM',     ram),
-        ('Flash',   flash),
-        ('Temp',    temp),
-        ('Uptime',  uptime),
-        ('WiFi',    wifi),
-        ('UID',     uid),
-        ('Shell',   'Launchpad  (RPCortex Nebula)'),
+        ('OS',       'RPCortex {}  ({})'.format(os_ver, sys.platform)),
+        ('Codename', codename),
+        ('Device',   device_id + (('  (' + owner + ')') if owner else '')),
+        ('Board',    board),
+        ('CPU',      cpu),
+        ('Freq',     freq),
+        ('Runtime',  mpy),
+        ('RAM',      ram),
+        ('Flash',    flash),
+        ('Temp',     temp),
+        ('Uptime',   uptime),
+        ('WiFi',     wifi),
+        ('UID',      uid),
+        ('Shell',    'Launchpad v0.9.1'),
     ]
 
     right = []

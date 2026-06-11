@@ -42,12 +42,12 @@ _MANIFEST = (
     '/Core/Launchpad/sys_net.py',
     '/Core/Launchpad/sys_user.py',
     '/Core/Launchpad/sys_text.py',
-    '/Nebula/Registry/registry.cfg',
-    '/Nebula/Registry/user.cfg',
+    '/Pulsar/Registry/registry.cfg',
+    '/Pulsar/Registry/user.cfg',
 )
 
-_REGISTRY = '/Nebula/Registry/registry.cfg'
-_LOG      = '/Nebula/Logs/latest.log'
+_REGISTRY = '/Pulsar/Registry/registry.cfg'
+_LOG      = '/Pulsar/Logs/latest.log'
 
 
 def fscheck(args=None):

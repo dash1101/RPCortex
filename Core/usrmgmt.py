@@ -1,4 +1,4 @@
-# Desc: User management — accounts, passwords, authentication for RPCortex - Nebula OS
+# Desc: User management — accounts, passwords, authentication for RPCortex - Pulsar OS
 # File: /Core/usrmgmt.py
 # Last Updated: 6/9/2026
 # Lang: MicroPython, English
@@ -18,7 +18,7 @@
 import hashlib
 import os
 
-_CFG = "/Nebula/Registry/user.cfg"
+_CFG = "/Pulsar/Registry/user.cfg"
 
 # ---------------------------------------------------------------------------
 # Helpers

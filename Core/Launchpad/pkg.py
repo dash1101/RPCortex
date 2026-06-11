@@ -1,4 +1,4 @@
-# Desc: Package manager shell command handler for RPCortex - Nebula OS
+# Desc: Package manager shell command handler for RPCortex - Pulsar OS
 # File: /Core/Launchpad/pkg.py
 # Last Updated: 6/9/2026
 # Lang: MicroPython, English

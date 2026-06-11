@@ -21,7 +21,7 @@ if '/Core' not in sys.path:
 
 from RPCortex import warn, error, info, ok, multi
 
-_CFG = '/Nebula/Registry/startup.cfg'
+_CFG = '/Pulsar/Registry/startup.cfg'
 _HEADER = (
     "# RPCortex startup tasks — one command per line, run once at login.\n"
     "# Manage with: startup add/remove/list/clear\n"
@@ -149,7 +149,7 @@ def startup(args=None):
 # (`startup add task run`) for an autonomous, headless device.
 # ===========================================================================
 
-_TASKS = '/Nebula/Registry/tasks.cfg'
+_TASKS = '/Pulsar/Registry/tasks.cfg'
 _THEADER = (
     "# RPCortex scheduled tasks — '<seconds>\\t<command>' per line.\n"
     "# Manage with: task add <secs> <command> / list / remove <n> / clear\n"

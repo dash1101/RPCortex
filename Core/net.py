@@ -25,7 +25,7 @@ from RPCortex import ok, warn, error, info, multi
 
 # Saved networks file — one "ssid\tpassword" per line (unlimited entries).
 # Replaces the old 2-slot registry approach (Networks.WiFi_SSID_1/2).
-_NETWORKS_FILE = '/Nebula/Registry/networks.cfg'
+_NETWORKS_FILE = '/Pulsar/Registry/networks.cfg'
 
 # ---------------------------------------------------------------------------
 # Detection helpers
@@ -134,9 +134,10 @@ def scan():
 # Connect / disconnect
 # ---------------------------------------------------------------------------
 
-def connect(ssid, password, timeout=20):
+def connect(ssid, password, timeout=20, silent=False):
     """
     Connect to a specific WiFi network.
+    silent=True: print nothing unless an error occurs.
     Returns True on success, False on failure/timeout.
     """
     import utime
@@ -153,13 +154,15 @@ def connect(ssid, password, timeout=20):
         except Exception:
             pass
         if cur_ssid == ssid:
-            ok("Already connected to '{}'.".format(ssid))
+            if not silent:
+                ok("Already connected to '{}'.".format(ssid))
             return True
         wlan.disconnect()
         utime.sleep_ms(300)
 
     wlan.active(True)
-    info("Connecting to '{}'...".format(ssid))
+    if not silent:
+        info("Connecting to '{}'...".format(ssid))
     wlan.connect(ssid, password)
 
     deadline = utime.ticks_add(utime.ticks_ms(), timeout * 1000)
@@ -167,17 +170,18 @@ def connect(ssid, password, timeout=20):
     while not wlan.isconnected():
         if utime.ticks_diff(deadline, utime.ticks_ms()) <= 0:
             wlan.disconnect()
-            error("Connection timed out after {}s.".format(timeout))
+            error("Connection to '{}' timed out after {}s.".format(ssid, timeout))
             return False
         utime.sleep_ms(400)
         dots += 1
-        if dots % 5 == 0:
+        if not silent and dots % 5 == 0:
             info("  still connecting...")
 
     cfg = wlan.ifconfig()
-    ok("Connected!  IP: {}  Gateway: {}".format(cfg[0], cfg[2]))
+    if not silent:
+        ok("Connected!  IP: {}  Gateway: {}".format(cfg[0], cfg[2]))
 
-    # Auto-save on successful connection (idempotent — updates if already saved)
+    # Auto-save on successful connection
     try:
         add_saved(ssid, password)
     except Exception:

@@ -121,18 +121,18 @@ def setup_seq():
     # --- Silent: add official package repo ---
     _REPO = 'https://raw.githubusercontent.com/dash1101/RPCortex-repo/main/repo/index.json'
     try:
-        for _d in ('/Nebula/pkg', '/Nebula/pkg/cache'):
+        for _d in ('/Pulsar/pkg', '/Pulsar/pkg/cache'):
             try:
                 uos.mkdir(_d)
             except OSError:
                 pass
         try:
-            with open('/Nebula/pkg/repos.cfg', 'r') as _f:
+            with open('/Pulsar/pkg/repos.cfg', 'r') as _f:
                 _existing = _f.read()
         except Exception:
             _existing = ''
         if _REPO not in _existing:
-            with open('/Nebula/pkg/repos.cfg', 'a') as _f:
+            with open('/Pulsar/pkg/repos.cfg', 'a') as _f:
                 _f.write(_REPO + '\n')
     except Exception:
         pass   # non-fatal; user can add manually with `pkg repo add`

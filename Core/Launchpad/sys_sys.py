@@ -1,4 +1,4 @@
-# Desc: System info/control shell commands - RPCortex Nebula OS
+# Desc: System info/control shell commands - RPCortex Pulsar OS
 # File: /Core/Launchpad/sys_sys.py
 # Last Updated: 6/9/2026
 # Lang: MicroPython, English
@@ -200,13 +200,13 @@ def clear(args=None):
 
 def ver(args=None):
     ver_str  = regedit.read('Settings.Version') or 'Unknown'
-    codename = regedit.read('System.Codename')  or 'Nebula'
+    codename = regedit.read('System.Codename')  or 'Pulsar'
     multi("RPCortex {}  —  {}".format(ver_str, codename))
     multi("MicroPython {}   Platform: {}".format(sys.version, sys.platform))
 
 
 def env(args=None):
-    REG_PATH = '/Nebula/Registry/registry.cfg'
+    REG_PATH = '/Pulsar/Registry/registry.cfg'
     section_filter = args.strip().lower() if args else None
     try:
         with open(REG_PATH, 'r') as f:
@@ -407,14 +407,14 @@ def factoryreset(args=None):
     # --- 1. Clear user accounts -----------------------------------------
     info("Clearing user accounts...", p="Reset")
     try:
-        with open('/Nebula/Registry/user.cfg', 'w') as f:
+        with open('/Pulsar/Registry/user.cfg', 'w') as f:
             f.write('')
         ok("User accounts cleared.", p="Reset")
     except OSError as e:
         warn("Could not clear user.cfg: {}".format(e), p="Reset")
     # Remove backup if present
     try:
-        uos.remove('/Nebula/Registry/user.cfg.bak')
+        uos.remove('/Pulsar/Registry/user.cfg.bak')
     except OSError:
         pass
 
@@ -422,12 +422,12 @@ def factoryreset(args=None):
     info("Resetting registry...", p="Reset")
     try:
         regedit._invalidate()
-        uos.remove('/Nebula/Registry/registry.cfg')
+        uos.remove('/Pulsar/Registry/registry.cfg')
         ok("Registry deleted — will be recreated from template on next boot.", p="Reset")
     except OSError as e:
         warn("Could not remove registry: {}".format(e), p="Reset")
     try:
-        uos.remove('/Nebula/Registry/registry.cfg.bak')
+        uos.remove('/Pulsar/Registry/registry.cfg.bak')
     except OSError:
         pass
 
@@ -471,9 +471,9 @@ def factoryreset(args=None):
     # --- 5. Clear session logs -------------------------------------------
     info("Clearing logs...", p="Reset")
     try:
-        for fname in uos.listdir('/Nebula/Logs'):
+        for fname in uos.listdir('/Pulsar/Logs'):
             try:
-                uos.remove('/Nebula/Logs/' + fname)
+                uos.remove('/Pulsar/Logs/' + fname)
             except OSError:
                 pass
         ok("Logs cleared.", p="Reset")
@@ -536,7 +536,7 @@ def reinstall(args=None):
     warn("=" * 60, p="Wipe")
     multi("")
     multi("  EVERY file on the device will be erased, including:")
-    multi("    /Core/   /Packages/   /Nebula/   /Users/   /Programs/")
+    multi("    /Core/   /Packages/   /Pulsar/   /Users/   /Programs/")
     multi("")
     multi("  After the wipe the device boots a minimal stub.")
     multi("  To reinstall RPCortex:")
@@ -594,7 +594,7 @@ def reinstall(args=None):
             warn("Continuing wipe — use Web Installer to restore.", p="Wipe")
 
     # --- Wipe all OS directories -----------------------------------------
-    _WIPE = ('/Core', '/Packages', '/Nebula', '/Users', '/Programs', '/Sandbox')
+    _WIPE = ('/Core', '/Packages', '/Pulsar', '/Users', '/Programs', '/Sandbox')
     info("Wiping OS files...", p="Wipe")
     for d in _WIPE:
         try:
@@ -813,8 +813,8 @@ def _update_from_file(archive_path):
     multi("")
     multi("  OS files will be overwritten.  User data is preserved:")
     multi("    /Users/              (home directories)")
-    multi("    /Nebula/Registry/    (registry + user accounts)")
-    multi("    /Nebula/pkg/         (package cache + repos)")
+    multi("    /Pulsar/Registry/    (registry + user accounts)")
+    multi("    /Pulsar/pkg/         (package cache + repos)")
     multi("")
     multi("  Tip: run 'freeup' first if you're on a Pico 1 with limited RAM.")
     multi("")
@@ -901,7 +901,7 @@ def _update_help():
     multi("  update from-file <path>    Apply a local .rpc archive")
     multi("")
     multi("  All update paths preserve user data:")
-    multi("    /Users/  /Nebula/  programs.lp (installed packages)")
+    multi("    /Users/  /Pulsar/  programs.lp (installed packages)")
     multi("")
     multi("  You can also update from the browser (no WiFi needed on device):")
     multi("    rpc.novalabs.app/update.html")

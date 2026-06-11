@@ -1,4 +1,4 @@
-# Desc: Text processing shell commands - RPCortex Nebula OS
+# Desc: Text processing shell commands - RPCortex Pulsar OS
 # File: /Core/Launchpad/sys_text.py
 # Last Updated: 6/9/2026
 # Lang: MicroPython, English

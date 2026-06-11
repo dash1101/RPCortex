@@ -1,17 +1,17 @@
-# Desc: Registry — system configuration read/write for RPCortex - Nebula OS
+# Desc: Registry — system configuration read/write for RPCortex - Pulsar OS
 # File: /Core/regedit.py
 # Last Updated: 6/9/2026
 # Lang: MicroPython, English
 # Version: v0.8.2
 # Author: dash1101
 #
-# The registry is an INI-style config file at /Nebula/Registry/registry.cfg.
+# The registry is an INI-style config file at /Pulsar/Registry/registry.cfg.
 # Sections are delimited by [SectionName] headers; keys use colon separators.
 #
 # This module caches the parsed config in memory after the first load.
 # Writes go through to disk immediately and update the cache in place.
 
-CONFIG_FILE = "/Nebula/Registry/registry.cfg"
+CONFIG_FILE = "/Pulsar/Registry/registry.cfg"
 
 # ---------------------------------------------------------------------------
 # In-memory config cache

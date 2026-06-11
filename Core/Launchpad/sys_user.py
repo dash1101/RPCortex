@@ -1,4 +1,4 @@
-# Desc: User management shell commands - RPCortex Nebula OS
+# Desc: User management shell commands - RPCortex Pulsar OS
 # File: /Core/Launchpad/sys_user.py
 # Last Updated: 6/9/2026
 # Lang: MicroPython, English

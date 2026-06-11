@@ -76,9 +76,9 @@ def _fskip(fh, n):
 # ---------------------------------------------------------------------------
 
 _SKIP = ('website/', 'repo/', '.git', '__pycache__', 'CLAUDE', 'temp/', 'tests/')
-# Note: Users/ and Nebula/ are NOT skipped here — this stub runs after a full
+# Note: Users/ and Pulsar/ are NOT skipped here — this stub runs after a full
 # wipe so there is no existing user data to preserve.  If the .rpc includes
-# default Nebula/ content (e.g. a pre-seeded registry), it will be installed.
+# default Pulsar/ content (e.g. a pre-seeded registry), it will be installed.
 _EXTS = ('.py', '.cfg', '.lp')
 
 def _want(rel):

@@ -1,4 +1,4 @@
-# Desc: WiFi management shell commands for RPCortex - Nebula OS
+# Desc: WiFi management shell commands for RPCortex - Pulsar OS
 # File: /Core/Launchpad/wifi.py
 # Last Updated: 6/9/2026
 # Lang: MicroPython, English
@@ -26,7 +26,8 @@ def wifi(args=None):
     Usage:
       wifi status              Show current connection state
       wifi scan                Scan for nearby networks
-      wifi connect [ssid]      Connect to a network (prompts for password)
+      wifi connect [-s] [ssid] Connect to a network (-s = silent unless error)
+      wifi autoconnect         Connect to strongest saved network, no prompts
       wifi disconnect          Disconnect from current network
       wifi list                List saved networks
       wifi add <ssid>          Save a new network (prompts for password)
@@ -45,7 +46,18 @@ def wifi(args=None):
     elif sub == 'scan':
         _scan()
     elif sub in ('connect', 'conn'):
-        _connect(rest)
+        # Parse optional -s / --silent flag
+        silent = False
+        target = rest
+        if rest and rest.startswith('-s'):
+            silent = True
+            target = rest[2:].strip() or None
+        elif rest and rest.startswith('--silent'):
+            silent = True
+            target = rest[8:].strip() or None
+        _connect(target, silent=silent)
+    elif sub in ('autoconnect', 'auto'):
+        _autoconnect()
     elif sub in ('disconnect', 'disc', 'down'):
         _disconnect()
     elif sub == 'list':
@@ -61,13 +73,14 @@ def wifi(args=None):
 
 def _usage():
     info("=== WiFi Commands ===")
-    multi("  wifi status              Connection status")
-    multi("  wifi scan                Scan for nearby networks")
-    multi("  wifi connect [ssid]      Connect to a network")
-    multi("  wifi disconnect          Disconnect")
-    multi("  wifi list                List saved networks")
-    multi("  wifi add <ssid>          Save a network")
-    multi("  wifi forget <ssid>       Remove a saved network")
+    multi("  wifi status                Connection status")
+    multi("  wifi scan                  Scan for nearby networks")
+    multi("  wifi connect [-s] [ssid]   Connect to a network  (-s = quiet)")
+    multi("  wifi autoconnect           Connect to strongest saved network")
+    multi("  wifi disconnect            Disconnect")
+    multi("  wifi list                  List saved networks")
+    multi("  wifi add <ssid>            Save a network")
+    multi("  wifi forget <ssid>         Remove a saved network")
 
 
 # ---------------------------------------------------------------------------
@@ -118,7 +131,7 @@ def _scan():
     multi("")
 
 
-def _connect(ssid_arg):
+def _connect(ssid_arg, silent=False):
     import net
     if not net.is_available():
         error("WiFi hardware not available.")
@@ -126,6 +139,10 @@ def _connect(ssid_arg):
 
     if ssid_arg:
         ssid = ssid_arg
+    elif silent:
+        # In silent mode, fall back to autoconnect
+        _autoconnect(silent=True)
+        return
     else:
         # Try saved networks first
         saved = net.list_saved()
@@ -147,7 +164,7 @@ def _connect(ssid_arg):
                 warn("No SSID entered.")
                 return
 
-    # Check if this SSID has a saved password (networks.cfg)
+    # Check for saved password
     saved_pw = None
     try:
         for s, p in net._read_networks():
@@ -158,12 +175,76 @@ def _connect(ssid_arg):
         pass
 
     if saved_pw is not None:
-        multi("Using saved password for '{}'.".format(ssid))
+        if not silent:
+            multi("Using saved password for '{}'.".format(ssid))
         password = saved_pw
+    elif silent:
+        # No saved password and in silent mode — can't prompt
+        error("No saved password for '{}'. Use 'wifi add' first.".format(ssid))
+        return
     else:
         password = masked_inpt("Password (blank for open network)").strip()
 
-    net.connect(ssid, password)
+    net.connect(ssid, password, silent=silent)
+
+
+def _autoconnect(silent=False):
+    """Scan saved networks, connect to the one with strongest RSSI. No prompts."""
+    import net
+    if not net.is_available():
+        error("WiFi hardware not available.")
+        return
+
+    saved = net._read_networks()
+    if not saved:
+        if not silent:
+            warn("No saved networks. Use 'wifi add <ssid>' first.")
+        else:
+            error("No saved networks for autoconnect.")
+        return
+
+    if not silent:
+        info("Scanning for saved networks...")
+
+    try:
+        scan_results = net.scan()
+    except Exception:
+        scan_results = []
+
+    # Build SSID->RSSI map from scan
+    rssi_map = {}
+    for r in scan_results:
+        ssid = r.get('ssid', '')
+        if ssid and ssid not in rssi_map:
+            rssi_map[ssid] = r.get('rssi', -100)
+
+    # Match saved networks against scan, pick strongest
+    best_ssid = None
+    best_pw   = None
+    best_rssi = -200
+    for ssid, pw in saved:
+        rssi = rssi_map.get(ssid, None)
+        if rssi is None:
+            # try case-insensitive match
+            for k, v in rssi_map.items():
+                if k.lower() == ssid.lower():
+                    rssi = v
+                    break
+        if rssi is not None and rssi > best_rssi:
+            best_rssi = rssi
+            best_ssid = ssid
+            best_pw   = pw
+
+    if best_ssid is None:
+        # Fall back: just try saved networks in order
+        best_ssid, best_pw = saved[0]
+        if not silent:
+            warn("No saved network visible; trying '{}' anyway.".format(best_ssid))
+    else:
+        if not silent:
+            info("Best match: '{}' ({} dBm)".format(best_ssid, best_rssi))
+
+    net.connect(best_ssid, best_pw, silent=silent)
 
 
 def _disconnect():

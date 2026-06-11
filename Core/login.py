@@ -1,4 +1,4 @@
-# Desc: Login stub - RPCortex Nebula OS
+# Desc: Login stub - RPCortex Pulsar OS
 # File: /Core/login.py
 # Last Updated: 6/9/2026
 # Lang: MicroPython, English

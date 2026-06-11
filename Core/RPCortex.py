@@ -86,7 +86,7 @@ WHITE_AT  = '\033[97m'
 # Session log
 # ---------------------------------------------------------------------------
 
-LOG_DIR    = '/Nebula/Logs'
+LOG_DIR    = '/Pulsar/Logs'
 LATEST_LOG = LOG_DIR + '/latest.log'
 MAX_LOGS   = 10
 
@@ -107,7 +107,7 @@ def init_session_log():
         _log_file = open(LATEST_LOG, 'w')
         t = time.localtime()
         _log_file.write(
-            "=== RPCortex Nebula - Session Log ===\n"
+            "=== RPCortex Pulsar - Session Log ===\n"
             "Started : {}-{:02d}-{:02d} {:02d}:{:02d}:{:02d}\n"
             "=====================================\n\n".format(
                 t[0], t[1], t[2], t[3], t[4], t[5]

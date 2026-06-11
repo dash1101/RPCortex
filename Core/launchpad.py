@@ -146,8 +146,8 @@ _history     = []               # command history (most recent last)
 _HIST_MAX    = 50
 _shell_state = {'running': False, 'home': '/', 'host': 'pulsar', 'stdin': None}  # mutable; cached scopes hold a reference
 _aliases     = {}               # name -> expanded command string (persisted to aliases.cfg)
-_ALIAS_CFG   = '/Nebula/Registry/aliases.cfg'
-_STARTUP_CFG = '/Nebula/Registry/startup.cfg'   # commands run once at shell start
+_ALIAS_CFG   = '/Pulsar/Registry/aliases.cfg'
+_STARTUP_CFG = '/Pulsar/Registry/startup.cfg'   # commands run once at shell start
 
 # ---------------------------------------------------------------------------
 # Critical built-in commands — inline handlers that NEVER go through exec().

@@ -1,4 +1,4 @@
-# Desc: Hardware management and clock tuning for RPCortex - Nebula OS
+# Desc: Hardware management and clock tuning for RPCortex - Pulsar OS
 # File: /Core/pulse.py
 # Last Updated: 6/9/2026
 # Lang: MicroPython, English

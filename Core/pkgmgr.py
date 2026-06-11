@@ -1,4 +1,4 @@
-# Desc: Package manager for RPCortex - Nebula OS
+# Desc: Package manager for RPCortex - Pulsar OS
 # File: /Core/pkgmgr.py
 # Last Updated: 6/9/2026
 # Lang: MicroPython, English
@@ -37,9 +37,9 @@ from RPCortex import ok, warn, error, info, multi
 
 PACKAGES_DIR = '/Packages'
 PROGRAMS_LP  = '/Core/Launchpad/programs.lp'
-PKG_BASE     = '/Nebula/pkg'
-REPOS_CFG    = '/Nebula/pkg/repos.cfg'
-CACHE_DIR    = '/Nebula/pkg/cache'
+PKG_BASE     = '/Pulsar/pkg'
+REPOS_CFG    = '/Pulsar/pkg/repos.cfg'
+CACHE_DIR    = '/Pulsar/pkg/cache'
 
 # ---------------------------------------------------------------------------
 # Minimal ZIP reader  (stored and deflate-compressed entries)

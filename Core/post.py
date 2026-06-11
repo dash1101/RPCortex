@@ -1,4 +1,4 @@
-# Desc: Power-On Self Test (POST) for RPCortex - Nebula OS
+# Desc: Power-On Self Test (POST) for RPCortex - Pulsar OS
 # File: /Core/post.py
 # Last Updated: 6/9/2026
 # Lang: MicroPython, English
@@ -96,26 +96,37 @@ def check_registry():
         core.fatal("PLEASE REINSTALL RPCORTEX!")
         return False
 
+    # Migrate /Nebula/ -> /Pulsar/ if updating from an older version
+    try:
+        uos.stat("/Nebula")
+        try:
+            uos.stat("/Pulsar")
+        except OSError:
+            uos.rename("/Nebula", "/Pulsar")
+            core.ok("Migrated /Nebula/ -> /Pulsar/")
+    except OSError:
+        pass  # /Nebula doesn't exist — nothing to migrate
+
     # Check/create the registry config file
     try:
-        uos.stat("/Nebula/Registry/registry.cfg")
+        uos.stat("/Pulsar/Registry/registry.cfg")
         core.ok("Registry found!")
     except OSError:
-        core.warn("File not found: '/Nebula/Registry/registry.cfg'")
-        core.info("Creating /Nebula/Registry/")
+        core.warn("File not found: '/Pulsar/Registry/registry.cfg'")
+        core.info("Creating /Pulsar/Registry/")
         try:
-            uos.mkdir("/Nebula")
+            uos.mkdir("/Pulsar")
         except OSError:
             pass   # already exists — fine
         try:
-            uos.mkdir("/Nebula/Registry")
+            uos.mkdir("/Pulsar/Registry")
             core.ok("Registry directory created")
         except OSError:
             pass   # already exists — fine
 
-        core.info("Building Registry '/Nebula/Registry/registry.cfg'")
+        core.info("Building Registry '/Pulsar/Registry/registry.cfg'")
         try:
-            with open("/Nebula/Registry/registry.cfg", "w") as f:
+            with open("/Pulsar/Registry/registry.cfg", "w") as f:
                 f.write(registry_content)
             core.ok("Registry created")
         except OSError as err:
@@ -251,12 +262,12 @@ def check_cores():
         core.error("Error checking CPU cores: {}".format(err))
 
 def _ensure_log_dir():
-    """Create /Nebula/Logs/ on first boot if it doesn't exist."""
+    """Create /Pulsar/Logs/ on first boot if it doesn't exist."""
     try:
-        uos.stat("/Nebula/Logs")
+        uos.stat("/Pulsar/Logs")
     except OSError:
         try:
-            uos.mkdir("/Nebula/Logs")
+            uos.mkdir("/Pulsar/Logs")
         except OSError:
             pass  # non-fatal — log writes will just silently fail
 
@@ -275,7 +286,7 @@ def _warn_unexpected_shutdown():
     last_user = regedit.read("Settings.Active_User") or "unknown"
     core.info("Last active user : {}".format(last_user), p="POST")
 
-    log_path = "/Nebula/Logs/latest.log"
+    log_path = "/Pulsar/Logs/latest.log"
     try:
         uos.stat(log_path)
         with open(log_path, "r") as f:
@@ -285,7 +296,7 @@ def _warn_unexpected_shutdown():
             tail = lines[-6:] if len(lines) >= 6 else lines
             for line in tail:
                 core.multi("    " + line.rstrip())
-        core.info("Full log: read /Nebula/Logs/latest.log", p="POST")
+        core.info("Full log: read /Pulsar/Logs/latest.log", p="POST")
     except OSError:
         core.info("No previous log found.", p="POST")
 
@@ -310,7 +321,7 @@ def script():
         if _vb[0]:
             core.info(msg, p=p)
 
-    # Guarantee /Nebula/Logs/ exists now that /Nebula/ is confirmed.
+    # Guarantee /Pulsar/Logs/ exists now that /Pulsar/ is confirmed.
     _ensure_log_dir()
     gc.collect()
 

@@ -1,4 +1,4 @@
-# Desc: CLI settings panel for RPCortex - Nebula OS
+# Desc: CLI settings panel for RPCortex - Pulsar OS
 # File: /Core/Launchpad/settings.py
 # Last Updated: 6/9/2026
 # Lang: MicroPython, English
