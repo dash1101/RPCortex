@@ -1,6 +1,6 @@
 # Desc: RPCortex shell scripting (.rps) - Pulsar OS
 # File: /Core/Launchpad/sys_script.py
-# Last Updated: 6/10/2026
+# Last Updated: 6/11/2026
 # Lang: MicroPython, English
 # Version: v0.9.1
 #
@@ -10,24 +10,28 @@
 #
 #   script <file.rps>
 #
-# Language (first cut):
+# Language:
 #   # comment                      blank lines and #-lines are ignored
 #   set NAME VALUE                 define a variable (VALUE may contain $vars)
 #   $NAME                          expands to the variable's value anywhere
-#   <any shell command>           run it (echo, ls, wifi, pipes, && / || ...)
-#   if COND                        run the block if COND is true
-#     ...
-#   else                           (optional)
-#     ...
-#   end
-#   while COND                     repeat the block while COND is true
-#     ...
-#   end
+#   inc NAME [n]                   add n (default 1) to a numeric variable
+#   dec NAME [n]                   subtract n (default 1) from a variable
+#   prompt NAME [text]             read a line of input into NAME
+#   capture NAME <command>         run a command, store its output in NAME
+#   <any shell command>            run it (echo, ls, wifi, pipes, && / || ...)
+#   if COND / else / end           conditional block
+#   while COND / end               loop while COND is true
+#   break / continue               exit / skip a while iteration
+#   stop                           end the script early
 #
-# COND is either a builtin test or a shell command (true when it succeeds):
-#   eq A B        true if A == B           ne A B      true if A != B
-#   exists PATH   true if the path exists   empty A     true if A is empty
-#   <command>     true if the command exits without error
+# COND is a builtin test or a shell command (true when it succeeds):
+#   eq A B      A == B            ne A B      A != B
+#   gt A B      A > B  (numeric)  lt A B      A < B
+#   ge A B      A >= B            le A B      A <= B
+#   contains A B  B is a substring of A
+#   exists PATH true if the path exists       empty A   true if A is empty
+#   not COND    negates any condition
+#   <command>   true if the command exits without error
 
 import sys
 import uos
@@ -35,13 +39,21 @@ import uos
 if '/Core' not in sys.path:
     sys.path.append('/Core')
 
-from RPCortex import warn, error, info, ok, multi
+from RPCortex import warn, error, info, ok, multi, inpt
 
 _MAX_LOOP = 100000   # while-loop guard against runaway scripts
 
 
 class _ScriptStop(Exception):
-    """Raised to unwind the interpreter when the shell logs out mid-script."""
+    """Raised to unwind the interpreter (logout mid-script, or `stop`)."""
+
+
+class _Break(Exception):
+    """Raised by `break` — caught by the nearest while loop."""
+
+
+class _Continue(Exception):
+    """Raised by `continue` — caught by the nearest while loop."""
 
 
 def _abspath(p):
@@ -80,16 +92,33 @@ def _run(line):
     return lp._run_line(line)
 
 
+def _num(s):
+    try:
+        return float(s)
+    except (ValueError, TypeError):
+        return None
+
+
+def _compare(a, b):
+    """Numeric compare when both look numeric, else lexical. -1 / 0 / 1."""
+    na, nb = _num(a), _num(b)
+    if na is not None and nb is not None:
+        return -1 if na < nb else (1 if na > nb else 0)
+    return -1 if a < b else (1 if a > b else 0)
+
+
 # ---------------------------------------------------------------------------
 # Parser — build a nested block structure from the source lines
 # ---------------------------------------------------------------------------
+
+_SIMPLE = ('set', 'inc', 'dec', 'prompt', 'capture')   # head -> (kind, rest)
+_BARE   = ('break', 'continue', 'stop')                # head -> (kind,)
+
 
 def _parse_block(lines, i, stop):
     """Parse statements until a line whose first token is in `stop`.
 
     Returns (block, index_of_stop_line).  Raises ValueError on a missing end.
-    Statement tuples: ('set', rest) | ('cmd', text) |
-                      ('if', cond, then_block, else_block) | ('while', cond, body)
     """
     block = []
     n = len(lines)
@@ -122,8 +151,11 @@ def _parse_block(lines, i, stop):
             i = j + 1
         elif head in ('else', 'end'):
             raise ValueError("unexpected '{}'".format(head))
-        elif head == 'set':
-            block.append(('set', rest))
+        elif head in _BARE:
+            block.append((head,))
+            i += 1
+        elif head in _SIMPLE:
+            block.append((head, rest))
             i += 1
         else:
             block.append(('cmd', raw))
@@ -165,16 +197,80 @@ class _Interp:
             return
         self.vars[p[0]] = self._expand(p[1]) if len(p) > 1 else ''
 
-    def _cond(self, cond):
-        cond = self._expand(cond).strip()
+    def _do_incdec(self, rest, sign):
+        p = rest.split()
+        if not p:
+            error("script: 'inc'/'dec' needs a variable name.")
+            return
+        name = p[0]
+        amt = 1
+        if len(p) > 1:
+            try:
+                amt = int(self._expand(p[1]))
+            except ValueError:
+                amt = 1
+        try:
+            cur = int(self.vars.get(name, '0') or '0')
+        except ValueError:
+            cur = 0
+        self.vars[name] = str(cur + sign * amt)
+
+    def _do_prompt(self, rest):
+        p = rest.split(None, 1)
+        if not p or not p[0]:
+            error("script: 'prompt' needs a variable name.")
+            return
+        label = self._expand(p[1]) if len(p) > 1 else p[0]
+        try:
+            self.vars[p[0]] = inpt(label).strip()
+        except Exception:
+            self.vars[p[0]] = ''
+
+    def _do_capture(self, rest):
+        p = rest.split(None, 1)
+        if not p or not p[0]:
+            error("script: 'capture' needs a name and a command.")
+            return
+        cmd = self._expand(p[1]) if len(p) > 1 else ''
+        self.vars[p[0]] = self._capture_run(cmd)
+
+    def _capture_run(self, cmd):
+        """Run a command, returning its multi() output as a stripped string."""
+        if not cmd:
+            return ''
+        try:
+            import RPCortex as _r
+            prev = _r.begin_capture()
+            try:
+                _run(cmd)
+            finally:
+                out = _r.end_capture(prev)
+            return (out or '').strip()
+        except Exception:
+            # Capture unsupported — run normally, return empty.
+            _run(cmd)
+            return ''
+
+    def _eval_cond(self, cond):
+        """Evaluate an already-expanded condition string."""
+        cond = cond.strip()
         if not cond:
             return False
         parts = cond.split()
         op = parts[0]
+        if op == 'not':
+            return not self._eval_cond(cond[3:].strip())
         if op == 'eq':
             return len(parts) >= 3 and parts[1] == parts[2]
         if op == 'ne':
             return not (len(parts) >= 3 and parts[1] == parts[2])
+        if op in ('gt', 'lt', 'ge', 'le'):
+            if len(parts) < 3:
+                return False
+            c = _compare(parts[1], parts[2])
+            return {'gt': c > 0, 'lt': c < 0, 'ge': c >= 0, 'le': c <= 0}[op]
+        if op == 'contains':
+            return len(parts) >= 3 and parts[2] in parts[1]
         if op == 'empty':
             return len(parts) < 2 or parts[1] == ''
         if op == 'exists':
@@ -188,6 +284,9 @@ class _Interp:
         # Otherwise: run as a shell command, true if it exits without error
         return bool(_run(cond))
 
+    def _cond(self, cond):
+        return self._eval_cond(self._expand(cond))
+
     def _exec(self, block):
         for st in block:
             if not _running():
@@ -197,12 +296,31 @@ class _Interp:
                 _run(self._expand(st[1]))
             elif kind == 'set':
                 self._do_set(st[1])
+            elif kind == 'inc':
+                self._do_incdec(st[1], 1)
+            elif kind == 'dec':
+                self._do_incdec(st[1], -1)
+            elif kind == 'prompt':
+                self._do_prompt(st[1])
+            elif kind == 'capture':
+                self._do_capture(st[1])
+            elif kind == 'break':
+                raise _Break
+            elif kind == 'continue':
+                raise _Continue
+            elif kind == 'stop':
+                raise _ScriptStop
             elif kind == 'if':
                 self._exec(st[2] if self._cond(st[1]) else st[3])
             elif kind == 'while':
                 guard = 0
                 while self._cond(st[1]):
-                    self._exec(st[2])
+                    try:
+                        self._exec(st[2])
+                    except _Continue:
+                        pass
+                    except _Break:
+                        break
                     guard += 1
                     if guard >= _MAX_LOOP:
                         error("script: while exceeded {} iterations — aborting.".format(_MAX_LOOP))
@@ -213,6 +331,10 @@ class _Interp:
             self._exec(self.block)
         except _ScriptStop:
             pass
+        except _Break:
+            warn("script: 'break' outside a while loop — ignored.")
+        except _Continue:
+            warn("script: 'continue' outside a while loop — ignored.")
 
 
 def script(args):

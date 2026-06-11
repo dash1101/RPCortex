@@ -232,7 +232,7 @@ def _crit_rawrepl(args=None):
     main.py — MicroPython drops to REPL after main.py returns.
     """
     info("Exiting to MicroPython REPL...")
-    multi("  Connect with the Web Installer: rpc.novalabs.app/install.html")
+    multi("  Connect with the Web Installer: rpc.novalabs.app/install")
     close_session_log()
     try:
         regedit.save("Settings.Startup", "0")
@@ -370,6 +370,46 @@ def _crit_recovery(args=None):
     recovery_init("Manual entry via 'recovery' command.")
 
 
+def emit_pkg_manifest():
+    """Print a machine-readable list of installed packages for the web tools.
+
+    Output (between markers, one entry per line):
+        PKGS_BEGIN
+        PKG:<name>:<version>
+        ...
+        PKGS_END
+
+    Scans /Packages/<dir>/package.cfg directly — no pkgmgr import — so it works
+    under low memory and at the login prompt as well as inside the shell. Used
+    by packages.html to show install state without assuming the shell is up.
+    """
+    import uos
+    sys.stdout.write('PKGS_BEGIN\r\n')
+    try:
+        for d in uos.listdir('/Packages'):
+            cfg  = '/Packages/{}/package.cfg'.format(d)
+            name = d
+            ver  = '?'
+            try:
+                with open(cfg) as f:
+                    for line in f:
+                        line = line.strip()
+                        if line.startswith('pkg.name') and ':' in line:
+                            name = line.split(':', 1)[1].strip()
+                        elif line.startswith('pkg.ver') and ':' in line:
+                            ver = line.split(':', 1)[1].strip()
+            except OSError:
+                continue
+            sys.stdout.write('PKG:{}:{}\r\n'.format(name, ver))
+    except OSError:
+        pass
+    sys.stdout.write('PKGS_END\r\n')
+
+
+def _crit_pkgs(args=None):
+    emit_pkg_manifest()
+
+
 _CRITICAL = {
     'reboot':    _crit_reboot,
     'sreboot':   _crit_sreboot,
@@ -377,6 +417,7 @@ _CRITICAL = {
     'freeup':    _crit_freeup,
     'gc':        _crit_freeup,
     '_xfer':     _crit_xfer,
+    '_pkgs':     _crit_pkgs,
     'alias':     _crit_alias,
     'unalias':   _crit_unalias,
     'rawrepl':   _crit_rawrepl,
@@ -881,21 +922,38 @@ def _shell_input(prompt):
     while True:
         # Idle-logout: only while the line is still empty (user idle at a fresh
         # prompt). Once typing has started we fall back to a normal blocking read
-        # so a half-typed command is never interrupted. Disabled when idle_secs
-        # is 0 or on platforms without select().
-        _idle = _shell_state.get('idle_secs', 0)
-        if _idle and not buf:
+        # so a half-typed command is never interrupted. Disabled in recovery
+        # (idle_enabled False) or on platforms without select().
+        #
+        # The timeout is re-read live from the registry each wait so changing it
+        # in the `settings` app takes effect immediately — no re-login needed.
+        # The wait polls in short 0.5s slices (the proven SysMon pattern) rather
+        # than one long select(), which is more reliable for stdin across ports.
+        if not buf and _shell_state.get('idle_enabled'):
             try:
-                import select as _sel
-                _r, _, _ = _sel.select([sys.stdin], [], [], _idle)
-                if not _r:
-                    sys.stdout.write('\r\n')
-                    warn("Session timed out after {} min of inactivity.".format(
-                        max(1, _idle // 60)))
-                    _shell_state['running'] = False
-                    return ''
-            except (ImportError, OSError):
-                pass   # no select on this platform — idle logout unavailable
+                _idle_min = int(regedit.read('Settings.Idle_Logout') or 0)
+            except Exception:
+                _idle_min = 0
+            if _idle_min > 0:
+                try:
+                    import select as _sel
+                    import utime as _ut
+                    _deadline = _idle_min * 60 * 1000
+                    _t0 = _ut.ticks_ms()
+                    _got_input = False
+                    while _ut.ticks_diff(_ut.ticks_ms(), _t0) < _deadline:
+                        _r, _, _ = _sel.select([sys.stdin], [], [], 0.5)
+                        if _r:
+                            _got_input = True
+                            break
+                    if not _got_input:
+                        sys.stdout.write('\r\n')
+                        warn("Session timed out after {} min of inactivity.".format(
+                            _idle_min))
+                        _shell_state['running'] = False
+                        return ''
+                except (ImportError, OSError):
+                    pass   # no select on this platform — idle logout unavailable
         try:
             ch = sys.stdin.read(1)
         except Exception:
@@ -1121,12 +1179,10 @@ def launchpad_init(username, password):
         _shell_state['host'] = regedit.read('System.Device_ID') or 'pulsar'
     except Exception:
         _shell_state['host'] = 'pulsar'
-    # Idle-logout timeout (minutes in registry → seconds for select()). 0 = off.
-    try:
-        _idle_min = int(regedit.read('Settings.Idle_Logout') or 0)
-        _shell_state['idle_secs'] = _idle_min * 60 if _idle_min > 0 else 0
-    except Exception:
-        _shell_state['idle_secs'] = 0
+    # Idle-logout is enabled for authenticated sessions; the actual timeout
+    # (Settings.Idle_Logout, minutes) is read live in _shell_input so it can be
+    # changed from the `settings` app without re-logging in.
+    _shell_state['idle_enabled'] = True
     try:
         uos.chdir(home)
     except OSError:
@@ -1226,7 +1282,7 @@ def recovery_init(errStr):
         warn("Re-imaging RPCortex is strongly recommended.", p="Recovery")
     info("A limited shell is now available.  Type 'help' for commands.", p="Recovery")
 
-    _shell_state['idle_secs'] = 0   # never idle-logout out of recovery mode
+    _shell_state['idle_enabled'] = False   # never idle-logout out of recovery mode
     _shell_state['running'] = True
 
     while _shell_state['running']:

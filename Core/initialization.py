@@ -331,6 +331,24 @@ def login_seq():
             _login_xfer(username[5:].strip())
             continue
 
+        # rawrepl at login — drop to the bare MicroPython REPL so the Web
+        # Installer can flash a fresh image even when no one is logged in.
+        # SystemExit is a BaseException: it propagates past start()'s
+        # `except Exception` and out of main.py, leaving the >>> prompt active.
+        if username == 'rawrepl':
+            multi("Exiting to MicroPython REPL...")
+            raise SystemExit(0)
+
+        # _pkgs at login — emit the machine-readable installed-package manifest
+        # so the web package browser can show install state without a session.
+        if username == '_pkgs':
+            try:
+                from Core.launchpad import emit_pkg_manifest
+                emit_pkg_manifest()
+            except Exception:
+                sys.stdout.write("PKGS_BEGIN\r\nPKGS_END\r\n")
+            continue
+
         if not decode(username, silent=True):
             warn("User '{}' not found.".format(username))
             multi("  Available accounts: root, guest  |  New users: run 'mkacct' after login")
