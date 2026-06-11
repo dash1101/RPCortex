@@ -37,6 +37,7 @@ Setup: false
 Network_Autoconnect: false
 OC_On_Boot: false
 Verbose_Boot: false
+Idle_Logout: 0
 
 [Features]
 Program_Execution: true

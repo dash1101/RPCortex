@@ -17,6 +17,27 @@ def whoami(args=None):
     multi(user if user else "(unknown)")
 
 
+def users(args=None):
+    """List all user accounts on the device."""
+    from usrmgmt import list_users
+    active = regedit.read('Settings.Active_User')
+    accounts = list_users()
+    if not accounts:
+        warn("No user accounts found.")
+        return
+    info("User accounts ({}):".format(len(accounts)))
+    for name, nopass, home in accounts:
+        tags = []
+        if name == active:
+            tags.append('active')
+        if name == 'root':
+            tags.append('admin')
+        if nopass:
+            tags.append('nopass')
+        tag_str = '  [{}]'.format(', '.join(tags)) if tags else ''
+        multi("  {:<16} {}{}".format(name, home or '-', tag_str))
+
+
 def mkacct(args=None):
     from usrmgmt import add_user
     info("Create a new user account.")

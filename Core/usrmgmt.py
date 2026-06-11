@@ -199,6 +199,24 @@ def is_nopass(username):
     return False
 
 
+def list_users():
+    """Return a list of (username, nopass, home) tuples from user.cfg."""
+    out = []
+    try:
+        with open(_CFG, 'r') as f:
+            for line in f:
+                parts = line.strip().split(', ')
+                if len(parts) >= 2 and parts[0]:
+                    name = parts[0][1:-1]   # strip surrounding quotes
+                    h    = parts[1][1:-1]
+                    home = parts[2][1:-1] if len(parts) >= 3 else ''
+                    if name:
+                        out.append((name, h == 'NOPASS', home))
+    except OSError:
+        pass
+    return out
+
+
 def change_password(username):
     """Interactive password change for an existing user."""
     bak = _backup(_CFG)

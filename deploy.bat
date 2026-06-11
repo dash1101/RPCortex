@@ -94,7 +94,7 @@ set "MPR=mpremote %PORT_ARG%"
 :: the full connect + raw-REPL handshake (~1-2s), so 30+ files took a minute+.
 :: `cp -r <dir> :` recurses and creates the directory on the device; chaining
 :: commands with `+` keeps everything in a SINGLE raw-REPL session -- a huge
-:: speedup. It also copies ALL package dirs (PicoFetch, PulseMark, NTP, ...),
+:: speedup. It also copies ALL package dirs (PicoFetch, RPCMark, NTP, ...),
 :: which the per-file version missed.
 ::
 :: Only Core\, Packages\, and main.py are touched -- \Nebula\ and \Users\

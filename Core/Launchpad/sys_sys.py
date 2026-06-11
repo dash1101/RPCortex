@@ -369,8 +369,8 @@ def pulse(args):
         error("Unknown subcommand '{}'. Run 'pulse' for usage.".format(sub))
 
 
-# `bench` lives in the PulseMark package (/Packages/PulseMark/) — renamed from
-# NebulaMark in v0.9.1. `fetch` lives in the PicoFetch package (/Packages/PicoFetch/).
+# `bench` lives in the RPCMark package (/Packages/RPCMark/) — formerly
+# NebulaMark/PulseMark. `fetch` lives in the PicoFetch package (/Packages/PicoFetch/).
 # Both are registered via programs.lp and self-healed by launchpad.load_commands().
 
 
@@ -1049,7 +1049,7 @@ def help(args=None):
         multi("  OS Mgmt    : update  factoryreset  reinstall")
         multi("  Network    : wifi  wget  curl  runurl  ping  nslookup")
         multi("  Packages   : pkg install|remove|list|info|search|update|upgrade|repo")
-        multi("  Users      : whoami  mkacct  rmuser  chpswd  logout  exit")
+        multi("  Users      : whoami  users  mkacct  rmuser  chpswd  logout  exit")
         multi("  Misc       : help  echo  history  alias  unalias")
         multi("")
         multi("  Type 'help <category>' for details.")
@@ -1115,7 +1115,7 @@ def help(args=None):
         multi("  which <cmd>          Show where a command is defined")
         multi("  clear / cls          Clear the screen")
         multi("  pulse set|min|max|boot  CPU clock management")
-        multi("  bench                Run PulseMark benchmark")
+        multi("  bench                Run RPCMark benchmark")
         multi("  fetch / neofetch     System info display")
         multi("  edit/nano [file]     Open the text editor")
         multi("  env [section]        Dump registry contents")
@@ -1156,6 +1156,7 @@ def help(args=None):
     elif a == "users":
         info("=== User Management ===")
         multi("  whoami               Show current user")
+        multi("  users                List all user accounts")
         multi("  mkacct               Create a new user account")
         multi("  rmuser <user>        Remove a user account")
         multi("  chpswd <user>        Change a user's password")
@@ -1237,7 +1238,7 @@ def help(args=None):
             'sleep':        'sleep <secs>        Pause for given seconds',
             'which':        'which <cmd>         Show where a command is defined',
             'pulse':        'pulse set|min|max|boot  CPU clock management',
-            'bench':        'bench               Run PulseMark benchmark',
+            'bench':        'bench               Run RPCMark benchmark',
             'fetch':        'fetch / neofetch    System info display',
             'neofetch':     'fetch / neofetch    System info display',
             'edit':         'edit [file]         Open the text editor',
@@ -1259,6 +1260,7 @@ def help(args=None):
             'nslookup':     'nslookup <host>     DNS lookup',
             'pkg':          'pkg install|remove|list|info|search|update|upgrade|commands',
             'whoami':       'whoami              Show current user',
+            'users':        'users               List all user accounts',
             'mkacct':       'mkacct              Create a new user account',
             'rmuser':       'rmuser <user>       Remove a user account',
             'chpswd':       'chpswd <user>       Change a user\'s password',

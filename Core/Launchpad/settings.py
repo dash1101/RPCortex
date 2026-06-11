@@ -1,11 +1,13 @@
 # Desc: CLI settings panel for RPCortex - Pulsar OS
 # File: /Core/Launchpad/settings.py
-# Last Updated: 6/9/2026
+# Last Updated: 6/11/2026
 # Lang: MicroPython, English
-# Version: v0.8.2
+# Version: v0.9.1
 # Author: dash1101
 #
 # TUI settings manager with box border, section grouping, and system widgets.
+# Toggles boolean registry keys and edits text/numeric personalization keys
+# (owner, timezone, device ID, idle-logout) without touching the CLI.
 # Loaded by the shell via the settings command in system.lp.
 
 import sys
@@ -15,20 +17,20 @@ if '/Core' not in sys.path:
     sys.path.append('/Core')
 
 import regedit
-from RPCortex import ok, warn, info, multi
+from RPCortex import ok, warn, info, multi, inpt
 
 # ---------------------------------------------------------------------------
 # Box drawing and ANSI constants
 # ---------------------------------------------------------------------------
 
-_H  = '\u2500'   # ─
-_V  = '\u2502'   # │
-_TL = '\u250c'   # ┌
-_TR = '\u2510'   # ┐
-_BL = '\u2514'   # └
-_BR = '\u2518'   # ┘
-_ML = '\u251c'   # ├
-_MR = '\u2524'   # ┤
+_H  = '─'   # ─
+_V  = '│'   # │
+_TL = '┌'   # ┌
+_TR = '┐'   # ┐
+_BL = '└'   # └
+_BR = '┘'   # ┘
+_ML = '├'   # ├
+_MR = '┤'   # ┤
 
 _CYN = '\x1b[96m'
 _GRN = '\x1b[92m'
@@ -69,7 +71,7 @@ def _section_label(title):
 
 
 def _draw_setting(num, label, val, note=''):
-    """Render one toggle row inside the panel."""
+    """Render one boolean toggle row inside the panel."""
     prefix_vis  = '  [{}] {:<22} : '.format(num, label)
     status_vis  = 'ON ' if val == 'true' else 'OFF'
     note_vis    = '  ' + note if note else ''
@@ -79,6 +81,21 @@ def _draw_setting(num, label, val, note=''):
     note_ansi   = ('  ' + _GRY + note + _RST) if note else ''
     full_ansi   = ('  ' + _WHT + '[{}]'.format(num) + _RST +
                    ' {:<22} : '.format(label) + status_ansi + note_ansi)
+
+    sys.stdout.write(_row(full_vis, full_ansi))
+
+
+def _draw_value(key_char, label, val, note=''):
+    """Render one editable text/numeric row inside the panel."""
+    shown      = val if val else '(unset)'
+    prefix_vis = '  [{}] {:<22} : '.format(key_char, label)
+    note_vis   = '  ' + note if note else ''
+    full_vis   = prefix_vis + shown + note_vis
+
+    val_ansi   = (_YLW + shown + _RST) if val else (_GRY + shown + _RST)
+    note_ansi  = ('  ' + _GRY + note + _RST) if note else ''
+    full_ansi  = ('  ' + _WHT + '[{}]'.format(key_char) + _RST +
+                  ' {:<22} : '.format(label) + val_ansi + note_ansi)
 
     sys.stdout.write(_row(full_vis, full_ansi))
 
@@ -123,6 +140,27 @@ def _rtoggle(key):
     regedit.save(key, new_val)
     return new_val
 
+
+def _redit(key, label, numeric=False, allow_blank=True):
+    """Full-screen prompt to edit a text/numeric registry value."""
+    sys.stdout.write('\x1b[2J\x1b[H')
+    cur = _rget(key, '')
+    info('Edit {}'.format(label))
+    multi('  Current value: ' + (cur if cur else '(unset)'))
+    if allow_blank:
+        multi('  Enter a new value, or leave blank to keep / clear.')
+    val = inpt('New {}'.format(label)).strip()
+    if val == '':
+        return
+    if numeric:
+        probe = val[1:] if val[:1] in ('-', '+') else val
+        if not probe.isdigit():
+            warn('{} must be a whole number.'.format(label))
+            sys.stdin.read(1)
+            return
+    regedit.save(key, val)
+    ok('{} set to: {}'.format(label, val))
+
 # ---------------------------------------------------------------------------
 # Panel renderer
 # ---------------------------------------------------------------------------
@@ -158,6 +196,11 @@ def _draw():
     sd_sup  = _rget('Features.SD_Support',          'false')
     wifi_ac = _rget('Settings.Network_Autoconnect', 'false')
 
+    owner   = _rget('System.Owner',     '')
+    tz      = _rget('System.TZ_Offset', '0')
+    devid   = _rget('System.Device_ID', 'pulsar')
+    idle    = _rget('Settings.Idle_Logout', '0')
+
     # --- SYSTEM ---
     sys.stdout.write(_section_label('SYSTEM'))
     _draw_setting('1', 'Verbose Boot',     verbose)
@@ -176,9 +219,19 @@ def _draw():
     _draw_setting('6', 'WiFi Autoconnect', wifi_ac)
     sys.stdout.write(_blank())
 
+    # --- PERSONALIZATION ---
+    sys.stdout.write(_section_label('PERSONALIZATION'))
+    _draw_value('o', 'Owner',              owner)
+    _draw_value('t', 'Timezone Offset',    tz,    'hours from UTC')
+    _draw_value('d', 'Device ID',          devid, 'shell hostname')
+    idle_note = 'minutes (0 = off)' if idle == '0' else 'minutes'
+    _draw_value('i', 'Idle Logout',        idle,  idle_note)
+    sys.stdout.write(_blank())
+
     # --- Footer ---
-    footer_vis  = '  [1-6] toggle   [r] refresh   [q] quit'
+    footer_vis  = '  [1-6] toggle   [o/t/d/i] edit   [r] refresh   [q] quit'
     footer_ansi = ('  ' + _GRY + '[1-6]' + _RST + ' toggle   ' +
+                   _GRY + '[o/t/d/i]' + _RST + ' edit   ' +
                    _GRY + '[r]' + _RST + ' refresh   ' +
                    _GRY + '[q]' + _RST + ' quit')
     sys.stdout.write(_row(footer_vis, footer_ansi))
@@ -205,6 +258,10 @@ def settings(args=None):
         elif ch == '4': _rtoggle('Features.beeper')
         elif ch == '5': _rtoggle('Features.SD_Support')
         elif ch == '6': _rtoggle('Settings.Network_Autoconnect')
+        elif ch in ('o', 'O'): _redit('System.Owner',         'Owner')
+        elif ch in ('t', 'T'): _redit('System.TZ_Offset',     'Timezone Offset', numeric=True)
+        elif ch in ('d', 'D'): _redit('System.Device_ID',     'Device ID')
+        elif ch in ('i', 'I'): _redit('Settings.Idle_Logout', 'Idle Logout', numeric=True)
         elif ch in ('r', 'R'):
             pass   # redraw
         elif ch in ('q', 'Q', '\x03', '\r', '\n'):

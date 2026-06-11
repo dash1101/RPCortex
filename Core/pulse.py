@@ -111,6 +111,6 @@ def set_clock(target_mhz, verbose=True):
 # Backward-compat alias — post.py uses pulse.overclock() in check_oc()
 overclock = set_clock
 
-# The benchmark moved out of pulse.py into a package — now /Packages/PulseMark/
-# pulsemark.py (the `bench` command; renamed from NebulaMark in v0.9.1) so it can
+# The benchmark moved out of pulse.py into a package — now /Packages/RPCMark/
+# rpcmark.py (the `bench` command; formerly NebulaMark/PulseMark) so it can
 # be updated via the package manager.

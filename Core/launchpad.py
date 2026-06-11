@@ -33,7 +33,7 @@ _BUILTIN_LP = (
     ('wifi',     '/Core/Launchpad/wifi.py:wifi'),
     ('fetch',    '/Packages/PicoFetch/picofetch.py:fetch'),
     ('neofetch', '/Packages/PicoFetch/picofetch.py:fetch'),
-    ('bench',    '/Packages/PulseMark/pulsemark.py:bench'),
+    ('bench',    '/Packages/RPCMark/rpcmark.py:bench'),
     ('ntp',      '/Packages/NTP/ntp.py:ntp'),
 )
 
@@ -879,6 +879,23 @@ def _shell_input(prompt):
 
     # ─────────────────────────────────────────────────────────────────────────
     while True:
+        # Idle-logout: only while the line is still empty (user idle at a fresh
+        # prompt). Once typing has started we fall back to a normal blocking read
+        # so a half-typed command is never interrupted. Disabled when idle_secs
+        # is 0 or on platforms without select().
+        _idle = _shell_state.get('idle_secs', 0)
+        if _idle and not buf:
+            try:
+                import select as _sel
+                _r, _, _ = _sel.select([sys.stdin], [], [], _idle)
+                if not _r:
+                    sys.stdout.write('\r\n')
+                    warn("Session timed out after {} min of inactivity.".format(
+                        max(1, _idle // 60)))
+                    _shell_state['running'] = False
+                    return ''
+            except (ImportError, OSError):
+                pass   # no select on this platform — idle logout unavailable
         try:
             ch = sys.stdin.read(1)
         except Exception:
@@ -1104,6 +1121,12 @@ def launchpad_init(username, password):
         _shell_state['host'] = regedit.read('System.Device_ID') or 'pulsar'
     except Exception:
         _shell_state['host'] = 'pulsar'
+    # Idle-logout timeout (minutes in registry → seconds for select()). 0 = off.
+    try:
+        _idle_min = int(regedit.read('Settings.Idle_Logout') or 0)
+        _shell_state['idle_secs'] = _idle_min * 60 if _idle_min > 0 else 0
+    except Exception:
+        _shell_state['idle_secs'] = 0
     try:
         uos.chdir(home)
     except OSError:
@@ -1203,6 +1226,7 @@ def recovery_init(errStr):
         warn("Re-imaging RPCortex is strongly recommended.", p="Recovery")
     info("A limited shell is now available.  Type 'help' for commands.", p="Recovery")
 
+    _shell_state['idle_secs'] = 0   # never idle-logout out of recovery mode
     _shell_state['running'] = True
 
     while _shell_state['running']:

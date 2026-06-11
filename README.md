@@ -50,7 +50,7 @@ It's not trying to be Linux. It's a $4 microcontroller running MicroPython. But 
 
 **Manage users.** Create accounts with `mkacct`, change passwords with `chpswd`, remove accounts with `rmuser`. Each user gets a home directory; every password prompt is masked. The `guest` account requires no password.
 
-**Tune the hardware.** `pulse set 220` overclocks to 220 MHz. `pulse boot 200` sets a boot clock. `bench` runs the PulseMark benchmark. `freeup` compacts the heap when things get fragmented after heavy use.
+**Tune the hardware.** `pulse set 220` overclocks to 220 MHz. `pulse boot 200` sets a boot clock. `bench` runs the RPCMark benchmark. `freeup` compacts the heap when things get fragmented after heavy use.
 
 **Make it yours.** `settings` opens an interactive panel to toggle boot overclocking, WiFi autoconnect, verbose boot, the beeper, SD support, and program execution. `reg get`/`reg set` writes the registry directly. Aliases (`alias ll=ls -l`) build your own shortcuts — and they survive reboots. `watch -n 5 sysinfo` keeps a live readout on screen. `date set` fixes the clock, and `reg set System.TZ_Offset -5` keeps it in your timezone. Name the device's owner (`reg set System.Owner Dash`) and rename the host in your prompt (`reg set System.Device_ID mypico`).
 
