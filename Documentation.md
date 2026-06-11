@@ -148,7 +148,7 @@ The RP2040 has 264KB of RAM. After loading several commands or running HTTPS req
 | `reg set <key> <val>` | Write a registry key |
 | `settings` | Open the settings panel |
 | `edit [file]` | Open the built-in editor |
-| `bench` | Run the NebulaMark benchmark |
+| `bench` | Run the PulseMark benchmark |
 
 ### `pulse` subcommands
 
@@ -459,9 +459,9 @@ pulse boot on      # apply on every boot
 settings           # toggle via panel
 ```
 
-### NebulaMark
+### PulseMark
 
-`bench` runs the NebulaMark suite: integer ops, floating-point ops, Mandelbrot iteration, and Pi approximation. Results are printed in operations per second and calculation time.
+`bench` runs the PulseMark suite: integer ops, floating-point ops, Mandelbrot iteration, and Pi approximation. Results are printed in operations per second and calculation time.
 
 ### Heap and fragmentation
 

@@ -32,10 +32,16 @@ out of v0.9.0).
 ### Added — recovery & diagnostics
 - **`fscheck`** — verify core OS files exist and are non-empty. **`diag`** — RAM/flash/registry/version snapshot. **`logdump [n]`** — print the session log. **`regreset`** — delete `registry.cfg` so POST rebuilds defaults (keeps users + WiFi). **`pkgdisable`/`pkgenable <name>`** — quarantine a misbehaving package without removing it. Registered via their own `recovery.lp` so they load even if `system.lp` is damaged. (New file: `Core/Launchpad/sys_recovery.py`.)
 
-### Added — packages (install with `pkg install <name>`)
-- **Calc** — offline calculator; sandboxed math eval (no filesystem/imports) + `hex`/`bin`/`oct`/`dec` conversion.
-- **Gpio** — direct pin control: `gpio read|set|toggle|pwm|stop|adc <pin>` on RP2040/RP2350/ESP32.
+### Added — packages
+- **NTP** (built-in) — `ntp sync` sets the clock from an internet time server over UDP; no RTC required. `ntp status` / `ntp server <host>`. Handles MicroPython's 2000-01-01 epoch. Pair with `startup add ntp sync` for boot-time sync.
+- **Calc** — offline calculator: `calc <expr>` (full `math` module) + `hex`/`bin`/`oct`/`dec` conversion.
+- **Gpio** — direct pin control: `gpio read|set|toggle|pwm|stop|adc <pin>` on RP2040/RP2350/ESP32. Accepts `LED` for the onboard LED (works on Pico W / Pico 2 W where it's on the WiFi chip).
 - **I2CScan** — `i2cscan [scl] [sda]` probes the I2C bus (SoftI2C, any pins) and names common devices.
+
+### Added — packaging
+- **Compiled (`.mpy`) packages** — the loader imports a package's `.mpy` when its `.py` is absent, so packages can ship compiled (smaller, faster). `make_pkg.py --compile` builds a compiled `.pkg`; `build_images.py` now compiles built-in packages into the `.mpy` image.
+- **Removable system packages** — a built-in package may declare `pkg.removable: true` to allow `pkg remove`, even though it ships with the OS. **PicoFetch** and **NTP** are now removable (the OS doesn't depend on them); Launchpad/Editor/PulseMark stay protected.
+- **`pkg install` takes multiple names** — `pkg install Calc Gpio I2CScan` installs each in turn.
 
 ### Added — networking & personalisation
 - **Download progress bars** — `wget` shows `[####----] 47%  N/M B` using `Content-Length` (redraws only on percent change; byte counter when size is unknown).
@@ -44,9 +50,16 @@ out of v0.9.0).
 
 ### Changed
 - **Unified dispatch & line execution** — `launchpad._dispatch_line()` is the single command router (alias/tilde/`--help`/route), returning a pass/fail status; `_run_line()` handles `;`, `&&`, `||`, and `|` for the interactive loop, recovery loop, startup runner, scripts, and `watch`. Replaces the three copied dispatch blocks from before.
+- **NebulaMark → PulseMark** — the benchmark package (`bench`) renamed as part of phasing out "Nebula" branding. Same command, same suite. (`/Packages/PulseMark/pulsemark.py`.)
+- **`.rps` scripts run by filename** — typing `myjob.rps` (or an absolute path) runs it through the script interpreter, like running a `.py`.
+- **`deploy.bat`/`deploy.sh` are far faster** — they now copy the whole tree in a single chained `mpremote` session (`cp -r Core : + cp -r Packages : + cp main.py :`) instead of one `mpremote` invocation per file (which paid the connect/raw-REPL cost ~30+ times). Also fixes them silently skipping the PicoFetch/PulseMark/NTP package dirs.
 - **`OS_VERSION` → `v0.9.1`**; registry template + boot-file headers bumped to Pulsar.
 
-### Fixed
+### Fixed (on-device hardware pass)
+- **`calc` failed with `name '__builtins__' isn't defined`** — passing an empty `__builtins__` as eval globals breaks name resolution on MicroPython. Removed it; math/builtins resolve normally now.
+- **`.rps` scripts crashed with `'str' object has no attribute 'isalnum'`** — MicroPython's `str` has no `isalnum()`. Variable-name scanning now uses explicit character ranges.
+- **`cat`/`read` raised MemoryError on larger files** (e.g. piping a 20 KB log to `wc`) — it did one big `f.read()`; now streams line-by-line, so it no longer needs a single large contiguous allocation.
+- **`pkgdisable` didn't take effect until a reboot** — it now drops the package's command(s) from the live table and clears the module cache immediately; `pkgenable` re-registers them live.
 - Stale "RPCortex Nebula" brand strings in the `help` banner, `sysinfo`, and HTTP `User-Agent` updated to "Pulsar".
 
 ---

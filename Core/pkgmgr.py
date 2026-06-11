@@ -715,8 +715,12 @@ def uninstall(pkg_name, force=False):
     try:
         with open(target_dir + '/package.cfg', 'r') as f:
             meta_check = _parse_cfg(f.read())
-        if meta_check.get('pkg.builtin') == 'true' and not force:
-            error("'{}' is a built-in package and cannot be removed.".format(pkg_name))
+        # Built-in packages are protected from removal — UNLESS they declare
+        # pkg.removable: true (the OS doesn't depend on them, so the user may
+        # remove them, e.g. PicoFetch, NTP). Upgrades pass force=True.
+        if meta_check.get('pkg.builtin') == 'true' \
+                and meta_check.get('pkg.removable') != 'true' and not force:
+            error("'{}' is a protected built-in package and cannot be removed.".format(pkg_name))
             info("Built-in packages can still be upgraded: pkg upgrade")
             return False
         reg_keys = meta_check.get('pkg.reg_keys', '')

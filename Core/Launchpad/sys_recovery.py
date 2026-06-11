@@ -148,6 +148,24 @@ def _find_pkg_dir(name, suffix=''):
     return None
 
 
+def _pkg_cmd_names(pkg_dir):
+    """Read the command names a package registers (from pkg.cmd in package.cfg)."""
+    names = []
+    try:
+        with open(pkg_dir + '/package.cfg', 'r') as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith('pkg.cmd') and ':' in line:
+                    val = line.split(':', 1)[1]
+                    for entry in val.split(';'):
+                        entry = entry.strip()
+                        if entry:
+                            names.append(entry.split(':', 1)[0].strip())
+    except OSError:
+        pass
+    return names
+
+
 def pkgdisable(args=None):
     """Disable a package by renaming its directory to <name>.disabled."""
     if not args or not args.strip():
@@ -158,12 +176,24 @@ def pkgdisable(args=None):
     if target is None:
         error("Package '{}' not found in /Packages.".format(name))
         return
+    cmds = _pkg_cmd_names(target)   # read before the dir is renamed away
     try:
         uos.rename(target, target + '.disabled')
-        ok("Disabled '{}'. Its command stops loading until re-enabled.".format(name))
-        info("Re-enable with: pkgenable {}".format(name))
     except OSError as e:
         error("Could not disable '{}': {}".format(name, e))
+        return
+    # Drop it from the LIVE command table + cache so it stops working now,
+    # not just after a reboot.
+    live = globals().get('_commands')
+    cache = globals().get('_cmd_cache')
+    if live is not None:
+        for c in cmds:
+            if c in live:
+                del live[c]
+    if cache is not None:
+        cache.clear()
+    ok("Disabled '{}'. Its command(s) stop working immediately.".format(name))
+    info("Re-enable with: pkgenable {}".format(name))
 
 
 def pkgenable(args=None):
@@ -179,6 +209,17 @@ def pkgenable(args=None):
     restored = target[:-len('.disabled')]
     try:
         uos.rename(target, restored)
-        ok("Re-enabled '{}'.".format(name))
     except OSError as e:
         error("Could not re-enable '{}': {}".format(name, e))
+        return
+    # Re-register the command(s) live: clear cache + reload the command table.
+    cache = globals().get('_cmd_cache')
+    if cache is not None:
+        cache.clear()
+    reload = globals().get('_load_commands')
+    if reload:
+        try:
+            reload()
+        except Exception:
+            pass
+    ok("Re-enabled '{}'.".format(name))

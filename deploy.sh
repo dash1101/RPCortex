@@ -76,95 +76,32 @@ echo ""
 MPR="mpremote ${PORT_ARG}"
 
 # ---------------------------------------------------------------------------
-# Helper: upload a single file
+# Copy the whole OS tree in ONE mpremote session.
+#
+# The old script ran a separate `mpremote cp` per file; each invocation pays
+# the full connect + raw-REPL handshake (~1-2s), so 30+ files took a minute+.
+# `cp -r <dir> :` recurses and creates the directory on the device; chaining
+# with `+` keeps it all in a SINGLE raw-REPL session -- a huge speedup. It also
+# copies ALL package dirs (PicoFetch, PulseMark, NTP, ...), which the per-file
+# version missed.
+#
+# Only Core/, Packages/, and main.py are touched -- /Nebula/ and /Users/
+# (user data) are never sent, so they're left intact.
 # ---------------------------------------------------------------------------
-uploaded=0
-errors=0
-
-upload() {
-    local local_path="$1"
-    local remote_path="$2"
-    local rel="${local_path#${SRC_DIR}/}"
-
-    if ${MPR} cp "${local_path}" ":${remote_path}" 2>/dev/null; then
-        printf "  \033[32m[+]\033[0m %s\n" "$rel"
-        uploaded=$(( uploaded + 1 ))
-    else
-        printf "  \033[31m[!]\033[0m FAILED: %s\n" "$rel"
-        errors=$(( errors + 1 ))
-    fi
-}
-
-# Ensure remote directories exist (silent if already present)
-ensure_dir() {
-    ${MPR} mkdir ":$1" 2>/dev/null || true
-}
-
-# ---------------------------------------------------------------------------
-# Create remote directory tree
-# ---------------------------------------------------------------------------
-echo "  -- Creating remote directories --"
-ensure_dir "/Core"
-ensure_dir "/Core/Launchpad"
-ensure_dir "/Packages"
-ensure_dir "/Packages/Launchpad"
-ensure_dir "/Packages/Editor"
+echo "  -- Copying OS in one session: Core/, Packages/, main.py --"
+echo "     (user data under /Nebula/ and /Users/ is left untouched)"
 echo ""
 
-# ---------------------------------------------------------------------------
-# main.py
-# ---------------------------------------------------------------------------
-echo "  -- Entry point --"
-upload "${SRC_DIR}/main.py" "/main.py"
-echo ""
-
-# ---------------------------------------------------------------------------
-# Core files
-# ---------------------------------------------------------------------------
-echo "  -- Core modules --"
-# Source deploy: .py files; compiled deploy: .py (stubs) + .mpy files
-for f in "${SRC_DIR}"/Core/*.py "${SRC_DIR}"/Core/*.mpy; do
-    [[ -f "$f" ]] || continue
-    fname="${f##*/}"
-    upload "$f" "/Core/${fname}"
-done
-echo ""
-
-# ---------------------------------------------------------------------------
-# Launchpad command files
-# ---------------------------------------------------------------------------
-echo "  -- Launchpad --"
-for f in "${SRC_DIR}"/Core/Launchpad/*; do
-    [[ -f "$f" ]] || continue
-    fname="${f##*/}"
-    upload "$f" "/Core/Launchpad/${fname}"
-done
-echo ""
-
-# ---------------------------------------------------------------------------
-# Package stubs
-# ---------------------------------------------------------------------------
-echo "  -- Package stubs --"
-for pkg_dir in Launchpad Editor; do
-    for f in "${SRC_DIR}/Packages/${pkg_dir}"/*; do
-        [[ -f "$f" ]] || continue
-        fname="${f##*/}"
-        upload "$f" "/Packages/${pkg_dir}/${fname}"
-    done
-done
-echo ""
-
-# ---------------------------------------------------------------------------
-# Summary
-# ---------------------------------------------------------------------------
-echo "  ─────────────────────────────────────────────"
-if (( errors > 0 )); then
-    echo "  [!] ${errors} file(s) failed to upload — check output above."
+if ${MPR} cp -r "${SRC_DIR}/Core" : + cp -r "${SRC_DIR}/Packages" : + cp "${SRC_DIR}/main.py" :; then
+    echo ""
+    echo "  ─────────────────────────────────────────────"
+    echo "  Deploy complete. Reboot to apply:  ${MPR} reset"
+    echo ""
+    exit 0
+else
+    echo ""
+    echo "  [!] Deploy failed."
+    echo "      - Is the board plugged in? Try:  ./deploy.sh --port /dev/ttyACM0"
+    echo "      - Close any other serial program (PuTTY/Thonny) using the port."
+    exit 1
 fi
-echo "  Uploaded  : ${uploaded} files"
-echo ""
-echo "  Deploy complete. Reboot the device to apply."
-echo ""
-
-(( errors > 0 )) && exit 1
-exit 0

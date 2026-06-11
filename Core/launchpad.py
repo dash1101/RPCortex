@@ -33,7 +33,7 @@ _BUILTIN_LP = (
     ('wifi',     '/Core/Launchpad/wifi.py:wifi'),
     ('fetch',    '/Packages/PicoFetch/picofetch.py:fetch'),
     ('neofetch', '/Packages/PicoFetch/picofetch.py:fetch'),
-    ('bench',    '/Packages/NebulaMark/nebulamark.py:bench'),
+    ('bench',    '/Packages/PulseMark/pulsemark.py:bench'),
     ('ntp',      '/Packages/NTP/ntp.py:ntp'),
 )
 
@@ -443,10 +443,31 @@ def _exec_scope(file_path):
     return scope
 
 
+def _path_exists(p):
+    try:
+        uos.stat(p)
+        return True
+    except OSError:
+        return False
+
+
 def _get_scope(file_path):
-    """Return (and if necessary build) the scope/module for a command file."""
+    """Return (and if necessary build) the scope/module for a command file.
+
+    Routing:
+      - /Core/Launchpad/*.py        -> __import__ (heap-efficient; built-ins)
+      - a package whose .py is gone  -> __import__ its .mpy  (compiled package)
+      - everything else (.py source) -> exec() into a fresh scope
+    The .mpy fallback lets packages ship compiled: programs.lp still maps to the
+    .py path, but if only the .mpy exists we import it instead of exec'ing text.
+    """
     if file_path not in _cmd_cache:
-        if file_path.startswith(_LP_DIR) and file_path.endswith('.py'):
+        use_import = file_path.startswith(_LP_DIR) and file_path.endswith('.py')
+        if (not use_import) and file_path.endswith('.py') \
+                and not _path_exists(file_path) \
+                and _path_exists(file_path[:-3] + '.mpy'):
+            use_import = True   # compiled package — import the .mpy
+        if use_import:
             scope = _lp_import(file_path)
         else:
             scope = _exec_scope(file_path)
@@ -490,7 +511,12 @@ def execute_command(command, args):
 
 
 def execute_file(name, args):
-    """Fall-through handler: try to run a .py script by name."""
+    """Fall-through handler: run a .rps script or a .py file by name."""
+    # An .rps script typed as a filename runs through the script interpreter,
+    # exactly like `script <file>` — works with a bare or absolute path.
+    if name.endswith('.rps') and 'script' in commands:
+        execute_command('script', name)
+        return
     try:
         if regedit.read('Features.Program_Execution') == 'false':
             error("Program execution is disabled.")

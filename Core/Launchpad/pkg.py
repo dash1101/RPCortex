@@ -42,17 +42,26 @@ def pkg(args=None):
     # --- install ---
     if sub == 'install':
         if not rest:
-            warn("Usage: pkg install <name>  OR  pkg install <path/to/file.pkg>")
+            warn("Usage: pkg install <name> [name2 ...]  OR  pkg install <path/to/file.pkg>")
             return
         import pkgmgr
-        # Treat as local file if it has a slash or ends with .pkg
+        # A local-file install (slash or .pkg) is a single target; otherwise
+        # treat the rest as one or more space-separated repo package names.
         if rest.startswith('/') or rest.endswith('.pkg'):
-            ok_flag = pkgmgr.install(rest)
+            targets = [rest]
+            online  = False
         else:
-            ok_flag = pkgmgr.install_online(rest)
-        # Reload commands dict so the new command is available immediately
-        # without requiring a reboot.
-        if ok_flag:
+            targets = rest.split()
+            online  = True
+        any_ok = False
+        for name in targets:
+            if online:
+                ok_flag = pkgmgr.install_online(name)
+            else:
+                ok_flag = pkgmgr.install(name)
+            any_ok = any_ok or bool(ok_flag)
+        # Reload commands dict so new commands are available immediately (no reboot).
+        if any_ok:
             _reload = globals().get('_load_commands')
             if _reload:
                 try:

@@ -86,91 +86,36 @@ if "%PORT_ARG%"=="" (
 echo.
 
 set "MPR=mpremote %PORT_ARG%"
-set /a uploaded=0
-set /a errors=0
 
 :: ---------------------------------------------------------------------------
-:: Helper subroutines
+:: Copy the whole OS tree in ONE mpremote session.
+::
+:: The old script ran a separate `mpremote cp` per file. Each invocation pays
+:: the full connect + raw-REPL handshake (~1-2s), so 30+ files took a minute+.
+:: `cp -r <dir> :` recurses and creates the directory on the device; chaining
+:: commands with `+` keeps everything in a SINGLE raw-REPL session -- a huge
+:: speedup. It also copies ALL package dirs (PicoFetch, PulseMark, NTP, ...),
+:: which the per-file version missed.
+::
+:: Only Core\, Packages\, and main.py are touched -- \Nebula\ and \Users\
+:: (user accounts, WiFi, settings) are never sent, so they're left intact.
 :: ---------------------------------------------------------------------------
-goto :skip_subs
-
-:ensure_dir
-    %MPR% mkdir ":%~1" >nul 2>&1
-    exit /b 0
-
-:upload_file
-    :: %1 = local path, %2 = remote path, %3 = display label
-    %MPR% cp "%~1" ":%~2" >nul 2>&1
-    if errorlevel 1 (
-        echo   [!] FAILED: %~3
-        set /a errors+=1
-    ) else (
-        echo   [+] %~3
-        set /a uploaded+=1
-    )
-    exit /b 0
-
-:skip_subs
-
-:: ---------------------------------------------------------------------------
-:: Create remote directory tree
-:: ---------------------------------------------------------------------------
-echo   -- Creating remote directories --
-call :ensure_dir /Core
-call :ensure_dir /Core/Launchpad
-call :ensure_dir /Packages
-call :ensure_dir /Packages/Launchpad
-call :ensure_dir /Packages/Editor
+echo   -- Copying OS in one session: Core\, Packages\, main.py --
+echo      (user data under \Nebula\ and \Users\ is left untouched)
 echo.
 
-:: ---------------------------------------------------------------------------
-:: main.py
-:: ---------------------------------------------------------------------------
-echo   -- Entry point --
-call :upload_file "%SRC_DIR%\main.py" "/main.py" "main.py"
-echo.
+%MPR% cp -r "%SRC_DIR%\Core" : + cp -r "%SRC_DIR%\Packages" : + cp "%SRC_DIR%\main.py" :
+set "RC=%errorlevel%"
 
-:: ---------------------------------------------------------------------------
-:: Core files (.py and .mpy)
-:: ---------------------------------------------------------------------------
-echo   -- Core modules --
-for %%F in ("%SRC_DIR%\Core\*.py" "%SRC_DIR%\Core\*.mpy") do (
-    if exist "%%F" call :upload_file "%%F" "/Core/%%~nxF" "Core\%%~nxF"
+echo.
+if not "%RC%"=="0" (
+    echo   [!] Deploy failed ^(exit %RC%^).
+    echo       - Is the board plugged in? Try:  deploy.bat --port COM3
+    echo       - Close any other serial program ^(PuTTY/Thonny^) using the port.
+    exit /b 1
 )
-echo.
 
-:: ---------------------------------------------------------------------------
-:: Launchpad command files
-:: ---------------------------------------------------------------------------
-echo   -- Launchpad --
-for %%F in ("%SRC_DIR%\Core\Launchpad\*.*") do (
-    if exist "%%F" call :upload_file "%%F" "/Core/Launchpad/%%~nxF" "Core\Launchpad\%%~nxF"
-)
-echo.
-
-:: ---------------------------------------------------------------------------
-:: Package stubs
-:: ---------------------------------------------------------------------------
-echo   -- Package stubs --
-for %%F in ("%SRC_DIR%\Packages\Launchpad\*.*") do (
-    if exist "%%F" call :upload_file "%%F" "/Packages/Launchpad/%%~nxF" "Packages\Launchpad\%%~nxF"
-)
-for %%F in ("%SRC_DIR%\Packages\Editor\*.*") do (
-    if exist "%%F" call :upload_file "%%F" "/Packages/Editor/%%~nxF" "Packages\Editor\%%~nxF"
-)
-echo.
-
-:: ---------------------------------------------------------------------------
-:: Summary
-:: ---------------------------------------------------------------------------
 echo   -------------------------------------------
-if %errors% gtr 0 (
-    echo   [!] %errors% file(s) failed to upload -- check output above.
-)
-echo   Uploaded  : %uploaded% files
+echo   Deploy complete. Reboot to apply:  %MPR% reset
 echo.
-echo   Deploy complete. Reboot the device to apply.
-echo.
-
-if %errors% gtr 0 exit /b 1
 exit /b 0

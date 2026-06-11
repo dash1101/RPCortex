@@ -7,4 +7,4 @@ pkg:/Core/Launchpad/pkg.py:pkg
 wifi:/Core/Launchpad/wifi.py:wifi
 fetch:/Packages/PicoFetch/picofetch.py:fetch
 neofetch:/Packages/PicoFetch/picofetch.py:fetch
-bench:/Packages/NebulaMark/nebulamark.py:bench
+bench:/Packages/PulseMark/pulsemark.py:bench

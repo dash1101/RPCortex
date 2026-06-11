@@ -155,7 +155,7 @@ Tentative; most of this depends on the multitasking foundation landing first.
 - ⚪ **TUI framework** — reusable adaptive box-draw components for terminal apps.
 - ⚪ **Rebuild system apps on the TUI framework** — `settings`, `edit`, etc.
 - ⚪ **Dev packages** — `git` (clone/fetch/push), `speedtest`, more (see Package ideas).
-- ⚪ **Extended benchmark** — NebulaMark gains mem / ROM / SD throughput tests.
+- ⚪ **Extended benchmark** — PulseMark gains mem / ROM / SD throughput tests.
 - ⚪ **SD card support** — init package surfaced as a startup task.
 
 ### Build & portability
@@ -203,7 +203,7 @@ re-implemented.
 | Multiple terminals / tabbing | ⚪ Future | needs multitasking |
 | SSH access | ⚪ Future | needs uasyncio |
 | TUI framework + redesign of `settings`/`edit` | ⚪ Future | v1.0-era |
-| Extended benchmark (mem/ROM/SD) | ⚪ Future | NebulaMark add-on |
+| Extended benchmark (mem/ROM/SD) | ⚪ Future | PulseMark add-on |
 | SD card support | ⚪ Future | package + startup task |
 | Candidate packages (`ntp`/`dht`/`mqtt`/…) | ⚪ Anytime | see Package ideas — don't gate releases |
 | `git` package | ⚪ Future | dev tooling |

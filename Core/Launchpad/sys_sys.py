@@ -369,8 +369,8 @@ def pulse(args):
         error("Unknown subcommand '{}'. Run 'pulse' for usage.".format(sub))
 
 
-# `bench` moved to the NebulaMark package (/Packages/NebulaMark/) in v0.8.2.
-# `fetch` moved to the PicoFetch package (/Packages/PicoFetch/) in v0.8.2.
+# `bench` lives in the PulseMark package (/Packages/PulseMark/) — renamed from
+# NebulaMark in v0.9.1. `fetch` lives in the PicoFetch package (/Packages/PicoFetch/).
 # Both are registered via programs.lp and self-healed by launchpad.load_commands().
 
 
@@ -1115,7 +1115,7 @@ def help(args=None):
         multi("  which <cmd>          Show where a command is defined")
         multi("  clear / cls          Clear the screen")
         multi("  pulse set|min|max|boot  CPU clock management")
-        multi("  bench                Run NebulaMark benchmark")
+        multi("  bench                Run PulseMark benchmark")
         multi("  fetch / neofetch     System info display")
         multi("  edit/nano [file]     Open the text editor")
         multi("  env [section]        Dump registry contents")
@@ -1237,7 +1237,7 @@ def help(args=None):
             'sleep':        'sleep <secs>        Pause for given seconds',
             'which':        'which <cmd>         Show where a command is defined',
             'pulse':        'pulse set|min|max|boot  CPU clock management',
-            'bench':        'bench               Run NebulaMark benchmark',
+            'bench':        'bench               Run PulseMark benchmark',
             'fetch':        'fetch / neofetch    System info display',
             'neofetch':     'fetch / neofetch    System info display',
             'edit':         'edit [file]         Open the text editor',

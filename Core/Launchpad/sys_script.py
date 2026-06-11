@@ -48,6 +48,15 @@ def _abspath(p):
     return p if p.startswith('/') else uos.getcwd().rstrip('/') + '/' + p
 
 
+def _ident_start(c):
+    # MicroPython str has no isalnum(); use explicit ranges so it works anywhere.
+    return c == '_' or ('a' <= c <= 'z') or ('A' <= c <= 'Z')
+
+
+def _ident_char(c):
+    return _ident_start(c) or ('0' <= c <= '9')
+
+
 def _engine():
     return sys.modules.get('Core.launchpad') or sys.modules.get('launchpad')
 
@@ -138,9 +147,9 @@ class _Interp:
         i, n = 0, len(s)
         while i < n:
             c = s[i]
-            if c == '$' and i + 1 < n and (s[i + 1].isalpha() or s[i + 1] == '_'):
+            if c == '$' and i + 1 < n and _ident_start(s[i + 1]):
                 j = i + 1
-                while j < n and (s[j].isalnum() or s[j] == '_'):
+                while j < n and _ident_char(s[j]):
                     j += 1
                 out.append(str(self.vars.get(s[i + 1:j], '')))
                 i = j

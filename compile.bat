@@ -171,7 +171,7 @@ for %%F in ("%REPO_DIR%\Core\Launchpad\*.lp") do (
 
 :: Built-in package directories are copied as SOURCE (the shell loads package
 :: command files with exec(), which needs text — they must NOT be compiled).
-for %%P in (Launchpad Editor PicoFetch NebulaMark NTP) do (
+for %%P in (Launchpad Editor PicoFetch PulseMark NTP) do (
     if exist "%REPO_DIR%\Packages\%%P\" (
         for %%F in ("%REPO_DIR%\Packages\%%P\*.*") do (
             call :copy_file "%%F" "Packages\%%P\%%~nxF"

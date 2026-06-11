@@ -303,8 +303,11 @@ def read(args):
                 continue
             if multiple:
                 multi(_CD + "==> {} <==".format(fp) + _CR)
+            # Stream line-by-line — never read the whole file into one buffer
+            # (a single large read OOMs on a fragmented heap; this doesn't).
             with open(path, 'r') as f:
-                multi(f.read())
+                for line in f:
+                    multi(line, nL=False)
         except OSError as e:
             error("Cannot read '{}': {}".format(path, e))
 
