@@ -2,7 +2,7 @@
 # File: /Core/post.py
 # Last Updated: 6/9/2026
 # Lang: MicroPython, English
-# Version: v0.8.2
+# Version: v0.9.1
 # Author: dash1101
 
 import uos, gc, sys, utime, machine
@@ -22,13 +22,15 @@ Clockable: false
 [System]
 Codename: RPCortex B9 - Pulsar
 Device_ID: pulsar
+Owner:
+TZ_Offset: 0
 State: 0
 Time: 0
 Session: 0
 
 [Settings]
 Startup: 0
-Version: v0.9.0
+Version: v0.9.1
 Note: 0
 Active_User:
 Setup: false

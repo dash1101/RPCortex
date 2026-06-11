@@ -1,8 +1,8 @@
-# Desc: Boot initialization and login sequence for RPCortex - Nebula OS
+# Desc: Boot initialization and login sequence for RPCortex - Pulsar OS
 # File: /Core/initialization.py
-# Last Updated: 6/9/2026
+# Last Updated: 6/10/2026
 # Lang: MicroPython, English
-# Version: v0.8.2
+# Version: v0.9.1
 # Author: dash1101
 
 from Core.RPCortex import multi, fatal, error, info, warn, ok, inpt, masked_inpt, OS_VERSION, OS_CODENAME
@@ -83,8 +83,23 @@ def setup_seq():
             break
     multi("")
 
-    # --- Step 2: Boot preferences ---
-    info("[2/2] Boot preferences")
+    # --- Step 2: Owner (personalisation) ---
+    info("[2/3] Personalisation")
+    multi("  Optional — who owns this device? (shown in sysinfo)")
+    multi("")
+    owner = inpt("  Owner name [skip]").strip()
+    if owner:
+        try:
+            regedit.save("System.Owner", owner)
+            ok("  Owner set to '{}'.".format(owner))
+        except Exception:
+            pass
+    else:
+        ok("  Skipped.  Set later: reg set System.Owner <name>")
+    multi("")
+
+    # --- Step 3: Boot preferences ---
+    info("[3/3] Boot preferences")
     multi("  Verbose boot shows detailed POST checks on each startup.")
     multi("  Off by default — useful for debugging, annoying day-to-day.")
     multi("")

@@ -65,8 +65,12 @@ def sysinfo(args=None):
     except OSError:
         free_flash = -1
 
-    info("=== RPCortex Nebula — System Info ===")
+    info("=== RPCortex Pulsar — System Info ===")
     multi("  OS Version  : {}".format(regedit.read('Settings.Version') or 'Unknown'))
+    _owner = regedit.read('System.Owner')
+    if _owner:
+        multi("  Owner       : {}".format(_owner))
+    multi("  Device ID   : {}".format(regedit.read('System.Device_ID') or 'pulsar'))
     multi("  Active User : {}".format(regedit.read('Settings.Active_User') or 'Unknown'))
     multi("  Platform    : {}".format(sys.platform))
     multi("  MicroPython : {}".format(sys.version))
@@ -104,9 +108,19 @@ def date(args=None):
             return
         warn("Usage: date   |   date set YYYY-MM-DD [HH:MM:SS]")
         return
-    t = utime.localtime()
-    multi("{:04d}-{:02d}-{:02d}  {:02d}:{:02d}:{:02d}".format(
-        t[0], t[1], t[2], t[3], t[4], t[5]))
+    # Apply the configured timezone offset (hours) for display, if set.
+    off = 0
+    try:
+        off = int(regedit.read('System.TZ_Offset') or 0)
+    except Exception:
+        off = 0
+    t = utime.localtime(utime.time() + off * 3600) if off else utime.localtime()
+    if off:
+        multi("{:04d}-{:02d}-{:02d}  {:02d}:{:02d}:{:02d}  (UTC{:+d})".format(
+            t[0], t[1], t[2], t[3], t[4], t[5], off))
+    else:
+        multi("{:04d}-{:02d}-{:02d}  {:02d}:{:02d}:{:02d}".format(
+            t[0], t[1], t[2], t[3], t[4], t[5]))
 
 
 def _set_rtc(s):
@@ -165,21 +179,13 @@ def watch(args):
         error("watch: shell engine not available.")
         return
 
-    cp = cmdline.split(None, 1)
-    c  = cp[0]
-    a  = cp[1] if len(cp) > 1 else None
     try:
         while True:
             sys.stdout.write("\x1b[2J\x1b[H")
             multi("\033[96mwatch\033[0m every {}s: {}   (Ctrl+C to stop)".format(interval, cmdline))
             multi("")
             try:
-                if c in _lp._CRITICAL:
-                    _lp._CRITICAL[c](a)
-                elif c in _lp.commands:
-                    _lp.execute_command(c, a)
-                else:
-                    _lp.execute_file(c, a)
+                _lp._run_line(cmdline)   # full line: supports pipes, && / ||
             except Exception as e:
                 error("watch: command error: {}".format(e))
             utime.sleep(interval)
@@ -1034,10 +1040,12 @@ def which(args):
 
 def help(args=None):
     if not args:
-        info("=== RPCortex Nebula — Launchpad ===")
+        info("=== RPCortex Pulsar — Launchpad ===")
         multi("  Filesystem : ls  cd  pwd  touch  mkdir  rm  read  head  tail  exec  rename  mv  cp  df  du  tree")
         multi("  Text       : grep  wc  find  sort  uniq  hex  basename  dirname")
         multi("  System     : sysinfo  meminfo  uptime  date  watch  ver  reboot  sreboot  rawrepl  recovery  sleep  which  clear  pulse  bench  fetch  edit  env  reg  freeup  settings")
+        multi("  Automation : startup  task  script   (pipes |  chaining && ||  also supported)")
+        multi("  Recovery   : fscheck  diag  logdump  regreset  pkgdisable  pkgenable")
         multi("  OS Mgmt    : update  factoryreset  reinstall")
         multi("  Network    : wifi  wget  curl  runurl  ping  nslookup")
         multi("  Packages   : pkg install|remove|list|info|search|update|upgrade|repo")
@@ -1045,7 +1053,7 @@ def help(args=None):
         multi("  Misc       : help  echo  history  alias  unalias")
         multi("")
         multi("  Type 'help <category>' for details.")
-        multi("  Categories: filesystem  text  system  network  packages  users  misc  osmgmt")
+        multi("  Categories: filesystem  text  system  automation  recovery  network  packages  users  misc  osmgmt")
         return
 
     a = args.strip().lower()
@@ -1161,6 +1169,29 @@ def help(args=None):
         multi("  alias [name=cmd]     Define or list aliases (saved across reboots)")
         multi("  unalias <name>       Remove an alias")
         multi("  freeup               Free cached RAM")
+
+    elif a == "automation":
+        info("=== Automation & Scripting ===")
+        multi("  Pipes & chaining     cmd1 | cmd2     ;     cmd1 && cmd2     cmd1 || cmd2")
+        multi("    e.g.  cat log | grep ERROR | wc")
+        multi("  startup ...          Commands that run once at login:")
+        multi("    startup add <cmd> | remove <n> | list | clear | run")
+        multi("  task ...             Commands that run on a repeating interval:")
+        multi("    task add <secs> <cmd> | remove <n> | list | clear | run")
+        multi("    'task run' is the scheduler loop (q / Ctrl+C to stop).")
+        multi("  script <file.rps>    Run a script: set/$vars, if/else, while, end")
+        multi("")
+        multi("  Tip: 'startup add task run' makes the device autonomous at boot.")
+
+    elif a == "recovery":
+        info("=== Recovery & Diagnostics ===")
+        multi("  fscheck              Verify core OS files are present + non-empty")
+        multi("  diag                 Quick health snapshot (RAM/flash/registry)")
+        multi("  logdump [n]          Print the session log (last n lines)")
+        multi("  regreset             Delete registry.cfg; POST rebuilds defaults")
+        multi("  pkgdisable <name>    Disable a package without removing it")
+        multi("  pkgenable  <name>    Re-enable a disabled package")
+        multi("  recovery             Enter recovery mode (limited shell)")
 
     else:
         # Try looking up as an individual command name

@@ -76,121 +76,68 @@ the v0.9.1 + v1.0 roadmap below.
 
 ---
 
-## 🟡 v0.9.1 — next
+## 🔵 v0.9.1 "Pulsar" — in development (shell power + automation)
 
-Shell power + automation: turning RPCortex from an interactive shell into
-something you can script and leave running.
-
-**Summary of what's coming:** pipes, startup tasks, scheduled tasks, a first-cut
-scripting language, expanded recovery tools, download progress bars, and extended
-`curl` flags.
+Turning RPCortex from an interactive shell into something you can script and
+leave running. The headline items build on a new per-command exit-code +
+`multi()` output-capture convention in `RPCortex.py` (the piece deferred out of
+v0.9.0). All items below are implemented and unit-tested in CPython; pending
+on-hardware validation for the release tag.
 
 ### Shell & scripting
 
-- 🟡 **Shell pipes** — `cat f | grep ERROR`. This is the prerequisite for
-  everything else in this section.
-
-  **Implementation plan:** Every command currently prints directly to stdout.
-  Pipes need a capture layer. Cleanest approach: add an optional
-  `_output_buf = []` to the shell scope; when a pipe is active, commands `append`
-  to it instead of printing; the next command in the chain receives it via a
-  `_stdin` injection. Requires a small API shim in each command file — but most
-  commands only have one or two print sites. Parser change: `_split_cmds()` gains
-  a second pass to split on `|` after splitting on `;`, building a pipeline list.
-  Each stage gets `execute_command` called with capture=True.
-
-- 🟡 **`&&` / `||` chaining** — conditional sequencing based on exit code.
-  Falls out of the same exit-code work as pipes. Each `execute_command` call
-  returns `True`/`False`; `_split_cmds` records the operator between sub-commands.
-
-- 🟡 **Scripting language (first cut)** — `.rps` files: variables (`$x = value`),
-  `if`/`else`/`end`, `while`/`end`, `for x in list`/`end`, `~` expansion,
-  and command dispatch through the live Launchpad engine.
-
-  **Implementation plan:** a `Core/script.py` interpreter that reads the file
-  line-by-line (no RAM-heavy AST), resolves `$vars`, handles the four block
-  keywords via a stack of `{type, counter}` frames, and dispatches non-keyword
-  lines to `execute_command`. Keep it under ~150 lines. Wire into `exec` command
-  and the `execute_file()` fallback in launchpad for `.rps` extension.
+- ✅ **Shell pipes** — `cmd1 | cmd2 | cmd3`. `RPCortex.multi()` is the data
+  channel: a capture buffer collects it per stage and feeds the next via
+  `_shell_state['stdin']`; status helpers still print (stderr-like). Consumers
+  `grep`/`wc`/`sort`/`uniq`/`cat`/`head`/`tail` read stdin when no file arg.
+- ✅ **`&&` / `||` chaining** — exit status derived from whether a command called
+  `error()`/`fatal()` (so no per-command changes were needed). `_run_line()`
+  honours `;`, `&&`, `||`, and `|`; `_dispatch_line()` returns the status.
+- ✅ **Scripting (`.rps`)** — `script <file>`: `set`/`$var`, `if`/`else`/`end`,
+  `while`/`end`, builtins `eq`/`ne`/`exists`/`empty`, plus any shell command as a
+  condition (exit status). `Core/Launchpad/sys_script.py`.
 
 ### Task scheduling & background
 
-- 🟡 **Startup tasks** — run commands/scripts/packages automatically after login.
-  *Good first item — self-contained and low-risk.*
-
-  **Implementation plan:** A `startup.cfg` file at `/Nebula/Registry/startup.cfg`
-  (one command per line, `#` comments). `initialization.Startup_Process` (already
-  called after login) reads the file and dispatches each line through the live
-  `execute_command` reference. Shell management commands: `startup add <cmd>`,
-  `startup remove <n>`, `startup list`, `startup clear`. The entire feature fits
-  in ~50 lines across two files.
-
-- 🟡 **Scheduled tasks** — interval execution using a software uptime offset
-  (`utime.ticks_ms()`), since the RTC isn't battery-backed on bare Pico.
-
-  **Implementation plan:** A `scheduler.cfg` at `/Nebula/Registry/scheduler.cfg`
-  (`interval_secs:command` per line). The shell's main loop checks
-  `utime.ticks_diff(now, last_tick) >= interval` after each command returns.
-  No threading needed for a first cut. Shell commands: `cron add <secs> <cmd>`,
-  `cron list`, `cron remove <n>`. Depends on the shell-loop having a defined
-  "idle tick" concept — add that first.
-
-- 🟡 **Unattended / background mode** — long-running tasks without holding the
-  shell. A simple polling form is possible before uasyncio by running the task
-  in a tight loop and checking for `KeyboardInterrupt` to yield. Full background
-  support waits for uasyncio (v1.0).
+- ✅ **Startup tasks** — `/Nebula/Registry/startup.cfg` runs once after login via
+  `launchpad._run_startup_tasks()`. Managed with `startup list|add|remove|clear|run`
+  (`Core/Launchpad/sys_task.py`).
+- ✅ **Scheduled tasks** — `task add <secs> <cmd>` (`/Nebula/Registry/tasks.cfg`);
+  `task run` is a foreground scheduler firing due tasks on a `utime.ticks_ms`
+  timer, staying responsive via `select()` (q/Ctrl+C to stop). Software-uptime
+  timing — no battery RTC needed.
+- ✅ **Unattended mode** — `startup add task run` boots the device straight into
+  the scheduler loop (headless autonomy). True concurrent background tasks
+  alongside an interactive prompt still wait for uasyncio (v1.0) — the shell's
+  input read is blocking by design.
 
 ### Recovery & hardware
 
-- 🟡 **Expanded recovery tools** — diagnostics and repair inside `recovery_init()`.
-  Currently recovery just gives you a stripped shell.
-
-  **Plan:** Add a `recovery.lp` command file (separate from `system.lp` — keeps
-  it loadable even with a corrupted `system.lp`) with:
-  - `fscheck` — `uos.stat()` every path in a known-good manifest; report missing
-    or zero-size files
-  - `regreset` — delete `registry.cfg` so POST recreates it from template on next
-    boot (does NOT touch `user.cfg` or `networks.cfg`)
-  - `logdump` — print the full `/Nebula/Logs/latest.log`
-  - `pkgdisable <name>` — rename a package dir to `<name>.disabled` so it can't
-    be loaded, without removing it
-
-- 🟡 **GPIO control via registry** — toggle pins from the shell to reset a hung
-  peripheral without a reboot. `gpio set <pin> high|low`, `gpio read <pin>`,
-  stored config via `Hardware.GPIO_<n>` keys.
+- ✅ **Expanded recovery tools** — `fscheck`, `diag`, `logdump`, `regreset`,
+  `pkgdisable`/`pkgenable` in `Core/Launchpad/sys_recovery.py`, registered via
+  their own `recovery.lp` (loads even if `system.lp` is damaged).
+- ✅ **GPIO control** — shipped as the `gpio` package (`read|set|toggle|pwm|stop|adc`).
+  Registry-backed *persistent* pin state (restore at boot via a startup task)
+  is a possible follow-up.
 
 ### Networking & UX
 
-- 🟡 **Download progress bars** — `[####----] 47%` for `wget`/`curl`/`pkg install`.
+- ✅ **Download progress bars** — `wget` prints `[####----] N%  done/total B`
+  from `Content-Length` (redraws only on percent change; byte counter if size
+  unknown). `net._draw_progress()`.
+- ✅ **Extended `curl` flags** — `-X`, `-d`, `-H`, `-o`, `-s`, `-I`, `--timeout`;
+  default GET-to-stdout (with redirects) unchanged. Quote-aware flag tokenizer in
+  `sys_net.py`; richer request builder in `net.curl()`.
+- ✅ **OS personalisation** — `System.Owner` (shown in `sysinfo`, prompted at
+  first-run setup) and `System.TZ_Offset` (applied to `date`); device name via
+  `System.Device_ID` was already done.
 
-  **Plan:** `net._open_connection()` already parses headers; add a
-  `Content-Length` check. If present, stream and print a `\r[####----] N%`
-  overwrite line. If absent, print a spinner. Single helper `_progress(done, total)`
-  in `net.py`.
+### Memory & performance (carry-over — still 🟡)
 
-- 🟡 **Extended `curl` flags** — `-X POST`, `-d '{"key":"val"}'`, `-H 'Auth: x'`,
-  `-o /file`, `-s` (silent), `-I` (headers only), `--timeout N`.
-
-  **Plan:** `sys_net.py curl()` currently just calls `net.curl(url)`. Wrap it with
-  a lightweight arg parser (no `import re` — just `split(None, maxN)` scan) and
-  extend `net.curl()` to accept `method`, `body`, `headers`, `output_file`,
-  `silent`, `head_only`, `timeout` kwargs. ~80 lines total.
-
-- 🟡 **OS personalisation** — owner name (`System.Owner`), timezone offset
-  (`System.TZ_Offset`, applied to `date` output), device name already done via
-  `System.Device_ID`.
-
-### Memory & performance
-
-- 🟡 Lazy / ephemeral imports — evict non-critical modules from `sys.modules`
-  after use and run `gc.collect()`. Target: `net`, `pkgmgr` (rarely needed
-  during a normal session).
-- 🟡 Module eviction under memory pressure with automatic retry (build on the
-  existing `MemoryError` auto-recovery in the shell loop).
-- 🟡 Avoid string concatenation in hot paths — use `bytearray` or list-join in
-  the log formatter and any loop that builds output incrementally.
-- 🟡 Targeted Pico W RAM tuning — profile free RAM after a cold boot vs. after
-  loading commands; aim for ~200 KB free ceiling.
+- 🟡 Lazy / ephemeral imports — evict `net`/`pkgmgr` from `sys.modules` after use.
+- 🟡 Module eviction under memory pressure with automatic retry.
+- 🟡 Avoid string concatenation in hot paths (fragmentation).
+- 🟡 Targeted Pico W RAM tuning (~200 KB free ceiling).
 
 ---
 
@@ -240,17 +187,18 @@ re-implemented.
 | Tilde expansion everywhere | ✅ Done | `_tilde_expand()` on all args (v0.8.1-rc1) |
 | README rewrite | ✅ Done | (v0.9.0) |
 | OS personalisation (device name) | ✅ Done | `System.Device_ID` (v0.9.0) |
-| OS personalisation (owner / timezone) | 🟡 Next | v0.9.1 — `System.Owner`, `System.TZ_Offset` |
-| Startup tasks | 🟡 Next | v0.9.1 — feasible, self-contained |
-| Scheduled tasks | 🟡 Next | v0.9.1 — software uptime timing |
-| Unattended / background mode | 🟡 Next | v0.9.1 polling form; full version needs uasyncio |
-| Recovery mode tools (expand) | 🟡 Next | v0.9.1 — `recovery.lp` |
-| Custom shell scripting language | 🟡 Next (first cut) | v0.9.1, after pipes/exit-codes |
-| Shell pipes / `&&` / `||` | 🟡 Next | v0.9.1 — needs exit-code convention |
-| GPIO via registry | 🟡 Next | v0.9.1 |
-| Download progress bars | 🟡 Next | v0.9.1 — `Content-Length` in `net.py` |
-| Extended `curl` flags | 🟡 Next | v0.9.1 — `-X/-d/-H/-o/-s/-I/--timeout` |
-| Lazy / ephemeral imports | 🟡 Next | v0.9.1 — evict `net`/`pkgmgr` after use |
+| OS personalisation (owner / timezone) | ✅ Done | v0.9.1 — `System.Owner`, `System.TZ_Offset` |
+| Startup tasks | ✅ Done | v0.9.1 — `startup` cmd + `startup.cfg` + engine hook |
+| GPIO control | ✅ Done | v0.9.1 — shipped as the `gpio` package |
+| Calc / I2C scan packages | ✅ Done | v0.9.1 — `calc`, `i2cscan` |
+| Scheduled tasks | ✅ Done | v0.9.1 — `task` + `task run` scheduler (select-based) |
+| Unattended / background mode | ✅ Done | v0.9.1 — `startup add task run`; true concurrency → uasyncio |
+| Recovery mode tools (expand) | ✅ Done | v0.9.1 — `recovery.lp` + `sys_recovery.py` |
+| Custom shell scripting language | ✅ Done | v0.9.1 — `.rps` (`sys_script.py`) |
+| Shell pipes / `&&` / `||` | ✅ Done | v0.9.1 — capture + exit-code convention |
+| Download progress bars | ✅ Done | v0.9.1 — `wget` via `Content-Length` |
+| Extended `curl` flags | ✅ Done | v0.9.1 — `-X/-d/-H/-o/-s/-I/--timeout` |
+| Lazy / ephemeral imports | 🟡 Next | carry-over to a later v0.9.x |
 | Multitasking (uasyncio) | ⚪ Future | v1.0 foundation |
 | Multiple terminals / tabbing | ⚪ Future | needs multitasking |
 | SSH access | ⚪ Future | needs uasyncio |
@@ -272,11 +220,11 @@ already has the networking and hardware primitives most of these need.
 
 | Package | What it does | Notes |
 |---------|--------------|-------|
-| `ntp` | `ntp sync` → set RTC from `pool.ntp.org` over UDP | Solves RTC-resets-on-power-loss; pairs with `date` + startup tasks. ~60 lines. **Best first package.** |
+| `calc` ✅ | `calc "3*(4+2)/1.5"`, `calc hex 255`, `calc bin 42` | **Shipped (v0.9.1).** Sandboxed eval (math only), base conversion. |
+| `gpio` ✅ | `gpio read/set/toggle/pwm/stop/adc <pin>` | **Shipped (v0.9.1).** Live pin control on RP2/ESP32. |
+| `i2cscan` ✅ | Scan the I2C bus, name detected devices | **Shipped (v0.9.1).** SoftI2C, any pins; common-device table. |
+| `ntp` ✅ | `ntp sync` → set the clock from `pool.ntp.org` over UDP | **Shipped (v0.9.1), built-in + in repo.** Solves RTC-resets-on-power-loss; `startup add ntp sync` for boot sync. Handles MicroPython's 2000 epoch. |
 | `dht` | `dht read <pin>` → temp + humidity from DHT11/DHT22 | The most common Pico add-on sensor; tiny driver (~40 lines). |
-| `i2cscan` | Scan I2C buses, print detected addresses with known-device names | First thing anyone does with a new sensor. Pure debug value. |
-| `gpio` | `gpio set/read/pwm <pin>` from the shell | Overlaps with the planned built-in `gpio`; could be the package form, or fold into core. |
-| `calc` | `calc "3*(4+2)/1.5"`, `calc hex 255`, `calc bin 42` | Quick math/unit/base conversions without leaving the prompt. |
 | `backup` | `backup create/restore <archive>` for home + registry | Safety net before `factoryreset` / `reinstall` / board migration. |
 | `httpd` | `httpd start [port]` → live status page (CPU/RAM/uptime/temp) over WiFi | Opens remote-monitoring + basic REST use cases. Shell already has the data. |
 | `mqtt` | `mqtt connect/pub/sub` | Makes RPCortex a real IoT node (Home Assistant / Node-RED speak MQTT). |

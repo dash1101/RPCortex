@@ -14,7 +14,7 @@ import uos
 if '/Core' not in sys.path:
     sys.path.append('/Core')
 
-from RPCortex import warn, error, info, ok, multi
+from RPCortex import warn, error, info, ok, multi, is_capturing
 
 _RST  = '\033[0m'
 _CY   = '\033[96m'    # cyan  — match highlight
@@ -28,36 +28,62 @@ def _resolve(path):
     return uos.getcwd().rstrip('/') + '/' + path
 
 
+def _stdin_text():
+    """Piped input text for the current command, or None if not piped."""
+    return globals().get('_shell_state', {}).get('stdin')
+
+
+def _iter_input(filepath, stdin):
+    """Yield input lines (with trailing newline) from a file, else piped stdin.
+
+    A file is streamed line-by-line (low RAM); piped text is already in RAM.
+    Lets every text command work on either `grep x file` or `... | grep x`.
+    """
+    if filepath is not None:
+        path = _resolve(filepath)
+        with open(path, 'r') as f:
+            for line in f:
+                yield line
+    elif stdin is not None:
+        parts = stdin.split('\n')
+        if parts and parts[-1] == '':
+            parts = parts[:-1]   # drop the empty tail from a trailing newline
+        for p in parts:
+            yield p + '\n'
+
+
 # ---------------------------------------------------------------------------
 # grep  — search file for pattern (substring match)
 # ---------------------------------------------------------------------------
 
 def grep(args):
-    if not args:
-        warn("Usage: grep <pattern> <file>")
-        return
-    parts = args.split(None, 1)
-    if len(parts) < 2:
-        warn("Usage: grep <pattern> <file>")
+    parts = args.split(None, 1) if args else []
+    if not parts:
+        warn("Usage: grep <pattern> <file>   (or  ... | grep <pattern>)")
         return
     pattern  = parts[0]
-    filepath = parts[1].strip()
-    path = _resolve(filepath)
+    filepath = parts[1].strip() if len(parts) > 1 else None
+    stdin    = _stdin_text()
+    if filepath is None and stdin is None:
+        warn("Usage: grep <pattern> <file>")
+        return
     try:
         count = 0
         lnum  = 0
-        with open(path, 'r') as f:
-            for line in f:
-                lnum += 1
-                if pattern in line:
-                    count += 1
-                    multi(_GR + "{:4d}".format(lnum) + _RST + "  " + line.rstrip('\n'))
-        if count == 0:
-            info("No matches for '{}'.".format(pattern))
-        else:
-            ok("{} match(es) in '{}'.".format(count, filepath))
+        for line in _iter_input(filepath, stdin):
+            lnum += 1
+            if pattern in line:
+                count += 1
+                multi(_GR + "{:4d}".format(lnum) + _RST + "  " + line.rstrip('\n'))
+        if not is_capturing():   # summary is status, not data — skip when piped onward
+            if count == 0:
+                info("No matches for '{}'.".format(pattern))
+            elif filepath:
+                ok("{} match(es) in '{}'.".format(count, filepath))
+            else:
+                ok("{} match(es).".format(count))
     except OSError as e:
-        error("Cannot read '{}': {}".format(path, e))
+        error("Cannot read input: {}".format(e))
 
 
 # ---------------------------------------------------------------------------
@@ -65,24 +91,24 @@ def grep(args):
 # ---------------------------------------------------------------------------
 
 def wc(args):
-    if not args:
-        warn("Usage: wc <file>")
+    filepath = args.strip() if args and args.strip() else None
+    stdin    = _stdin_text()
+    if filepath is None and stdin is None:
+        warn("Usage: wc <file>   (or  ... | wc)")
         return
-    path = _resolve(args.strip())
     try:
         lines = 0
         words = 0
         byt   = 0
-        with open(path, 'r') as f:
-            for line in f:
-                lines += 1
-                words += len(line.split())
-                byt   += len(line)
+        for line in _iter_input(filepath, stdin):
+            lines += 1
+            words += len(line.split())
+            byt   += len(line)
         multi("  Lines : {}".format(lines))
         multi("  Words : {}".format(words))
         multi("  Bytes : {}".format(byt))
     except OSError as e:
-        error("Cannot read '{}': {}".format(args.strip(), e))
+        error("Cannot read input: {}".format(e))
 
 
 # ---------------------------------------------------------------------------
@@ -126,11 +152,13 @@ def find(args=None):
     _walk(root)
 
     if not results:
-        info("No files found.")
+        if not is_capturing():
+            info("No files found.")
     else:
         for r in sorted(results):
             multi("  " + r)
-        ok("{} result(s).".format(len(results)))
+        if not is_capturing():
+            ok("{} result(s).".format(len(results)))
 
 
 # ---------------------------------------------------------------------------
@@ -138,27 +166,29 @@ def find(args=None):
 # ---------------------------------------------------------------------------
 
 def sort(args):
-    if not args:
-        warn("Usage: sort <file>")
+    filepath = args.strip() if args and args.strip() else None
+    stdin    = _stdin_text()
+    if filepath is None and stdin is None:
+        warn("Usage: sort <file>   (or  ... | sort)")
         return
-    path = _resolve(args.strip())
     try:
-        sz = uos.stat(path)[6]
-    except OSError as e:
-        error("Cannot access '{}': {}".format(args.strip(), e))
-        return
-    if sz > 8192:
-        warn("Large file ({} KB) — loading into RAM. Run 'freeup' first if low on memory.".format(
-            sz // 1024))
-    try:
-        with open(path, 'r') as f:
-            lines = f.readlines()
+        if filepath is not None:
+            path = _resolve(filepath)
+            try:
+                sz = uos.stat(path)[6]
+            except OSError as e:
+                error("Cannot access '{}': {}".format(filepath, e))
+                return
+            if sz > 8192:
+                warn("Large file ({} KB) — loading into RAM. Run 'freeup' first if low on memory.".format(
+                    sz // 1024))
+        lines = [line for line in _iter_input(filepath, stdin)]
         for line in sorted(lines):
             multi(line.rstrip('\n'))
     except OSError as e:
-        error("Cannot read '{}': {}".format(args.strip(), e))
+        error("Cannot read input: {}".format(e))
     except MemoryError:
-        error("Not enough RAM to sort this file. Run 'freeup' and retry.")
+        error("Not enough RAM to sort this input. Run 'freeup' and retry.")
 
 
 # ---------------------------------------------------------------------------
@@ -166,20 +196,20 @@ def sort(args):
 # ---------------------------------------------------------------------------
 
 def uniq(args):
-    if not args:
-        warn("Usage: uniq <file>")
+    filepath = args.strip() if args and args.strip() else None
+    stdin    = _stdin_text()
+    if filepath is None and stdin is None:
+        warn("Usage: uniq <file>   (or  ... | uniq)")
         return
-    path = _resolve(args.strip())
     try:
         prev = None
-        with open(path, 'r') as f:
-            for line in f:
-                s = line.rstrip('\n')
-                if s != prev:
-                    multi(s)
-                    prev = s
+        for line in _iter_input(filepath, stdin):
+            s = line.rstrip('\n')
+            if s != prev:
+                multi(s)
+                prev = s
     except OSError as e:
-        error("Cannot read '{}': {}".format(args.strip(), e))
+        error("Cannot read input: {}".format(e))
 
 
 # ---------------------------------------------------------------------------

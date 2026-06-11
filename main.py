@@ -1,8 +1,8 @@
-# Desc: Entry point for RPCortex - Nebula OS
+# Desc: Entry point for RPCortex - Pulsar OS
 # File: /main.py
-# Last Updated: 6/9/2026
+# Last Updated: 6/10/2026
 # Lang: MicroPython, English
-# Version: v0.8.2
+# Version: v0.9.1
 # Author: dash1101
 
 # RPC β9

@@ -1,8 +1,8 @@
-# Desc: Core output utilities and session logging for RPCortex - Nebula OS
+# Desc: Core output utilities and session logging for RPCortex - Pulsar OS
 # File: /Core/RPCortex.py
-# Last Updated: 6/9/2026
+# Last Updated: 6/10/2026
 # Lang: MicroPython, English
-# Version: v0.8.2
+# Version: v0.9.1
 # Author: dash1101
 
 import os
@@ -13,10 +13,58 @@ import time
 # initialization.start() syncs Settings.Version and System.Codename in the
 # registry to these values on every boot, so the registry can never drift
 # after an OS update.
-OS_VERSION  = "v0.9.0"
+OS_VERSION  = "v0.9.1"
 OS_CODENAME = "RPCortex B9 - Pulsar"
 
 post_check = True
+
+# ---------------------------------------------------------------------------
+# Output capture + command exit-status tracking  (pipes, && / ||, scripting)
+#
+# multi() is the data channel (stdout-like): when a capture buffer is active it
+# is collected instead of printed, so the shell can feed it to the next stage
+# of a pipeline.  The status helpers (ok/info/warn/error/fatal) always print —
+# they are stderr-like and never become piped data.
+#
+# error()/fatal() additionally set _had_error.  The shell clears it before each
+# command and reads it after, deriving a pass/fail exit status for && / || and
+# script conditionals WITHOUT every command needing to return one.
+# ---------------------------------------------------------------------------
+
+_capture   = None     # list buffer while capturing multi() output, else None
+_had_error = False    # set by error()/fatal(); cleared per command by the shell
+
+
+def begin_capture():
+    """Start buffering multi() output. Returns the previous buffer (nesting-safe)."""
+    global _capture
+    prev = _capture
+    _capture = []
+    return prev
+
+
+def end_capture(prev=None):
+    """Stop buffering; return captured text and restore the previous buffer."""
+    global _capture
+    text = ''.join(_capture) if _capture is not None else ''
+    _capture = prev
+    return text
+
+
+def is_capturing():
+    """True while multi() output is being captured (i.e. piped onward)."""
+    return _capture is not None
+
+
+def clear_error():
+    """Reset the per-command error flag (call before dispatching a command)."""
+    global _had_error
+    _had_error = False
+
+
+def had_error():
+    """True if error()/fatal() was called since the last clear_error()."""
+    return _had_error
 
 # ---------------------------------------------------------------------------
 # ANSI color constants
@@ -171,12 +219,16 @@ def _fmt(color, symbol, msg, p, nL):
 
 
 def error(msg, nL=True, p=None):
+    global _had_error
+    _had_error = True   # failure signal for && / || and script conditionals
     if post_check:
         _fmt(FAIL, '!', msg, p, nL)
         _log_write('ERROR', ('[{}] '.format(p) if p else '') + str(msg))
 
 
 def fatal(msg, nL=True, p=None):
+    global _had_error
+    _had_error = True
     if post_check:
         _fmt(FAIL, '!!!', msg, p, nL)
         _log_write('FATAL', ('[{}] '.format(p) if p else '') + str(msg))
@@ -203,7 +255,10 @@ def ok(msg, nL=True, p=None):
 def multi(msg, nL=True, p=None):
     if post_check:
         out = msg + ('\n' if nL else '')
-        print(out, end='')
+        if _capture is not None:
+            _capture.append(out)   # piped onward instead of printed
+        else:
+            print(out, end='')
         _log_write('PRINT', str(msg))
 
 

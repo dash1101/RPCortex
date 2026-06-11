@@ -35,6 +35,19 @@ def _abspath(p):
     return p if p.startswith('/') else uos.getcwd().rstrip('/') + '/' + p
 
 
+def _stdin_text():
+    """Piped input text for the current command, or None if not piped."""
+    return globals().get('_shell_state', {}).get('stdin')
+
+
+def _stdin_lines(stdin):
+    """Split piped stdin text into lines (without trailing-empty artifact)."""
+    parts = stdin.split('\n')
+    if parts and parts[-1] == '':
+        parts = parts[:-1]
+    return parts
+
+
 def _copy_chunked(src, dst, chunk=1024):
     """Stream-copy src -> dst in fixed-size chunks (never loads the whole file).
 
@@ -273,6 +286,11 @@ def delete(args):
 
 def read(args):
     if not args:
+        stdin = _stdin_text()
+        if stdin is not None:
+            if stdin:
+                multi(stdin, nL=not stdin.endswith('\n'))   # echo piped input as-is
+            return
         warn("Usage: read <file> [file2 ...]")
         return
     files    = args.split()
@@ -291,49 +309,67 @@ def read(args):
             error("Cannot read '{}': {}".format(path, e))
 
 
-def head(args):
-    if not args:
-        warn("Usage: head <file> [n]")
-        return
-    parts    = args.split(None, 1)
-    filepath = parts[0]
+def _head_tail_args(args, stdin):
+    """Resolve (filepath, n) for head/tail, supporting piped stdin.
+
+    When piped (stdin present) a lone numeric arg is the line count, not a file
+    name — so `cat f | head 5` means n=5.  An explicit file always wins.
+    """
+    filepath = None
     n = 10
-    if len(parts) > 1:
-        try:
-            n = int(parts[1])
-        except ValueError:
-            warn("Invalid line count, defaulting to 10.")
-    path = filepath if filepath.startswith('/') else uos.getcwd().rstrip('/') + '/' + filepath
+    if args:
+        parts = args.split(None, 1)
+        if stdin is not None and len(parts) == 1 and parts[0].lstrip('-').isdigit():
+            n = int(parts[0].lstrip('-'))
+        else:
+            filepath = parts[0]
+            if len(parts) > 1:
+                try:
+                    n = int(parts[1])
+                except ValueError:
+                    warn("Invalid line count, defaulting to 10.")
+    return filepath, n
+
+
+def head(args):
+    stdin = _stdin_text()
+    filepath, n = _head_tail_args(args, stdin)
+    if filepath is None and stdin is None:
+        warn("Usage: head <file> [n]   (or  ... | head [n])")
+        return
     try:
-        with open(path, 'r') as f:
-            for i, line in enumerate(f):
-                if i >= n:
-                    break
-                multi(line.rstrip('\n'))
+        if filepath is not None:
+            path = filepath if filepath.startswith('/') else uos.getcwd().rstrip('/') + '/' + filepath
+            with open(path, 'r') as f:
+                for i, line in enumerate(f):
+                    if i >= n:
+                        break
+                    multi(line.rstrip('\n'))
+        else:
+            for line in _stdin_lines(stdin)[:n]:
+                multi(line)
     except OSError as e:
-        error("Cannot read '{}': {}".format(path, e))
+        error("Cannot read input: {}".format(e))
 
 
 def tail(args):
-    if not args:
-        warn("Usage: tail <file> [n]")
+    stdin = _stdin_text()
+    filepath, n = _head_tail_args(args, stdin)
+    if filepath is None and stdin is None:
+        warn("Usage: tail <file> [n]   (or  ... | tail [n])")
         return
-    parts    = args.split(None, 1)
-    filepath = parts[0]
-    n = 10
-    if len(parts) > 1:
-        try:
-            n = int(parts[1])
-        except ValueError:
-            warn("Invalid line count, defaulting to 10.")
-    path = filepath if filepath.startswith('/') else uos.getcwd().rstrip('/') + '/' + filepath
     try:
-        with open(path, 'r') as f:
-            lines = f.readlines()
-        for line in lines[-n:]:
-            multi(line.rstrip('\n'))
+        if filepath is not None:
+            path = filepath if filepath.startswith('/') else uos.getcwd().rstrip('/') + '/' + filepath
+            with open(path, 'r') as f:
+                lines = f.readlines()
+            for line in lines[-n:]:
+                multi(line.rstrip('\n'))
+        else:
+            for line in _stdin_lines(stdin)[-n:]:
+                multi(line)
     except OSError as e:
-        error("Cannot read '{}': {}".format(path, e))
+        error("Cannot read input: {}".format(e))
 
 
 def execute(args):

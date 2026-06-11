@@ -12,7 +12,42 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
   3. Categories: Added / Changed / Fixed / Removed / Security
 -->
 
-## [Unreleased]
+## [v0.9.1] "Pulsar" — in development
+
+The shell-power + automation release. Pipes, conditional chaining, a scripting
+language, scheduled/unattended tasks, expanded recovery tooling, and the
+hardware/local packages a standalone device wants. The headline pieces all build
+on a new per-command exit-code + output-capture convention (the item deferred
+out of v0.9.0).
+
+### Added — shell power
+- **Pipes** — `cmd1 | cmd2 | cmd3`. Each stage's `multi()` (data) output is captured and fed to the next stage as stdin; status lines (`ok`/`info`/`warn`/`error`) still print, like stderr. Consumers `grep`, `wc`, `sort`, `uniq`, `cat`/`read`, `head`, `tail` all read piped stdin when no file argument is given. e.g. `cat /Nebula/Logs/latest.log | grep ERROR | wc`.
+- **Conditional chaining** — `cmd1 && cmd2` (run second only if first succeeded) and `cmd1 || cmd2` (only if first failed), combinable with `;` and `|`. Exit status is derived from whether the command called `error()`/`fatal()` — no per-command changes needed.
+- **Scripting (`.rps`)** — `script <file.rps>`: variables (`set NAME VALUE`, `$NAME` expansion), `if`/`else`/`end`, `while`/`end`, `#` comments, and any shell command (pipes/chaining included). Conditions are builtins (`eq`, `ne`, `exists`, `empty`) or any command's exit status. New file: `Core/Launchpad/sys_script.py`.
+
+### Added — autonomy
+- **Startup tasks** — commands in `/Nebula/Registry/startup.cfg` run once after login, before the prompt, via `launchpad._run_startup_tasks()`. Managed with `startup list|add <cmd>|remove <n>|clear|run`. (New file: `Core/Launchpad/sys_task.py`.)
+- **Scheduled & unattended tasks** — `task add <secs> <cmd>` / `list` / `remove <n>` / `clear`, stored in `/Nebula/Registry/tasks.cfg`. `task run` enters a foreground scheduler that fires due tasks on a software-uptime timer and stays responsive (quit with `q`/Ctrl+C via `select()`). Run it as a startup task (`startup add task run`) for a headless, autonomous device.
+
+### Added — recovery & diagnostics
+- **`fscheck`** — verify core OS files exist and are non-empty. **`diag`** — RAM/flash/registry/version snapshot. **`logdump [n]`** — print the session log. **`regreset`** — delete `registry.cfg` so POST rebuilds defaults (keeps users + WiFi). **`pkgdisable`/`pkgenable <name>`** — quarantine a misbehaving package without removing it. Registered via their own `recovery.lp` so they load even if `system.lp` is damaged. (New file: `Core/Launchpad/sys_recovery.py`.)
+
+### Added — packages (install with `pkg install <name>`)
+- **Calc** — offline calculator; sandboxed math eval (no filesystem/imports) + `hex`/`bin`/`oct`/`dec` conversion.
+- **Gpio** — direct pin control: `gpio read|set|toggle|pwm|stop|adc <pin>` on RP2040/RP2350/ESP32.
+- **I2CScan** — `i2cscan [scl] [sda]` probes the I2C bus (SoftI2C, any pins) and names common devices.
+
+### Added — networking & personalisation
+- **Download progress bars** — `wget` shows `[####----] 47%  N/M B` using `Content-Length` (redraws only on percent change; byte counter when size is unknown).
+- **Extended `curl` flags** — `-X <method>`, `-d <data>`, `-H '<header>'`, `-o <file>`, `-s` (silent), `-I` (headers only), `--timeout <secs>`. The default GET-to-stdout behaviour (with redirect following) is unchanged.
+- **Personalisation** — `System.Owner` (shown in `sysinfo`, prompted at first-run setup) and `System.TZ_Offset` (hours; applied to `date` output). Device name was already configurable via `System.Device_ID`.
+
+### Changed
+- **Unified dispatch & line execution** — `launchpad._dispatch_line()` is the single command router (alias/tilde/`--help`/route), returning a pass/fail status; `_run_line()` handles `;`, `&&`, `||`, and `|` for the interactive loop, recovery loop, startup runner, scripts, and `watch`. Replaces the three copied dispatch blocks from before.
+- **`OS_VERSION` → `v0.9.1`**; registry template + boot-file headers bumped to Pulsar.
+
+### Fixed
+- Stale "RPCortex Nebula" brand strings in the `help` banner, `sysinfo`, and HTTP `User-Agent` updated to "Pulsar".
 
 ---
 

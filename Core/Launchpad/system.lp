@@ -56,6 +56,9 @@ env:/Core/Launchpad/sys_sys.py:env
 reg:/Core/Launchpad/sys_sys.py:reg
 freeup:/Core/Launchpad/sys_sys.py:freeup
 gc:/Core/Launchpad/sys_sys.py:freeup
+startup:/Core/Launchpad/sys_task.py:startup
+task:/Core/Launchpad/sys_task.py:task
+script:/Core/Launchpad/sys_script.py:script
 settings:/Core/Launchpad/settings.py:settings
 factoryreset:/Core/Launchpad/sys_sys.py:factoryreset
 reinstall:/Core/Launchpad/sys_sys.py:reinstall

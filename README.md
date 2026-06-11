@@ -12,7 +12,7 @@
 
 # RPCortex — Pulsar β9
 
-RPCortex is a CLI operating system for the Raspberry Pi Pico, ESP32, and compatible boards, written entirely in MicroPython. It turns a microcontroller into something that actually behaves like a computer — a real interactive shell, user accounts with passwords, a package manager, WiFi, over-the-air updates, a text editor, and a structured boot process with hardware checks.
+RPCortex is a CLI operating system for the **Raspberry Pi Pico series** (RP2040 / RP2350) and the **ESP32-S3**, written entirely in **MicroPython**. It turns a microcontroller into something that actually behaves like a computer — a real interactive shell with pipes and scripting, user accounts with passwords, a package manager, WiFi, over-the-air updates, a text editor, task automation, and a structured boot process with hardware checks.
 
 It runs on hardware with 264 KB of RAM. That constraint is the point.
 
@@ -26,7 +26,7 @@ You flash MicroPython, copy the files, open PuTTY at 115200 baud, and reboot. PO
 root@pulsar:~>
 ```
 
-From there you have a shell that works. `ls` shows your files with sizes and timestamps. `cd ~` takes you home. Up/down arrows scroll your last 50 commands. Left/right arrows move the cursor so you can edit a command mid-line. Tab completes commands and paths. You can open a file, edit it, save it. You can connect to WiFi, update the OS over the air, and install a package by name. You can overclock the CPU, benchmark it, and check the temperature — all from the same prompt.
+From there you have a shell that works. `ls` shows your files with sizes and timestamps. `cd ~` takes you home. Up/down arrows scroll your last 50 commands. Left/right arrows move the cursor so you can edit a command mid-line. Tab completes commands and paths. You can pipe commands together (`cat log | grep ERROR | wc`), chain them (`wifi connect && pkg update`), and write scripts. You can open a file, edit it, save it. You can connect to WiFi, update the OS over the air, and install a package by name. You can overclock the CPU, benchmark it, drive GPIO pins, and check the temperature — all from the same prompt.
 
 It's not trying to be Linux. It's a $4 microcontroller running MicroPython. But within those constraints, it behaves like a real system.
 
@@ -34,7 +34,11 @@ It's not trying to be Linux. It's a $4 microcontroller running MicroPython. But 
 
 ## What you can do with it
 
-**Use it as a shell environment.** Browse and manage files, run scripts, edit configs. The filesystem commands cover everything standard: `ls`, `cd`, `cp`, `mv`, `rm`, `tree`, `df`, `du`. Copies and moves stream large files safely without exhausting RAM, and accept relative paths. Read several files at once with `cat a.txt b.txt`. Text processing with `grep`, `find`, `sort`, `wc`, and `hex`. The text editor opens any file over serial. `~` expands to your home directory in any argument — `cd ~/docs`, `cp ~/config.txt /tmp/`, all of it.
+**Use it as a shell environment.** Browse and manage files, run scripts, edit configs. The filesystem commands cover everything standard: `ls`, `cd`, `cp`, `mv`, `rm`, `tree`, `df`, `du`. Copies and moves stream large files safely without exhausting RAM, and accept relative paths. Read several files at once with `cat a.txt b.txt`. Text processing with `grep`, `find`, `sort`, `wc`, and `hex` — and you can **pipe** them together (`cat log | grep ERROR | sort | uniq`) and chain with `&&` / `||`. The text editor opens any file over serial. `~` expands to your home directory in any argument — `cd ~/docs`, `cp ~/config.txt /tmp/`, all of it.
+
+**Automate it.** Write `.rps` scripts with variables, `if`/`else`, and `while` loops, then run them with `script myjob.rps`. Add commands to run automatically at boot (`startup add wifi connect`), or on a repeating timer (`task add 60 sysmon`). Run `startup add task run` and the device boots straight into an autonomous scheduler — no terminal required. It's a standalone computer that can now do things on its own.
+
+**Talk to hardware.** Drive pins straight from the prompt with the `gpio` package — `gpio set 25 high`, `gpio pwm 15 50`, `gpio read 14`, `gpio adc 26`. Scan for I²C sensors with `i2cscan` (it names common parts like SSD1306 and BME280). Do quick math with `calc "3 * (4 + 2)"` and base conversions with `calc hex 255`.
 
 **Connect to the internet.** WiFi connects on any Pico W or ESP32 — and remembers your networks and passwords. `wget` streams files directly to flash. `curl` fetches APIs. `runurl` downloads and executes a Python file in one step. Autoconnect on boot if you want it.
 
@@ -48,7 +52,9 @@ It's not trying to be Linux. It's a $4 microcontroller running MicroPython. But 
 
 **Tune the hardware.** `pulse set 220` overclocks to 220 MHz. `pulse boot 200` sets a boot clock. `bench` runs NebulaMark. `freeup` compacts the heap when things get fragmented after heavy use.
 
-**Make it yours.** `settings` opens an interactive panel to toggle boot overclocking, WiFi autoconnect, verbose boot, the beeper, SD support, and program execution. `reg get`/`reg set` writes the registry directly. Aliases (`alias ll=ls -l`) build your own shortcuts — and they now survive reboots. `watch -n 5 sysinfo` keeps a live readout on screen. `date set` fixes the clock so your logs are timestamped correctly. `reg set System.Device_ID mypico` even renames the host in your prompt.
+**Make it yours.** `settings` opens an interactive panel to toggle boot overclocking, WiFi autoconnect, verbose boot, the beeper, SD support, and program execution. `reg get`/`reg set` writes the registry directly. Aliases (`alias ll=ls -l`) build your own shortcuts — and they survive reboots. `watch -n 5 sysinfo` keeps a live readout on screen. `date set` fixes the clock, and `reg set System.TZ_Offset -5` keeps it in your timezone. Name the device's owner (`reg set System.Owner Dash`) and rename the host in your prompt (`reg set System.Device_ID mypico`).
+
+**Recover from trouble.** If something breaks, recovery mode gives you a limited shell plus repair tools: `fscheck` verifies the core files are intact, `diag` prints a health snapshot, `logdump` shows the session log, `regreset` rebuilds a corrupt registry (keeping your accounts and WiFi), and `pkgdisable` quarantines a misbehaving package without removing it.
 
 ---
 
@@ -107,4 +113,4 @@ Open source. Explicit credit to **[@dash1101](https://github.com/dash1101)** is 
 
 ---
 
-###### RPCortex Pulsar β9 — v0.9.0
+###### RPCortex Pulsar β9 — v0.9.1

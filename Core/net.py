@@ -1,8 +1,8 @@
-# Desc: WiFi networking and HTTP client for RPCortex - Nebula OS
+# Desc: WiFi networking and HTTP client for RPCortex - Pulsar OS
 # File: /Core/net.py
-# Last Updated: 6/9/2026
+# Last Updated: 6/10/2026
 # Lang: MicroPython, English
-# Version: v0.8.2
+# Version: v0.9.1
 # Author: dash1101
 #
 # Supported hardware:
@@ -318,7 +318,7 @@ def _parse_url(url):
     return host, port, path, use_ssl
 
 
-def _open_connection(host, port, use_ssl):
+def _open_connection(host, port, use_ssl, timeout=15):
     """Open a TCP socket, optionally wrapped with TLS. Returns the socket."""
     import socket
     import gc
@@ -329,7 +329,7 @@ def _open_connection(host, port, use_ssl):
     gc.collect()
     s = socket.socket()
     try:
-        s.settimeout(15)
+        s.settimeout(timeout)
     except Exception:
         pass
     s.connect(addr)
@@ -417,6 +417,39 @@ def _abs_url(location, orig_host, orig_ssl):
     return scheme + orig_host + '/' + location
 
 
+def _content_length(raw_headers):
+    """Return the Content-Length value from raw header bytes, or None."""
+    for line in raw_headers.decode('utf-8', 'ignore').split('\r\n')[1:]:
+        if line.lower().startswith('content-length:'):
+            try:
+                return int(line.split(':', 1)[1].strip())
+            except ValueError:
+                return None
+    return None
+
+
+def _draw_progress(done, total, last_pct):
+    """Print an in-place download progress bar. Returns the new last_pct.
+
+    Redraws only when the integer percent changes (total known) to avoid
+    flooding the serial line; falls back to a byte counter when size unknown.
+    """
+    if total:
+        pct = done * 100 // total
+        if pct == last_pct:
+            return last_pct
+        filled = pct * 24 // 100
+        sys.stdout.write('\r  [{}{}] {:>3}%  {}/{} B'.format(
+            '#' * filled, '-' * (24 - filled), pct, done, total))
+        return pct
+    else:
+        # Unknown size: update roughly every 4 KB
+        if done - last_pct >= 4096:
+            sys.stdout.write('\r  {} B'.format(done))
+            return done
+        return last_pct
+
+
 def wget(url, dest=None, chunk_size=512, verbose=True):
     """
     Download a URL.
@@ -437,7 +470,7 @@ def wget(url, dest=None, chunk_size=512, verbose=True):
             req = (
                 'GET {} HTTP/1.0\r\n'
                 'Host: {}\r\n'
-                'User-Agent: RPCortex-Nebula/0.8\r\n'
+                'User-Agent: RPCortex-Pulsar/0.9\r\n'
                 'Connection: close\r\n\r\n'
             ).format(path, host)
             s.send(req.encode())
@@ -457,7 +490,9 @@ def wget(url, dest=None, chunk_size=512, verbose=True):
                 continue   # next iteration opens a fresh connection
             # 2xx or other final response — read body
             if dest is not None:
+                total = _content_length(raw_headers)
                 written = 0
+                last_pct = -1
                 with open(dest, 'wb') as f:
                     if body_buf:
                         f.write(body_buf)
@@ -469,6 +504,10 @@ def wget(url, dest=None, chunk_size=512, verbose=True):
                             break
                         f.write(chunk)
                         written += len(chunk)
+                        if verbose:
+                            last_pct = _draw_progress(written, total, last_pct)
+                if verbose:
+                    sys.stdout.write('\n')   # finish the progress line
                 return status, written
             else:
                 body = body_buf
@@ -624,57 +663,106 @@ def nslookup(host):
 # Curl  — fetch URL body and return as string (for small text responses)
 # ---------------------------------------------------------------------------
 
-def curl(url, chunk_size=512, verbose=False):
+def curl(url, chunk_size=512, verbose=False, method='GET', data=None,
+         headers=None, output=None, silent=False, head_only=False, timeout=15):
     """
     Fetch a URL and stream the response body to stdout.
-    Follows up to 5 redirects. Iterative — no recursion.
-    Body is written chunk-by-chunk — never accumulated — so any response
-    size works regardless of available RAM.  Returns bytes written.
+
+    Default behaviour (GET, stream body to stdout, follow up to 5 redirects) is
+    unchanged.  Optional flags extend it:
+      method     HTTP verb (GET/POST/PUT/DELETE/...)
+      data       request body (str/bytes); sets Content-Length
+      headers    dict of extra request headers
+      output     write the body to this file path instead of stdout
+      silent     suppress status messages
+      head_only  send HEAD and print only the response headers
+      timeout    socket timeout in seconds
+
+    Body is streamed chunk-by-chunk — never accumulated — so any response size
+    works regardless of RAM.  Returns bytes written (or the status for HEAD).
     """
     import gc
+    if head_only:
+        method = 'HEAD'
+    # Redirects are only auto-followed for a plain GET (a POST/HEAD redirect
+    # would need method rewriting — out of scope for this first cut).
+    follow = (method == 'GET' and data is None and not head_only)
+    body_bytes = b''
+    if data is not None:
+        body_bytes = data.encode('utf-8') if isinstance(data, str) else data
     for _depth in range(6):
         if _depth > 0:
             gc.collect()
         host, port, path, use_ssl = _parse_url(url)
-        if verbose:
-            info("{}:{} -> {}".format(host, port, path))
-        s = _open_connection(host, port, use_ssl)
+        if verbose and not silent:
+            info("{} {}:{} -> {}".format(method, host, port, path))
+        s = _open_connection(host, port, use_ssl, timeout=timeout)
         try:
-            req = (
-                'GET {} HTTP/1.0\r\n'
-                'Host: {}\r\n'
-                'User-Agent: RPCortex-Nebula/0.8\r\n'
-                'Connection: close\r\n\r\n'
-            ).format(path, host)
-            s.send(req.encode())
+            lines = [
+                '{} {} HTTP/1.0'.format(method, path),
+                'Host: {}'.format(host),
+                'User-Agent: RPCortex-Pulsar/0.9',
+            ]
+            has_ct = False
+            if headers:
+                for k, v in headers.items():
+                    lines.append('{}: {}'.format(k, v))
+                    if k.lower() == 'content-type':
+                        has_ct = True
+            if body_bytes:
+                if not has_ct:
+                    lines.append('Content-Type: application/x-www-form-urlencoded')
+                lines.append('Content-Length: {}'.format(len(body_bytes)))
+            lines.append('Connection: close')
+            s.send(('\r\n'.join(lines) + '\r\n\r\n').encode())
+            if body_bytes:
+                s.send(body_bytes)
             raw_headers, body_first = _read_headers(s, chunk_size)
             status = _parse_status(raw_headers)
-            if verbose:
+            if verbose and not silent:
                 info("HTTP {}".format(status))
-            if status in (301, 302, 303, 307, 308):
+            if follow and status in (301, 302, 303, 307, 308):
                 loc = _get_location(raw_headers)
                 del raw_headers, body_first
                 gc.collect()
                 if not loc:
                     raise OSError("Redirect with no Location header")
                 url = _abs_url(loc, host, use_ssl)
-                if verbose:
+                if verbose and not silent:
                     info("Redirect -> {}".format(url))
                 continue
-            # Stream body directly to stdout — one chunk at a time, no accumulation
+            if head_only:
+                sys.stdout.write(raw_headers.decode('utf-8', 'ignore'))
+                sys.stdout.write('\r\n')
+                return status
             written = 0
             del raw_headers
-            if body_first:
-                sys.stdout.write(body_first.decode('utf-8', 'ignore'))
-                written += len(body_first)
-                del body_first
-            while True:
-                chunk = s.recv(chunk_size)
-                if not chunk:
-                    break
-                sys.stdout.write(chunk.decode('utf-8', 'ignore'))
-                written += len(chunk)
-            sys.stdout.write('\r\n')
+            if output:
+                with open(output, 'wb') as f:
+                    if body_first:
+                        f.write(body_first)
+                        written += len(body_first)
+                    del body_first
+                    while True:
+                        chunk = s.recv(chunk_size)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        written += len(chunk)
+                if not silent:
+                    ok("Saved {} bytes to '{}'".format(written, output))
+            else:
+                if body_first:
+                    sys.stdout.write(body_first.decode('utf-8', 'ignore'))
+                    written += len(body_first)
+                    del body_first
+                while True:
+                    chunk = s.recv(chunk_size)
+                    if not chunk:
+                        break
+                    sys.stdout.write(chunk.decode('utf-8', 'ignore'))
+                    written += len(chunk)
+                sys.stdout.write('\r\n')
             return written
         finally:
             try:

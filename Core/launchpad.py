@@ -1,8 +1,8 @@
-# Desc: Launchpad CLI shell engine for RPCortex - Nebula OS
+# Desc: Launchpad CLI shell engine for RPCortex - Pulsar OS
 # File: /Core/launchpad.py
-# Last Updated: 6/9/2026
+# Last Updated: 6/10/2026
 # Lang: MicroPython, English
-# Version: v0.8.2
+# Version: v0.9.1
 # Author: dash1101
 
 import sys
@@ -15,7 +15,8 @@ import regedit
 from usrmgmt import decode
 from RPCortex import (
     fatal, error, info, warn, ok, multi,
-    init_session_log, close_session_log
+    init_session_log, close_session_log,
+    begin_capture, end_capture, clear_error, had_error
 )
 
 # ---------------------------------------------------------------------------
@@ -33,6 +34,7 @@ _BUILTIN_LP = (
     ('fetch',    '/Packages/PicoFetch/picofetch.py:fetch'),
     ('neofetch', '/Packages/PicoFetch/picofetch.py:fetch'),
     ('bench',    '/Packages/NebulaMark/nebulamark.py:bench'),
+    ('ntp',      '/Packages/NTP/ntp.py:ntp'),
 )
 
 
@@ -142,9 +144,10 @@ def _load_lp(path):
 _cmd_cache   = {}               # file_path -> module or scope dict
 _history     = []               # command history (most recent last)
 _HIST_MAX    = 50
-_shell_state = {'running': False, 'home': '/', 'host': 'pulsar'}  # mutable; cached scopes hold a reference
+_shell_state = {'running': False, 'home': '/', 'host': 'pulsar', 'stdin': None}  # mutable; cached scopes hold a reference
 _aliases     = {}               # name -> expanded command string (persisted to aliases.cfg)
 _ALIAS_CFG   = '/Nebula/Registry/aliases.cfg'
+_STARTUP_CFG = '/Nebula/Registry/startup.cfg'   # commands run once at shell start
 
 # ---------------------------------------------------------------------------
 # Critical built-in commands — inline handlers that NEVER go through exec().
@@ -528,7 +531,12 @@ def execute_file(name, args):
         error("Error running '{}': {}".format(path, e))
 
 # ---------------------------------------------------------------------------
-# Multi-command splitting  (';' separator, quote-aware)
+# Command-line parsing + execution
+#   ;        sequence (always run next)
+#   &&       run next only if previous succeeded
+#   ||       run next only if previous failed
+#   |        pipeline: capture left's multi() output, feed it to right as stdin
+# All splitting is quote-aware (single/double quotes protect operators).
 # ---------------------------------------------------------------------------
 
 def _tilde_expand(s, home):
@@ -560,32 +568,186 @@ def _tilde_expand(s, home):
     return ''.join(result)
 
 
-def _split_cmds(raw):
-    """Split a command line on ';', respecting single and double quotes."""
-    cmds = []
-    cur  = []
-    in_q = False
-    qchar = None
-    for ch in raw:
+def _parse_line(raw):
+    """Split a line into (connector, segment) pairs on ; && || (quote-aware).
+
+    connector is 'first' for the first segment, then 'seq' (;), 'and' (&&) or
+    'or' (||).  Each segment is still a possibly-piped command string.
+    """
+    segs  = []
+    cur   = []
+    conn  = 'first'
+    in_q  = False
+    q     = None
+    i, n  = 0, len(raw)
+    while i < n:
+        ch = raw[i]
         if ch in ('"', "'"):
             if not in_q:
-                in_q  = True
-                qchar = ch
-            elif ch == qchar:
-                in_q  = False
-                qchar = None
-            cur.append(ch)
-        elif ch == ';' and not in_q:
+                in_q, q = True, ch
+            elif ch == q:
+                in_q, q = False, None
+            cur.append(ch); i += 1; continue
+        if not in_q:
+            if ch == ';':
+                seg = ''.join(cur).strip()
+                if seg:
+                    segs.append((conn, seg))
+                conn, cur = 'seq', []; i += 1; continue
+            if ch == '&' and i + 1 < n and raw[i + 1] == '&':
+                seg = ''.join(cur).strip()
+                if seg:
+                    segs.append((conn, seg))
+                conn, cur = 'and', []; i += 2; continue
+            if ch == '|' and i + 1 < n and raw[i + 1] == '|':
+                seg = ''.join(cur).strip()
+                if seg:
+                    segs.append((conn, seg))
+                conn, cur = 'or', []; i += 2; continue
+        cur.append(ch); i += 1
+    seg = ''.join(cur).strip()
+    if seg:
+        segs.append((conn, seg))
+    return segs
+
+
+def _split_pipeline(seg):
+    """Split one segment into pipeline stages on a single '|' (quote-aware)."""
+    stages = []
+    cur    = []
+    in_q   = False
+    q      = None
+    i, n   = 0, len(seg)
+    while i < n:
+        ch = seg[i]
+        if ch in ('"', "'"):
+            if not in_q:
+                in_q, q = True, ch
+            elif ch == q:
+                in_q, q = False, None
+            cur.append(ch); i += 1; continue
+        if ch == '|' and not in_q:
+            if i + 1 < n and seg[i + 1] == '|':   # '||' shouldn't reach here, but be safe
+                cur.append('||'); i += 2; continue
             s = ''.join(cur).strip()
             if s:
-                cmds.append(s)
-            cur = []
-        else:
-            cur.append(ch)
+                stages.append(s)
+            cur = []; i += 1; continue
+        cur.append(ch); i += 1
     s = ''.join(cur).strip()
     if s:
-        cmds.append(s)
-    return cmds
+        stages.append(s)
+    return stages
+
+
+def _dispatch_line(sub_raw):
+    """Parse and execute one command string; return True on success.
+
+    Single source of truth for command dispatch — handles alias expansion,
+    tilde expansion, and the --help/-h redirect, then routes to a critical
+    built-in, a registered command, or the file fall-through.  Exit status is
+    derived from the error flag (error()/fatal() ⇒ failure).
+
+    Does NOT split on ; | && || (callers do) and does NOT catch MemoryError —
+    it propagates so callers can run their own retry/cleanup.
+    """
+    _parts = sub_raw.split(None, 1)
+    if not _parts:
+        return True
+    command = _parts[0]
+    args    = _parts[1] if len(_parts) > 1 else None
+    # Alias expansion — re-parse if the command matches an alias
+    if command in _aliases:
+        expanded = _aliases[command]
+        if args:
+            expanded = expanded + ' ' + args
+        _eparts = expanded.split(None, 1)
+        command = _eparts[0]
+        args    = _eparts[1] if len(_eparts) > 1 else None
+    # Tilde expansion in args
+    if args and '~' in args:
+        args = _tilde_expand(args, _shell_state.get('home', '/'))
+    # --help / -h flag: redirect to 'help <command>'
+    if args in ('--help', '-h') and command != 'help':
+        execute_command('help', command)
+        return True
+    clear_error()
+    if command in _CRITICAL:
+        _CRITICAL[command](args)
+    elif command in commands:
+        execute_command(command, args)
+    else:
+        execute_file(command, args)
+    return not had_error()
+
+
+def _exec_pipeline(stages):
+    """Run a list of command strings as a pipeline; return last stage's status.
+
+    Each stage but the last has its multi() output captured and handed to the
+    next stage via _shell_state['stdin'].  The final stage prints normally.
+    """
+    n        = len(stages)
+    piped_in = None
+    exit_ok  = True
+    try:
+        for i in range(n):
+            _shell_state['stdin'] = piped_in
+            if i == n - 1:
+                exit_ok = _dispatch_line(stages[i])
+            else:
+                prev = begin_capture()
+                try:
+                    exit_ok = _dispatch_line(stages[i])
+                finally:
+                    piped_in = end_capture(prev)
+    finally:
+        _shell_state['stdin'] = None
+    return exit_ok
+
+
+def _run_line(raw):
+    """Execute a full input line: ; sequencing, && / || conditionals, | pipes.
+
+    Returns the exit status (True = ok) of the last command actually run.  Does
+    NOT catch MemoryError (propagates to the caller's retry wrapper).
+    """
+    exit_ok = True
+    for connector, segment in _parse_line(raw):
+        if not _shell_state['running']:
+            break
+        if connector == 'and' and not exit_ok:
+            continue   # previous failed — skip this &&-chained command
+        if connector == 'or' and exit_ok:
+            continue   # previous succeeded — skip this ||-chained command
+        exit_ok = _exec_pipeline(_split_pipeline(segment))
+    return exit_ok
+
+
+def _run_startup_tasks():
+    """Run each command in startup.cfg once, after the shell is ready.
+
+    Best-effort autonomy hook: a missing file is normal; a failing task logs an
+    error but never blocks the prompt.  Runs in the live shell context (commands
+    loaded, CWD = home), so tasks behave exactly as if the user had typed them —
+    including pipes and && / ||.
+    """
+    try:
+        with open(_STARTUP_CFG, 'r') as f:
+            lines = [ln.strip() for ln in f]
+    except OSError:
+        return   # no startup.cfg — nothing to run
+    tasks = [ln for ln in lines if ln and not ln.startswith('#')]
+    if not tasks:
+        return
+    info("Running {} startup task(s)...".format(len(tasks)), p="Startup")
+    for t in tasks:
+        if not _shell_state['running']:
+            return   # a task logged out / exited — stop here
+        try:
+            _run_line(t)
+        except Exception as e:
+            error("Startup task failed: {}  ({})".format(t, e))
 
 # ---------------------------------------------------------------------------
 # Shell input  — interactive line reader with history navigation
@@ -926,6 +1088,13 @@ def launchpad_init(username, password):
 
     _shell_state['running'] = True
 
+    # Autonomy hook: run user-defined startup tasks once, now that commands are
+    # loaded and CWD is the home directory, before the interactive prompt opens.
+    try:
+        _run_startup_tasks()
+    except Exception as e:
+        warn("Startup task runner error: {}".format(e))
+
     while _shell_state['running']:
         try:
             raw = _shell_input(_prompt(username))
@@ -934,62 +1103,31 @@ def launchpad_init(username, password):
             if not raw:
                 continue
 
-            for sub_raw in _split_cmds(raw):
-                if not _shell_state['running']:
-                    break
-                _parts  = sub_raw.split(None, 1)
-                command = _parts[0]
-                args    = _parts[1] if len(_parts) > 1 else None
-                # Alias expansion — re-parse if the command matches an alias
-                if command in _aliases:
-                    expanded = _aliases[command]
-                    if args:
-                        expanded = expanded + ' ' + args
-                    _eparts = expanded.split(None, 1)
-                    command = _eparts[0]
-                    args    = _eparts[1] if len(_eparts) > 1 else None
-                # Tilde expansion in args
-                if args and '~' in args:
-                    args = _tilde_expand(args, _shell_state.get('home', '/'))
-                # --help / -h flag: redirect to 'help <command>'
-                if args in ('--help', '-h') and command not in ('help',):
-                    execute_command('help', command)
-                    continue
+            try:
+                _run_line(raw)
+            except MemoryError:
+                import gc as _gc
+                _cmd_cache.clear()
+                _gc.collect()
+                # Heap-consolidation nudge: allocating then freeing a large
+                # block forces MicroPython to compact small free regions into
+                # one contiguous span before the retry.
                 try:
-                    if command in _CRITICAL:
-                        _CRITICAL[command](args)
-                    elif command in commands:
-                        execute_command(command, args)
-                    else:
-                        execute_file(command, args)
-                except MemoryError:
-                    import gc as _gc
-                    _cmd_cache.clear()
+                    _nudge = bytearray(4096)
+                    del _nudge
                     _gc.collect()
-                    # Heap-consolidation nudge: allocating then freeing a large
-                    # block forces MicroPython to compact small free regions into
-                    # one contiguous span before the retry.
-                    try:
-                        _nudge = bytearray(4096)
-                        del _nudge
-                        _gc.collect()
-                    except MemoryError:
-                        pass
-                    warn("Heap fragmented — cache cleared ({} KB free). Retrying...".format(
+                except MemoryError:
+                    pass
+                warn("Heap fragmented — cache cleared ({} KB free). Retrying...".format(
+                    _gc.mem_free() // 1024))
+                try:
+                    _run_line(raw)
+                except MemoryError:
+                    error("Allocation failed ({} KB free) — heap is fragmented.".format(
                         _gc.mem_free() // 1024))
-                    try:
-                        if command in _CRITICAL:
-                            _CRITICAL[command](args)
-                        elif command in commands:
-                            execute_command(command, args)
-                        else:
-                            execute_file(command, args)
-                    except MemoryError:
-                        error("Allocation failed ({} KB free) — heap is fragmented.".format(
-                            _gc.mem_free() // 1024))
-                        info("Run 'freeup' to consolidate heap, or 'reboot'.")
-                    except Exception as e2:
-                        error("Command error after cleanup: {}".format(e2))
+                    info("Run 'freeup' to consolidate heap, or 'reboot'.")
+                except Exception as e2:
+                    error("Command error after cleanup: {}".format(e2))
 
         except KeyboardInterrupt:
             warn("Use 'exit' or 'logout' to leave the shell.")
@@ -1047,31 +1185,7 @@ def recovery_init(errStr):
             raw = raw.strip()
             if not raw:
                 continue
-            for sub_raw in _split_cmds(raw):
-                if not _shell_state['running']:
-                    break
-                _parts  = sub_raw.split(None, 1)
-                command = _parts[0]
-                args    = _parts[1] if len(_parts) > 1 else None
-                if command in _aliases:
-                    expanded = _aliases[command]
-                    if args:
-                        expanded = expanded + ' ' + args
-                    _eparts = expanded.split(None, 1)
-                    command = _eparts[0]
-                    args    = _eparts[1] if len(_eparts) > 1 else None
-                if args and '~' in args:
-                    args = _tilde_expand(args, _shell_state.get('home', '/'))
-                # --help / -h flag: redirect to 'help <command>'
-                if args in ('--help', '-h') and command not in ('help',):
-                    execute_command('help', command)
-                    continue
-                if command in _CRITICAL:
-                    _CRITICAL[command](args)
-                elif command in commands:
-                    execute_command(command, args)
-                else:
-                    execute_file(command, args)
+            _run_line(raw)
         except KeyboardInterrupt:
             warn("Use 'reboot' to restart the system.")
         except MemoryError:
