@@ -40,6 +40,18 @@ def is_available():
         return False
 
 
+def online():
+    """Return True if WiFi hardware is present AND the STA interface is connected."""
+    try:
+        import network
+        if not hasattr(network, 'WLAN'):
+            return False
+        wlan = network.WLAN(network.STA_IF)
+        return wlan.active() and wlan.isconnected()
+    except Exception:
+        return False
+
+
 def _get_wlan():
     """Return the STA interface, or None if not supported."""
     try:
@@ -190,17 +202,19 @@ def connect(ssid, password, timeout=20, silent=False):
     return True
 
 
-def connect_saved(timeout=20):
+def connect_saved(timeout=20, silent=False):
     """
     Attempt to connect to saved networks (tries each in order).
     Returns True if a connection was established.
+    silent=True suppresses info messages; errors still print.
     """
     nets = _read_networks()
     if not nets:
         return False
     for i, (ssid, pw) in enumerate(nets):
-        info("Trying saved network [{}]: {}".format(i + 1, ssid))
-        if connect(ssid, pw, timeout=timeout):
+        if not silent:
+            info("Trying saved network [{}]: {}".format(i + 1, ssid))
+        if connect(ssid, pw, timeout=timeout, silent=silent):
             return True
     return False
 

@@ -57,7 +57,10 @@ def wifi(args=None):
             target = rest[8:].strip() or None
         _connect(target, silent=silent)
     elif sub in ('autoconnect', 'auto'):
-        _autoconnect()
+        silent = False
+        if rest and (rest.startswith('-s') or rest.startswith('--silent')):
+            silent = True
+        _autoconnect(silent=silent)
     elif sub in ('disconnect', 'disc', 'down'):
         _disconnect()
     elif sub == 'list':
@@ -76,7 +79,7 @@ def _usage():
     multi("  wifi status                Connection status")
     multi("  wifi scan                  Scan for nearby networks")
     multi("  wifi connect [-s] [ssid]   Connect to a network  (-s = quiet)")
-    multi("  wifi autoconnect           Connect to strongest saved network")
+    multi("  wifi autoconnect [-s]      Connect to strongest saved network  (-s = quiet)")
     multi("  wifi disconnect            Disconnect")
     multi("  wifi list                  List saved networks")
     multi("  wifi add <ssid>            Save a network")

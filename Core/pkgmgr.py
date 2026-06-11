@@ -333,6 +333,12 @@ def update():
     import gc
     gc.collect()
     import net
+    if not net.is_available():
+        error("WiFi not available on this board. Cannot fetch repo index.")
+        return False
+    if not net.online():
+        error("Not connected to WiFi. Run: wifi connect")
+        return False
 
     updated = 0
     for i, url in enumerate(repos):
@@ -565,6 +571,12 @@ def install_online(name):
 
     info("Found '{}'. Downloading...".format(name))
     import net
+    if not net.is_available():
+        error("WiFi not available on this board. Cannot download package.")
+        return False
+    if not net.online():
+        error("Not connected to WiFi. Run: wifi connect")
+        return False
 
     tmp = PKG_BASE + '/tmp_install.pkg'
     _ensure_dirs()
@@ -651,6 +663,12 @@ def upgrade():
             info("Upgrading {} {} -> {}...".format(name, cur_ver, avail['ver']))
             if uninstall(name, force=True):
                 import net
+                if not net.is_available():
+                    error("WiFi not available. Cannot download upgrade for '{}'.".format(name))
+                    continue
+                if not net.online():
+                    error("Not connected to WiFi. Run: wifi connect")
+                    continue
                 tmp = PKG_BASE + '/tmp_upgrade.pkg'
                 _ensure_dirs()
                 try:
