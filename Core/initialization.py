@@ -50,22 +50,22 @@ _STARTUP_MSGS = {
 def setup_seq():
     """
     First-run setup wizard.  Runs once when Settings.Setup != 'true'.
-    Creates root + guest accounts, adds the official repo, applies boot prefs.
+    Creates root + guest accounts, configures WiFi/timezone/clock, adds the
+    official repo, applies boot prefs.
     """
     multi("")
-    info("=== RPCortex {} — First Run Setup ===".format(OS_VERSION))
+    info("=== RPCortex {} - First Run Setup ===".format(OS_VERSION))
     multi("")
     info("Welcome! Let's get your device configured.")
-    multi("  Everything here can be changed later from the shell.")
+    multi("  Six quick steps - everything here can be changed later.")
     multi("")
 
-    # --- Step 1: Root account ---
-    info("[1/2] Root account")
+    # --- Step 1: Root account ------------------------------------------------
+    info("[1/6] Root account")
     multi("  'root' is the system administrator.")
     multi("")
-
     if decode('root', silent=True):
-        info("  Root account already exists — skipping.")
+        info("  Root account already exists - skipping.")
     else:
         while True:
             pw = masked_inpt("  Set root password")
@@ -83,9 +83,9 @@ def setup_seq():
             break
     multi("")
 
-    # --- Step 2: Owner (personalisation) ---
-    info("[2/3] Personalisation")
-    multi("  Optional — who owns this device? (shown in sysinfo)")
+    # --- Step 2: Owner -------------------------------------------------------
+    info("[2/6] Owner")
+    multi("  Optional - who owns this device? (shown in sysinfo)")
     multi("")
     owner = inpt("  Owner name [skip]").strip()
     if owner:
@@ -98,13 +98,138 @@ def setup_seq():
         ok("  Skipped.  Set later: reg set System.Owner <name>")
     multi("")
 
-    # --- Step 3: Boot preferences ---
-    info("[3/3] Boot preferences")
+    # --- Step 3: Device name (hostname) -------------------------------------
+    info("[3/6] Device name")
+    multi("  Optional - appears in the shell prompt:  user@<name>")
+    multi("  Leave blank to keep the default 'pulsar'.")
+    multi("")
+    devid = inpt("  Device name [pulsar]").strip()
+    if devid:
+        devid = devid.split()[0]   # keep it shell-safe: one token, no spaces
+        try:
+            regedit.save("System.Device_ID", devid)
+            ok("  Device name set to '{}'.".format(devid))
+        except Exception:
+            pass
+    else:
+        ok("  Keeping 'pulsar'.  Change later: reg set System.Device_ID <name>")
+    multi("")
+
+    # --- Step 4: WiFi --------------------------------------------------------
+    info("[4/6] WiFi")
+    wifi_ok = False
+    try:
+        import net
+        have_wifi = net.is_available()
+    except Exception:
+        have_wifi = False
+
+    if not have_wifi:
+        ok("  No WiFi hardware detected - skipping.")
+    else:
+        multi("  Connect now so we can sync the clock and fetch packages.")
+        multi("")
+        join = inpt("  Set up WiFi now? [Y/n]").strip().lower()
+        if join in ('', 'y', 'yes'):
+            ssid = None
+            try:
+                info("  Scanning...")
+                nets = net.scan()
+            except Exception:
+                nets = []
+            if nets:
+                seen = []
+                shown = []
+                for n in nets:
+                    s = n.get('ssid', '')
+                    if s and s not in seen:
+                        seen.append(s)
+                        shown.append(n)
+                    if len(shown) >= 9:
+                        break
+                multi("")
+                for i in range(len(shown)):
+                    n = shown[i]
+                    multi("   {:>2}. {:<24} {:>4} dBm  {}".format(
+                        i + 1, n['ssid'][:24], n['rssi'], n.get('security', '')))
+                multi("    0. Other / hidden network (type the name)")
+                multi("")
+                pick = inpt("  Choose a network [number, or blank to skip]").strip()
+                if pick.isdigit():
+                    idx = int(pick)
+                    if 1 <= idx <= len(shown):
+                        ssid = shown[idx - 1]['ssid']
+                    elif idx == 0:
+                        ssid = inpt("  Network name (SSID)").strip()
+            else:
+                warn("  No networks found.")
+                ssid = inpt("  Network name (SSID) [skip]").strip()
+
+            if ssid:
+                pwd = masked_inpt("  Password for '{}' (blank for open)".format(ssid))
+                try:
+                    info("  Connecting to '{}'...".format(ssid))
+                    if net.connect(ssid, pwd):
+                        net.add_saved(ssid, pwd)   # persist for autoconnect
+                        ok("  Connected and saved.")
+                        wifi_ok = True
+                        ac = inpt("  Reconnect automatically on boot? [Y/n]").strip().lower()
+                        if ac in ('', 'y', 'yes'):
+                            try:
+                                regedit.save("Settings.Network_Autoconnect", "true")
+                                ok("  Autoconnect enabled.")
+                            except Exception:
+                                pass
+                    else:
+                        warn("  Could not connect.  Set up later: wifi connect {}".format(ssid))
+                except Exception as e:
+                    warn("  WiFi error: {}".format(e))
+            else:
+                ok("  Skipped.  Set up later with: wifi scan / wifi connect <ssid>")
+        else:
+            ok("  Skipped.  Set up later with: wifi scan / wifi connect <ssid>")
+    multi("")
+
+    # --- Step 5: Time (timezone + NTP) --------------------------------------
+    info("[5/6] Time")
+    multi("  Timezone offset from UTC in whole hours (e.g. -5 = US Eastern).")
+    multi("")
+    tz = inpt("  Timezone offset [0]").strip()
+    if tz:
+        if tz.lstrip('+-').isdigit():
+            try:
+                regedit.save("System.TZ_Offset", tz.lstrip('+'))
+                ok("  Timezone set to UTC{}{}.".format(
+                    '' if tz.startswith('-') else '+', tz.lstrip('+')))
+            except Exception:
+                pass
+        else:
+            warn("  Not a number - skipping.  Set later: reg set System.TZ_Offset <hours>")
+    else:
+        ok("  Keeping UTC (0).")
+
+    if wifi_ok:
+        sync = inpt("  Sync the clock now over the internet (NTP)? [Y/n]").strip().lower()
+        if sync in ('', 'y', 'yes'):
+            try:
+                if '/Packages/NTP' not in sys.path:
+                    sys.path.append('/Packages/NTP')
+                import ntp as _ntp
+                _ntp.ntp('sync')
+            except Exception as e:
+                warn("  Clock sync unavailable: {}".format(e))
+                multi("    Sync later with:  ntp sync")
+    else:
+        multi("  (No WiFi - sync later with 'ntp sync', or set the clock with 'date set'.)")
+    multi("")
+
+    # --- Step 6: Boot preferences -------------------------------------------
+    info("[6/6] Boot preferences")
     multi("  Verbose boot shows detailed POST checks on each startup.")
-    multi("  Off by default — useful for debugging, annoying day-to-day.")
+    multi("  Off by default - useful for debugging, noisy day-to-day.")
     multi("")
     vb = inpt("  Enable verbose boot? [y/N]").strip().lower()
-    if vb == 'y':
+    if vb in ('y', 'yes'):
         try:
             regedit.save("Settings.Verbose_Boot", "true")
             ok("  Verbose boot enabled.")
@@ -114,11 +239,11 @@ def setup_seq():
         ok("  Verbose boot off.  Toggle anytime: reg set Settings.Verbose_Boot true")
     multi("")
 
-    # --- Silent: create guest account ---
+    # --- Silent: create guest account ---------------------------------------
     if not decode('guest', silent=True):
         add_user('guest', '', nopass=True)
 
-    # --- Silent: add official package repo ---
+    # --- Silent: add official package repo ----------------------------------
     _REPO = 'https://raw.githubusercontent.com/dash1101/RPCortex-repo/main/repo/index.json'
     try:
         for _d in ('/Pulsar/pkg', '/Pulsar/pkg/cache'):
@@ -137,12 +262,15 @@ def setup_seq():
     except Exception:
         pass   # non-fatal; user can add manually with `pkg repo add`
 
-    # --- Done ---
+    # --- Done ---------------------------------------------------------------
     regedit.save("Settings.Setup", "true")
     multi("")
     ok("All set!  Official package repo added automatically.")
     multi("  Log in with 'root' or 'guest'.")
-    multi("  Run 'pkg update' to fetch the latest package list.")
+    if wifi_ok:
+        multi("  Run 'pkg update' to fetch the latest package list.")
+    else:
+        multi("  Connect WiFi (wifi connect <ssid>) then 'pkg update' for packages.")
     multi("")
 
 # ---------------------------------------------------------------------------
