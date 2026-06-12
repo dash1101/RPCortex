@@ -444,8 +444,13 @@ def available():
 # Install — local file
 # ---------------------------------------------------------------------------
 
-def install(archive_path):
-    """Install a package from a local .pkg archive."""
+def install(archive_path, force=False):
+    """Install a package from a local .pkg archive.
+
+    force=True reinstalls over an existing copy (removes it first, keeping the
+    package's registry keys) instead of refusing — used by 'pkg reinstall' and
+    the web installer's re-install button.
+    """
     if not archive_path:
         warn("Usage: pkg install <path/to/file.pkg>")
         return False
@@ -464,10 +469,10 @@ def install(archive_path):
         error("Cannot read '{}': {}".format(archive_path, e))
         return False
 
-    return _install_from_data(data)
+    return _install_from_data(data, force=force)
 
 
-def _install_from_data(data):
+def _install_from_data(data, force=False):
     """Extract and install package from raw ZIP bytes."""
     entries = list(_extract_zip_entries(data))
     if not entries:
@@ -501,9 +506,16 @@ def _install_from_data(data):
     # Check for existing install
     try:
         uos.stat(pkg_dir)
-        warn("'{}' is already installed.".format(pkg_name))
-        warn("Remove first with: pkg remove {}".format(pkg_name))
-        return False
+        if force:
+            info("Reinstalling '{}' — removing existing copy first...".format(pkg_name))
+            # force=True so this works for protected built-ins too and keeps
+            # the package's registry keys across the reinstall.
+            uninstall(pkg_name, force=True)
+        else:
+            warn("'{}' is already installed.".format(pkg_name))
+            warn("Reinstall with: pkg reinstall {}  (or: pkg remove {})".format(
+                pkg_name, pkg_name))
+            return False
     except OSError:
         pass
 
@@ -548,8 +560,11 @@ def _install_from_data(data):
 # Install — online by name
 # ---------------------------------------------------------------------------
 
-def install_online(name):
-    """Look up a package by name in cached repo indexes and install it."""
+def install_online(name, force=False):
+    """Look up a package by name in cached repo indexes and install it.
+
+    force=True reinstalls over an existing copy (see install()).
+    """
     repos = _read_repos()
     if not repos:
         warn("No repos configured. Add one with: pkg repo add <url>")
@@ -601,7 +616,7 @@ def install_online(name):
         with open(tmp, 'rb') as f:
             data = f.read()
         gc.collect()
-        result = _install_from_data(data)
+        result = _install_from_data(data, force=force)
     except Exception as e:
         error("Install failed: {}".format(e))
         result = False

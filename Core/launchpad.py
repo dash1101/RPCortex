@@ -341,7 +341,10 @@ def _crit_xfer(args=None):
             import gc as _gc2
             _gc2.collect()
             import pkgmgr
-            result = pkgmgr.install(dest)
+            # force=True so the web "Install / Re-install / Update" button
+            # always succeeds — an existing copy is removed first (settings
+            # in the registry are preserved across the reinstall).
+            result = pkgmgr.install(dest, force=True)
             if result:
                 # Reload commands so newly installed command is live
                 try:

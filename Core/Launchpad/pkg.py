@@ -11,7 +11,8 @@
 # Usage:
 #   pkg install <name>             Install a package by name (from repo cache)
 #   pkg install <path/to/file.pkg> Install a local .pkg archive
-#   pkg remove  <name>             Remove an installed package
+#   pkg reinstall <name>           Remove then install fresh (repair)
+#   pkg remove  <name> [--force]   Remove a package (--force: even built-ins)
 #   pkg list                       List installed packages
 #   pkg info    <name>             Show package details
 #   pkg search  <query>            Search repo cache
@@ -30,6 +31,19 @@ if '/Core' not in sys.path:
 from RPCortex import warn, info, multi
 
 
+def _strip_flags(rest, flags):
+    """Remove the given flag tokens from a rest-string.
+
+    Returns (cleaned_rest, found) where found is True if any flag was present.
+    """
+    if not rest:
+        return rest, False
+    toks  = rest.split()
+    kept  = [t for t in toks if t not in flags]
+    found = len(kept) != len(toks)
+    return ' '.join(kept), found
+
+
 def pkg(args=None):
     if not args:
         _pkg_help()
@@ -39,10 +53,14 @@ def pkg(args=None):
     sub   = parts[0].lower()
     rest  = parts[1].strip() if len(parts) > 1 else None
 
-    # --- install ---
-    if sub == 'install':
+    # --- install / reinstall ---
+    if sub in ('install', 'reinstall'):
+        force = (sub == 'reinstall')
+        rest, had_flag = _strip_flags(rest, ('--force', '-f'))
+        force = force or had_flag
         if not rest:
             warn("Usage: pkg install <name> [name2 ...]  OR  pkg install <path/to/file.pkg>")
+            warn("       pkg reinstall <name>            (remove + install fresh)")
             return
         import pkgmgr
         # A local-file install (slash or .pkg) is a single target; otherwise
@@ -56,9 +74,9 @@ def pkg(args=None):
         any_ok = False
         for name in targets:
             if online:
-                ok_flag = pkgmgr.install_online(name)
+                ok_flag = pkgmgr.install_online(name, force=force)
             else:
-                ok_flag = pkgmgr.install(name)
+                ok_flag = pkgmgr.install(name, force=force)
             any_ok = any_ok or bool(ok_flag)
         # Reload commands dict so new commands are available immediately (no reboot).
         if any_ok:
@@ -71,11 +89,13 @@ def pkg(args=None):
 
     # --- remove ---
     elif sub in ('remove', 'uninstall', 'rm'):
+        rest, force = _strip_flags(rest, ('--force', '-f'))
         if not rest:
-            warn("Usage: pkg remove <name>")
+            warn("Usage: pkg remove <name> [--force]")
+            warn("       --force removes even protected built-in packages (for repair)")
             return
         import pkgmgr
-        if pkgmgr.uninstall(rest):
+        if pkgmgr.uninstall(rest, force=force):
             _cmds   = globals().get('_commands')
             _reload = globals().get('_load_commands')
             if _cmds is not None and _reload:
@@ -210,7 +230,9 @@ def _pkg_help():
     multi("  Package commands:")
     multi("    pkg install <name>         Install a package by name from repo")
     multi("    pkg install <file.pkg>     Install a local .pkg archive")
+    multi("    pkg reinstall <name>       Remove then install fresh (repair)")
     multi("    pkg remove  <name>         Remove an installed package")
+    multi("    pkg remove  <name> --force Remove even a protected built-in")
     multi("    pkg list                   List installed packages")
     multi("    pkg info    <name>         Show package details")
     multi("    pkg commands               List commands added by installed packages")
