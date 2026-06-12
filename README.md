@@ -99,7 +99,7 @@ update check
 ## Documentation
 
 - **[Documentation](https://rpc.novalabs.app/docs)** — full command reference, shell controls, registry keys, networking, and package format
-- **[CHANGELOG](https://rpc.novalabs.app/roadmap)** — version history and release notes
+- **[CHANGELOG](https://rpc.novalabs.app/release)** — version history and release notes
 - **[ROADMAP](https://rpc.novalabs.app/roadmap)** — what's shipped, what's next, and where ideas land
 - **[rpc.novalabs.app](https://rpc.novalabs.app)** — web installer, package browser, OS updater, and HTML docs
 - **[Package Dev Guide](https://rpc.novalabs.app/PackageDev)** — build and publish your own packages
