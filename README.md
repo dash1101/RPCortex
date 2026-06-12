@@ -75,7 +75,7 @@ Requires MicroPython v1.25 or newer. v1.28 recommended. 4 MB flash minimum.
 
 ## Getting Started
 
-**Easiest:** Use the [Web Installer](https://rpc.novalabs.app/install.html) — flashes RPCortex directly from your browser over USB. No desktop software required (Chrome/Edge only).
+**Easiest:** Use the [Web Installer](https://rpc.novalabs.app/install) — flashes RPCortex directly from your browser over USB. No desktop software required (Chrome/Edge only).
 
 **Manual:**
 
@@ -98,11 +98,11 @@ update check
 
 ## Documentation
 
-- **[NebulaDocs](https://rpc.novalabs.app/NebulaDocs.html)** — full command reference, shell controls, registry keys, networking, and package format
-- **[CHANGELOG.md](CHANGELOG.md)** — version history and release notes
-- **[ROADMAP.md](ROADMAP.md)** — what's shipped, what's next, and where ideas land
+- **[Documentation](https://rpc.novalabs.app/docs)** — full command reference, shell controls, registry keys, networking, and package format
+- **[CHANGELOG](https://rpc.novalabs.app/roadmap)** — version history and release notes
+- **[ROADMAP](https://rpc.novalabs.app/roadmap)** — what's shipped, what's next, and where ideas land
 - **[rpc.novalabs.app](https://rpc.novalabs.app)** — web installer, package browser, OS updater, and HTML docs
-- **[Package Dev Guide](https://rpc.novalabs.app/PackageDev.html)** — build and publish your own packages
+- **[Package Dev Guide](https://rpc.novalabs.app/PackageDev)** — build and publish your own packages
 - **[Issues](https://github.com/dash1101/RPCortex/issues)** — bug reports and feature requests
 
 ---
