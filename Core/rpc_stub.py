@@ -200,41 +200,54 @@ def _install(path):
             print('[?] Seek failed: ' + rel + '  ' + str(e))
             continue
 
-        # Read using CD's comp_size (always accurate)
-        raw = fh.read(comp_size)
-
-        fd = None
-        if comp_method == 0:
-            fd = raw
-        elif comp_method == 8:
-            try:
-                import zlib
-                fd = zlib.decompress(raw, -15)
-            except Exception:
-                pass
-            if fd is None:
-                try:
-                    import uzlib
-                    fd = uzlib.decompress(raw, -15)
-                except Exception:
-                    pass
-            if fd is None:
-                print('[?] Cannot decompress: ' + rel)
-                raw = None
-                gc.collect()
-                continue
-        else:
-            raw = None
-            gc.collect()
-            continue
-
-        raw = None
-        gc.collect()
-
         dp = '/' + rel
         parent = '/'.join(dp.split('/')[:-1])
         if parent:
             _makedirs(parent)
+
+        # STORED (the .rpc format): stream input -> output in small chunks so a
+        # big file (e.g. launchpad.py ~52 KB) never needs one contiguous alloc.
+        if comp_method == 0:
+            try:
+                remaining = comp_size
+                with open(dp, 'wb') as f:
+                    while remaining > 0:
+                        chunk = fh.read(512 if remaining > 512 else remaining)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        remaining -= len(chunk)
+                print('  + ' + dp)
+                count += 1
+            except Exception as e:
+                print('[?] Write failed: ' + dp + '  ' + str(e))
+            gc.collect()
+            continue
+
+        if comp_method != 8:
+            raw = None
+            gc.collect()
+            continue
+
+        raw = fh.read(comp_size)
+        fd = None
+        try:
+            import zlib
+            fd = zlib.decompress(raw, -15)
+        except Exception:
+            pass
+        if fd is None:
+            try:
+                import uzlib
+                fd = uzlib.decompress(raw, -15)
+            except Exception:
+                pass
+        raw = None
+        gc.collect()
+        if fd is None:
+            print('[?] Cannot decompress: ' + rel)
+            gc.collect()
+            continue
 
         try:
             with open(dp, 'wb') as f:
@@ -243,7 +256,6 @@ def _install(path):
             count += 1
         except Exception as e:
             print('[?] Write failed: ' + dp + '  ' + str(e))
-
         fd = None
         gc.collect()
 
@@ -286,7 +298,7 @@ try:
         _p(_ERR, '[!] Auto-install failed.')
         print('  Check the archive and try again, or use the Web Installer.')
         print()
-        print('  Web Installer:  rpc.novalabs.app/install.html')
+        print('  Web Installer:  rpc.novalabs.app/install')
 
 except OSError:
     print('  No ' + RPC_PATH + ' found on device.')
@@ -296,14 +308,14 @@ except OSError:
     print('  Option 1  \u2014  Transfer a .rpc file, then reboot:')
     print()
     print('    a) Connect via Web Installer, use the File Transfer tool:')
-    print('         rpc.novalabs.app/install.html')
+    print('         rpc.novalabs.app/install')
     print('         Send the .rpc file to /update.rpc')
     print()
     print('    b) Reboot \u2014 the stub will detect and install it automatically.')
     print()
     print('  Option 2  \u2014  Full reinstall via Web Installer:')
     print()
-    print('    Open:  rpc.novalabs.app/install.html')
+    print('    Open:  rpc.novalabs.app/install')
     print('    Connect your device via USB and click "Install Now".')
     print()
     _p(_GRY, '  MicroPython REPL is available.  The Web Installer works here.')

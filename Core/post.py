@@ -44,7 +44,6 @@ Program_Execution: true
 Serial: true
 beeper: false
 SD_Support: false
-Nova: false
 
 [Globals]
 user_dir: /Users/

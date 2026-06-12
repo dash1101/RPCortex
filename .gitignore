@@ -39,3 +39,6 @@ desktop.ini
 .env
 .env.*
 secrets.*
+
+# Generated build stamp (build_v091.py)
+Core/buildinfo.py

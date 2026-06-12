@@ -46,7 +46,7 @@ It's not trying to be Linux. It's a $4 microcontroller running MicroPython. But 
 
 **Install software.** The package manager works like you'd expect: `pkg install <name>`, `pkg remove <name>`, `pkg upgrade`. Add the official repo, run `pkg update`, and everything in the index is a single command away. Installed commands show up in the shell immediately — no reboot. Even the built-in `fetch` and `bench` tools are packages now, so they update independently.
 
-**Install packages from your browser.** The [web package browser](https://rpc.novalabs.app/packages.html) installs packages directly to a connected device over USB — no WiFi, no REPL, no reboot. Connect, click Install, done.
+**Install packages from your browser.** The [web package browser](https://rpc.novalabs.app/packages) installs packages directly to a connected device over USB — no WiFi, no REPL, no reboot. Connect, click Install, done.
 
 **Manage users.** Create accounts with `mkacct`, change passwords with `chpswd`, remove accounts with `rmuser`. Each user gets a home directory; every password prompt is masked. The `guest` account requires no password.
 

@@ -16,6 +16,15 @@ import time
 OS_VERSION  = "v0.9.1"
 OS_CODENAME = "RPCortex B9 - Pulsar"
 
+# OS_BUILD is a date/time build id stamped by build_v091.py into a generated
+# Core/buildinfo.py at release-build time. A from-source/dev tree has no
+# buildinfo, so it reports "source". The build id lets the updater tell two
+# builds of the SAME version apart (re-publishing v0.9.1 bumps the build).
+try:
+    from buildinfo import BUILD as OS_BUILD
+except Exception:
+    OS_BUILD = "source"
+
 post_check = True
 
 # ---------------------------------------------------------------------------

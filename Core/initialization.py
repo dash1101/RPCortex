@@ -5,7 +5,7 @@
 # Version: v0.9.1
 # Author: dash1101
 
-from Core.RPCortex import multi, fatal, error, info, warn, ok, inpt, masked_inpt, OS_VERSION, OS_CODENAME
+from Core.RPCortex import multi, fatal, error, info, warn, ok, inpt, masked_inpt, OS_VERSION, OS_CODENAME, OS_BUILD
 import Core.regedit as regedit
 from Core.launchpad import launchpad_init as _boot
 from Core.launchpad import recovery_init  as _recovery
@@ -297,6 +297,11 @@ def start(arg):
                 regedit.save("System.Codename", OS_CODENAME)
             except Exception:
                 pass
+        if regedit.read("System.Build") != OS_BUILD:
+            try:
+                regedit.save("System.Build", OS_BUILD)
+            except Exception:
+                pass
 
         version = regedit.read("Settings.Version") or "Unknown"
         info("RPCortex {} — starting up...".format(version))
@@ -315,7 +320,6 @@ def start(arg):
         ok("  Active User   : {}".format(regedit.read("Settings.Active_User") or "none"))
         ok("  Net Autoconn  : {}".format(regedit.read("Settings.Network_Autoconnect") or "?"))
         ok("  Clockable     : {}".format(regedit.read("Hardware.Clockable")   or "?"))
-        ok("  Nova GUI      : {}".format(regedit.read("Features.Nova")        or "false"))
 
         # Startup mode banner — use the pre-POST value captured by post.py.
         # POST arms Settings.Startup to "1" at its end (session-active

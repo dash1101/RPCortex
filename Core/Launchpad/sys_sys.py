@@ -83,7 +83,6 @@ def sysinfo(args=None):
         free_ram // 1024, free_ram * 100 // total_ram if total_ram else 0))
     if free_flash >= 0:
         multi("  Flash Free  : {} KB".format(free_flash // 1024))
-    multi("  Nova GUI    : {}".format(regedit.read('Features.Nova') or 'false'))
 
 
 def meminfo(args=None):
@@ -541,7 +540,7 @@ def reinstall(args=None):
     multi("  After the wipe the device boots a minimal stub.")
     multi("  To reinstall RPCortex:")
     multi("    a) Stage a .rpc file:  reinstall /path/to/os.rpc")
-    multi("    b) Use the Web Installer:  rpc.novalabs.app/install.html")
+    multi("    b) Use the Web Installer:  rpc.novalabs.app/install")
     multi("")
     warn("YOU WILL NEED THE WEB INSTALLER OR A .rpc FILE.", p="Wipe")
     multi("")
@@ -614,7 +613,7 @@ def reinstall(args=None):
     except OSError as e:
         error("CRITICAL: Failed to write stub: {}".format(e), p="Wipe")
         error("Device may be unbootable. Use Web Installer at:", p="Wipe")
-        error("  rpc.novalabs.app/install.html", p="Wipe")
+        error("  rpc.novalabs.app/install", p="Wipe")
         return
 
     stub_content = None
@@ -683,9 +682,22 @@ def _update_check():
         return None
     latest = manifest.get('version', '?')
     info("Latest version  : {}".format(latest), p="Update")
-    if _vt(latest) > _vt(cur):
+
+    # Build-aware: a newer version, OR the same version with a different build id
+    # (the server re-published this version) both count as an update. This lets
+    # beta/dev rebuilds at the same version number still be offered.
+    cur_build    = regedit.read('System.Build') or 'source'
+    latest_build = manifest.get('build', '')
+    newer_version = _vt(latest) > _vt(cur)
+    new_build     = (_vt(latest) == _vt(cur)) and bool(latest_build) and (latest_build != cur_build)
+
+    if newer_version or new_build:
         notes = manifest.get('notes', '')
-        ok("Update available: {} -> {}".format(cur, latest), p="Update")
+        if newer_version:
+            ok("Update available: {} -> {}".format(cur, latest), p="Update")
+        else:
+            ok("New build available: {} (build {} -> {})".format(
+                latest, cur_build, latest_build), p="Update")
         if notes:
             multi("  Changes: {}".format(notes))
         multi("  Install over the air:  update online")
@@ -793,7 +805,7 @@ def _update_from_file(archive_path):
         minor = int(parts[1]) if len(parts) > 1 else 0
         if major < 1 and minor < 8:
             error("Update requires RPCortex v0.8.0 or later (current: {}).".format(cur_ver))
-            info("Flash a fresh install from rpc.novalabs.app/install.html instead.")
+            info("Flash a fresh install from rpc.novalabs.app/install instead.")
             return
     except Exception:
         pass  # If version can't be read, continue and let the user decide
@@ -904,7 +916,7 @@ def _update_help():
     multi("    /Users/  /Pulsar/  programs.lp (installed packages)")
     multi("")
     multi("  You can also update from the browser (no WiFi needed on device):")
-    multi("    rpc.novalabs.app/update.html")
+    multi("    rpc.novalabs.app/update")
 
 
 def edit(args=None):
@@ -1067,7 +1079,7 @@ def help(args=None):
         multi("  reinstall [f.rpc]     Full system wipe + reinstall stub")
         multi("")
         multi("  Browser update (no WiFi required on device):")
-        multi("    rpc.novalabs.app/update.html")
+        multi("    rpc.novalabs.app/update")
 
     elif a == "filesystem":
         info("=== Filesystem Commands ===")

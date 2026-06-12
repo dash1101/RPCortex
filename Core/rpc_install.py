@@ -240,54 +240,65 @@ def install_rpc(archive_path):
             n_fail += 1
             continue
 
-        # Read compressed data using CD's comp_size (always accurate)
-        raw = fh.read(comp_size)
-
-        # Decompress
-        file_data = None
-        if comp_method == 0:
-            file_data = raw
-
-        elif comp_method == 8:
-            try:
-                import zlib
-                file_data = zlib.decompress(raw, -15)
-            except ImportError:
-                pass
-            except Exception as e:
-                warn("  zlib '{}': {}".format(rel, e), p="Update")
-
-            if file_data is None:
-                try:
-                    import uzlib
-                    file_data = uzlib.decompress(raw, -15)
-                except ImportError:
-                    pass
-                except Exception as e:
-                    warn("  uzlib '{}': {}".format(rel, e), p="Update")
-
-            if file_data is None:
-                warn("  No decompressor for '{}' — skipping.".format(rel), p="Update")
-                raw = None
-                n_fail += 1
-                gc.collect()
-                continue
-
-        else:
-            warn("  Compression {} unsupported ('{}').".format(comp_method, rel), p="Update")
-            raw = None
-            n_skip += 1
-            gc.collect()
-            continue
-
-        raw = None
-        gc.collect()
-
-        # Write to device
+        # Compute the device path and make parent dirs.
         device_path = '/' + rel
         parent = '/'.join(device_path.split('/')[:-1])
         if parent:
             _makedirs(parent)
+
+        # STORED (the .rpc format): stream input -> output in small chunks so
+        # we never allocate the whole file at once. A big contiguous alloc
+        # (e.g. ~52 KB for launchpad.py) can fail on a fragmented heap even
+        # with plenty of free RAM — that was the "Out of memory during update".
+        if comp_method == 0:
+            try:
+                remaining = comp_size
+                with open(device_path, 'wb') as out:
+                    while remaining > 0:
+                        chunk = fh.read(512 if remaining > 512 else remaining)
+                        if not chunk:
+                            break
+                        out.write(chunk)
+                        remaining -= len(chunk)
+                n_ok += 1
+                info("  [{}/{}] {}".format(n_ok, n_wanted, device_path), p="Update")
+            except OSError as e:
+                warn("  Write failed '{}': {}".format(device_path, e), p="Update")
+                n_fail += 1
+            gc.collect()
+            continue
+
+        # DEFLATE (method 8) — rare for a .rpc; read + decompress whole.
+        if comp_method != 8:
+            warn("  Compression {} unsupported ('{}').".format(comp_method, rel), p="Update")
+            n_skip += 1
+            gc.collect()
+            continue
+
+        raw = fh.read(comp_size)
+        file_data = None
+        try:
+            import zlib
+            file_data = zlib.decompress(raw, -15)
+        except ImportError:
+            pass
+        except Exception as e:
+            warn("  zlib '{}': {}".format(rel, e), p="Update")
+        if file_data is None:
+            try:
+                import uzlib
+                file_data = uzlib.decompress(raw, -15)
+            except ImportError:
+                pass
+            except Exception as e:
+                warn("  uzlib '{}': {}".format(rel, e), p="Update")
+        raw = None
+        gc.collect()
+        if file_data is None:
+            warn("  No decompressor for '{}' — skipping.".format(rel), p="Update")
+            n_fail += 1
+            gc.collect()
+            continue
 
         try:
             with open(device_path, 'wb') as out:
@@ -297,7 +308,6 @@ def install_rpc(archive_path):
         except OSError as e:
             warn("  Write failed '{}': {}".format(device_path, e), p="Update")
             n_fail += 1
-
         file_data = None
         gc.collect()
 
