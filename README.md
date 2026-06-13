@@ -48,7 +48,7 @@ It's not trying to be Linux. It's a $4 microcontroller running MicroPython. But 
 
 **Install packages from your browser.** The [web package browser](https://rpc.novalabs.app/packages) installs packages directly to a connected device over USB — no WiFi, no REPL, no reboot. Connect, click Install, done.
 
-**Manage users.** Create accounts with `mkacct`, change passwords with `chpswd`, remove accounts with `rmuser`. Each user gets a home directory; every password prompt is masked. The `guest` account requires no password.
+**Manage users.** Create accounts with `mkacct` (optionally `--nopass` / `--admin`), and modify them with `usermod <user> passwd|rename|admin on|off|nopass on|off`. Remove accounts with `rmuser` — the `root` and `guest` accounts are protected. Each user gets a home directory; every password prompt is masked. The `guest` account requires no password, and admin-only actions re-prompt for an admin password.
 
 **Tune the hardware.** `pulse set 220` overclocks to 220 MHz. `pulse boot 200` sets a boot clock. `bench` runs the RPCMark benchmark. `freeup` compacts the heap when things get fragmented after heavy use.
 

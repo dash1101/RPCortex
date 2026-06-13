@@ -27,7 +27,7 @@ python rpc_comm.py --port COM7 pull /Pulsar/Logs/latest.log latest.log
 python rpc_comm.py --port COM7 rm /Users/root/notes.txt
 python rpc_comm.py --port COM7 pkg-install dist/sysmon.pkg # local .pkg
 python rpc_comm.py --port COM7 pkg-online SysMon           # from the repo (WiFi)
-python rpc_comm.py --port COM7 os-update RPC-Pulsar-b9-Beta.rpc
+python rpc_comm.py --port COM7 os-update RPC-Pulsar-b9-Stable.rpc
 python rpc_comm.py --port COM7 os-update-online            # fetch latest + apply
 ```
 

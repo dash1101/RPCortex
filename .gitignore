@@ -40,7 +40,7 @@ desktop.ini
 .env.*
 secrets.*
 
-# Generated build stamp (build_v091.py)
+# Generated build stamp (build.py)
 Core/buildinfo.py
 
 # Generated bundled repo index (build.py)

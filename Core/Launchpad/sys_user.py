@@ -1,8 +1,8 @@
 # Desc: User management shell commands - RPCortex Pulsar OS
 # File: /Core/Launchpad/sys_user.py
-# Last Updated: 6/9/2026
+# Last Updated: 6/12/2026
 # Lang: MicroPython, English
-# Version: v0.8.2
+# Version: v0.9.1
 
 import sys
 if '/Core' not in sys.path:
@@ -79,19 +79,89 @@ def mkacct(args=None):
 
 
 def usermod(args):
-    """Grant/revoke admin.  Usage: usermod <user> admin on|off"""
+    """Modify a user account (passwords, name, nopass, admin) in one command.
+
+    Usage:
+      usermod <user> passwd            change the password
+      usermod <user> rename <newname>  rename the account
+      usermod <user> admin  on|off     grant / revoke admin rights
+      usermod <user> nopass on|off     enable / disable no-password login
+    """
     toks = (args or '').split()
-    if len(toks) < 3 or toks[1].lower() != 'admin' or toks[2].lower() not in ('on', 'off'):
-        warn("Usage: usermod <user> admin on|off")
+    if len(toks) < 2:
+        warn("Usage: usermod <user> passwd | rename <name> | admin on|off | nopass on|off")
         return
-    from usrmgmt import set_admin, require_admin, decode as _decode
-    user = toks[0]
+    from usrmgmt import (decode as _decode, set_admin, set_nopass, set_password,
+                         rename_user, change_password, require_admin)
+    user   = toks[0]
+    sub    = toks[1].lower()
+    active = regedit.read('Settings.Active_User')
+
     if not _decode(user, silent=True):
         error("User '{}' not found.".format(user))
         return
-    if not require_admin("change admin rights"):
+
+    # --- change password ---
+    if sub in ('passwd', 'password', 'pw'):
+        if user == active:
+            change_password(user)               # self-service: verifies current pw
+        else:
+            if not require_admin("change another user's password"):
+                return
+            new_pw = masked_inpt("New password for '{}'".format(user))
+            if not new_pw.strip():
+                warn("Password cannot be blank.")
+                return
+            if new_pw != masked_inpt("Confirm new password"):
+                error("Passwords do not match.")
+                return
+            set_password(user, new_pw)
         return
-    set_admin(user, toks[2].lower() == 'on')
+
+    # --- rename ---
+    if sub in ('rename', 'name'):
+        if len(toks) < 3:
+            warn("Usage: usermod <user> rename <newname>")
+            return
+        if user == active:
+            error("Cannot rename the active user. Log in as another admin first.")
+            return
+        if not require_admin("rename a user account"):
+            return
+        rename_user(user, toks[2])
+        return
+
+    # --- admin on/off ---
+    if sub == 'admin':
+        if len(toks) < 3 or toks[2].lower() not in ('on', 'off'):
+            warn("Usage: usermod <user> admin on|off")
+            return
+        if not require_admin("change admin rights"):
+            return
+        set_admin(user, toks[2].lower() == 'on')
+        return
+
+    # --- nopass on/off ---
+    if sub == 'nopass':
+        if len(toks) < 3 or toks[2].lower() not in ('on', 'off'):
+            warn("Usage: usermod <user> nopass on|off")
+            return
+        if not require_admin("change no-password login"):
+            return
+        if toks[2].lower() == 'on':
+            set_nopass(user, True)
+        else:
+            new_pw = masked_inpt("Set a password for '{}'".format(user))
+            if not new_pw.strip():
+                warn("A password is required to disable nopass.")
+                return
+            if new_pw != masked_inpt("Confirm password"):
+                error("Passwords do not match.")
+                return
+            set_nopass(user, False, new_password=new_pw)
+        return
+
+    warn("Unknown action '{}'. Use: passwd | rename | admin | nopass".format(sub))
 
 
 def rmuser(args):
@@ -122,14 +192,6 @@ def rmuser(args):
         _rm(target)
     else:
         info("Cancelled.")
-
-
-def chpswd(args):
-    if not args:
-        warn("Usage: chpswd <username>")
-        return
-    from usrmgmt import change_password
-    change_password(args.strip())
 
 
 def logout(args=None):

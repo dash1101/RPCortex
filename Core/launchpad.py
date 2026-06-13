@@ -908,7 +908,7 @@ def _shell_input(prompt):
     """
     Interactive line reader with full cursor navigation.
       - Up/Down   : history navigation
-      - Ctrl+Left/Right     : jump by word;  Ctrl+Backspace/W, Ctrl+Del: word delete
+      - Ctrl+Left/Right     : jump by word;  Ctrl+W: word delete back, Ctrl+Del: word delete fwd
       - Left/Right: cursor movement within the line
       - Home/End  : jump to start/end (xterm and VT sequences)
       - Delete    : delete character under cursor
@@ -1035,7 +1035,11 @@ def _shell_input(prompt):
             return line
 
         # --- Backspace (delete char before cursor) ---
-        elif ch == '\x7f':
+        # Both \x7f and \x08 are bound to single-char delete: terminals disagree
+        # on which byte plain Backspace sends (PuTTY=\x7f, others=\x08), so we
+        # treat BOTH as a plain backspace and never let it eat a whole word.
+        # Word-delete-back lives on the unambiguous Ctrl+W (\x17) instead.
+        elif ch in ('\x7f', '\x08'):
             _ghost_clear()
             if cursor > 0:
                 del buf[cursor - 1]
@@ -1047,8 +1051,8 @@ def _shell_input(prompt):
             ghost = ''
             _ghost_update()
 
-        # --- Ctrl+Backspace (\x08 in PuTTY) / Ctrl+W: delete word before cursor ---
-        elif ch in ('\x08', '\x17'):
+        # --- Ctrl+W: delete word before cursor ---
+        elif ch == '\x17':
             _ghost_clear()
             ghost = ''
             start = _word_left(buf, cursor)

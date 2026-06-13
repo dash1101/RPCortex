@@ -1,12 +1,14 @@
 # Desc: User management — accounts, passwords, authentication for RPCortex - Pulsar OS
 # File: /Core/usrmgmt.py
-# Last Updated: 6/9/2026
+# Last Updated: 6/12/2026
 # Lang: MicroPython, English
-# Version: v0.8.2
+# Version: v0.9.1
 # Author: dash1101
 #
 # Password storage format (user.cfg):
-#   'username', 'salt$sha256(salt+password)', '/path/'
+#   'username', 'salt$sha256(salt+password)', '/home/', 'admin'|'user'
+#   (the 4th role field is optional for backward compat; a 3-field line is
+#    admin only when the username is 'root')
 #
 # Special stored hash values:
 #   'NOPASS'  — account accepts any password including blank (used by guest)
@@ -220,37 +222,37 @@ def is_admin(username):
     return False
 
 
-def set_admin(username, admin):
-    """Grant (admin=True) or revoke (False) admin rights for a user."""
-    if username == 'root' and not admin:
-        _warn("root is always an administrator.")
-        return False
+def _rewrite_line(username, new_name=None, hashed=None, home=None, role=None):
+    """Rewrite a single user.cfg line, changing ONLY the provided fields and
+    preserving the rest (always writes the full 4-field form).
+    Returns True if the user was found and the file rewritten."""
     bak = _backup(_CFG)
     try:
         with open(_CFG, 'r') as f:
             lines = f.readlines()
-        role = 'admin' if admin else 'user'
         found = False
         out = []
         for line in lines:
             parts = line.strip().split(', ')
             if parts and parts[0] == "'{}'".format(username):
                 found = True
-                name = parts[0]
-                h    = parts[1] if len(parts) >= 2 else "''"
-                home = parts[2] if len(parts) >= 3 else "'/Users/{}/'".format(username)
-                out.append("{}, {}, {}, '{}'\n".format(name, h, home, role))
+                cur_name = parts[0][1:-1]
+                cur_hash = parts[1][1:-1] if len(parts) >= 2 else ''
+                cur_home = parts[2][1:-1] if len(parts) >= 3 else '/Users/{}/'.format(username)
+                cur_role = parts[3][1:-1] if len(parts) >= 4 else ('admin' if username == 'root' else 'user')
+                n  = new_name if new_name is not None else cur_name
+                h  = hashed   if hashed   is not None else cur_hash
+                hm = home     if home     is not None else cur_home
+                r  = role     if role     is not None else cur_role
+                out.append("'{}', '{}', '{}', '{}'\n".format(n, h, hm, r))
             else:
                 out.append(line if line.endswith('\n') else line + '\n')
         if not found:
-            _error("User '{}' not found.".format(username))
             return False
         with open(_CFG, 'w') as f:
             f.write(''.join(out))
-        _ok("'{}' is now {}.".format(username, 'an administrator' if admin else 'a standard user'))
         return True
-    except Exception as e:
-        _error("Could not update role: {}".format(e))
+    except Exception:
         _restore(_CFG, bak)
         return False
     finally:
@@ -258,6 +260,74 @@ def set_admin(username, admin):
             os.remove(bak)
         except OSError:
             pass
+
+
+def set_admin(username, admin):
+    """Grant (admin=True) or revoke (False) admin rights for a user."""
+    if username == 'root' and not admin:
+        _warn("root is always an administrator.")
+        return False
+    if _rewrite_line(username, role='admin' if admin else 'user'):
+        _ok("'{}' is now {}.".format(username, 'an administrator' if admin else 'a standard user'))
+        return True
+    _error("User '{}' not found.".format(username))
+    return False
+
+
+def set_password(username, new_password):
+    """Set a user's password unconditionally (no current-password check).
+    Preserves home and role.  Use for admin-initiated changes."""
+    if _rewrite_line(username, hashed=hash_password(new_password)):
+        _ok("Password for '{}' updated.".format(username))
+        return True
+    _error("User '{}' not found.".format(username))
+    return False
+
+
+def set_nopass(username, nopass, new_password=None):
+    """Enable (nopass=True) or disable (False) no-password login.
+    Disabling requires a real password via new_password."""
+    if nopass and username == 'root':
+        _warn("root cannot be a no-password account.")
+        return False
+    if not nopass and not new_password:
+        _error("A password is required to disable nopass.")
+        return False
+    h = 'NOPASS' if nopass else hash_password(new_password)
+    if _rewrite_line(username, hashed=h):
+        _ok("'{}' {}.".format(username,
+            'now logs in without a password' if nopass else 'now requires a password'))
+        return True
+    _error("User '{}' not found.".format(username))
+    return False
+
+
+def rename_user(old, new):
+    """Rename a user account and its home directory."""
+    if old in ('root', 'guest'):
+        _warn("'{}' is a protected account and cannot be renamed.".format(old))
+        return False
+    if not new or new == old:
+        _warn("Invalid new name.")
+        return False
+    if decode(new, silent=True):
+        _error("A user named '{}' already exists.".format(new))
+        return False
+    if _rewrite_line(old, new_name=new, home='/Users/{}/'.format(new)):
+        try:
+            os.rename('/Users/{}'.format(old), '/Users/{}'.format(new))
+        except OSError:
+            _ensure_user_dir(new)
+        try:
+            import regedit
+            if regedit.read('Settings.Active_User') == old:
+                regedit.save('Settings.Active_User', new)
+        except Exception:
+            pass
+        _ok("User '{}' renamed to '{}'.".format(old, new))
+        return True
+    _error("User '{}' not found.".format(old))
+    return False
 
 
 def require_admin(reason=''):
@@ -305,54 +375,24 @@ def list_users():
 
 
 def change_password(username):
-    """Interactive password change for an existing user."""
-    bak = _backup(_CFG)
-    try:
-        with open(_CFG, 'r') as f:
-            lines = f.readlines()
-
-        new_lines = []
-        found = False
-        for line in lines:
-            parts = line.strip().split(', ')
-            if parts and parts[0] == "'{}'".format(username):
-                found = True
-                stored_hash = parts[1][1:-1]   # strip surrounding quotes
-                if stored_hash != 'NOPASS':
-                    old_pw = _minpt("Current password")
-                    if not verify_password(old_pw, stored_hash):
-                        _error("Incorrect current password.")
-                        return
-                new_pw = _minpt("New password")
-                if not new_pw.strip():
-                    _warn("Password cannot be blank.")
-                    return
-                confirm = _minpt("Confirm new password")
-                if new_pw != confirm:
-                    _error("Passwords do not match.")
-                    return
-                user_path = parts[2][1:-1]
-                new_lines.append("'{}', '{}', '{}'\n".format(
-                    username, hash_password(new_pw), user_path))
-            else:
-                new_lines.append(line)
-
-        if not found:
-            _error("User '{}' not found.".format(username))
+    """Interactive self-service password change (verifies the current password).
+    Preserves the account's home and admin role."""
+    if not decode(username, silent=True):
+        _error("User '{}' not found.".format(username))
+        return
+    if not is_nopass(username):
+        old_pw = _minpt("Current password")
+        if not decode(username, old_pw, silent=True):
+            _error("Incorrect current password.")
             return
-
-        with open(_CFG, 'w') as f:
-            f.write(''.join(new_lines))
-        _ok("Password for '{}' updated.".format(username))
-
-    except Exception as e:
-        _error("Password change failed: {}".format(e))
-        _restore(_CFG, bak)
-    finally:
-        try:
-            os.remove(bak)
-        except OSError:
-            pass
+    new_pw = _minpt("New password")
+    if not new_pw.strip():
+        _warn("Password cannot be blank.")
+        return
+    if new_pw != _minpt("Confirm new password"):
+        _error("Passwords do not match.")
+        return
+    set_password(username, new_pw)
 
 
 def rmuser(username):

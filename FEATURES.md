@@ -80,8 +80,11 @@ recursive), `sort`, `uniq`, `hex`/`hexdump`, `basename`, `dirname`.
 `-X/-d/-H/-o/-s/-I/--timeout`), `runurl`/`run`, `ping` (TCP RTT), `nslookup`/`ns`.
 
 ### Users (`sys_user.py`)
-`whoami`, `users` (lists accounts with active/admin/nopass tags), `mkacct`,
-`rmuser`, `chpswd`, `logout`, `exit`.
+`whoami`, `users` (lists accounts with active/admin/nopass tags), `mkacct`
+(`[name] [--nopass] [--admin]`), `usermod` (one command for `passwd` / `rename`
+/ `admin on|off` / `nopass on|off`), `rmuser` (root/guest protected), `logout`,
+`exit`. Admin accounts and a `require_admin` re-auth gate forced actions
+(e.g. `pkg remove --force`).
 
 ### Automation (`sys_task.py`)
 - `startup list|add <cmd>|remove <n>|clear|run` — commands run once at login

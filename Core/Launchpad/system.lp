@@ -84,7 +84,6 @@ users:/Core/Launchpad/sys_user.py:users
 mkacct:/Core/Launchpad/sys_user.py:mkacct
 usermod:/Core/Launchpad/sys_user.py:usermod
 rmuser:/Core/Launchpad/sys_user.py:rmuser
-chpswd:/Core/Launchpad/sys_user.py:chpswd
 logout:/Core/Launchpad/sys_user.py:logout
 exit:/Core/Launchpad/sys_user.py:exit
 
