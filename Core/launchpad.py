@@ -978,9 +978,14 @@ def _word_right(buf, cursor):
 #  very low idle clock can drift the baud — keep Min_Clock sensible there.)
 # ---------------------------------------------------------------------------
 _DYN_STATE = ['active']   # 'active' | 'idle'
+_DYN_FLOOR_MHZ = 60       # HARD safety floor for the idle clock — below ~60 MHz
+                          # flash/peripheral timing destabilises and the device
+                          # freezes/throws random errors. Never idle below this,
+                          # even if Hardware.Min_Clock is set lower.
 
-def _set_clock_from(*keys):
-    """Set machine.freq() from the first non-empty registry clock key ('220.0MHz')."""
+def _set_clock_from(keys, floor=0):
+    """Set machine.freq() from the first non-empty registry clock key
+    ('220.0MHz'); clamp up to `floor` MHz if given."""
     src = ''
     for k in keys:
         src = regedit.read(k) or ''
@@ -988,12 +993,17 @@ def _set_clock_from(*keys):
             break
     try:
         mhz = float(src.replace('MHz', '').strip())
-        if mhz > 0:
+    except Exception:
+        return False
+    if floor and mhz < floor:
+        mhz = floor
+    if mhz > 0:
+        try:
             import machine
             machine.freq(int(mhz * 1_000_000))
             return True
-    except Exception:
-        pass
+        except Exception:
+            pass
     return False
 
 def _apply_dyn_clock(active):
@@ -1001,17 +1011,17 @@ def _apply_dyn_clock(active):
     Caches state so repeated calls on the hot input path are nearly free."""
     if (regedit.read('Settings.Dynamic_Clock') or 'false') != 'true':
         if _DYN_STATE[0] == 'idle':            # feature turned off mid-idle: restore
-            if _set_clock_from('Hardware.Boot_Clock', 'Hardware.Max_Clock'):
+            if _set_clock_from(('Hardware.Boot_Clock', 'Hardware.Max_Clock')):
                 _DYN_STATE[0] = 'active'
         return
     want = 'active' if active else 'idle'
     if _DYN_STATE[0] == want:
         return
     if active:
-        if _set_clock_from('Hardware.Boot_Clock', 'Hardware.Max_Clock'):
+        if _set_clock_from(('Hardware.Boot_Clock', 'Hardware.Max_Clock')):
             _DYN_STATE[0] = 'active'
     else:
-        if _set_clock_from('Hardware.Min_Clock'):
+        if _set_clock_from(('Hardware.Min_Clock',), floor=_DYN_FLOOR_MHZ):
             _DYN_STATE[0] = 'idle'
 
 

@@ -319,8 +319,8 @@ def pulse(args):
         multi("")
         multi("  pulse status          Show clock info")
         multi("  pulse set <MHz>       Set clock now         (e.g. pulse set 220)")
-        multi("  pulse min <MHz>       Save minimum clock    (e.g. pulse min 30)")
-        multi("  pulse max <MHz>       Save maximum clock    (e.g. pulse max 220)")
+        multi("  pulse min <MHz>       Save minimum clock    (dynamic-clock idle; e.g. pulse min 80)")
+        multi("  pulse max <MHz>       Save maximum clock    (dynamic-clock busy; e.g. pulse max 220)")
         multi("  pulse boot <MHz>      Set boot clock + enable  (e.g. pulse boot 200)")
         multi("  pulse boot on|off     Enable/disable boot clock")
         return

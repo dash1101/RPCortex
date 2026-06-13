@@ -489,6 +489,22 @@ def install(archive_path, force=False):
     return _install_from_data(data, force=force)
 
 
+def _find_installed_dir(pkg_name):
+    """Return the on-device dir of an installed package matched by pkg.name
+    (case-insensitive), or None. Tolerates folder-case drift across builds."""
+    try:
+        for entry in uos.listdir(PACKAGES_DIR):
+            try:
+                with open(PACKAGES_DIR + '/' + entry + '/package.cfg', 'r') as f:
+                    if _parse_cfg(f.read()).get('pkg.name', '').lower() == pkg_name.lower():
+                        return PACKAGES_DIR + '/' + entry
+            except OSError:
+                pass
+    except OSError:
+        pass
+    return None
+
+
 def _install_from_data(data, force=False):
     """Extract and install package from raw ZIP bytes."""
     entries = list(_extract_zip_entries(data))
@@ -520,11 +536,18 @@ def _install_from_data(data, force=False):
     if pkg_desc:
         info("Description : {}".format(pkg_desc))
 
-    # Check for existing install
-    try:
-        uos.stat(pkg_dir)
-        if force:
-            info("Reinstalling '{}' — removing existing copy first...".format(pkg_name))
+    # Check for an existing install BY NAME (case-insensitive), not by exact
+    # path — so a copy in a different-case folder (e.g. an older /Packages/ntp
+    # vs the canonical /Packages/NTP) is found and CONSOLIDATED instead of
+    # duplicated.
+    existing = _find_installed_dir(pkg_name)
+    if existing:
+        if force or existing != pkg_dir:
+            if existing != pkg_dir:
+                info("Replacing existing copy at '{}' (consolidating to '{}')...".format(
+                    existing, pkg_dir))
+            else:
+                info("Reinstalling '{}' — removing existing copy first...".format(pkg_name))
             # force=True so this works for protected built-ins too and keeps
             # the package's registry keys across the reinstall.
             uninstall(pkg_name, force=True)
@@ -533,8 +556,6 @@ def _install_from_data(data, force=False):
             warn("Reinstall with: pkg reinstall {}  (or: pkg remove {})".format(
                 pkg_name, pkg_name))
             return False
-    except OSError:
-        pass
 
     # Strip top-level ZIP directory prefix
     prefix = ''

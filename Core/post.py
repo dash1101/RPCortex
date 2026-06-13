@@ -219,11 +219,13 @@ def check_oc():
 
         _plat = sys.platform.lower()
         if 'rp2' in _plat:
-            # RP2040/RP2350 — known-safe limits, no probing needed
-            minoc = "30.0MHz"
+            # RP2040/RP2350 — known-safe limits, no probing needed.
+            # Min is 80 MHz: lower clocks (e.g. 30) destabilise flash/peripheral
+            # timing and freeze the device — also the dynamic-clock idle floor.
+            minoc = "80.0MHz"
             maxoc = "220.0MHz"
         else:
-            minoc = pulse.set_clock(30, verbose=False)
+            minoc = pulse.set_clock(80, verbose=False)
             maxoc = pulse.set_clock(250, verbose=False)
 
         regedit.save("Hardware.Min_Clock", minoc)

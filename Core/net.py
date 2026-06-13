@@ -178,6 +178,17 @@ def connect(ssid, password, timeout=20, silent=False):
         utime.sleep_ms(300)
 
     wlan.active(True)
+    # On a cold boot the radio may not be fully up the instant we activate it;
+    # issuing connect() too early silently fails (and a manual retry "right
+    # after" then works). Wait briefly for the interface to come active first.
+    _settle = utime.ticks_ms()
+    while utime.ticks_diff(utime.ticks_ms(), _settle) < 2000:
+        try:
+            if wlan.active():
+                break
+        except Exception:
+            break
+        utime.sleep_ms(50)
     wlan.connect(ssid, password)
 
     start = utime.ticks_ms()
@@ -221,10 +232,16 @@ def connect_saved(timeout=20, silent=False):
     nets = _read_networks()
     if not nets:
         return False
-    for i, (ssid, pw) in enumerate(nets):
-        # No chatty "Trying saved network" line — connect() shows a clean
-        # in-place spinner ("Connecting to 'X'... \ (3s)") with the SSID.
-        if connect(ssid, pw, timeout=timeout, silent=silent):
+    # Two passes: a cold-boot autoconnect occasionally fails on the first try
+    # (radio just coming up) but succeeds immediately after — so retry the whole
+    # saved-network list once before giving up.
+    for _attempt in (1, 2):
+        for ssid, pw in nets:
+            # No chatty "Trying saved network" line — connect() shows a clean
+            # in-place spinner ("Connecting to 'X'... \ (3s)") with the SSID.
+            if connect(ssid, pw, timeout=timeout, silent=silent):
+                return True
+        if online():
             return True
     return False
 
