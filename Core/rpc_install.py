@@ -64,6 +64,27 @@ def _makedirs(path):
         except OSError:
             pass
 
+def _purge_counterpart(device_path):
+    """When installing X.mpy, remove a stale X.py (and vice-versa).
+    MicroPython imports X.py BEFORE X.mpy, so a leftover source file would
+    shadow the freshly-installed compiled module after a source->compiled
+    (or compiled->source) update — the update would appear to do nothing."""
+    if device_path.endswith('.mpy'):
+        other = device_path[:-4] + '.py'
+    elif device_path.endswith('.py') and not device_path.endswith('main.py'):
+        other = device_path[:-3] + '.mpy'
+    else:
+        return
+    try:
+        uos.stat(other)
+    except OSError:
+        return
+    try:
+        uos.remove(other)
+        info("  removed stale {}".format(other), p="Update")
+    except OSError:
+        pass
+
 # ---------------------------------------------------------------------------
 # ZIP helpers
 # ---------------------------------------------------------------------------
@@ -245,6 +266,7 @@ def install_rpc(archive_path):
         parent = '/'.join(device_path.split('/')[:-1])
         if parent:
             _makedirs(parent)
+        _purge_counterpart(device_path)   # drop a stale .py/.mpy of the same module
 
         # STORED (the .rpc format): stream input -> output in small chunks so
         # we never allocate the whole file at once. A big contiguous alloc

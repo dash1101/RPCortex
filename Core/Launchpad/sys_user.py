@@ -194,6 +194,30 @@ def rmuser(args):
         info("Cancelled.")
 
 
+def passwd(args=None):
+    """Change your own password (`passwd`), or another user's with admin rights
+    (`passwd <user>`). Shorthand for `usermod <user> passwd`."""
+    from usrmgmt import change_password, set_password, require_admin, decode as _decode
+    target = (args or '').strip()
+    active = regedit.read('Settings.Active_User')
+    if not target or target == active:
+        change_password(active)                 # self-service: verifies current pw
+        return
+    if not _decode(target, silent=True):
+        error("User '{}' not found.".format(target))
+        return
+    if not require_admin("change another user's password"):
+        return
+    new_pw = masked_inpt("New password for '{}'".format(target))
+    if not new_pw.strip():
+        warn("Password cannot be blank.")
+        return
+    if new_pw != masked_inpt("Confirm new password"):
+        error("Passwords do not match.")
+        return
+    set_password(target, new_pw)
+
+
 def logout(args=None):
     state = globals().get('_shell_state')
     if state:

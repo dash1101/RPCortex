@@ -5,7 +5,7 @@
 # Version: v0.9.1
 # Author: dash1101
 
-from Core.RPCortex import multi, fatal, error, info, warn, ok, inpt, masked_inpt, OS_VERSION, OS_CODENAME, OS_BUILD
+from Core.RPCortex import multi, fatal, error, info, warn, ok, inpt, masked_inpt, OS_VERSION, OS_CODENAME, OS_BUILD, OS_STAGE
 import regedit   # bare import — same instance the shell uses (shared cache)
 from Core.launchpad import launchpad_init as _boot
 from Core.launchpad import recovery_init  as _recovery
@@ -219,6 +219,16 @@ def setup_seq():
             except Exception as e:
                 warn("  Clock sync unavailable: {}".format(e))
                 multi("    Sync later with:  ntp sync")
+        # Offer to keep the clock correct on every boot (registry-driven, so it
+        # adapts if the NTP package is later removed; toggle it in `settings`).
+        boot = inpt("  Re-sync the clock automatically on every boot? [y/N]").strip().lower()
+        if boot in ('y', 'yes'):
+            try:
+                regedit.save("Apps.NTP_On_Boot", "true")
+                regedit.save("Apps.NTP_Boot_Silent", "true")
+                ok("  NTP will sync silently at boot.  Change it in 'settings'.")
+            except Exception:
+                pass
     else:
         multi("  (No WiFi - sync later with 'ntp sync', or set the clock with 'date set'.)")
     multi("")
@@ -310,6 +320,11 @@ def start(arg):
         if regedit.read("System.Build") != OS_BUILD:
             try:
                 regedit.save("System.Build", OS_BUILD)
+            except Exception:
+                pass
+        if regedit.read("System.Stage") != OS_STAGE:
+            try:
+                regedit.save("System.Stage", OS_STAGE)
             except Exception:
                 pass
 

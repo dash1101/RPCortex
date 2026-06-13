@@ -18,12 +18,17 @@ OS_CODENAME = "RPCortex B9 - Pulsar"
 
 # OS_BUILD is a date/time build id stamped by build.py into a generated
 # Core/buildinfo.py at release-build time. A from-source/dev tree has no
-# buildinfo, so it reports "source". The build id lets the updater tell two
-# builds of the SAME version apart (re-publishing v0.9.1 bumps the build).
+# buildinfo, so it reports "source"/"dev". The build id lets the updater tell
+# two builds of the SAME version apart (re-publishing v0.9.1 bumps the build).
+# OS_STAGE is the release channel (Stable/Beta/Alpha/RC/Release) from build.cfg.
 try:
     from buildinfo import BUILD as OS_BUILD
 except Exception:
     OS_BUILD = "source"
+try:
+    from buildinfo import STAGE as OS_STAGE
+except Exception:
+    OS_STAGE = "dev"
 
 post_check = True
 

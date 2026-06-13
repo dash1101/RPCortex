@@ -49,6 +49,24 @@ def _makedirs(path):
         except OSError:
             pass
 
+def _purge_counterpart(dp):
+    """Remove a stale X.py when writing X.mpy (and vice-versa) — MicroPython
+    imports .py before .mpy, so a leftover would shadow the new module."""
+    if dp.endswith('.mpy'):
+        other = dp[:-4] + '.py'
+    elif dp.endswith('.py') and not dp.endswith('main.py'):
+        other = dp[:-3] + '.mpy'
+    else:
+        return
+    try:
+        uos.stat(other)
+    except OSError:
+        return
+    try:
+        uos.remove(other)
+    except OSError:
+        pass
+
 # ---------------------------------------------------------------------------
 # ZIP helpers (self-contained — no imports from Core/)
 # ---------------------------------------------------------------------------
@@ -204,6 +222,7 @@ def _install(path):
         parent = '/'.join(dp.split('/')[:-1])
         if parent:
             _makedirs(parent)
+        _purge_counterpart(dp)
 
         # STORED (the .rpc format): stream input -> output in small chunks so a
         # big file (e.g. launchpad.py ~52 KB) never needs one contiguous alloc.

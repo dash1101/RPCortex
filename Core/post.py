@@ -21,6 +21,8 @@ Clockable: false
 
 [System]
 Codename: RPCortex B9 - Pulsar
+Build: source
+Stage: dev
 Device_ID: pulsar
 Owner:
 TZ_Offset: 0
@@ -56,6 +58,24 @@ errors = []
 beeper = False   # module-level default; set by beeper_check()
 boot_startup_mode = "0"   # Settings.Startup as it was BEFORE POST armed it;
                           # read by initialization.py for the startup banner
+
+# --- Quiet boot ------------------------------------------------------------
+# When Settings.Verbose_Boot is false, only warnings/errors/fatals print; the
+# chatty progress + "X OK" confirmations are suppressed. _vinfo/_vok gate the
+# info/ok levels; warn/error/fatal always go straight to core.* (never gated).
+def _verbose():
+    try:
+        return (regedit.read('Settings.Verbose_Boot') or 'false') == 'true'
+    except Exception:
+        return False   # registry not readable yet (first boot) -> stay quiet
+
+def _vinfo(msg, p='POST'):
+    if _verbose():
+        core.info(msg, p=p)
+
+def _vok(msg, p='POST'):
+    if _verbose():
+        core.ok(msg, p=p)
 
 try:
     core.post_check = True
@@ -111,7 +131,7 @@ def check_registry():
     # Check/create the registry config file
     try:
         uos.stat("/Pulsar/Registry/registry.cfg")
-        core.ok("Registry found!")
+        _vok("Registry found!")
     except OSError:
         core.warn("File not found: '/Pulsar/Registry/registry.cfg'")
         core.info("Creating /Pulsar/Registry/")
@@ -152,19 +172,19 @@ def wlan_check():
         core.info("Supported boards: Pico W, ESP32, ESP32-S2/S3.", p="POST")
         return False
 
-    core.ok("WiFi hardware detected.", p="POST")
+    _vok("WiFi hardware detected.", p="POST")
 
     # Already associated (e.g. the radio kept the link across a soft reboot)?
     # Don't spend boot time reconnecting.
     if net.online():
         s = net.status()
-        core.ok("WiFi already connected:  {}  ({})".format(
+        _vok("WiFi already connected:  {}  ({})".format(
             s.get('ssid', '?'), s.get('ip', '?')), p="POST")
         return True
 
     autoconn = regedit.read('Settings.Network_Autoconnect')
     if autoconn != 'true':
-        core.info("Autoconnect is off. Use 'wifi connect' in the shell.", p="POST")
+        _vinfo("Autoconnect is off. Use 'wifi connect' in the shell.", p="POST")
         return True   # hardware available, not an error
 
     # Autoconnect: try saved networks
@@ -172,12 +192,12 @@ def wlan_check():
         core.warn("Autoconnect enabled but no networks saved. Use 'wifi add'.", p="POST")
         return True
 
-    core.info("Autoconnect enabled. Attempting connection...", p="POST")
+    _vinfo("Autoconnect enabled. Attempting connection...", p="POST")
     try:
         connected = net.connect_saved(timeout=15)
         if connected:
             s = net.status()
-            core.ok("WiFi connected:  {}  ({})".format(
+            _vok("WiFi connected:  {}  ({})".format(
                 s.get('ssid', '?'), s.get('ip', '?')), p="POST")
             return True
         else:
@@ -229,7 +249,7 @@ def check_oc():
         regedit.save("Hardware.Max_Clock", maxoc)
         regedit.save("Hardware.Clockable", "true")
         regedit.save("Settings.Startup", "0")
-        core.ok("Clock range: {} — {}".format(minoc, maxoc), p="POST")
+        _vok("Clock range: {} — {}".format(minoc, maxoc), p="POST")
     except Exception as err:
         core.error("Clock calibration failed: {}".format(err), p="POST")
         core.warn("System will continue at default clock speed.", p="POST")
@@ -254,7 +274,7 @@ def _apply_boot_clock():
     try:
         machine.freq(hz)
         regedit.save("Settings.Startup", "0")  # clear sentinel — clock is safe
-        core.ok("Boot clock applied: {} MHz".format(hz // 1_000_000), p="POST")
+        _vok("Boot clock applied: {} MHz".format(hz // 1_000_000), p="POST")
     except Exception as e:
         # Leave sentinel "7" — next boot will disable OC_On_Boot automatically
         core.warn("Boot clock failed: {}. Running at default.".format(e), p="POST")
@@ -264,9 +284,9 @@ def check_cores():
     try:
         if hasattr(machine, "ncores"):
             max_cores = machine.ncores()
-            core.ok("Multi-core support detected. Max cores: {}".format(max_cores))
+            _vok("Multi-core support detected. Max cores: {}".format(max_cores))
         else:
-            core.ok("Single-core processor.")
+            _vok("Single-core processor.")
     except Exception as err:
         core.error("Error checking CPU cores: {}".format(err))
 
@@ -311,8 +331,8 @@ def _warn_unexpected_shutdown():
 
 
 def script():
-    core.info("=== Power-On Self Test (POST) ===", p="POST")
-    core.info("Checking system integrity before boot...", p="POST")
+    _vinfo("=== Power-On Self Test (POST) ===", p="POST")
+    _vinfo("Checking system integrity before boot...", p="POST")
 
     # --- Registry FIRST ---
     # All subsequent steps read/write the registry; the directories and file
@@ -320,15 +340,10 @@ def script():
     if not check_registry():
         core.fatal("Registry check FAILED. Cannot continue.", p="POST")
         return False
-    core.ok("Registry OK.", p="POST")
+    _vok("Registry OK.", p="POST")
 
-    # Now the registry exists — read verbose boot preference safely.
-    # Use a list so the closure always sees the current value (MicroPython safe).
-    _vb = [False]
-    _vb[0] = (regedit.read('Settings.Verbose_Boot') or 'false') == 'true'
-    def _vi(msg, p='POST'):
-        if _vb[0]:
-            core.info(msg, p=p)
+    # Verbose-boot is read live by _vinfo/_vok from here on (the registry is
+    # guaranteed to exist now).  Quiet boot shows only warnings/errors.
 
     # Guarantee /Pulsar/Logs/ exists now that /Pulsar/ is confirmed.
     _ensure_log_dir()
@@ -357,17 +372,17 @@ def script():
         core.warn("Use 'pulse set <MHz>' to change clock manually.", p="POST")
 
     if regedit.read("Hardware.Clockable") != "true":
-        core.info("First boot — running clock calibration...", p="POST")
+        _vinfo("First boot — running clock calibration...", p="POST")
         check_oc()
 
     if regedit.read("Settings.OC_On_Boot") == "true":
         _apply_boot_clock()
     else:
-        core.info("CPU at {} MHz. Use 'pulse boot <MHz>' to set a boot clock.".format(
+        _vinfo("CPU at {} MHz. Use 'pulse boot <MHz>' to set a boot clock.".format(
             machine.freq() // 1_000_000), p="POST")
 
     # --- Critical file checks ---
-    _vi("Checking core files...", p="POST")
+    _vinfo("Checking core files...", p="POST")
     if not check_core():
         core.fatal("Core file check FAILED. Cannot continue.", p="POST")
         return False
@@ -376,31 +391,31 @@ def script():
         return False
     gc.collect()
 
-    _vi("Checking CPU...", p="POST")
+    _vinfo("Checking CPU...", p="POST")
     if not pulse.cpu_check():
         core.fatal("CPU check FAILED. Cannot continue.", p="POST")
         return False
-    core.ok("CPU OK.", p="POST")
+    _vok("CPU OK.", p="POST")
     gc.collect()
 
-    _vi("Checking memory...", p="POST")
+    _vinfo("Checking memory...", p="POST")
     if not pulse.mem_check():
         core.fatal("Memory check FAILED. Cannot continue.", p="POST")
         return False
-    core.ok("Memory OK.", p="POST")
+    _vok("Memory OK.", p="POST")
     gc.collect()
 
-    _vi("Checking CPU core count...", p="POST")
+    _vinfo("Checking CPU core count...", p="POST")
     check_cores()
     gc.collect()
 
     # --- Non-critical checks ---
-    _vi("Checking WLAN...", p="POST")
+    _vinfo("Checking WLAN...", p="POST")
     if not wlan_check():
         errors.append("WLAN not available")
     gc.collect()
 
-    _vi("Checking beeper...", p="POST")
+    _vinfo("Checking beeper...", p="POST")
     if not beeper_check():
         errors.append("Beeper not configured or unavailable")
 
@@ -409,13 +424,13 @@ def script():
         core.warn("POST completed with warnings:", p="POST")
         for msg in errors:
             core.warn("  - {}".format(msg), p="POST")
-        core.info("Non-critical hardware may be unavailable this session.", p="POST")
+        _vinfo("Non-critical hardware may be unavailable this session.", p="POST")
         if beeper:
             beeper.on()
             utime.sleep_ms(175)
             beeper.off()
     else:
-        core.ok("All checks passed. System is ready.", p="POST")
+        _vok("All checks passed. System is ready.", p="POST")
         if beeper:
             beeper.on()
             utime.sleep_ms(25)

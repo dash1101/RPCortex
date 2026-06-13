@@ -82,9 +82,10 @@ recursive), `sort`, `uniq`, `hex`/`hexdump`, `basename`, `dirname`.
 ### Users (`sys_user.py`)
 `whoami`, `users` (lists accounts with active/admin/nopass tags), `mkacct`
 (`[name] [--nopass] [--admin]`), `usermod` (one command for `passwd` / `rename`
-/ `admin on|off` / `nopass on|off`), `rmuser` (root/guest protected), `logout`,
-`exit`. Admin accounts and a `require_admin` re-auth gate forced actions
-(e.g. `pkg remove --force`).
+/ `admin on|off` / `nopass on|off`), `passwd [user]` (self-service password
+change; admin-gated for another user), `rmuser` (root/guest protected),
+`logout`, `exit`. Admin accounts and a `require_admin` re-auth gate forced
+actions (e.g. `pkg remove --force`).
 
 ### Automation (`sys_task.py`)
 - `startup list|add <cmd>|remove <n>|clear|run` — commands run once at login

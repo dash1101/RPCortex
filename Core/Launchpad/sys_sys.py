@@ -67,7 +67,9 @@ def sysinfo(args=None):
 
     info("=== RPCortex Pulsar — System Info ===")
     multi("  OS Version  : {}".format(regedit.read('Settings.Version') or 'Unknown'))
-    multi("  Build       : {}".format(regedit.read('System.Build') or _os_build()))
+    multi("  Build       : {}  ({})".format(
+        regedit.read('System.Build') or _os_build(),
+        regedit.read('System.Stage') or _os_stage()))
     _owner = regedit.read('System.Owner')
     if _owner:
         multi("  Owner       : {}".format(_owner))
@@ -202,8 +204,9 @@ def ver(args=None):
     ver_str  = regedit.read('Settings.Version') or 'Unknown'
     codename = regedit.read('System.Codename')  or 'Pulsar'
     build    = regedit.read('System.Build') or _os_build()
+    stage    = regedit.read('System.Stage') or _os_stage()
     multi("RPCortex {}  —  {}".format(ver_str, codename))
-    multi("Build: {}".format(build))
+    multi("Build: {}  ({})".format(build, stage))
     multi("MicroPython {}   Platform: {}".format(sys.version, sys.platform))
 
 
@@ -214,6 +217,15 @@ def _os_build():
         return OS_BUILD or 'source'
     except Exception:
         return 'source'
+
+
+def _os_stage():
+    """Release channel from RPCortex.OS_STAGE; 'dev' for an unstamped tree."""
+    try:
+        from RPCortex import OS_STAGE
+        return OS_STAGE or 'dev'
+    except Exception:
+        return 'dev'
 
 
 def env(args=None):
@@ -1073,7 +1085,7 @@ def help(args=None):
         multi("  OS Mgmt    : update  factoryreset  reinstall")
         multi("  Network    : wifi  wget  curl  runurl  ping  nslookup")
         multi("  Packages   : pkg install|remove|list|info|search|update|upgrade|repo")
-        multi("  Users      : whoami  users  mkacct  usermod  rmuser  logout  exit")
+        multi("  Users      : whoami  users  mkacct  usermod  passwd  rmuser  logout  exit")
         multi("  Misc       : help  echo  history  alias  unalias")
         multi("")
         multi("  Type 'help <category>' for details.")
@@ -1186,6 +1198,7 @@ def help(args=None):
         multi("  usermod <user> rename <newname>      Rename an account (admin)")
         multi("  usermod <user> admin  on|off         Grant/revoke admin (admin)")
         multi("  usermod <user> nopass on|off         Toggle no-password login (admin)")
+        multi("  passwd [user]        Change your own password (or another's, admin)")
         multi("  rmuser <user>        Remove a user (root/guest are protected)")
         multi("  logout / exit        Log out of this session")
 
@@ -1292,6 +1305,7 @@ def help(args=None):
             'mkacct':       'mkacct              Create a new user account',
             'rmuser':       'rmuser <user>       Remove a user account',
             'usermod':      'usermod <user> passwd|rename|admin|nopass   Modify an account',
+            'passwd':       'passwd [user]       Change your own (or another user\'s) password',
             'logout':       'logout              Log out of this session',
             'exit':         'exit                Log out of this session',
             'echo':         'echo <text>         Print text',

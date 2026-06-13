@@ -828,6 +828,30 @@ def _run_startup_tasks():
         except Exception as e:
             error("Startup task failed: {}  ({})".format(t, e))
 
+
+def _ntp_installed():
+    """True if the (removable) NTP package is present on the device."""
+    try:
+        uos.stat('/Packages/NTP/package.cfg')
+        return True
+    except OSError:
+        return False
+
+
+def _run_ntp_on_boot():
+    """Sync the clock at boot when Apps.NTP_On_Boot is set — registry-driven so
+    the setting survives startup.cfg edits AND adapts when the NTP package is
+    removed/reinstalled (a missing package silently skips, no error)."""
+    if (regedit.read('Apps.NTP_On_Boot') or 'false') != 'true':
+        return
+    if not _ntp_installed() or not _shell_state['running']:
+        return
+    silent = (regedit.read('Apps.NTP_Boot_Silent') or 'true') == 'true'
+    try:
+        _run_line('ntp sync -s' if silent else 'ntp sync')
+    except Exception as e:
+        error("NTP boot sync failed: {}".format(e))
+
 # ---------------------------------------------------------------------------
 # Shell input  — interactive line reader with history navigation
 # ---------------------------------------------------------------------------
@@ -1034,12 +1058,12 @@ def _shell_input(prompt):
                     _history.pop(0)
             return line
 
-        # --- Backspace (delete char before cursor) ---
-        # Both \x7f and \x08 are bound to single-char delete: terminals disagree
-        # on which byte plain Backspace sends (PuTTY=\x7f, others=\x08), so we
-        # treat BOTH as a plain backspace and never let it eat a whole word.
-        # Word-delete-back lives on the unambiguous Ctrl+W (\x17) instead.
-        elif ch in ('\x7f', '\x08'):
+        # --- Backspace (delete one char before cursor) ---
+        # This terminal sends \x08 for plain Backspace and \x7f for
+        # Ctrl+Backspace, so \x08 = single char, \x7f = word (below). If a
+        # terminal sends \x7f for plain Backspace (PuTTY's "Control-?" default)
+        # this swaps them; Ctrl+W (\x17) is the portable word-delete either way.
+        elif ch == '\x08':
             _ghost_clear()
             if cursor > 0:
                 del buf[cursor - 1]
@@ -1051,8 +1075,8 @@ def _shell_input(prompt):
             ghost = ''
             _ghost_update()
 
-        # --- Ctrl+W: delete word before cursor ---
-        elif ch == '\x17':
+        # --- Ctrl+Backspace (\x7f here) / Ctrl+W (\x17): delete word before cursor ---
+        elif ch in ('\x7f', '\x17'):
             _ghost_clear()
             ghost = ''
             start = _word_left(buf, cursor)
@@ -1283,6 +1307,7 @@ def launchpad_init(username, password, auth=True):
     # loaded and CWD is the home directory, before the interactive prompt opens.
     try:
         _run_startup_tasks()
+        _run_ntp_on_boot()   # registry-driven NTP-on-boot (after WiFi autoconnect)
     except Exception as e:
         warn("Startup task runner error: {}".format(e))
 

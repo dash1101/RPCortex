@@ -16,6 +16,7 @@
 
 import sys
 import machine
+import uos
 
 if '/Core' not in sys.path:
     sys.path.append('/Core')
@@ -43,15 +44,36 @@ _idx    = {}   # setting-key -> line index within the drawn panel
 _nlines = 0    # number of content lines drawn (prompt sits on line _nlines)
 
 # Arrow-key navigation (FileExp-style): a selectable cursor over all rows.
-_NAV    = ['1', '2', '3', '4', '5', '6', 'o', 't', 'd', 'i']
+# The TIME rows ('n','s') only appear when the (removable) NTP package is
+# installed — _nav()/_build_lines() add them dynamically, so the panel adapts
+# when NTP is removed or reinstalled.
 _sel    = '1'  # currently highlighted row key
 _TOGGLE = {'1': 'Settings.Verbose_Boot', '2': 'Features.Program_Execution',
            '3': 'Settings.OC_On_Boot',   '4': 'Features.beeper',
-           '5': 'Features.SD_Support',    '6': 'Settings.Network_Autoconnect'}
+           '5': 'Features.SD_Support',    '6': 'Settings.Network_Autoconnect',
+           'n': 'Apps.NTP_On_Boot',       's': 'Apps.NTP_Boot_Silent'}
 _EDIT   = {'o': ('System.Owner', 'Owner', False),
            't': ('System.TZ_Offset', 'Timezone Offset', True),
            'd': ('System.Device_ID', 'Device ID', False),
            'i': ('Settings.Idle_Logout', 'Idle Logout', True)}
+
+
+def _ntp_installed():
+    """True if the removable NTP package is present (gates the TIME section)."""
+    try:
+        uos.stat('/Packages/NTP/package.cfg')
+        return True
+    except OSError:
+        return False
+
+
+def _nav():
+    """Ordered list of selectable row keys; TIME keys only when NTP is present."""
+    keys = ['1', '2', '3', '4', '5', '6']
+    if _ntp_installed():
+        keys += ['n', 's']
+    keys += ['o', 't', 'd', 'i']
+    return keys
 
 # ---------------------------------------------------------------------------
 # Registry helpers
@@ -137,7 +159,7 @@ def _value_row(key, label, val, note=''):
 def _footer():
     return ('  ' + _DG + 'Up/Down' + _R + ' move   ' +
             _DG + 'Enter' + _R + ' change   ' +
-            _DG + '[1-6/o/t/d/i]' + _R + ' jump   ' +
+            _DG + 'letter/#' + _R + ' jump   ' +
             _DG + '[r]' + _R + ' refresh   ' +
             _DG + '[q]' + _R + ' quit')
 
@@ -164,6 +186,12 @@ def _row_for(key):
         return _toggle_row('5', 'SD Card Support', sd, 'not yet implemented' if sd == 'true' else '')
     if key == '6':
         return _toggle_row('6', 'WiFi Autoconnect', _rget('Settings.Network_Autoconnect', 'false'))
+    if key == 'n':
+        return _toggle_row('n', 'NTP Sync on Boot', _rget('Apps.NTP_On_Boot', 'false'))
+    if key == 's':
+        sil = _rget('Apps.NTP_Boot_Silent', 'true')
+        return _toggle_row('s', 'NTP Boot Silent', sil,
+                           'sync quietly' if sil == 'true' else 'show sync output')
     if key == 'o':
         return _value_row('o', 'Owner',           _rget('System.Owner', ''))
     if key == 't':
@@ -197,6 +225,11 @@ def _build_lines():
     lines.append('')
     lines.append(_sec('NETWORK'))
     idx['6'] = len(lines); lines.append(_row_for('6'))
+    if _ntp_installed():
+        lines.append('')
+        lines.append(_sec('TIME'))
+        idx['n'] = len(lines); lines.append(_row_for('n'))
+        idx['s'] = len(lines); lines.append(_row_for('s'))
     lines.append('')
     lines.append(_sec('PERSONALIZATION'))
     idx['o'] = len(lines); lines.append(_row_for('o'))
@@ -287,10 +320,11 @@ def settings(args=None):
                 if sys.stdin.read(1) == '[':
                     a = sys.stdin.read(1)
                     if a in ('A', 'B'):
+                        nav = _nav()
                         old = _sel
-                        i = _NAV.index(_sel) if _sel in _NAV else 0
-                        i = (i - 1) % len(_NAV) if a == 'A' else (i + 1) % len(_NAV)
-                        _sel = _NAV[i]
+                        i = nav.index(_sel) if _sel in nav else 0
+                        i = (i - 1) % len(nav) if a == 'A' else (i + 1) % len(nav)
+                        _sel = nav[i]
                         _update(old)         # un-highlight old row
                         _update(_sel)        # highlight new row
             except Exception:
@@ -308,8 +342,10 @@ def settings(args=None):
             continue
 
         # --- Direct shortcuts (also move the highlight to that row) ---
+        # Only keys currently on the panel act (TIME keys n/s are absent when
+        # NTP isn't installed), so a stray 'n'/'s' never toggles a hidden row.
         k = ch.lower()
-        if k in _TOGGLE or k in _EDIT:
+        if k in _nav():
             old = _sel
             _sel = k
             if old != _sel:

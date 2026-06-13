@@ -83,6 +83,7 @@ whoami:/Core/Launchpad/sys_user.py:whoami
 users:/Core/Launchpad/sys_user.py:users
 mkacct:/Core/Launchpad/sys_user.py:mkacct
 usermod:/Core/Launchpad/sys_user.py:usermod
+passwd:/Core/Launchpad/sys_user.py:passwd
 rmuser:/Core/Launchpad/sys_user.py:rmuser
 logout:/Core/Launchpad/sys_user.py:logout
 exit:/Core/Launchpad/sys_user.py:exit
