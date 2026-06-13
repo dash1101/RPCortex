@@ -14,8 +14,8 @@ running version lives in `Core/RPCortex.py` (`OS_VERSION` / `OS_CODENAME`).
 
 - **Power-On Self Test (POST)** — registry validation, CPU arithmetic check,
   fast RAM stress test (single-buffer stride pattern, scales to free RAM), clock
-  check, WLAN check + optional autoconnect, beeper init. Returns pass/fail to
-  gate boot.
+  check, WLAN check + optional autoconnect. Returns pass/fail to gate boot.
+  (Quiet unless `Verbose_Boot` is on.)
 - **First-run setup** — creates `root` (password set interactively) and a
   NOPASS `guest` account, user home directories, and prompts for owner name on
   first boot.
@@ -155,15 +155,19 @@ apt-style manager over a remote repo.
   `speedtest`, `backup`, `helloworld`.
 
 ## 9. Settings TUI (`settings.py`)
-- SysMon-styled borderless panel with efficient in-place single-row redraw.
-- Toggles: `Verbose_Boot`, `Program_Execution`, `OC_On_Boot`, beeper,
-  `SD_Support`, `Network_Autoconnect`.
+- SysMon-styled borderless panel with arrow-key navigation + in-place redraw.
+- Toggles: `Verbose_Boot`, `Program_Execution`, `OC_On_Boot`, `SD_Support`,
+  `Network_Autoconnect`; a **TIME** section (NTP on-boot / silent / auto-timezone)
+  appears only when the NTP package is installed.
 - Editable fields: Owner, Timezone Offset, Device ID, Idle Logout — no
   `reg set` needed.
 
 ## 10. Apps
-- **Text editor** (`editor.py`) — nano-style ANSI editor (`edit`/`nano`/`vi`);
-  needs a real serial terminal.
+- **Text editor** (Editor package, `/Packages/Editor/editor.py`) — nano-style
+  ANSI editor (`edit`/`nano`/`vi`/`vim`); upgradeable like any package; needs a
+  real serial terminal.
+- **Desktop** (`desktop`/`dt`) — keyboard-driven icon grid; **IDE** (`ide`/`dev`)
+  — in-device editor + run/live-test for packages and `.rps`.
 - **PicoFetch** — neofetch-style system info (`fetch`).
 - **RPCMark** — CPU/RAM benchmark (`bench`).
 - **NTP** — `ntp sync [server]` / `status` / `server <host>`; sets the clock

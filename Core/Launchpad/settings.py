@@ -49,9 +49,10 @@ _nlines = 0    # number of content lines drawn (prompt sits on line _nlines)
 # when NTP is removed or reinstalled.
 _sel    = '1'  # currently highlighted row key
 _TOGGLE = {'1': 'Settings.Verbose_Boot', '2': 'Features.Program_Execution',
-           '3': 'Settings.OC_On_Boot',   '4': 'Features.beeper',
-           '5': 'Features.SD_Support',    '6': 'Settings.Network_Autoconnect',
-           'n': 'Apps.NTP_On_Boot',       's': 'Apps.NTP_Boot_Silent'}
+           '3': 'Settings.OC_On_Boot',   '4': 'Features.SD_Support',
+           '5': 'Settings.Network_Autoconnect',
+           'n': 'Apps.NTP_On_Boot',       's': 'Apps.NTP_Boot_Silent',
+           'a': 'Apps.NTP_Boot_Auto'}
 _EDIT   = {'o': ('System.Owner', 'Owner', False),
            't': ('System.TZ_Offset', 'Timezone Offset', True),
            'd': ('System.Device_ID', 'Device ID', False),
@@ -69,9 +70,9 @@ def _ntp_installed():
 
 def _nav():
     """Ordered list of selectable row keys; TIME keys only when NTP is present."""
-    keys = ['1', '2', '3', '4', '5', '6']
+    keys = ['1', '2', '3', '4', '5']
     if _ntp_installed():
-        keys += ['n', 's']
+        keys += ['n', 's', 'a']
     keys += ['o', 't', 'd', 'i']
     return keys
 
@@ -180,18 +181,19 @@ def _row_for(key):
         freq = bc if bc else _rget('Hardware.Max_Clock', '')
         return _toggle_row('3', 'Boot Overclock', oc, freq if oc == 'true' else '')
     if key == '4':
-        return _toggle_row('4', 'Beeper', _rget('Features.beeper', 'false'))
-    if key == '5':
         sd = _rget('Features.SD_Support', 'false')
-        return _toggle_row('5', 'SD Card Support', sd, 'not yet implemented' if sd == 'true' else '')
-    if key == '6':
-        return _toggle_row('6', 'WiFi Autoconnect', _rget('Settings.Network_Autoconnect', 'false'))
+        return _toggle_row('4', 'SD Card Support', sd, 'not yet implemented' if sd == 'true' else '')
+    if key == '5':
+        return _toggle_row('5', 'WiFi Autoconnect', _rget('Settings.Network_Autoconnect', 'false'))
     if key == 'n':
         return _toggle_row('n', 'NTP Sync on Boot', _rget('Apps.NTP_On_Boot', 'false'))
     if key == 's':
         sil = _rget('Apps.NTP_Boot_Silent', 'true')
         return _toggle_row('s', 'NTP Boot Silent', sil,
                            'sync quietly' if sil == 'true' else 'show sync output')
+    if key == 'a':
+        return _toggle_row('a', 'NTP Auto-Timezone', _rget('Apps.NTP_Boot_Auto', 'false'),
+                           'set zone by IP on boot')
     if key == 'o':
         return _value_row('o', 'Owner',           _rget('System.Owner', ''))
     if key == 't':
@@ -221,15 +223,15 @@ def _build_lines():
     lines.append(_sec('HARDWARE'))
     idx['3'] = len(lines); lines.append(_row_for('3'))
     idx['4'] = len(lines); lines.append(_row_for('4'))
-    idx['5'] = len(lines); lines.append(_row_for('5'))
     lines.append('')
     lines.append(_sec('NETWORK'))
-    idx['6'] = len(lines); lines.append(_row_for('6'))
+    idx['5'] = len(lines); lines.append(_row_for('5'))
     if _ntp_installed():
         lines.append('')
         lines.append(_sec('TIME'))
         idx['n'] = len(lines); lines.append(_row_for('n'))
         idx['s'] = len(lines); lines.append(_row_for('s'))
+        idx['a'] = len(lines); lines.append(_row_for('a'))
     lines.append('')
     lines.append(_sec('PERSONALIZATION'))
     idx['o'] = len(lines); lines.append(_row_for('o'))

@@ -571,14 +571,16 @@ def _rimtree(path):
 # Reinstall  (full wipe — writes a boot-time reinstall stub)
 # ---------------------------------------------------------------------------
 
-def reinstall(args=None):
+def _full_reinstall(rpc_src=None, online=False):
     """
-    Full system wipe.  Deletes everything, writes a minimal reinstall
-    stub as main.py, and reboots.
+    Full system wipe + reinstall.  Deletes everything, writes the reinstall
+    stub as main.py, and reboots — the stub auto-installs a staged /update.rpc.
 
-    Optional argument: path to a .rpc file to stage for auto-install.
-      reinstall                  — wipe only; use Web Installer to restore
-      reinstall /path/to/os.rpc  — stage .rpc; stub auto-installs on boot
+      rpc_src : path to a local .rpc to stage (auto-installs on boot)
+      online  : download the latest .rpc from the update server, then wipe
+
+    With neither, it wipes only and you restore via the Web Installer.
+    Exposed through `update reinstall [online | <path.rpc>]`.
     """
     import machine as _m
 
@@ -588,28 +590,35 @@ def reinstall(args=None):
     multi("")
     multi("  EVERY file on the device will be erased, including:")
     multi("    /Core/   /Packages/   /Pulsar/   /Users/   /Programs/")
+    multi("  (a normal 'update online' keeps your data — use that unless you")
+    multi("   specifically want a clean factory reinstall.)")
     multi("")
-    multi("  After the wipe the device boots a minimal stub.")
-    multi("  To reinstall RPCortex:")
-    multi("    a) Stage a .rpc file:  reinstall /path/to/os.rpc")
-    multi("    b) Use the Web Installer:  rpc.novalabs.app/install")
-    multi("")
-    warn("YOU WILL NEED THE WEB INSTALLER OR A .rpc FILE.", p="Wipe")
+    if online:
+        multi("  The latest release will be downloaded, then installed fresh.")
+    elif rpc_src:
+        multi("  '{}' will be staged and installed fresh on boot.".format(rpc_src))
+    else:
+        multi("  Restore afterwards with the Web Installer: rpc.novalabs.app/install")
     multi("")
     confirm = inpt("Type WIPE to confirm (anything else cancels)")
     if confirm.strip() != "WIPE":
-        info("Full wipe cancelled.")
+        info("Full reinstall cancelled.")
         return
 
-    # --- Validate optional .rpc argument ---------------------------------
-    rpc_src = None
-    if args and args.strip():
-        rpc_src = args.strip().split(None, 1)[0]
+    # --- Online: download the latest .rpc to /update.rpc BEFORE wiping ----
+    if online:
+        if not _download_latest(_FULL_TMP):
+            error("Download failed — nothing was wiped.", p="Wipe")
+            return
+        rpc_src = _FULL_TMP
+
+    # --- Validate a local .rpc argument ----------------------------------
+    elif rpc_src:
         try:
             uos.stat(rpc_src)
         except OSError:
             error("Specified .rpc not found: {}".format(rpc_src))
-            error("Fix the path or run without argument to wipe anyway.")
+            error("Fix the path or run 'update reinstall' alone to wipe anyway.")
             return
 
     # --- Read reinstall stub BEFORE wiping /Core/ ------------------------
@@ -625,12 +634,14 @@ def reinstall(args=None):
         return
 
     # --- Stage .rpc if provided ------------------------------------------
-    if rpc_src:
-        info("Staging {} as /update.rpc...".format(rpc_src), p="Wipe")
+    # The online path already downloaded straight to /update.rpc, so only
+    # copy when the source is a *different* file.
+    if rpc_src and rpc_src != _FULL_TMP:
+        info("Staging {} as {}...".format(rpc_src, _FULL_TMP), p="Wipe")
         try:
             # Chunk-copy so we never load the whole archive at once
             with open(rpc_src, 'rb') as _src:
-                with open('/update.rpc', 'wb') as _dst:
+                with open(_FULL_TMP, 'wb') as _dst:
                     while True:
                         _chunk = _src.read(4096)
                         if not _chunk:
@@ -638,8 +649,8 @@ def reinstall(args=None):
                         _dst.write(_chunk)
                         _chunk = None
             gc.collect()
-            ok("Staged /update.rpc ({} bytes).".format(
-                uos.stat('/update.rpc')[6]), p="Wipe")
+            ok("Staged {} ({} bytes).".format(
+                _FULL_TMP, uos.stat(_FULL_TMP)[6]), p="Wipe")
         except Exception as e:
             warn("Could not stage .rpc: {}".format(e), p="Wipe")
             warn("Continuing wipe — use Web Installer to restore.", p="Wipe")
@@ -684,6 +695,56 @@ def reinstall(args=None):
 
 _LATEST_URL = 'https://rpc.novalabs.app/releases/latest.json'
 _OTA_TMP    = '/update.rpc'
+_FULL_TMP   = '/update.rpc'   # the stub auto-installs this on boot after a wipe
+
+
+def _installed_build():
+    """Read the BUILD id from /Core/buildinfo.py (a source build only — a
+    compiled build ships buildinfo.mpy, so this returns None there and the
+    new build is shown at next login instead). Best-effort."""
+    try:
+        with open('/Core/buildinfo.py') as f:
+            for line in f:
+                if line.strip().startswith('BUILD'):
+                    return line.split('=', 1)[1].strip().strip('"\'')
+    except Exception:
+        pass
+    return None
+
+
+def _download_latest(dest):
+    """Download the latest release .rpc from the manifest to `dest`.
+    Returns True on success. Used by both 'update online' and 'update reinstall online'."""
+    manifest = _fetch_manifest()
+    if manifest is None:
+        return False
+    url = manifest.get('url')
+    if not url:
+        error("Manifest has no download URL.")
+        return False
+    sz = manifest.get('size')
+    info("Downloading {} ...".format(url), p="Update")
+    if sz:
+        info("Size: {} KB — this may take a minute.".format(int(sz) // 1024), p="Update")
+    gc.collect()
+    import net
+    try:
+        status, written = net.wget(url, dest=dest, verbose=False)
+    except MemoryError:
+        error("Not enough RAM for download. Run 'freeup' or reboot, then retry.", p="Update")
+        return False
+    except Exception as e:
+        error("Download failed: {}".format(e), p="Update")
+        return False
+    if status != 200:
+        error("HTTP {} — aborting.".format(status), p="Update")
+        try:
+            uos.remove(dest)
+        except OSError:
+            pass
+        return False
+    ok("Downloaded {} KB to {}.".format(written // 1024, dest), p="Update")
+    return True
 
 
 def _vt(v):
@@ -727,13 +788,15 @@ def _fetch_manifest():
 def _update_check():
     """Check for a newer OS version. Returns the manifest if newer, else None."""
     cur = regedit.read('Settings.Version') or 'v0.0.0'
-    info("Current version : {}".format(cur), p="Update")
+    cur_b = regedit.read('System.Build') or 'source'
+    info("Current version : {}  (build {})".format(cur, cur_b), p="Update")
     info("Checking {} ...".format(_LATEST_URL), p="Update")
     manifest = _fetch_manifest()
     if manifest is None:
         return None
     latest = manifest.get('version', '?')
-    info("Latest version  : {}".format(latest), p="Update")
+    info("Latest version  : {}  (build {})".format(
+        latest, manifest.get('build', '?')), p="Update")
 
     # Build-aware: a newer version, OR the same version with a different build id
     # (the server re-published this version) both count as an update. This lets
@@ -760,7 +823,7 @@ def _update_check():
 
 
 def _update_online(force=False):
-    """OTA: download the latest .rpc and apply it via _update_from_file."""
+    """OTA: download the latest .rpc and apply it (preserving user data)."""
     manifest = _update_check()
     if manifest is None:
         if not force:
@@ -768,35 +831,10 @@ def _update_online(force=False):
         manifest = _fetch_manifest()
         if manifest is None:
             return
-    url = manifest.get('url')
-    if not url:
-        error("Manifest has no download URL.")
-        return
-    sz_hint = manifest.get('size')
     multi("")
-    info("Downloading {} ...".format(url), p="Update")
-    if sz_hint:
-        info("Size: {} KB — this may take a minute.".format(int(sz_hint) // 1024), p="Update")
-    gc.collect()
-    import net
-    try:
-        status, written = net.wget(url, dest=_OTA_TMP, verbose=False)
-    except MemoryError as e:
-        error("Not enough RAM for download: {}".format(e), p="Update")
-        info("Run 'freeup', or reboot and retry from a fresh shell.")
+    if not _download_latest(_OTA_TMP):
         return
-    except Exception as e:
-        error("Download failed: {}".format(e), p="Update")
-        return
-    if status != 200:
-        error("HTTP {} — aborting.".format(status), p="Update")
-        try:
-            uos.remove(_OTA_TMP)
-        except OSError:
-            pass
-        return
-    ok("Downloaded {} KB to {}.".format(written // 1024, _OTA_TMP), p="Update")
-    _update_from_file(_OTA_TMP)
+    _update_from_file(_OTA_TMP, new_build=manifest.get('build'))
     # Only reached if the update was cancelled or failed (success reboots)
     try:
         uos.remove(_OTA_TMP)
@@ -834,13 +872,23 @@ def update(args=None):
     elif sub == 'online':
         _update_online(force=(rest == '--force'))
 
+    elif sub == 'reinstall':
+        # Full factory wipe + reinstall (the old standalone `reinstall` command).
+        if rest and rest.lower() == 'online':
+            _full_reinstall(online=True)
+        elif rest:
+            _full_reinstall(rpc_src=rest)
+        else:
+            _full_reinstall()
+
     else:
         warn("Unknown subcommand '{}'. Run 'update' for usage.".format(sub))
         _update_help()
 
 
-def _update_from_file(archive_path):
-    """Apply a .rpc archive as an OS update."""
+def _update_from_file(archive_path, new_build=None):
+    """Apply a .rpc archive as an OS update.  new_build (from the OTA manifest)
+    is shown on success when known; otherwise the new build appears at next login."""
     # Resolve relative paths
     if not archive_path.startswith('/'):
         try:
@@ -944,7 +992,12 @@ def _update_from_file(archive_path):
         except OSError:
             pass
 
-    ok("Update complete: {} file(s) installed.".format(n_installed), p="Update")
+    nb = new_build or _installed_build()
+    if nb:
+        ok("Update complete: {} file(s) installed.  Now on build {}.".format(
+            n_installed, nb), p="Update")
+    else:
+        ok("Update complete: {} file(s) installed.".format(n_installed), p="Update")
     multi("")
     info("Rebooting in 3 seconds to apply the update...", p="Update")
 
@@ -959,12 +1012,17 @@ def _update_from_file(archive_path):
 def _update_help():
     info("=== OS Update ===")
     multi("")
-    multi("  update check               Check the update server for a newer version")
+    multi("  update check               Check the update server (shows version + build)")
     multi("  update online              Download + install the latest release (OTA)")
     multi("  update online --force      Reinstall even if already up to date")
     multi("  update from-file <path>    Apply a local .rpc archive")
     multi("")
-    multi("  All update paths preserve user data:")
+    multi("  Full factory reinstall (ERASES everything, then installs fresh):")
+    multi("    update reinstall           Wipe; restore via the Web Installer")
+    multi("    update reinstall online    Download the latest, then wipe + install")
+    multi("    update reinstall <path>    Stage a local .rpc, then wipe + install")
+    multi("")
+    multi("  check / online / from-file preserve user data:")
     multi("    /Users/  /Pulsar/  programs.lp (installed packages)")
     multi("")
     multi("  You can also update from the browser (no WiFi needed on device):")
@@ -972,8 +1030,15 @@ def _update_help():
 
 
 def edit(args=None):
-    from editor import edit as _edit
-    _edit(args.strip() if args else None)
+    # Editor is a removable/upgradeable package now (lives in /Packages/Editor).
+    if '/Packages/Editor' not in sys.path:
+        sys.path.append('/Packages/Editor')
+    try:
+        from editor import edit as _edit
+    except ImportError:
+        error("Editor not installed. Restore it with: pkg install Editor")
+        return
+    _edit(args.strip() if args and args.strip() else None)
 
 
 # ---------------------------------------------------------------------------
@@ -1110,7 +1175,7 @@ def help(args=None):
         multi("  System     : sysinfo  meminfo  uptime  date  watch  ver  reboot  sreboot  rawrepl  recovery  sleep  which  clear  pulse  bench  fetch  edit  env  reg  freeup  settings")
         multi("  Automation : startup  task  autonomy  script   (pipes |  chaining && ||  also supported)")
         multi("  Recovery   : fscheck  diag  logdump  regreset  pkgdisable  pkgenable")
-        multi("  OS Mgmt    : update  factoryreset  reinstall")
+        multi("  OS Mgmt    : update check|online|from-file|reinstall  factoryreset  keycode")
         multi("  Network    : wifi  wget  curl  runurl  ping  nslookup")
         multi("  Packages   : pkg install|remove|list|info|search|update|upgrade|repo")
         multi("  Users      : whoami  users  mkacct  usermod  passwd  rmuser  logout  exit")
@@ -1124,14 +1189,14 @@ def help(args=None):
 
     if a == 'osmgmt':
         info("=== OS Management ===")
-        multi("  update check          Check the update server for a newer version")
-        multi("  update online         Download + install latest release (OTA)")
-        multi("  update from-file <f>  Apply a local .rpc archive as an OS update")
-        multi("  factoryreset          Restore factory defaults + reboot")
-        multi("  reinstall [f.rpc]     Full system wipe + reinstall stub")
+        multi("  update check              Check the update server (version + build)")
+        multi("  update online             Download + install latest release (OTA)")
+        multi("  update from-file <f>      Apply a local .rpc archive as an OS update")
+        multi("  update reinstall [online|<f.rpc>]   Full factory wipe + fresh install")
+        multi("  factoryreset              Restore factory defaults + reboot")
         multi("")
-        multi("  Browser update (no WiFi required on device):")
-        multi("    rpc.novalabs.app/update")
+        multi("  check/online/from-file keep your data; reinstall ERASES everything.")
+        multi("  Browser update (no WiFi required on device):  rpc.novalabs.app/update")
 
     elif a == "filesystem":
         info("=== Filesystem Commands ===")
@@ -1187,8 +1252,9 @@ def help(args=None):
         multi("  freeup               Free cached RAM (clear cmd cache + GC)")
         multi("  update check|online  Check for / install OS updates (OTA)")
         multi("  update from-file <f>  Apply a local .rpc archive as an OS update")
+        multi("  update reinstall ...  Full factory wipe + fresh install")
+        multi("  keycode              Show raw bytes of keys you press")
         multi("  factoryreset         Restore factory defaults and reboot")
-        multi("  reinstall [f.rpc]    Full wipe + reinstall stub (recovery)")
 
     elif a == "network":
         info("=== Network Commands ===")
@@ -1318,9 +1384,9 @@ def help(args=None):
             'freeup':       'freeup              Clear command cache + GC',
             'gc':           'gc / freeup         Clear command cache + GC',
             'settings':     'settings            Open settings TUI panel',
-            'update':       'update check|online|from-file <f>  Check for / apply OS updates',
+            'update':       'update check|online|from-file|reinstall  OS updates / full reinstall',
             'factoryreset': 'factoryreset        Restore factory defaults',
-            'reinstall':    'reinstall [f.rpc]   Full system wipe + stub',
+            'keycode':      'keycode             Show raw byte(s) of each key pressed',
             'wifi':         'wifi status|scan|connect|disconnect|list|add|forget',
             'wget':         'wget <url> [dest]   Download a file',
             'curl':         'curl <url>          Fetch URL and print response',

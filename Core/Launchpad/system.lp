@@ -69,7 +69,6 @@ autonomy:/Core/Launchpad/sys_task.py:autonomy
 script:/Core/Launchpad/sys_script.py:script
 settings:/Core/Launchpad/settings.py:settings
 factoryreset:/Core/Launchpad/sys_sys.py:factoryreset
-reinstall:/Core/Launchpad/sys_sys.py:reinstall
 update:/Core/Launchpad/sys_sys.py:update
 
 # ---------------------------------------------------------------------------

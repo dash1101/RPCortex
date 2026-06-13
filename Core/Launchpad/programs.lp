@@ -8,3 +8,4 @@ wifi:/Core/Launchpad/wifi.py:wifi
 fetch:/Packages/PicoFetch/picofetch.py:fetch
 neofetch:/Packages/PicoFetch/picofetch.py:fetch
 bench:/Packages/RPCMark/rpcmark.py:bench
+ntp:/Packages/NTP/ntp.py:ntp

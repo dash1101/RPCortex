@@ -581,10 +581,11 @@ def Startup_Process(username, password):
     if _note and _note != "0":
         if _note == "update_ok":
             _ver = regedit.read("Settings.Version") or "Unknown"
+            _bld = regedit.read("System.Build") or "source"
             multi("")
             ok("─" * 52, p="Boot")
             ok("OS update applied successfully!", p="Boot")
-            ok("Now running RPCortex {}.".format(_ver), p="Boot")
+            ok("Now running RPCortex {}  (build {}).".format(_ver, _bld), p="Boot")
             ok("─" * 52, p="Boot")
         try:
             regedit.save("Settings.Note", "0")

@@ -5,7 +5,7 @@
 # Version: v0.9.1
 # Author: dash1101
 
-import uos, gc, sys, utime, machine
+import uos, gc, sys, machine
 import regedit   # bare import — same instance the shell uses (shared cache)
 import Core.RPCortex as core
 import Core.pulse as pulse
@@ -13,7 +13,6 @@ import Core.pulse as pulse
 registry_content = """[Networks]
 
 [Hardware]
-beeper_pin: None
 Min_Clock:
 Max_Clock:
 Boot_Clock:
@@ -45,7 +44,6 @@ Autonomous: false
 [Features]
 Program_Execution: true
 Serial: true
-beeper: false
 SD_Support: false
 
 [Globals]
@@ -55,7 +53,6 @@ programs_dir: /Programs/
 """
 
 errors = []
-beeper = False   # module-level default; set by beeper_check()
 boot_startup_mode = "0"   # Settings.Startup as it was BEFORE POST armed it;
                           # read by initialization.py for the startup banner
 
@@ -205,23 +202,6 @@ def wlan_check():
             return False
     except Exception as err:
         core.error("Autoconnect error: {}".format(err), p="POST")
-        return False
-
-def beeper_check():
-    global beeper
-    try:
-        beeper_val = regedit.read("Features.beeper")
-        beeper_pin = regedit.read("Hardware.beeper_pin")
-        if beeper_val == "true":
-            if beeper_pin != "None":
-                beeper_pin = int(beeper_pin)
-                beeper = machine.Pin(beeper_pin, machine.Pin.OUT)
-                return True
-        else:
-            beeper = False
-            return False
-    except Exception as err:
-        core.error("Unable to initialize beeper at pin {}".format(regedit.read('Hardware.beeper_pin')))
         return False
 
 def check_oc():
@@ -415,26 +395,14 @@ def script():
         errors.append("WLAN not available")
     gc.collect()
 
-    _vinfo("Checking beeper...", p="POST")
-    if not beeper_check():
-        errors.append("Beeper not configured or unavailable")
-
     # --- Summary ---
     if errors:
         core.warn("POST completed with warnings:", p="POST")
         for msg in errors:
             core.warn("  - {}".format(msg), p="POST")
         _vinfo("Non-critical hardware may be unavailable this session.", p="POST")
-        if beeper:
-            beeper.on()
-            utime.sleep_ms(175)
-            beeper.off()
     else:
         _vok("All checks passed. System is ready.", p="POST")
-        if beeper:
-            beeper.on()
-            utime.sleep_ms(25)
-            beeper.off()
 
     # Sentinel "1": session is now active. A clean reboot/shutdown writes "0"
     # before calling machine.reset(); if "1" survives to the next POST it means

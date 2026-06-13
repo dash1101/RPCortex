@@ -1,8 +1,8 @@
 # Desc: Terminal text editor (nano-style) for RPCortex - Pulsar OS
-# File: /Core/editor.py
-# Last Updated: 6/9/2026
+# File: /Packages/Editor/editor.py
+# Last Updated: 6/13/2026
 # Lang: MicroPython, English
-# Version: v0.8.2
+# Version: v0.9.1
 # Author: dash1101
 #
 # Invoked via the shell: edit <filename>

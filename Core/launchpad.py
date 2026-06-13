@@ -38,17 +38,31 @@ _BUILTIN_LP = (
 )
 
 
+def _builtin_file_present(path):
+    """True if a built-in command's module is on disk as .py OR .mpy.
+    A `.py`-only check missed compiled builds (where it's e.g. ntp.mpy), so the
+    self-heal never re-registered `ntp` and the command went missing."""
+    base = path[:-3] if path.endswith('.py') else (path[:-4] if path.endswith('.mpy') else path)
+    for ext in ('.py', '.mpy'):
+        try:
+            uos.stat(base + ext)
+            return True
+        except OSError:
+            pass
+    return False
+
+
 def _repair_programs_lp():
-    """Re-add missing built-in entries to programs.lp (and the live dict)."""
+    """Re-add missing built-in entries to programs.lp (and the live dict).
+    A module is present whether it ships as source (.py) OR compiled (.mpy) —
+    the loader resolves .py->.mpy at launch."""
     missing = []
     for cmd, mapping in _BUILTIN_LP:
         if cmd in commands:
             continue
         path = mapping.split(':', 1)[0]
-        try:
-            uos.stat(path)
-        except OSError:
-            continue   # target file gone — don't register a dead command
+        if not _builtin_file_present(path):
+            continue   # neither .py nor .mpy present — don't register a dead command
         missing.append((cmd, mapping))
     if not missing:
         return
@@ -860,8 +874,14 @@ def _run_ntp_on_boot():
     if not _ntp_installed() or not _shell_state['running']:
         return
     silent = (regedit.read('Apps.NTP_Boot_Silent') or 'true') == 'true'
+    auto   = (regedit.read('Apps.NTP_Boot_Auto') or 'false') == 'true'
+    cmd = 'ntp sync'
+    if silent:
+        cmd += ' -s'
+    if auto:
+        cmd += ' --auto'      # also geolocate + set the timezone
     try:
-        _run_line('ntp sync -s' if silent else 'ntp sync')
+        _run_line(cmd)
     except Exception as e:
         error("NTP boot sync failed: {}".format(e))
 
