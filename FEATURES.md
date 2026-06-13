@@ -65,11 +65,13 @@ registries.
   fast-path; relative **or** absolute paths everywhere.
 
 ### System & control (`sys_sys.py`)
-`reboot`, `sreboot`/`softreset`, `sysinfo`, `meminfo`, `uptime`, `date`
-(+ `date set` to set the RTC), `watch [-n s] <cmd>`, `ver`, `clear`/`cls`,
-`pulse` (clock management), `edit`/`nano`/`vi`, `env`, `reg`, `freeup`/`gc`,
-`settings`, `help`, `echo`/`print` (+ `>`/`>>` redirect), `history`, `sleep`,
-`which`, `factoryreset`, `reinstall`, `update`.
+`reboot`, `sreboot`/`softreset`, `sysinfo`, `meminfo`/`free`, `uptime`, `date`
+(+ `date set` to set the RTC), `watch [-n s] <cmd>`, `ver`/`uname`, `clear`/`cls`,
+`pulse` (clock management), `edit`/`nano`/`vi`/`vim`, `env`, `reg`, `freeup`/`gc`,
+`settings`, `help`/`man`, `echo`/`print` (+ `>`/`>>` redirect), `history`, `sleep`,
+`which`, `keycode` (raw key-byte diagnostic), `factoryreset`, `reinstall`, `update`.
+Many commands carry Unix/DOS synonyms (`ll`/`la`, `more`/`less`, `cat`, `dir`,
+`del`, `id`, …) and read-paths are case-insensitive (`ls packages` → `/Packages`).
 
 ### Text processing (`sys_text.py`)
 `grep` (line-numbered, highlighted), `wc`/`count`, `find` (depth-limited

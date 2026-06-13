@@ -84,6 +84,7 @@ def ls(args=None):
     cwd = uos.getcwd()
     if args:
         target = args if args.startswith('/') else cwd.rstrip('/') + '/' + args
+        target = _resolve_ro(target)      # case-insensitive: `ls packages` -> /Packages
     else:
         target = cwd
     try:
@@ -151,6 +152,17 @@ def _ci_resolve(path):
             return None
         cur = (cur + '/' + match) if cur else '/' + match
     return cur or '/'
+
+
+def _resolve_ro(path):
+    """For READ-only ops (ls/read/du/tree/rm/cp-src): return the path unchanged
+    if it exists, else its case-insensitive match, else the original (so the
+    caller's not-found error still makes sense). Never invent a name for writes."""
+    try:
+        uos.stat(path)
+        return path
+    except OSError:
+        return _ci_resolve(path) or path
 
 
 def cd(args):
@@ -323,7 +335,7 @@ def read(args):
     files    = args.split()
     multiple = len(files) > 1
     for fp in files:
-        path = _abspath(fp)
+        path = _resolve_ro(_abspath(fp))   # case-insensitive file match
         try:
             if uos.stat(path)[0] & 0x4000:
                 error("'{}' is a directory.".format(path))
@@ -370,7 +382,7 @@ def head(args):
     try:
         if filepath is not None:
             path = filepath if filepath.startswith('/') else uos.getcwd().rstrip('/') + '/' + filepath
-            with open(path, 'r') as f:
+            with open(_resolve_ro(path), 'r') as f:
                 for i, line in enumerate(f):
                     if i >= n:
                         break
@@ -391,7 +403,7 @@ def tail(args):
     try:
         if filepath is not None:
             path = filepath if filepath.startswith('/') else uos.getcwd().rstrip('/') + '/' + filepath
-            with open(path, 'r') as f:
+            with open(_resolve_ro(path), 'r') as f:
                 lines = f.readlines()
             for line in lines[-n:]:
                 multi(line.rstrip('\n'))
@@ -520,7 +532,7 @@ def diskfree(args=None):
 
 def du(args=None):
     """du [path]  — total size of a file or directory tree (recursive)."""
-    target = _abspath(args.strip()) if args else uos.getcwd()
+    target = _resolve_ro(_abspath(args.strip())) if args else uos.getcwd()
     try:
         uos.stat(target)
     except OSError:
@@ -547,7 +559,7 @@ def du(args=None):
 
 
 def tree(args=None):
-    root = args.strip() if args else uos.getcwd()
+    root = _resolve_ro(_abspath(args.strip())) if args else uos.getcwd()
     multi(root)
 
     def _tree(path, prefix=""):

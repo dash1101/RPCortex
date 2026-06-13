@@ -5,6 +5,8 @@
 # Filesystem  (sys_fs.py)
 # ---------------------------------------------------------------------------
 ls:/Core/Launchpad/sys_fs.py:ls
+ll:/Core/Launchpad/sys_fs.py:ls
+la:/Core/Launchpad/sys_fs.py:ls
 dir:/Core/Launchpad/sys_fs.py:ls
 cd:/Core/Launchpad/sys_fs.py:cd
 chdir:/Core/Launchpad/sys_fs.py:cd
@@ -20,6 +22,8 @@ read:/Core/Launchpad/sys_fs.py:read
 open:/Core/Launchpad/sys_fs.py:read
 view:/Core/Launchpad/sys_fs.py:read
 cat:/Core/Launchpad/sys_fs.py:read
+more:/Core/Launchpad/sys_fs.py:read
+less:/Core/Launchpad/sys_fs.py:read
 head:/Core/Launchpad/sys_fs.py:head
 tail:/Core/Launchpad/sys_fs.py:tail
 exec:/Core/Launchpad/sys_fs.py:execute
@@ -40,7 +44,9 @@ reboot:/Core/Launchpad/sys_sys.py:reboot
 sreboot:/Core/Launchpad/sys_sys.py:sreboot
 softreset:/Core/Launchpad/sys_sys.py:sreboot
 sysinfo:/Core/Launchpad/sys_sys.py:sysinfo
+uname:/Core/Launchpad/sys_sys.py:ver
 meminfo:/Core/Launchpad/sys_sys.py:meminfo
+free:/Core/Launchpad/sys_sys.py:meminfo
 uptime:/Core/Launchpad/sys_sys.py:uptime
 date:/Core/Launchpad/sys_sys.py:date
 watch:/Core/Launchpad/sys_sys.py:watch
@@ -52,6 +58,7 @@ pulse:/Core/Launchpad/sys_sys.py:pulse
 edit:/Core/Launchpad/sys_sys.py:edit
 nano:/Core/Launchpad/sys_sys.py:edit
 vi:/Core/Launchpad/sys_sys.py:edit
+vim:/Core/Launchpad/sys_sys.py:edit
 env:/Core/Launchpad/sys_sys.py:env
 reg:/Core/Launchpad/sys_sys.py:reg
 freeup:/Core/Launchpad/sys_sys.py:freeup
@@ -80,6 +87,7 @@ curl:/Core/Launchpad/sys_net.py:curl
 # User management  (sys_user.py)
 # ---------------------------------------------------------------------------
 whoami:/Core/Launchpad/sys_user.py:whoami
+id:/Core/Launchpad/sys_user.py:whoami
 users:/Core/Launchpad/sys_user.py:users
 mkacct:/Core/Launchpad/sys_user.py:mkacct
 usermod:/Core/Launchpad/sys_user.py:usermod
@@ -106,8 +114,10 @@ dirname:/Core/Launchpad/sys_text.py:dirname
 # Misc  (now in sys_sys.py)
 # ---------------------------------------------------------------------------
 help:/Core/Launchpad/sys_sys.py:help
+man:/Core/Launchpad/sys_sys.py:help
 echo:/Core/Launchpad/sys_sys.py:say
 print:/Core/Launchpad/sys_sys.py:say
 history:/Core/Launchpad/sys_sys.py:history
 sleep:/Core/Launchpad/sys_sys.py:sleep_cmd
 which:/Core/Launchpad/sys_sys.py:which
+keycode:/Core/Launchpad/sys_sys.py:keycode

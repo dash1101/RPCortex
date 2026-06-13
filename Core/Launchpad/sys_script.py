@@ -18,7 +18,16 @@
 #   dec NAME [n]                   subtract n (default 1) from a variable
 #   prompt NAME [text]             read a line of input into NAME
 #   capture NAME <command>         run a command, store its output in NAME
-#   <any shell command>            run it (echo, ls, wifi, pipes, && / || ...)
+#   <any shell command>            run it — INCLUDING installed packages
+#                                  (gpio, calc, ntp, ...), pipes, && / ||
+#
+# Example — read a pin with the gpio package and act on it:
+#   capture PIN gpio read 15
+#   if eq $PIN 1
+#     echo button pressed
+#   end
+# (capture grabs a command's multi() output; data-producing package commands
+#  emit their value via multi() when captured — e.g. gpio read prints just 0/1.)
 #   if COND / else / end           conditional block
 #   while COND / end               loop while COND is true
 #   break / continue               exit / skip a while iteration

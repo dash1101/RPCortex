@@ -228,6 +228,34 @@ def _os_stage():
         return 'dev'
 
 
+def keycode(args=None):
+    """Show the raw byte(s) each keypress sends — diagnoses terminal keymaps
+    (e.g. exactly what Ctrl+Backspace emits on YOUR terminal). Quit with Ctrl+C.
+
+    Most keys are one byte; escape sequences (arrows, Ctrl+Del) arrive as several
+    bytes shown on separate lines starting with 0x1b."""
+    _names = {0x08: 'Ctrl+H / Backspace', 0x7f: 'DEL / Backspace',
+              0x17: 'Ctrl+W', 0x1b: 'ESC (sequence start)', 0x0d: 'Enter (CR)',
+              0x0a: 'Enter (LF)', 0x09: 'Tab', 0x7e: '~ (sequence end)'}
+    info("Press keys to see their byte(s).  Ctrl+C to quit.")
+    while True:
+        try:
+            ch = sys.stdin.read(1)
+        except Exception:
+            break
+        if ch == '':
+            continue
+        b = ord(ch[0])
+        if b == 0x03:                       # Ctrl+C
+            multi("  0x03    Ctrl+C  (quit)")
+            break
+        name = _names.get(b)
+        if name is None:
+            name = repr(ch) if 32 <= b < 127 else 'control byte'
+        multi("  0x{:02x}    {}".format(b, name))
+    ok("keycode: done.")
+
+
 def env(args=None):
     REG_PATH = '/Pulsar/Registry/registry.cfg'
     section_filter = args.strip().lower() if args else None

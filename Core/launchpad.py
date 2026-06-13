@@ -497,33 +497,46 @@ def _path_exists(p):
         return False
 
 
+def _resolve_module_file(file_path):
+    """Pick the actual module file to load, **preferring the compiled `.mpy`**
+    when both a `.py` and `.mpy` exist for the same module.
+
+    This makes a command launch whether programs.lp / package.cfg names the
+    `.py` OR the `.mpy`, and whichever extension is actually on disk — the
+    earlier logic only handled "`.py` gone, `.mpy` present" and would otherwise
+    `exec()` a stale source `.py` (and `exec()` of a big package on a fragmented
+    heap is what failed intermittently). Returns the original path if neither
+    counterpart exists (so the caller raises a sane not-found error).
+    """
+    if file_path.endswith('.py'):
+        base = file_path[:-3]
+    elif file_path.endswith('.mpy'):
+        base = file_path[:-4]
+    else:
+        return file_path
+    if _path_exists(base + '.mpy'):
+        return base + '.mpy'
+    if _path_exists(base + '.py'):
+        return base + '.py'
+    return file_path
+
+
 def _get_scope(file_path):
     """Return (and if necessary build) the scope/module for a command file.
 
-    Routing:
-      - /Core/Launchpad/*.py|.mpy    -> __import__ (heap-efficient; built-ins)
-      - a cfg path that ends .mpy     -> __import__ (compiled package, explicit)
-      - a .py whose file is gone but  -> __import__ the .mpy beside it
-        a .mpy sits beside it
-      - everything else (.py source)  -> exec() into a fresh scope
-    So compiled builds work whether programs.lp/package.cfg point at the .py
-    name (resolved to .mpy) OR directly at the .mpy. Never exec() a .mpy as text.
+    Resolves the cfg path to the real on-disk file first (`.mpy` preferred),
+    then routes:
+      - /Core/Launchpad/*.py|.mpy  -> __import__ (heap-efficient; built-ins)
+      - any resolved .mpy          -> __import__ (compiled; never exec'd as text)
+      - a package source .py       -> exec() into a fresh scope
+    Cached by the ORIGINAL cfg path so the command-table key stays stable.
     """
     if file_path not in _cmd_cache:
-        use_import = False
-        if file_path.startswith(_LP_DIR) and \
-                (file_path.endswith('.py') or file_path.endswith('.mpy')):
-            use_import = True                          # built-in Launchpad module
-        elif file_path.endswith('.mpy'):
-            use_import = True                          # cfg points straight at .mpy
-        elif file_path.endswith('.py') \
-                and not _path_exists(file_path) \
-                and _path_exists(file_path[:-3] + '.mpy'):
-            use_import = True                          # .py gone, .mpy present
-        if use_import:
-            scope = _lp_import(file_path)
+        real = _resolve_module_file(file_path)
+        if real.startswith(_LP_DIR) or real.endswith('.mpy'):
+            scope = _lp_import(real)                    # built-in OR compiled
         else:
-            scope = _exec_scope(file_path)
+            scope = _exec_scope(real)                  # package source .py
         if scope is None:
             return None
         _cmd_cache[file_path] = scope
