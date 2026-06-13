@@ -229,7 +229,7 @@ def _fmt(color, symbol, msg, p, nL):
     out += " {}{}".format(WHITE, msg)
     if nL:
         out += '\n'
-    print(out, end='')
+    sys.stdout.write(out)   # faster than print() on MicroPython (no arg/sep/end work)
 
 
 def error(msg, nL=True, p=None):
@@ -267,13 +267,40 @@ def ok(msg, nL=True, p=None):
 
 
 def multi(msg, nL=True, p=None):
+    # The high-volume display/data channel (cat/ls/grep/TUI output). Uses
+    # sys.stdout.write (faster than print) and is NOT logged per line — logging
+    # every display line to flash was the main drag on text-heavy output. The
+    # diagnostic log still captures events (info/ok/warn/error/fatal).
     if post_check:
         out = msg + ('\n' if nL else '')
         if _capture is not None:
             _capture.append(out)   # piped onward instead of printed
         else:
-            print(out, end='')
-        _log_write('PRINT', str(msg))
+            sys.stdout.write(out)
+
+
+# ---------------------------------------------------------------------------
+# In-place spinner — for any operation that makes the user wait (WiFi connect,
+# downloads, scans). Renders "<label> \ (3s)" on one line, updating in place.
+# ---------------------------------------------------------------------------
+_SPIN_FRAMES = '-\\|/'
+
+def spin(label, i, start_ms):
+    """Render the spinner once: '<label> <frame> (<elapsed>s)'.
+    Call repeatedly with an incrementing i and the start tick from utime.ticks_ms()."""
+    try:
+        import utime
+        secs = utime.ticks_diff(utime.ticks_ms(), start_ms) // 1000
+    except Exception:
+        secs = 0
+    ch = _SPIN_FRAMES[i % len(_SPIN_FRAMES)]
+    sys.stdout.write('\r\x1b[K{} {} ({}s)'.format(label, ch, secs))
+
+def spin_done(msg=None):
+    """Clear the spinner line; print a final message on its own line if given."""
+    sys.stdout.write('\r\x1b[K')
+    if msg is not None:
+        sys.stdout.write(msg + '\n')
 
 
 def inpt(msg):

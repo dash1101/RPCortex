@@ -37,6 +37,7 @@ Active_User:
 Setup: false
 Network_Autoconnect: false
 OC_On_Boot: false
+Dynamic_Clock: false
 Verbose_Boot: false
 Idle_Logout: 0
 Autonomous: false

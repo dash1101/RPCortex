@@ -50,7 +50,7 @@ _nlines = 0    # number of content lines drawn (prompt sits on line _nlines)
 _sel    = '1'  # currently highlighted row key
 _TOGGLE = {'1': 'Settings.Verbose_Boot', '2': 'Features.Program_Execution',
            '3': 'Settings.OC_On_Boot',   '4': 'Features.SD_Support',
-           '5': 'Settings.Network_Autoconnect',
+           '5': 'Settings.Dynamic_Clock', '6': 'Settings.Network_Autoconnect',
            'n': 'Apps.NTP_On_Boot',       's': 'Apps.NTP_Boot_Silent',
            'a': 'Apps.NTP_Boot_Auto'}
 _EDIT   = {'o': ('System.Owner', 'Owner', False),
@@ -60,17 +60,24 @@ _EDIT   = {'o': ('System.Owner', 'Owner', False),
 
 
 def _ntp_installed():
-    """True if the removable NTP package is present (gates the TIME section)."""
+    """True if the removable NTP package is present (gates the TIME section).
+    Case-insensitive (/Packages/NTP built-in vs /Packages/ntp repo install)."""
     try:
-        uos.stat('/Packages/NTP/package.cfg')
-        return True
+        for d in uos.listdir('/Packages'):
+            if d.lower() == 'ntp':
+                try:
+                    uos.stat('/Packages/' + d + '/package.cfg')
+                    return True
+                except OSError:
+                    pass
     except OSError:
-        return False
+        pass
+    return False
 
 
 def _nav():
     """Ordered list of selectable row keys; TIME keys only when NTP is present."""
-    keys = ['1', '2', '3', '4', '5']
+    keys = ['1', '2', '3', '4', '5', '6']
     if _ntp_installed():
         keys += ['n', 's', 'a']
     keys += ['o', 't', 'd', 'i']
@@ -184,7 +191,10 @@ def _row_for(key):
         sd = _rget('Features.SD_Support', 'false')
         return _toggle_row('4', 'SD Card Support', sd, 'not yet implemented' if sd == 'true' else '')
     if key == '5':
-        return _toggle_row('5', 'WiFi Autoconnect', _rget('Settings.Network_Autoconnect', 'false'))
+        dc = _rget('Settings.Dynamic_Clock', 'false')
+        return _toggle_row('5', 'Dynamic CPU Clock', dc, 'idle low / busy high' if dc == 'true' else '')
+    if key == '6':
+        return _toggle_row('6', 'WiFi Autoconnect', _rget('Settings.Network_Autoconnect', 'false'))
     if key == 'n':
         return _toggle_row('n', 'NTP Sync on Boot', _rget('Apps.NTP_On_Boot', 'false'))
     if key == 's':
@@ -223,9 +233,10 @@ def _build_lines():
     lines.append(_sec('HARDWARE'))
     idx['3'] = len(lines); lines.append(_row_for('3'))
     idx['4'] = len(lines); lines.append(_row_for('4'))
+    idx['5'] = len(lines); lines.append(_row_for('5'))
     lines.append('')
     lines.append(_sec('NETWORK'))
-    idx['5'] = len(lines); lines.append(_row_for('5'))
+    idx['6'] = len(lines); lines.append(_row_for('6'))
     if _ntp_installed():
         lines.append('')
         lines.append(_sec('TIME'))
@@ -316,7 +327,7 @@ def settings(args=None):
         except Exception:
             break
 
-        # --- Arrow keys: move the highlighted row ---
+        # --- Arrow keys: move the highlighted row;  bare ESC quits ---
         if ch == '\x1b':
             try:
                 if sys.stdin.read(1) == '[':
@@ -329,6 +340,10 @@ def settings(args=None):
                         _sel = nav[i]
                         _update(old)         # un-highlight old row
                         _update(_sel)        # highlight new row
+                else:
+                    sys.stdout.write('\x1b[2J\x1b[H')   # ESC (not an arrow) = quit
+                    ok("Settings saved.")
+                    return
             except Exception:
                 pass
             continue

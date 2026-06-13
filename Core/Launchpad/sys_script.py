@@ -30,6 +30,8 @@
 #  emit their value via multi() when captured — e.g. gpio read prints just 0/1.)
 #   if COND / else / end           conditional block
 #   while COND / end               loop while COND is true
+#   try / catch / end              run a block; if a command fails or raises,
+#                                  run the catch block ($ERROR holds the message)
 #   break / continue               exit / skip a while iteration
 #   stop                           end the script early
 #
@@ -158,7 +160,18 @@ def _parse_block(lines, i, stop):
                 raise ValueError("'while' without matching 'end'")
             block.append(('while', rest, body))
             i = j + 1
-        elif head in ('else', 'end'):
+        elif head == 'try':
+            try_blk, j = _parse_block(lines, i + 1, ('catch', 'end'))
+            if j >= n:
+                raise ValueError("'try' without matching 'end'")
+            catch_blk = []
+            if lines[j].strip().split(None, 1)[0] == 'catch':
+                catch_blk, j = _parse_block(lines, j + 1, ('end',))
+                if j >= n:
+                    raise ValueError("'catch' without matching 'end'")
+            block.append(('try', try_blk, catch_blk))
+            i = j + 1
+        elif head in ('else', 'catch', 'end'):
             raise ValueError("unexpected '{}'".format(head))
         elif head in _BARE:
             block.append((head,))
@@ -179,6 +192,7 @@ def _parse_block(lines, i, stop):
 class _Interp:
     def __init__(self, lines):
         self.vars = {}
+        self._err = False     # set when a command in the current try-block fails
         self.block, _ = _parse_block(lines, 0, ())
 
     def _expand(self, s):
@@ -302,7 +316,9 @@ class _Interp:
                 raise _ScriptStop
             kind = st[0]
             if kind == 'cmd':
-                _run(self._expand(st[1]))
+                if not _run(self._expand(st[1])):
+                    self._err = True          # remembered by an enclosing try
+                    self.vars['ERROR'] = 'command failed'
             elif kind == 'set':
                 self._do_set(st[1])
             elif kind == 'inc':
@@ -321,6 +337,22 @@ class _Interp:
                 raise _ScriptStop
             elif kind == 'if':
                 self._exec(st[2] if self._cond(st[1]) else st[3])
+            elif kind == 'try':
+                # Run st[1]; if any command in it fails OR it raises, run the
+                # catch block st[2]. $ERROR holds the message either way.
+                prev = self._err
+                self._err = False
+                try:
+                    self._exec(st[1])
+                except (_Break, _Continue, _ScriptStop):
+                    raise                       # control flow must propagate
+                except Exception as e:
+                    self._err = True
+                    self.vars['ERROR'] = str(e)
+                if self._err:
+                    self._err = False
+                    self._exec(st[2])           # catch block (may be empty)
+                self._err = prev                # don't leak failure to the parent
             elif kind == 'while':
                 guard = 0
                 while self._cond(st[1]):

@@ -21,7 +21,7 @@ import sys
 if '/Core' not in sys.path:
     sys.path.append('/Core')
 
-from RPCortex import ok, warn, error, info, multi
+from RPCortex import ok, warn, error, info, multi, spin, spin_done
 
 # Saved networks file — one "ssid\tpassword" per line (unlimited entries).
 # Replaces the old 2-slot registry approach (Networks.WiFi_SSID_1/2).
@@ -178,25 +178,28 @@ def connect(ssid, password, timeout=20, silent=False):
         utime.sleep_ms(300)
 
     wlan.active(True)
-    if not silent:
-        info("Connecting to '{}'...".format(ssid))
     wlan.connect(ssid, password)
 
-    deadline = utime.ticks_add(utime.ticks_ms(), timeout * 1000)
-    dots = 0
+    start = utime.ticks_ms()
+    deadline = utime.ticks_add(start, timeout * 1000)
+    i = 0
+    label = "Connecting to '{}'...".format(ssid)
     while not wlan.isconnected():
         if utime.ticks_diff(deadline, utime.ticks_ms()) <= 0:
             wlan.disconnect()
+            if not silent:
+                spin_done()
             error("Connection to '{}' timed out after {}s.".format(ssid, timeout))
             return False
-        utime.sleep_ms(400)
-        dots += 1
-        if not silent and dots % 5 == 0:
-            info("  still connecting...")
+        if not silent:
+            spin(label, i, start)     # in-place "Connecting to 'X'... \ (3s)"
+        utime.sleep_ms(250)
+        i += 1
 
     cfg = wlan.ifconfig()
     if not silent:
-        ok("Connected!  IP: {}  Gateway: {}".format(cfg[0], cfg[2]))
+        spin_done()
+        ok("Connected to '{}'!  IP: {}  Gateway: {}".format(ssid, cfg[0], cfg[2]))
 
     # Auto-save on successful connection
     try:
@@ -219,8 +222,8 @@ def connect_saved(timeout=20, silent=False):
     if not nets:
         return False
     for i, (ssid, pw) in enumerate(nets):
-        if not silent:
-            info("Trying saved network [{}]: {}".format(i + 1, ssid))
+        # No chatty "Trying saved network" line — connect() shows a clean
+        # in-place spinner ("Connecting to 'X'... \ (3s)") with the SSID.
         if connect(ssid, pw, timeout=timeout, silent=silent):
             return True
     return False

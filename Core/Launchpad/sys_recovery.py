@@ -50,27 +50,45 @@ _REGISTRY = '/Pulsar/Registry/registry.cfg'
 _LOG      = '/Pulsar/Logs/latest.log'
 
 
+def _stat_any(path):
+    """stat the path, or its .mpy counterpart — a compiled build ships e.g.
+    launchpad.mpy instead of launchpad.py. Returns (stat, real_path) or None."""
+    try:
+        return uos.stat(path), path
+    except OSError:
+        pass
+    if path.endswith('.py'):
+        alt = path[:-3] + '.mpy'
+        try:
+            return uos.stat(alt), alt
+        except OSError:
+            pass
+    return None
+
+
 def fscheck(args=None):
-    """Verify core OS files exist and are non-empty."""
+    """Verify core OS files exist and are non-empty (source OR compiled)."""
     info("Filesystem check — {} core files".format(len(_MANIFEST)))
     missing = 0
     empty = 0
     for path in _MANIFEST:
-        try:
-            st = uos.stat(path)
-            if st[6] == 0:
-                multi("  \033[93mEMPTY  \033[0m {}".format(path))
-                empty += 1
-            else:
-                multi("  \033[92mOK     \033[0m {}".format(path))
-        except OSError:
+        res = _stat_any(path)
+        if res is None:
             multi("  \033[91mMISSING\033[0m {}".format(path))
             missing += 1
+            continue
+        st, real = res
+        if st[6] == 0:
+            multi("  \033[93mEMPTY  \033[0m {}".format(real))
+            empty += 1
+        else:
+            note = '  (.mpy)' if real.endswith('.mpy') else ''
+            multi("  \033[92mOK     \033[0m {}{}".format(path, note))
     multi("")
     if missing == 0 and empty == 0:
         ok("All core files present.")
     else:
-        error("{} missing, {} empty. Re-imaging is recommended (reinstall).".format(missing, empty))
+        error("{} missing, {} empty. Re-imaging is recommended (update reinstall).".format(missing, empty))
 
 
 def diag(args=None):

@@ -5,7 +5,6 @@
 
 pkg:/Core/Launchpad/pkg.py:pkg
 wifi:/Core/Launchpad/wifi.py:wifi
-fetch:/Packages/PicoFetch/picofetch.py:fetch
-neofetch:/Packages/PicoFetch/picofetch.py:fetch
-bench:/Packages/RPCMark/rpcmark.py:bench
-ntp:/Packages/NTP/ntp.py:ntp
+# fetch/neofetch/bench/ntp are added by load_commands()'s self-heal ONLY when
+# their package files are actually present (.py OR .mpy) — so this file never
+# hardcodes a command for a package that may not be shipped/installed.

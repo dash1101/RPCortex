@@ -818,6 +818,7 @@ def _run_line(raw):
     Returns the exit status (True = ok) of the last command actually run.  Does
     NOT catch MemoryError (propagates to the caller's retry wrapper).
     """
+    _apply_dyn_clock(True)   # full speed while a command runs (also for scripts/tasks)
     exit_ok = True
     for connector, segment in _parse_line(raw):
         if not _shell_state['running']:
@@ -857,12 +858,19 @@ def _run_startup_tasks():
 
 
 def _ntp_installed():
-    """True if the (removable) NTP package is present on the device."""
+    """True if the (removable) NTP package is present — case-insensitive, since a
+    repo install may land in /Packages/ntp while the OS built-in is /Packages/NTP."""
     try:
-        uos.stat('/Packages/NTP/package.cfg')
-        return True
+        for d in uos.listdir('/Packages'):
+            if d.lower() == 'ntp':
+                try:
+                    uos.stat('/Packages/' + d + '/package.cfg')
+                    return True
+                except OSError:
+                    pass
     except OSError:
-        return False
+        pass
+    return False
 
 
 def _run_ntp_on_boot():
@@ -961,6 +969,52 @@ def _word_right(buf, cursor):
     return i
 
 
+# ---------------------------------------------------------------------------
+# Dynamic CPU clock — when Settings.Dynamic_Clock is on, the shell drops to a
+# low idle clock while waiting at the prompt and rises to the working clock on
+# activity (a keypress, or a command running). Saves power/heat when idle and
+# gives full speed only when it's needed. Opt-in; off by default.
+# (USB-CDC serial is unaffected by machine.freq(); on a HARDWARE-UART REPL a
+#  very low idle clock can drift the baud — keep Min_Clock sensible there.)
+# ---------------------------------------------------------------------------
+_DYN_STATE = ['active']   # 'active' | 'idle'
+
+def _set_clock_from(*keys):
+    """Set machine.freq() from the first non-empty registry clock key ('220.0MHz')."""
+    src = ''
+    for k in keys:
+        src = regedit.read(k) or ''
+        if src.strip():
+            break
+    try:
+        mhz = float(src.replace('MHz', '').strip())
+        if mhz > 0:
+            import machine
+            machine.freq(int(mhz * 1_000_000))
+            return True
+    except Exception:
+        pass
+    return False
+
+def _apply_dyn_clock(active):
+    """Idle/active CPU clock switch (no-op unless Settings.Dynamic_Clock is on).
+    Caches state so repeated calls on the hot input path are nearly free."""
+    if (regedit.read('Settings.Dynamic_Clock') or 'false') != 'true':
+        if _DYN_STATE[0] == 'idle':            # feature turned off mid-idle: restore
+            if _set_clock_from('Hardware.Boot_Clock', 'Hardware.Max_Clock'):
+                _DYN_STATE[0] = 'active'
+        return
+    want = 'active' if active else 'idle'
+    if _DYN_STATE[0] == want:
+        return
+    if active:
+        if _set_clock_from('Hardware.Boot_Clock', 'Hardware.Max_Clock'):
+            _DYN_STATE[0] = 'active'
+    else:
+        if _set_clock_from('Hardware.Min_Clock'):
+            _DYN_STATE[0] = 'idle'
+
+
 def _shell_input(prompt):
     """
     Interactive line reader with full cursor navigation.
@@ -1020,6 +1074,8 @@ def _shell_input(prompt):
         # in the `settings` app takes effect immediately — no re-login needed.
         # The wait polls in short 0.5s slices (the proven SysMon pattern) rather
         # than one long select(), which is more reliable for stdin across ports.
+        if not buf:
+            _apply_dyn_clock(False)   # idle at the prompt — drop the CPU clock
         if not buf and _shell_state.get('idle_enabled'):
             try:
                 _idle_min = int(regedit.read('Settings.Idle_Logout') or 0)
@@ -1049,6 +1105,7 @@ def _shell_input(prompt):
             ch = sys.stdin.read(1)
         except Exception:
             return ''
+        _apply_dyn_clock(True)    # a key arrived — back to the working clock
 
         # CRLF handling: if the last line ended with \r, skip a paired \n
         if _skip_lf:

@@ -10,10 +10,11 @@
 # Thonny's built-in REPL does NOT work — use a real terminal emulator.
 #
 # Controls:
-#   Arrow keys      Move cursor
-#   Ctrl+S          Save
-#   Ctrl+Q          Quit (prompts if unsaved)
+#   Arrow keys      Move cursor          Ctrl+Left/Right  Move by word
+#   Ctrl+S          Save                 Ctrl+W / Ctrl+Bksp  Delete word back
+#   Ctrl+Q          Quit (prompts if unsaved)   Ctrl+Del  Delete word forward
 #   Ctrl+X          Save and quit
+#   Esc             Quit WITHOUT saving — dumps unsaved work to a .tmp file
 #   Ctrl+K          Cut current line
 #   Ctrl+U          Paste cut line
 #   Ctrl+F          Find text
@@ -110,6 +111,11 @@ KEY_CTRL_G = "CTRL_G"
 KEY_CTRL_F = "CTRL_F"
 KEY_CTRL_A = "CTRL_A"
 KEY_CTRL_E = "CTRL_E"
+KEY_WORD_LEFT  = "WORD_LEFT"     # Ctrl+Left
+KEY_WORD_RIGHT = "WORD_RIGHT"    # Ctrl+Right
+KEY_WORD_DEL   = "WORD_DEL"      # Ctrl+Del
+KEY_WORD_BKSP  = "WORD_BKSP"     # Ctrl+Backspace / Ctrl+W
+KEY_ESC        = "ESC"           # bare Escape
 
 def read_key():
     """Read one keypress and return a key token or a character string."""
@@ -126,7 +132,10 @@ def read_key():
     if ch == "\x18": return KEY_CTRL_X   # Ctrl+X
     if ch == "\x07": return KEY_CTRL_G   # Ctrl+G
     if ch in ("\r", "\n"): return KEY_ENTER
-    if ch in ("\x7f", "\x08"): return KEY_BKSP
+    # This terminal sends \x08 for plain Backspace and \x7f for Ctrl+Backspace
+    # (matches the shell). \x17 is Ctrl+W — the portable word-delete.
+    if ch == "\x08": return KEY_BKSP
+    if ch in ("\x7f", "\x17"): return KEY_WORD_BKSP
 
     # Escape sequences
     if ch == "\x1b":
@@ -149,13 +158,16 @@ def read_key():
             if seq == "6~": return KEY_PGDN
             if seq == "1~": return KEY_HOME
             if seq == "4~": return KEY_END
+            if seq == "1;5D": return KEY_WORD_LEFT     # Ctrl+Left
+            if seq == "1;5C": return KEY_WORD_RIGHT    # Ctrl+Right
+            if seq == "3;5~": return KEY_WORD_DEL      # Ctrl+Del
             return None  # unknown escape seq
         elif next1 == "O":
             c = sys.stdin.read(1)
             if c == "H": return KEY_HOME
             if c == "F": return KEY_END
             return None
-        return None
+        return KEY_ESC   # bare Escape (next char wasn't [ or O)
 
     return ch  # printable character
 
@@ -312,6 +324,57 @@ class Editor:
 
     def move_end(self):
         self.cx = len(self.lines[self.cy])
+
+    # --- word-wise navigation / deletion (Ctrl+arrows, Ctrl+Del/Backspace) ---
+    def _word_left_idx(self):
+        line = self.lines[self.cy]
+        i = self.cx
+        while i > 0 and line[i - 1] == ' ':
+            i -= 1
+        while i > 0 and line[i - 1] != ' ':
+            i -= 1
+        return i
+
+    def _word_right_idx(self):
+        line = self.lines[self.cy]
+        n = len(line)
+        i = self.cx
+        while i < n and line[i] == ' ':
+            i += 1
+        while i < n and line[i] != ' ':
+            i += 1
+        return i
+
+    def word_left(self):
+        if self.cx > 0:
+            self.cx = self._word_left_idx()
+        else:
+            self.move_left()
+
+    def word_right(self):
+        if self.cx < len(self.lines[self.cy]):
+            self.cx = self._word_right_idx()
+        else:
+            self.move_right()
+
+    def word_backspace(self):
+        if self.cx > 0:
+            start = self._word_left_idx()
+            line = self.lines[self.cy]
+            self.lines[self.cy] = line[:start] + line[self.cx:]
+            self.cx = start
+            self.dirty = True
+        else:
+            self.backspace()
+
+    def word_delete(self):
+        line = self.lines[self.cy]
+        if self.cx < len(line):
+            end = self._word_right_idx()
+            self.lines[self.cy] = line[:self.cx] + line[end:]
+            self.dirty = True
+        else:
+            self.delete_char()
 
     def page_up(self):
         self.cy = max(0, self.cy - self.edit_rows)
@@ -479,10 +542,24 @@ class Editor:
     # Main loop
     # -----------------------------------------------------------------------
 
+    def _esc_recover(self):
+        """ESC quit: if the buffer is modified, dump it to a .tmp recovery file
+        (next to the real file, or /Pulsar/editor_recovery.tmp for a scratch
+        buffer) so the work isn't lost — without overwriting the real file."""
+        if not self.dirty:
+            return
+        tmp = (self.filename + '.tmp') if self.filename else '/Pulsar/editor_recovery.tmp'
+        try:
+            with open(tmp, 'w') as f:
+                f.write('\n'.join(self.lines))
+            self._exit_note = "Unsaved changes saved to {} (ESC, not saved to the file).".format(tmp)
+        except Exception as e:
+            self._exit_note = "ESC: could not write recovery file ({}).".format(e)
+
     def run(self):
         clear_screen()
         self.message = (self.message or
-                        "^S Save  ^Q Quit  ^X Save+Quit  ^K Cut  ^U Paste  ^F Find  ^G GoTo")
+                        "^S Save  ^Q Quit  ^X Save+Quit  Esc Discard  ^F Find  ^G GoTo")
         while True:
             self.render()
             key = read_key()
@@ -493,13 +570,17 @@ class Editor:
             elif key == KEY_DOWN:   self.move_down()
             elif key == KEY_LEFT:   self.move_left()
             elif key == KEY_RIGHT:  self.move_right()
+            elif key == KEY_WORD_LEFT:  self.word_left()
+            elif key == KEY_WORD_RIGHT: self.word_right()
             elif key == KEY_HOME or key == KEY_CTRL_A: self.move_home()
             elif key == KEY_END  or key == KEY_CTRL_E: self.move_end()
             elif key == KEY_PGUP:   self.page_up()
             elif key == KEY_PGDN:   self.page_down()
             elif key == KEY_ENTER:  self.insert_newline()
             elif key == KEY_BKSP:   self.backspace()
+            elif key == KEY_WORD_BKSP: self.word_backspace()
             elif key == KEY_DEL:    self.delete_char()
+            elif key == KEY_WORD_DEL: self.word_delete()
             elif key == KEY_CTRL_K: self.cut_line()
             elif key == KEY_CTRL_U: self.paste_line()
             elif key == KEY_CTRL_F: self.find()
@@ -512,6 +593,12 @@ class Editor:
             elif key == KEY_CTRL_Q:
                 if self.prompt_save_quit():
                     break
+            elif key == KEY_ESC:
+                # ESC = leave WITHOUT saving the real file, but dump the buffer
+                # to a .tmp recovery file so nothing is lost (e.g. exit the IDE
+                # editor back to the explorer, then save the temp when ready).
+                self._esc_recover()
+                break
             elif isinstance(key, str) and len(key) == 1 and ord(key) >= 32:
                 self.insert_char(key)
             else:
@@ -523,7 +610,10 @@ class Editor:
         show_cursor()
         normal_video()
         print("Editor closed.")
-        if self.filename and not self.dirty:
+        note = getattr(self, '_exit_note', None)
+        if note:
+            print(note)
+        elif self.filename and not self.dirty:
             print("File saved: {}".format(self.filename))
 
 
