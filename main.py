@@ -7,6 +7,14 @@
 
 # RPC β9
 
+# Put /Core on the import path up front so every module — boot-time (post,
+# initialization) AND the shell — imports the SAME `regedit` (one cache).
+# Importing it two ways (`Core.regedit` vs bare `regedit`) created two module
+# instances with separate caches; a stale one could erase persisted keys.
+import sys as _sys
+if '/Core' not in _sys.path:
+    _sys.path.append('/Core')
+
 VERSION = "β9"
 CODENAME = "Pulsar"
 

@@ -6,7 +6,7 @@
 # Author: dash1101
 
 from Core.RPCortex import multi, fatal, error, info, warn, ok, inpt, masked_inpt, OS_VERSION, OS_CODENAME, OS_BUILD
-import Core.regedit as regedit
+import regedit   # bare import — same instance the shell uses (shared cache)
 from Core.launchpad import launchpad_init as _boot
 from Core.launchpad import recovery_init  as _recovery
 from Core.usrmgmt  import decode, add_user, is_nopass
@@ -283,6 +283,16 @@ def start(arg):
             warn("Unknown start argument: '{}'".format(arg))
             return
 
+        # Verbose-boot gate: when off, the chatty boot banner is suppressed
+        # (only warnings/errors and the crash/update banners still print).
+        _verbose = (regedit.read("Settings.Verbose_Boot") or "false") == "true"
+        def _vi(msg, p=None):
+            if _verbose:
+                info(msg, p=p) if p else info(msg)
+        def _vok(msg, p=None):
+            if _verbose:
+                ok(msg, p=p) if p else ok(msg)
+
         # Sync the registry version + codename with the running code.  After an
         # OS update the new code boots against the old registry values — without
         # this the post-update banner, `ver`, and `fetch` would keep reporting
@@ -304,22 +314,22 @@ def start(arg):
                 pass
 
         version = regedit.read("Settings.Version") or "Unknown"
-        info("RPCortex {} — starting up...".format(version))
+        _vi("RPCortex {} — starting up...".format(version))
 
         # File integrity check
-        info("Checking system file integrity...")
+        _vi("Checking system file integrity...")
         if not get_exist():
             fatal("Critical system files are missing!")
             recovery_mode(errStr="Missing critical system files.")
             return
-        ok("System file check passed.")
+        _vok("System file check passed.")
 
-        # Print current registry snapshot
-        info("Reading system configuration...")
-        ok("  Version       : {}".format(regedit.read("Settings.Version")     or "?"))
-        ok("  Active User   : {}".format(regedit.read("Settings.Active_User") or "none"))
-        ok("  Net Autoconn  : {}".format(regedit.read("Settings.Network_Autoconnect") or "?"))
-        ok("  Clockable     : {}".format(regedit.read("Hardware.Clockable")   or "?"))
+        # Print current registry snapshot (verbose only)
+        _vi("Reading system configuration...")
+        _vok("  Version       : {}".format(regedit.read("Settings.Version")     or "?"))
+        _vok("  Active User   : {}".format(regedit.read("Settings.Active_User") or "none"))
+        _vok("  Net Autoconn  : {}".format(regedit.read("Settings.Network_Autoconnect") or "?"))
+        _vok("  Clockable     : {}".format(regedit.read("Hardware.Clockable")   or "?"))
 
         # Startup mode banner — use the pre-POST value captured by post.py.
         # POST arms Settings.Startup to "1" at its end (session-active
@@ -342,7 +352,22 @@ def start(arg):
         if regedit.read("Settings.Setup") != 'true':
             setup_seq()
 
-        ok("System ready.  Proceeding to login.", p="Boot")
+        # Autonomy mode: skip the login prompt entirely and run the shell (which
+        # runs the startup tasks) as the configured user. Settings.Autonomous
+        # holds that username; 'false'/empty disables it. Enabled by an admin
+        # who accepts that the device runs unattended with no login.
+        _auto = (regedit.read("Settings.Autonomous") or '').strip()
+        if _auto and _auto.lower() not in ('false', '0', 'off', 'no'):
+            if decode(_auto, silent=True):
+                regedit.save("Settings.Active_User", _auto)
+                regedit.save("Settings.Startup", "0")
+                ok("Autonomous mode: running as '{}' (no login).".format(_auto), p="Boot")
+                _boot(_auto, '', auth=False)
+                info("Autonomous shell exited — falling back to login.")
+            else:
+                warn("Autonomous user '{}' not found — using normal login.".format(_auto))
+
+        _vok("System ready.  Proceeding to login.", p="Boot")
         login_seq()
 
     except Exception as e:

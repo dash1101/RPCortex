@@ -42,6 +42,17 @@ _PROMPT = 'Choice: '   # input prompt (no trailing newline)
 _idx    = {}   # setting-key -> line index within the drawn panel
 _nlines = 0    # number of content lines drawn (prompt sits on line _nlines)
 
+# Arrow-key navigation (FileExp-style): a selectable cursor over all rows.
+_NAV    = ['1', '2', '3', '4', '5', '6', 'o', 't', 'd', 'i']
+_sel    = '1'  # currently highlighted row key
+_TOGGLE = {'1': 'Settings.Verbose_Boot', '2': 'Features.Program_Execution',
+           '3': 'Settings.OC_On_Boot',   '4': 'Features.beeper',
+           '5': 'Features.SD_Support',    '6': 'Settings.Network_Autoconnect'}
+_EDIT   = {'o': ('System.Owner', 'Owner', False),
+           't': ('System.TZ_Offset', 'Timezone Offset', True),
+           'd': ('System.Device_ID', 'Device ID', False),
+           'i': ('Settings.Idle_Logout', 'Idle Logout', True)}
+
 # ---------------------------------------------------------------------------
 # Registry helpers
 # ---------------------------------------------------------------------------
@@ -104,10 +115,14 @@ def _title_line():
             ' ' * pad + _DG + right + _R)
 
 
+def _lead(key):
+    return (_CY + _BD + '> ' + _R) if key == _sel else '  '
+
+
 def _toggle_row(num, label, val, note=''):
     status = (_GR + _BD + 'ON ' + _R) if val == 'true' else (_DG + 'OFF' + _R)
     ntxt   = ('   ' + _DG + note + _R) if note else ''
-    return ('  ' + _WH + '[' + num + ']' + _R + ' ' +
+    return (_lead(num) + _WH + '[' + num + ']' + _R + ' ' +
             '{:<22}'.format(label) + ' : ' + status + ntxt)
 
 
@@ -115,13 +130,14 @@ def _value_row(key, label, val, note=''):
     shown = val if val else '(unset)'
     vcol  = (_YL + shown + _R) if val else (_DG + shown + _R)
     ntxt  = ('   ' + _DG + note + _R) if note else ''
-    return ('  ' + _WH + '[' + key + ']' + _R + ' ' +
+    return (_lead(key) + _WH + '[' + key + ']' + _R + ' ' +
             '{:<22}'.format(label) + ' : ' + vcol + ntxt)
 
 
 def _footer():
-    return ('  ' + _DG + '[1-6]' + _R + ' toggle   ' +
-            _DG + '[o/t/d/i]' + _R + ' edit   ' +
+    return ('  ' + _DG + 'Up/Down' + _R + ' move   ' +
+            _DG + 'Enter' + _R + ' change   ' +
+            _DG + '[1-6/o/t/d/i]' + _R + ' jump   ' +
             _DG + '[r]' + _R + ' refresh   ' +
             _DG + '[q]' + _R + ' quit')
 
@@ -244,8 +260,20 @@ def _redit(key, label, numeric=False):
 # Entry point
 # ---------------------------------------------------------------------------
 
+def _activate(key):
+    """Toggle (booleans) or edit (text/numeric) the given row."""
+    if key in _TOGGLE:
+        _rtoggle(_TOGGLE[key])
+        _update(key)
+    elif key in _EDIT:
+        reg, label, numeric = _EDIT[key]
+        _redit(reg, label, numeric=numeric)
+        _full_draw()
+
+
 def settings(args=None):
     """Interactive CLI settings panel."""
+    global _sel
     _full_draw()
     while True:
         try:
@@ -253,20 +281,40 @@ def settings(args=None):
         except Exception:
             break
 
-        if ch in ('q', 'Q', '\x03', '\r', '\n'):
+        # --- Arrow keys: move the highlighted row ---
+        if ch == '\x1b':
+            try:
+                if sys.stdin.read(1) == '[':
+                    a = sys.stdin.read(1)
+                    if a in ('A', 'B'):
+                        old = _sel
+                        i = _NAV.index(_sel) if _sel in _NAV else 0
+                        i = (i - 1) % len(_NAV) if a == 'A' else (i + 1) % len(_NAV)
+                        _sel = _NAV[i]
+                        _update(old)         # un-highlight old row
+                        _update(_sel)        # highlight new row
+            except Exception:
+                pass
+            continue
+
+        if ch in ('q', 'Q', '\x03'):
             sys.stdout.write('\x1b[2J\x1b[H')
             ok("Settings saved.")
             return
 
-        if   ch == '1': _rtoggle('Settings.Verbose_Boot');        _update('1')
-        elif ch == '2': _rtoggle('Features.Program_Execution');   _update('2')
-        elif ch == '3': _rtoggle('Settings.OC_On_Boot');          _update('3')
-        elif ch == '4': _rtoggle('Features.beeper');              _update('4')
-        elif ch == '5': _rtoggle('Features.SD_Support');          _update('5')
-        elif ch == '6': _rtoggle('Settings.Network_Autoconnect'); _update('6')
-        elif ch in ('o', 'O'): _redit('System.Owner',         'Owner');                       _full_draw()
-        elif ch in ('t', 'T'): _redit('System.TZ_Offset',     'Timezone Offset', numeric=True); _full_draw()
-        elif ch in ('d', 'D'): _redit('System.Device_ID',     'Device ID');                    _full_draw()
-        elif ch in ('i', 'I'): _redit('Settings.Idle_Logout', 'Idle Logout', numeric=True);    _full_draw()
-        elif ch in ('r', 'R'): _full_draw()
+        # --- Enter: change the highlighted row ---
+        if ch in ('\r', '\n'):
+            _activate(_sel)
+            continue
+
+        # --- Direct shortcuts (also move the highlight to that row) ---
+        k = ch.lower()
+        if k in _TOGGLE or k in _EDIT:
+            old = _sel
+            _sel = k
+            if old != _sel:
+                _update(old)
+            _activate(k)
+        elif ch in ('r', 'R'):
+            _full_draw()
         # any other key: ignore, no redraw

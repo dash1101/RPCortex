@@ -42,3 +42,6 @@ secrets.*
 
 # Generated build stamp (build_v091.py)
 Core/buildinfo.py
+
+# Generated bundled repo index (build.py)
+Core/default_repo.json

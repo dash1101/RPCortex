@@ -449,11 +449,13 @@ def _inject(target, is_module):
 _LP_DIR = '/Core/Launchpad/'
 
 def _lp_import(file_path):
-    """Load a /Core/Launchpad/*.py file via __import__ (heap-efficient)."""
+    """Load a module via __import__ (heap-efficient). Accepts a .py or .mpy path."""
     slash = file_path.rfind('/')
     name  = file_path[slash + 1:]
     if name.endswith('.py'):
         name = name[:-3]
+    elif name.endswith('.mpy'):
+        name = name[:-4]
     dir_path = file_path[:slash]
     if dir_path not in sys.path:
         sys.path.append(dir_path)
@@ -499,18 +501,25 @@ def _get_scope(file_path):
     """Return (and if necessary build) the scope/module for a command file.
 
     Routing:
-      - /Core/Launchpad/*.py        -> __import__ (heap-efficient; built-ins)
-      - a package whose .py is gone  -> __import__ its .mpy  (compiled package)
-      - everything else (.py source) -> exec() into a fresh scope
-    The .mpy fallback lets packages ship compiled: programs.lp still maps to the
-    .py path, but if only the .mpy exists we import it instead of exec'ing text.
+      - /Core/Launchpad/*.py|.mpy    -> __import__ (heap-efficient; built-ins)
+      - a cfg path that ends .mpy     -> __import__ (compiled package, explicit)
+      - a .py whose file is gone but  -> __import__ the .mpy beside it
+        a .mpy sits beside it
+      - everything else (.py source)  -> exec() into a fresh scope
+    So compiled builds work whether programs.lp/package.cfg point at the .py
+    name (resolved to .mpy) OR directly at the .mpy. Never exec() a .mpy as text.
     """
     if file_path not in _cmd_cache:
-        use_import = file_path.startswith(_LP_DIR) and file_path.endswith('.py')
-        if (not use_import) and file_path.endswith('.py') \
+        use_import = False
+        if file_path.startswith(_LP_DIR) and \
+                (file_path.endswith('.py') or file_path.endswith('.mpy')):
+            use_import = True                          # built-in Launchpad module
+        elif file_path.endswith('.mpy'):
+            use_import = True                          # cfg points straight at .mpy
+        elif file_path.endswith('.py') \
                 and not _path_exists(file_path) \
                 and _path_exists(file_path[:-3] + '.mpy'):
-            use_import = True   # compiled package — import the .mpy
+            use_import = True                          # .py gone, .mpy present
         if use_import:
             scope = _lp_import(file_path)
         else:
@@ -874,10 +883,32 @@ def _tab_complete(buf_str):
 _skip_lf = False   # CRLF pairing: skip a \n that follows a \r
 
 
+def _word_left(buf, cursor):
+    """Index at the start of the word left of cursor (skip spaces, then word)."""
+    i = cursor
+    while i > 0 and buf[i - 1] == ' ':
+        i -= 1
+    while i > 0 and buf[i - 1] != ' ':
+        i -= 1
+    return i
+
+
+def _word_right(buf, cursor):
+    """Index at the end of the word right of cursor (skip spaces, then word)."""
+    n = len(buf)
+    i = cursor
+    while i < n and buf[i] == ' ':
+        i += 1
+    while i < n and buf[i] != ' ':
+        i += 1
+    return i
+
+
 def _shell_input(prompt):
     """
     Interactive line reader with full cursor navigation.
       - Up/Down   : history navigation
+      - Ctrl+Left/Right     : jump by word;  Ctrl+Backspace/W, Ctrl+Del: word delete
       - Left/Right: cursor movement within the line
       - Home/End  : jump to start/end (xterm and VT sequences)
       - Delete    : delete character under cursor
@@ -1003,8 +1034,8 @@ def _shell_input(prompt):
                     _history.pop(0)
             return line
 
-        # --- Backspace ---
-        elif ch in ('\x7f', '\x08'):
+        # --- Backspace (delete char before cursor) ---
+        elif ch == '\x7f':
             _ghost_clear()
             if cursor > 0:
                 del buf[cursor - 1]
@@ -1014,6 +1045,21 @@ def _shell_input(prompt):
                 if tail:
                     sys.stdout.write('\x1b[{}D'.format(len(tail)))
             ghost = ''
+            _ghost_update()
+
+        # --- Ctrl+Backspace (\x08 in PuTTY) / Ctrl+W: delete word before cursor ---
+        elif ch in ('\x08', '\x17'):
+            _ghost_clear()
+            ghost = ''
+            start = _word_left(buf, cursor)
+            removed = cursor - start
+            if removed > 0:
+                del buf[start:cursor]
+                cursor = start
+                tail = ''.join(buf[cursor:])
+                sys.stdout.write('\x1b[{}D\x1b[K'.format(removed) + tail)
+                if tail:
+                    sys.stdout.write('\x1b[{}D'.format(len(tail)))
             _ghost_update()
 
         # --- Ctrl+C ---
@@ -1096,12 +1142,12 @@ def _shell_input(prompt):
                         cursor = len(buf)
                     _ghost_update()
 
-                elif n2 in ('1', '3', '4', '7', '8'):   # VT extended sequences
+                elif n2 in ('1', '3', '4', '7', '8'):   # VT extended / modified
                     try:
-                        tilde = sys.stdin.read(1)
+                        nxt = sys.stdin.read(1)
                     except Exception:
-                        tilde = ''
-                    if tilde == '~':
+                        nxt = ''
+                    if nxt == '~':
                         if n2 in ('1', '7'):        # Home
                             if cursor > 0:
                                 sys.stdout.write('\x1b[{}D'.format(cursor))
@@ -1119,6 +1165,34 @@ def _shell_input(prompt):
                                 if tail:
                                     sys.stdout.write('\x1b[{}D'.format(len(tail)))
                                 _ghost_update()
+                    elif nxt == ';':
+                        # Modified key:  ESC [ <n2> ; <mod> <final>   (mod 5 = Ctrl)
+                        try:
+                            mod = sys.stdin.read(1)
+                            fin = sys.stdin.read(1)
+                        except Exception:
+                            mod = fin = ''
+                        if mod == '5':              # Ctrl held
+                            if n2 == '1' and fin == 'D':       # Ctrl+Left: word left
+                                new = _word_left(buf, cursor)
+                                if new < cursor:
+                                    sys.stdout.write('\x1b[{}D'.format(cursor - new))
+                                    cursor = new
+                            elif n2 == '1' and fin == 'C':     # Ctrl+Right: word right
+                                new = _word_right(buf, cursor)
+                                if new > cursor:
+                                    sys.stdout.write('\x1b[{}C'.format(new - cursor))
+                                    cursor = new
+                                _ghost_update()
+                            elif n2 == '3' and fin == '~':     # Ctrl+Del: word delete fwd
+                                end = _word_right(buf, cursor)
+                                if end > cursor:
+                                    del buf[cursor:end]
+                                    tail = ''.join(buf[cursor:])
+                                    sys.stdout.write('\x1b[K' + tail)
+                                    if tail:
+                                        sys.stdout.write('\x1b[{}D'.format(len(tail)))
+                                    _ghost_update()
             except Exception:
                 pass
 
@@ -1165,9 +1239,14 @@ def _prompt(username):
 # Shell main loop
 # ---------------------------------------------------------------------------
 
-def launchpad_init(username, password):
-    """Start the authenticated Launchpad shell for the given user."""
-    if not decode(username, password, silent=True):
+def launchpad_init(username, password, auth=True):
+    """Start the Launchpad shell for the given user.
+
+    auth=False skips the password check — used only by autonomous mode, which
+    deliberately runs without a login (it's enabled by an admin who accepts
+    that anyone with physical access controls the device).
+    """
+    if auth and not decode(username, password, silent=True):
         warn("Authentication failed for '{}'. Cannot start shell.".format(username))
         return
 

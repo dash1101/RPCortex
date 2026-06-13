@@ -75,6 +75,7 @@ def status():
         'connected': False,
         'ip':        None,
         'ssid':      None,
+        'rssi':      None,
     }
     wlan = _get_wlan()
     if wlan is None:
@@ -91,6 +92,10 @@ def status():
             result['ssid'] = wlan.config('ssid')
         except Exception:
             result['ssid'] = '?'
+        try:
+            result['rssi'] = wlan.status('rssi')   # current-link signal (dBm)
+        except Exception:
+            result['rssi'] = None
 
     return result
 
@@ -208,6 +213,8 @@ def connect_saved(timeout=20, silent=False):
     Returns True if a connection was established.
     silent=True suppresses info messages; errors still print.
     """
+    if online():           # already connected — nothing to do
+        return True
     nets = _read_networks()
     if not nets:
         return False

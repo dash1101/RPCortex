@@ -118,6 +118,41 @@ def ls(args=None):
             multi("  ERROR  {:<7}  {:<19}  {}".format("?", "?", item))
 
 
+def _ci_resolve(path):
+    """Resolve a path component-by-component, case-insensitively.
+
+    Each component prefers an exact match; otherwise scans the parent for a
+    name that matches ignoring case. So `cd /core/launchpad` finds
+    `/Core/Launchpad`. Returns the real path, or None if any component is
+    genuinely missing.
+    """
+    cur = ''
+    for part in path.split('/'):
+        if not part:
+            continue
+        exact = (cur + '/' + part) if cur else '/' + part
+        try:
+            uos.stat(exact)            # exact case exists — use it
+            cur = exact
+            continue
+        except OSError:
+            pass
+        parent = cur or '/'
+        match = None
+        pl = part.lower()
+        try:
+            for e in uos.listdir(parent):
+                if e.lower() == pl:
+                    match = e
+                    break
+        except OSError:
+            return None
+        if match is None:
+            return None
+        cur = (cur + '/' + match) if cur else '/' + match
+    return cur or '/'
+
+
 def cd(args):
     home = globals().get('_shell_state', {}).get('home', '/')
     if not args or args.strip() == '~':
@@ -133,23 +168,15 @@ def cd(args):
         return
     except OSError:
         pass
-    # Case-insensitive fallback: scan parent directory for a matching name
-    sep = target.rfind('/')
-    parent = target[:sep] if sep > 0 else '/'
-    name_lower = target[sep + 1:].lower()
-    try:
-        entries = uos.listdir(parent)
-        for e in entries:
-            if e.lower() == name_lower:
-                candidate = parent.rstrip('/') + '/' + e
-                try:
-                    if uos.stat(candidate)[0] & 0x4000:
-                        uos.chdir(candidate)
-                        return
-                except OSError:
-                    pass
-    except OSError:
-        pass
+    # Case-insensitive fallback: resolve the whole path component-by-component.
+    resolved = _ci_resolve(target)
+    if resolved:
+        try:
+            if uos.stat(resolved)[0] & 0x4000:
+                uos.chdir(resolved)
+                return
+        except OSError:
+            pass
     error("Cannot find path '{}'".format(args or '~'))
 
 

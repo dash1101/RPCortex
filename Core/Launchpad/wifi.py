@@ -101,8 +101,10 @@ def _status():
     multi("")
     if s['connected']:
         ok("Connected")
-        multi("  SSID : {}".format(s['ssid'] or '?'))
-        multi("  IP   : {}".format(s['ip']   or '?'))
+        multi("  SSID   : {}".format(s['ssid'] or '?'))
+        multi("  IP     : {}".format(s['ip']   or '?'))
+        if s.get('rssi') is not None:
+            multi("  Signal : {} dBm".format(s['rssi']))
     elif s['active']:
         warn("Interface active, not connected.")
     else:

@@ -53,9 +53,12 @@ def wget(args=None):
         fname = url.rstrip('/').split('/')[-1] or 'download'
         dest = uos.getcwd().rstrip('/') + '/' + fname
 
-    from net import wget as _wget, is_available
+    from net import wget as _wget, is_available, online
     if not is_available():
-        error("WiFi not available. Connect first with: wifi connect")
+        error("WiFi not available on this board.")
+        return
+    if not online():
+        error("Not connected to WiFi. Run: wifi connect")
         return
     import gc
     try:
@@ -84,9 +87,12 @@ def runurl(args=None):
     url  = parts[0]
     keep = '--keep' in parts
 
-    from net import run_url, is_available
+    from net import run_url, is_available, online
     if not is_available():
-        error("WiFi not available. Connect first with: wifi connect")
+        error("WiFi not available on this board.")
+        return
+    if not online():
+        error("Not connected to WiFi. Run: wifi connect")
         return
     try:
         run_url(url, keep=keep)
@@ -162,9 +168,12 @@ def curl(args=None):
     if kwargs.get('output') and not kwargs['output'].startswith('/'):
         kwargs['output'] = uos.getcwd().rstrip('/') + '/' + kwargs['output']
 
-    from net import is_available
+    from net import is_available, online
     if not is_available():
-        error("WiFi not available. Connect first with: wifi connect")
+        error("WiFi not available on this board.")
+        return
+    if not online():
+        error("Not connected to WiFi. Run: wifi connect")
         return
     import gc
     try:
@@ -194,9 +203,12 @@ def ping(args=None):
             count = int(parts[1])
         except ValueError:
             warn("Invalid count — defaulting to 4.")
-    from net import ping as _ping, is_available
+    from net import ping as _ping, is_available, online
     if not is_available():
-        error("WiFi not available. Connect first with: wifi connect")
+        error("WiFi not available on this board.")
+        return
+    if not online():
+        error("Not connected to WiFi. Run: wifi connect")
         return
     _ping(host, count=count)
 
@@ -205,8 +217,11 @@ def nslookup(args=None):
     if not args:
         warn("Usage: nslookup <host>")
         return
-    from net import nslookup as _nslookup, is_available
+    from net import nslookup as _nslookup, is_available, online
     if not is_available():
-        error("WiFi not available. Connect first with: wifi connect")
+        error("WiFi not available on this board.")
+        return
+    if not online():
+        error("Not connected to WiFi. Run: wifi connect")
         return
     _nslookup(args.strip())

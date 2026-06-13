@@ -142,12 +142,17 @@ def _minpt(prompt):
 # Public API
 # ---------------------------------------------------------------------------
 
-def add_user(username, password, nopass=False):
+def add_user(username, password, nopass=False, admin=False):
     """
     Add a new user account.
-    - nopass=True  creates a NOPASS account (accepts any password, used for guest)
+    - nopass=True  creates a NOPASS account (accepts any password / blank)
+    - admin=True   grants administrator rights (root is always an admin)
     - Creates /Users/<username>/ home directory automatically.
     Returns True on success, False if already exists or error.
+
+    user.cfg line: 'name', 'salt$hash', '/home/', 'admin'|'user'
+    (the 4th field is optional for backward compatibility — a line without it
+    is treated as admin only when the username is 'root'.)
     """
     bak = _backup(_CFG)
     try:
@@ -167,9 +172,10 @@ def add_user(username, password, nopass=False):
 
         user_path = '/Users/{}/'.format(username)
         hashed    = 'NOPASS' if nopass else hash_password(password)
+        role      = 'admin' if (admin or username == 'root') else 'user'
 
         with open(_CFG, 'a') as f:
-            f.write("'{}', '{}', '{}'\n".format(username, hashed, user_path))
+            f.write("'{}', '{}', '{}', '{}'\n".format(username, hashed, user_path, role))
 
         _ensure_user_dir(username)
         _ok("Account '{}' created.".format(username))
@@ -199,8 +205,88 @@ def is_nopass(username):
     return False
 
 
+def is_admin(username):
+    """Return True if the account is an administrator (root always is)."""
+    if username == 'root':
+        return True
+    try:
+        with open(_CFG, 'r') as f:
+            for line in f:
+                parts = line.strip().split(', ')
+                if len(parts) >= 4 and parts[0] == "'{}'".format(username):
+                    return parts[3][1:-1] == 'admin'
+    except OSError:
+        pass
+    return False
+
+
+def set_admin(username, admin):
+    """Grant (admin=True) or revoke (False) admin rights for a user."""
+    if username == 'root' and not admin:
+        _warn("root is always an administrator.")
+        return False
+    bak = _backup(_CFG)
+    try:
+        with open(_CFG, 'r') as f:
+            lines = f.readlines()
+        role = 'admin' if admin else 'user'
+        found = False
+        out = []
+        for line in lines:
+            parts = line.strip().split(', ')
+            if parts and parts[0] == "'{}'".format(username):
+                found = True
+                name = parts[0]
+                h    = parts[1] if len(parts) >= 2 else "''"
+                home = parts[2] if len(parts) >= 3 else "'/Users/{}/'".format(username)
+                out.append("{}, {}, {}, '{}'\n".format(name, h, home, role))
+            else:
+                out.append(line if line.endswith('\n') else line + '\n')
+        if not found:
+            _error("User '{}' not found.".format(username))
+            return False
+        with open(_CFG, 'w') as f:
+            f.write(''.join(out))
+        _ok("'{}' is now {}.".format(username, 'an administrator' if admin else 'a standard user'))
+        return True
+    except Exception as e:
+        _error("Could not update role: {}".format(e))
+        _restore(_CFG, bak)
+        return False
+    finally:
+        try:
+            os.remove(bak)
+        except OSError:
+            pass
+
+
+def require_admin(reason=''):
+    """Gate a privileged action: the active user must be an admin AND prove it.
+
+    - non-admin            -> denied.
+    - admin with a password -> must re-enter it.
+    - admin with NOPASS     -> a yes/no confirmation (no password to check).
+    Returns True if authorized.
+    """
+    import regedit
+    active = regedit.read('Settings.Active_User') or ''
+    if not is_admin(active):
+        _error("This action needs administrator rights{}.".format(
+            (' (' + reason + ')') if reason else ''))
+        _warn("Log in as an admin account (e.g. root).")
+        return False
+    if is_nopass(active):
+        ans = _inpt("Admin '{}' has no password. Type YES to confirm".format(active))
+        return ans.strip() == 'YES'
+    pw = _minpt("Confirm admin password for '{}'".format(active))
+    if decode(active, pw, silent=True):
+        return True
+    _error("Incorrect password — action cancelled.")
+    return False
+
+
 def list_users():
-    """Return a list of (username, nopass, home) tuples from user.cfg."""
+    """Return a list of (username, nopass, home, admin) tuples from user.cfg."""
     out = []
     try:
         with open(_CFG, 'r') as f:
@@ -210,8 +296,9 @@ def list_users():
                     name = parts[0][1:-1]   # strip surrounding quotes
                     h    = parts[1][1:-1]
                     home = parts[2][1:-1] if len(parts) >= 3 else ''
+                    admin = (parts[3][1:-1] == 'admin') if len(parts) >= 4 else (name == 'root')
                     if name:
-                        out.append((name, h == 'NOPASS', home))
+                        out.append((name, h == 'NOPASS', home, admin))
     except OSError:
         pass
     return out

@@ -293,15 +293,32 @@ def _cache_path(idx):
     return CACHE_DIR + '/' + str(idx) + '.json'
 
 
+BUNDLED_INDEX = '/Core/default_repo.json'   # shipped in the image by build.py
+
+
 def _load_cache(idx):
-    """Load a cached repo index. Returns list of package dicts or []."""
+    """Load a cached repo index. Returns list of package dicts or [].
+
+    For the first (official) repo, falls back to the OS-bundled index so
+    `pkg available` / `pkg install <name>` work before the user runs
+    `pkg update`. The on-disk cache (after `pkg update`) always takes priority.
+    """
     try:
         import ujson
         with open(_cache_path(idx), 'r') as f:
             data = ujson.load(f)
         return data.get('packages', [])
     except Exception:
-        return []
+        pass
+    if idx == 0:
+        try:
+            import ujson
+            with open(BUNDLED_INDEX, 'r') as f:
+                data = ujson.load(f)
+            return data.get('packages', [])
+        except Exception:
+            pass
+    return []
 
 # ---------------------------------------------------------------------------
 # Version comparison

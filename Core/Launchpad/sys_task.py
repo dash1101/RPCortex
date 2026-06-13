@@ -333,3 +333,38 @@ def task(args=None):
     else:
         error("Unknown subcommand '{}'.".format(sub))
         info("Usage: task [list|add <secs> <cmd>|remove <n>|clear|run]")
+
+
+def autonomy(args=None):
+    """Run the device with no login.  autonomy status | on [user] | off"""
+    import regedit
+    toks = (args or '').split()
+    sub  = toks[0].lower() if toks else 'status'
+
+    if sub == 'status':
+        cur = (regedit.read('Settings.Autonomous') or '').strip()
+        if cur and cur.lower() not in ('false', '0', 'off', 'no'):
+            ok("Autonomy mode: ON — boots straight to a shell as '{}' (no login).".format(cur))
+        else:
+            info("Autonomy mode: OFF — normal login required.")
+        return
+
+    from usrmgmt import require_admin, decode
+    if sub == 'on':
+        user = toks[1] if len(toks) > 1 else (regedit.read('Settings.Active_User') or 'root')
+        if not decode(user, silent=True):
+            error("User '{}' not found.".format(user))
+            return
+        if not require_admin("enable autonomy mode"):
+            return
+        regedit.save('Settings.Autonomous', user)
+        ok("Autonomy mode ON — runs as '{}' with no login.".format(user))
+        warn("Anyone with physical access now controls the device. Reboot to apply.")
+        info("Tip: pair with startup tasks, e.g.  startup add wifi autoconnect -s")
+    elif sub == 'off':
+        if not require_admin("disable autonomy mode"):
+            return
+        regedit.save('Settings.Autonomous', 'false')
+        ok("Autonomy mode OFF — normal login restored. Reboot to apply.")
+    else:
+        warn("Usage: autonomy status | on [user] | off")

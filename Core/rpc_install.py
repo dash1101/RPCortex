@@ -33,7 +33,7 @@ _SKIP = (
     'website/', 'repo/', '.git', '__pycache__', 'CLAUDE',
     'Users/', 'Nebula/', 'Pulsar/', 'temp/', 'tests/',
 )
-_EXTS = ('.py', '.cfg', '.lp')
+_EXTS = ('.py', '.cfg', '.lp', '.mpy', '.json')   # .mpy: compiled; .json: bundled repo index
 
 def _want(rel):
     """True if this archive-relative path should be written to the device."""

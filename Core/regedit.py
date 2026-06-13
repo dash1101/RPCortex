@@ -65,14 +65,42 @@ def save_config(config):
 # Public API
 # ---------------------------------------------------------------------------
 
+def _read_disk():
+    """Parse registry.cfg straight from disk (bypass the cache)."""
+    config = {}
+    section = None
+    try:
+        with open(CONFIG_FILE, 'r') as file:
+            for line in file:
+                line = line.strip()
+                if line.startswith('[') and line.endswith(']'):
+                    section = line[1:-1]
+                    config[section] = {}
+                elif section and ':' in line:
+                    k, v = line.split(':', 1)
+                    config[section][k.strip()] = v.strip()
+    except OSError:
+        pass
+    return config
+
+
 def save(key, value):
-    """Write a single key. Creates the section if it doesn't exist."""
-    config = load_config()
+    """Write a single key. Creates the section if it doesn't exist.
+
+    Reads the CURRENT on-disk config first (not the cache) and merges the one
+    key, so a stale in-memory cache can never clobber keys written elsewhere.
+    This matters because the OS historically imported regedit two ways
+    (`Core.regedit` at boot vs bare `regedit` in the shell) — separate module
+    instances with separate caches; a stale one writing its whole dict back
+    used to erase keys like Settings.Setup / Settings.Active_User.
+    """
+    global _cache
+    config = _read_disk()
     section, key = key.split('.', 1)
     if section not in config:
         config[section] = {}
     config[section][key] = value
-    save_config(config)
+    save_config(config)   # writes disk + sets _cache = config
 
 
 def read(key):
@@ -84,7 +112,7 @@ def read(key):
 
 def delete(key):
     """Delete a key; removes the section if it becomes empty."""
-    config = load_config()
+    config = _read_disk()   # fresh disk, not the (possibly stale) cache
     section, key_name = key.split('.', 1)
     if section in config and key_name in config[section]:
         del config[section][key_name]

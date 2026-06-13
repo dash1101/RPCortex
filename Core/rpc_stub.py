@@ -79,7 +79,7 @@ _SKIP = ('website/', 'repo/', '.git', '__pycache__', 'CLAUDE', 'temp/', 'tests/'
 # Note: Users/ and Pulsar/ are NOT skipped here — this stub runs after a full
 # wipe so there is no existing user data to preserve.  If the .rpc includes
 # default Pulsar/ content (e.g. a pre-seeded registry), it will be installed.
-_EXTS = ('.py', '.cfg', '.lp')
+_EXTS = ('.py', '.cfg', '.lp', '.mpy', '.json')   # .mpy: compiled; .json: bundled repo index
 
 def _want(rel):
     for s in _SKIP:

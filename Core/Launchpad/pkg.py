@@ -94,6 +94,14 @@ def pkg(args=None):
             warn("Usage: pkg remove <name> [--force]")
             warn("       --force removes even protected built-in packages (for repair)")
             return
+        # Force-removing a protected system package is privileged.
+        if force:
+            try:
+                from usrmgmt import require_admin
+                if not require_admin("force-remove a system package"):
+                    return
+            except Exception:
+                pass
         import pkgmgr
         if pkgmgr.uninstall(rest, force=force):
             _cmds   = globals().get('_commands')

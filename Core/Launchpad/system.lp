@@ -58,6 +58,7 @@ freeup:/Core/Launchpad/sys_sys.py:freeup
 gc:/Core/Launchpad/sys_sys.py:freeup
 startup:/Core/Launchpad/sys_task.py:startup
 task:/Core/Launchpad/sys_task.py:task
+autonomy:/Core/Launchpad/sys_task.py:autonomy
 script:/Core/Launchpad/sys_script.py:script
 settings:/Core/Launchpad/settings.py:settings
 factoryreset:/Core/Launchpad/sys_sys.py:factoryreset
@@ -81,6 +82,7 @@ curl:/Core/Launchpad/sys_net.py:curl
 whoami:/Core/Launchpad/sys_user.py:whoami
 users:/Core/Launchpad/sys_user.py:users
 mkacct:/Core/Launchpad/sys_user.py:mkacct
+usermod:/Core/Launchpad/sys_user.py:usermod
 rmuser:/Core/Launchpad/sys_user.py:rmuser
 chpswd:/Core/Launchpad/sys_user.py:chpswd
 logout:/Core/Launchpad/sys_user.py:logout

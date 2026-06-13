@@ -6,7 +6,7 @@
 # Author: dash1101
 
 import uos, gc, sys, utime, machine
-import Core.regedit as regedit
+import regedit   # bare import — same instance the shell uses (shared cache)
 import Core.RPCortex as core
 import Core.pulse as pulse
 
@@ -38,6 +38,7 @@ Network_Autoconnect: false
 OC_On_Boot: false
 Verbose_Boot: false
 Idle_Logout: 0
+Autonomous: false
 
 [Features]
 Program_Execution: true
@@ -152,6 +153,14 @@ def wlan_check():
         return False
 
     core.ok("WiFi hardware detected.", p="POST")
+
+    # Already associated (e.g. the radio kept the link across a soft reboot)?
+    # Don't spend boot time reconnecting.
+    if net.online():
+        s = net.status()
+        core.ok("WiFi already connected:  {}  ({})".format(
+            s.get('ssid', '?'), s.get('ip', '?')), p="POST")
+        return True
 
     autoconn = regedit.read('Settings.Network_Autoconnect')
     if autoconn != 'true':
