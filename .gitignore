@@ -45,3 +45,4 @@ Core/buildinfo.py
 
 # Generated bundled repo index (build.py)
 Core/default_repo.json
+.aider*
