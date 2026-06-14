@@ -255,6 +255,34 @@ def _task_clear():
         ok("Cleared {} scheduled task(s).".format(len(tasks)))
 
 
+def _task_background(rest):
+    """Arm/disarm the idle background scheduler (Track A multitasking, v0.9.5).
+
+    When ON, scheduled tasks fire while you're idle at the prompt (they pause the
+    moment you start typing and while a command is running). Unlike `task run`
+    this doesn't block the shell — you keep working between fires."""
+    import regedit
+    sub = (rest or '').strip().lower()
+    cur = (regedit.read('Apps.Task_Background') or 'false') == 'true'
+    if sub in ('on', 'enable', 'true', '1'):
+        if not _read_tasks():
+            warn("No scheduled tasks yet. Add one first:  task add <secs> <command>")
+        regedit.save('Apps.Task_Background', 'true')
+        ok("Background tasks ON — they fire while you're idle at the prompt.")
+        info("They pause while you type and during a running command. 'task background off' to stop.")
+    elif sub in ('off', 'disable', 'false', '0'):
+        regedit.save('Apps.Task_Background', 'false')
+        ok("Background tasks OFF.")
+    elif sub in ('', 'status'):
+        info("Background tasks: {}".format("ON" if cur else "OFF"))
+        if cur:
+            multi("  Scheduled tasks fire while idle at the prompt. See:  task list")
+        else:
+            multi("  Enable with:  task background on")
+    else:
+        warn("Usage: task background on|off|status")
+
+
 def _scheduler():
     """Foreground scheduler loop: fire due tasks; quit on 'q' / Ctrl+C."""
     tasks = _read_tasks()
@@ -330,9 +358,11 @@ def task(args=None):
         _task_clear()
     elif sub == 'run':
         _scheduler()
+    elif sub in ('background', 'bg'):
+        _task_background(rest)
     else:
         error("Unknown subcommand '{}'.".format(sub))
-        info("Usage: task [list|add <secs> <cmd>|remove <n>|clear|run]")
+        info("Usage: task [list|add <secs> <cmd>|remove <n>|clear|run|background on|off]")
 
 
 def autonomy(args=None):
@@ -368,3 +398,36 @@ def autonomy(args=None):
         ok("Autonomy mode OFF — normal login restored. Reboot to apply.")
     else:
         warn("Usage: autonomy status | on [user] | off")
+
+
+def asyncmode(args=None):
+    """Toggle the EXPERIMENTAL asyncio shell (v0.9.5 multitasking foundation).
+
+    asyncmode status | on | off
+
+    When ON, the next login runs an async shell where background scheduled tasks
+    fire even while you type — the groundwork for v1.0 concurrency. It's
+    experimental: editing is basic (no history/cursor-nav/completion yet) and a
+    long command still blocks the loop. A crash sentinel falls back to the normal
+    shell automatically, so it can't lock you out. Most users want the standard
+    shell + 'task background on' instead."""
+    import regedit
+    sub = (args or '').strip().lower()
+    cur = (regedit.read('Settings.Async_Shell') or 'false') == 'true'
+    if sub in ('', 'status'):
+        info("Async shell (experimental): {}".format("ON" if cur else "OFF"))
+        if cur:
+            multi("  Next login uses the asyncio shell. Disable:  asyncmode off")
+        else:
+            multi("  Standard shell in use. For background tasks try:  task background on")
+            multi("  Enable the experimental async shell:  asyncmode on")
+        return
+    if sub in ('on', 'enable', 'true', '1'):
+        regedit.save('Settings.Async_Shell', 'true')
+        ok("Async shell ENABLED (experimental). Applies at the next login/reboot.")
+        warn("Editing is basic here; the standard shell stays the safe default.")
+    elif sub in ('off', 'disable', 'false', '0'):
+        regedit.save('Settings.Async_Shell', 'false')
+        ok("Async shell disabled — back to the standard shell at next login.")
+    else:
+        warn("Usage: asyncmode status | on | off")

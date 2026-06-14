@@ -13,8 +13,8 @@ import time
 # initialization.start() syncs Settings.Version and System.Codename in the
 # registry to these values on every boot, so the registry can never drift
 # after an OS update.
-OS_VERSION  = "v0.9.1"
-OS_CODENAME = "RPCortex B9 - Pulsar"
+OS_VERSION  = "v0.9.5"
+OS_CODENAME = "RPCortex B95 - Pulsar"
 
 # OS_BUILD is a date/time build id stamped by build.py into a generated
 # Core/buildinfo.py at release-build time. A from-source/dev tree has no

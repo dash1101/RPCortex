@@ -1,6 +1,6 @@
 # RPCortex — Feature List
 
-**RPCortex Pulsar — v0.9.1** · MicroPython operating system for RP2040 / RP2350
+**RPCortex Pulsar — v0.9.5** · MicroPython operating system for RP2040 / RP2350
 (and ESP32-S3). Serial-first (PuTTY @ 115200). Single source of truth for the
 running version lives in `Core/RPCortex.py` (`OS_VERSION` / `OS_CODENAME`).
 

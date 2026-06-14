@@ -1045,6 +1045,245 @@ def _apply_dyn_clock(active):
             _DYN_STATE[0] = 'idle'
 
 
+# ===========================================================================
+# Multitasking (v0.9.5)
+#
+# Two cooperative paths, both reading /Pulsar/Registry/tasks.cfg:
+#
+#   Track A — idle background scheduler (default-available, low risk):
+#     The sync shell already polls stdin in slices while the user is idle at an
+#     empty prompt (the idle-logout wait in _shell_input). When
+#     Apps.Task_Background is on, each idle slice also fires any due `task`s.
+#     Tasks run ONLY while the line buffer is empty, so a half-typed command is
+#     never disturbed — we just clear the line, print, and reprint the prompt.
+#
+#   Track B — asyncio shell (opt-in, EXPERIMENTAL — Settings.Async_Shell):
+#     A real event loop runs a background scheduler coroutine alongside a
+#     minimal async line reader, so tasks fire even while you type. Guarded by a
+#     crash sentinel that falls back to the proven sync shell. The v1.0 base.
+#
+# Both are COOPERATIVE: a long synchronous command (wget/bench/pkg) blocks the
+# prompt AND the scheduler until it returns. net.py is still synchronous, so
+# true background networking waits for the v1.0 async-socket work.
+# ===========================================================================
+
+_TASKS_CFG = '/Pulsar/Registry/tasks.cfg'
+_bg_due = None    # list of [next_due_ms, interval_ms, cmd]; None = not loaded
+_bg_sig = None    # raw tasks.cfg text we built _bg_due from (detects edits)
+
+
+def _bg_tasks_armed():
+    """True if background scheduling is enabled and tasks.cfg exists."""
+    try:
+        if (regedit.read('Apps.Task_Background') or 'false') != 'true':
+            return False
+        uos.stat(_TASKS_CFG)
+        return True
+    except OSError:
+        return False
+    except Exception:
+        return False
+
+
+def _bg_load_tasks():
+    """(Re)load tasks.cfg into the due-time table, only re-parsing on change."""
+    global _bg_due, _bg_sig
+    import utime as _ut
+    try:
+        with open(_TASKS_CFG, 'r') as f:
+            data = f.read()
+    except OSError:
+        data = ''
+    if data == _bg_sig and _bg_due is not None:
+        return _bg_due
+    now = _ut.ticks_ms()
+    rows = []
+    for line in data.split('\n'):
+        s = line.strip()
+        if not s or s.startswith('#'):
+            continue
+        if '\t' in line:
+            a, b = line.split('\t', 1)
+        else:
+            a, _, b = line.partition(' ')
+        try:
+            interval = int(a.strip())
+        except ValueError:
+            continue
+        cmd = b.strip()
+        if interval > 0 and cmd:
+            rows.append([_ut.ticks_add(now, interval * 1000), interval * 1000, cmd])
+    _bg_due = rows
+    _bg_sig = data
+    return rows
+
+
+def _run_due_tasks(restore=''):
+    """Fire any scheduled tasks whose time has come. Best-effort, never raises.
+    Returns True if at least one ran. `restore` (a string) is reprinted after the
+    output so the caller's prompt/line is redrawn cleanly."""
+    import utime as _ut
+    rows = _bg_load_tasks()
+    if not rows:
+        return False
+    ran = False
+    now = _ut.ticks_ms()
+    for row in rows:
+        if _ut.ticks_diff(now, row[0]) >= 0:
+            if not ran:
+                _apply_dyn_clock(True)         # tasks want the working clock
+                sys.stdout.write('\r\x1b[K')   # clear the current prompt/input line
+                ran = True
+            multi('\033[90m[task] {}\033[0m'.format(row[2]))
+            try:
+                _run_line(row[2])
+            except MemoryError:
+                import gc as _gc
+                _gc.collect()
+                warn('[task] skipped (low memory): {}'.format(row[2]))
+            except Exception as _e:
+                error('[task] error: {}'.format(_e))
+            row[0] = _ut.ticks_add(_ut.ticks_ms(), row[1])   # reschedule
+    if ran and restore:
+        sys.stdout.write(restore)
+    return ran
+
+
+# --- Track B: asyncio shell (experimental) ---------------------------------
+
+async def _async_input(prompt):
+    """Minimal async line reader. Intentionally small (no history / cursor-nav /
+    completion yet) so the proven sync _shell_input stays the untouched fallback.
+    Yields to the event loop between keystrokes so background coroutines run."""
+    import asyncio
+    import select as _sel
+    global _skip_lf
+    sys.stdout.write(prompt)
+    buf = []
+    _shell_state['async_line'] = prompt
+    while True:
+        try:
+            r = _sel.select([sys.stdin], [], [], 0)[0]
+        except Exception:
+            r = None
+        if not r:
+            await asyncio.sleep_ms(15)        # the cooperative yield point
+            continue
+        ch = sys.stdin.read(1)
+        if _skip_lf:
+            _skip_lf = False
+            if ch == '\n':
+                continue
+        if ch in ('\r', '\n'):
+            if ch == '\r':
+                _skip_lf = True
+            sys.stdout.write('\r\n')
+            _shell_state['async_line'] = ''
+            return ''.join(buf)
+        if ch in ('\x7f', '\x08'):
+            if buf:
+                buf.pop()
+                sys.stdout.write('\x08 \x08')
+        elif ch == '\x03':                    # Ctrl+C — cancel the line
+            sys.stdout.write('^C\r\n')
+            _shell_state['async_line'] = ''
+            return ''
+        elif ch == '\x1b':                    # swallow an escape sequence (arrows)
+            try:
+                if _sel.select([sys.stdin], [], [], 0.01)[0]:
+                    if sys.stdin.read(1) == '[' and _sel.select([sys.stdin], [], [], 0.01)[0]:
+                        sys.stdin.read(1)
+            except Exception:
+                pass
+        elif ord(ch) >= 32:
+            buf.append(ch)
+            sys.stdout.write(ch)
+        _shell_state['async_line'] = prompt + ''.join(buf)
+
+
+async def _scheduler_coro():
+    """Background task scheduler — runs while the async shell is open. Gated by
+    the same Apps.Task_Background master switch as Track A, so background tasks
+    are one control; async mode just lets them fire even while you type."""
+    import asyncio
+    while _shell_state.get('running'):
+        try:
+            if _bg_tasks_armed():
+                _run_due_tasks(restore=_shell_state.get('async_line', ''))
+        except Exception:
+            pass
+        await asyncio.sleep_ms(250)
+
+
+async def _shell_coro(username):
+    """Interactive prompt as a coroutine (Track B)."""
+    while _shell_state.get('running'):
+        raw = (await _async_input(_prompt(username))).strip()
+        if not raw:
+            continue
+        try:
+            _run_line(raw)
+        except MemoryError:
+            import gc as _gc
+            _cmd_cache.clear()
+            _gc.collect()
+            warn("Heap fragmented — cache cleared ({} KB free).".format(_gc.mem_free() // 1024))
+
+
+async def _supervisor(username):
+    import asyncio
+    sched = asyncio.create_task(_scheduler_coro())
+    try:
+        await _shell_coro(username)
+    finally:
+        try:
+            sched.cancel()
+        except Exception:
+            pass
+
+
+def _enter_async_shell(username):
+    """Run the experimental asyncio shell if opted in. Returns True only after a
+    full session ran; False (fall through to the sync loop) when off, crashed
+    last time, or unavailable. SystemExit (rawrepl) propagates out to the REPL."""
+    try:
+        if (regedit.read('Settings.Async_Shell') or 'false') != 'true':
+            return False
+    except Exception:
+        return False
+    # Crash guard (mirrors the boot-clock sentinel): a hard crash inside the loop
+    # never reaches the finally below, so the flag survives. If we see it set at
+    # the next login, fall back to the proven sync shell this once.
+    try:
+        if (regedit.read('Settings.Async_Booting') or '0') == '1':
+            warn("Async shell didn't exit cleanly last time — using the standard shell.")
+            info("It stays enabled; this was a one-time safety fallback.")
+            regedit.save('Settings.Async_Booting', '0')
+            return False
+    except Exception:
+        pass
+    try:
+        import asyncio
+    except ImportError:
+        warn("asyncio isn't available on this build — using the standard shell.")
+        return False
+    info("Async shell (EXPERIMENTAL): background tasks run while you type.", p="Launchpad")
+    info("Editing is basic here (no history/completion yet). 'logout' to exit.", p="Launchpad")
+    try:
+        regedit.save('Settings.Async_Booting', '1')
+        asyncio.run(_supervisor(username))
+    finally:
+        try:
+            regedit.save('Settings.Async_Booting', '0')
+        except Exception:
+            pass
+        try:
+            asyncio.new_event_loop()   # reset loop state for the rest of this boot
+        except Exception:
+            pass
+    return True
+
+
 def _shell_input(prompt):
     """
     Interactive line reader with full cursor navigation.
@@ -1111,26 +1350,34 @@ def _shell_input(prompt):
                 _idle_min = int(regedit.read('Settings.Idle_Logout') or 0)
             except Exception:
                 _idle_min = 0
-            if _idle_min > 0:
+            _bg = _bg_tasks_armed()   # Track A: fire scheduled tasks while idle
+            # Poll in 0.5s slices while idle if EITHER idle-logout or background
+            # tasks are active. Each empty slice fires any due tasks; the idle
+            # timer keeps running (a background task is not user activity).
+            if _idle_min > 0 or _bg:
                 try:
                     import select as _sel
                     import utime as _ut
-                    _deadline = _idle_min * 60 * 1000
+                    _deadline = _idle_min * 60 * 1000   # 0 when idle-logout is off
                     _t0 = _ut.ticks_ms()
                     _got_input = False
-                    while _ut.ticks_diff(_ut.ticks_ms(), _t0) < _deadline:
+                    while True:
                         _r, _, _ = _sel.select([sys.stdin], [], [], 0.5)
                         if _r:
                             _got_input = True
                             break
-                    if not _got_input:
+                        if _bg:
+                            _run_due_tasks(restore=prompt)   # reprints the prompt
+                        if _idle_min > 0 and _ut.ticks_diff(_ut.ticks_ms(), _t0) >= _deadline:
+                            break
+                    if not _got_input and _idle_min > 0:
                         sys.stdout.write('\r\n')
                         warn("Session timed out after {} min of inactivity.".format(
                             _idle_min))
                         _shell_state['running'] = False
                         return ''
                 except (ImportError, OSError):
-                    pass   # no select on this platform — idle logout unavailable
+                    pass   # no select on this platform — idle features unavailable
         try:
             ch = sys.stdin.read(1)
         except Exception:
@@ -1442,6 +1689,14 @@ def launchpad_init(username, password, auth=True):
         _run_ntp_on_boot()   # registry-driven NTP-on-boot (after WiFi autoconnect)
     except Exception as e:
         warn("Startup task runner error: {}".format(e))
+
+    # Experimental opt-in (Settings.Async_Shell): run the asyncio shell so
+    # background tasks fire even while you type. Crash-guarded; returns True only
+    # after a full session, else we fall through to the proven sync loop below.
+    if _enter_async_shell(username):
+        ok("Goodbye, {}.".format(username), p="Launchpad")
+        close_session_log()
+        return
 
     while _shell_state['running']:
         try:

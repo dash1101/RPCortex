@@ -1321,11 +1321,14 @@ def help(args=None):
         multi("    startup add <cmd> | remove <n> | list | clear | run")
         multi("  task ...             Commands that run on a repeating interval:")
         multi("    task add <secs> <cmd> | remove <n> | list | clear | run")
-        multi("    'task run' is the scheduler loop (q / Ctrl+C to stop).")
+        multi("    'task run'           foreground scheduler loop (q / Ctrl+C to stop)")
+        multi("    'task background on' fire tasks while you're idle at the prompt (v0.9.5)")
+        multi("  asyncmode on|off     EXPERIMENTAL async shell — tasks fire while you type")
         multi("  autonomy on [user]   Run with NO login (headless); off | status")
         multi("  script <file.rps>    Run a script: set/$vars, if/else, while, end")
         multi("")
         multi("  Tip: 'startup add task run' makes the device autonomous at boot.")
+        multi("  Tip: 'task background on' keeps you at the shell while tasks tick.")
 
     elif a == "recovery":
         info("=== Recovery & Diagnostics ===")

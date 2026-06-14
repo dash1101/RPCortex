@@ -66,6 +66,7 @@ gc:/Core/Launchpad/sys_sys.py:freeup
 startup:/Core/Launchpad/sys_task.py:startup
 task:/Core/Launchpad/sys_task.py:task
 autonomy:/Core/Launchpad/sys_task.py:autonomy
+asyncmode:/Core/Launchpad/sys_task.py:asyncmode
 script:/Core/Launchpad/sys_script.py:script
 settings:/Core/Launchpad/settings.py:settings
 factoryreset:/Core/Launchpad/sys_sys.py:factoryreset

@@ -10,7 +10,7 @@
 
 ---
 
-# RPCortex — Pulsar β9
+# RPCortex — Pulsar β95
 
 RPCortex is a CLI operating system for the **Raspberry Pi Pico series** (RP2040 / RP2350) and the **ESP32-S3**, written entirely in **MicroPython**. It turns a microcontroller into something that actually behaves like a computer — a real interactive shell with pipes and scripting, user accounts with passwords, a package manager, WiFi, over-the-air updates, a text editor, task automation, and a structured boot process with hardware checks.
 
@@ -113,4 +113,4 @@ Open source. Explicit credit to **[@dash1101](https://github.com/dash1101)** is 
 
 ---
 
-###### RPCortex Pulsar β9 — v0.9.1
+###### RPCortex Pulsar β95 — v0.9.5
