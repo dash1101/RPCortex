@@ -35,6 +35,9 @@ if '/Core' not in sys.path:
 
 from RPCortex import ok, warn, error, info, multi
 
+# ANSI colours for list output
+_CY = '\x1b[96m'; _GR = '\x1b[92m'; _YL = '\x1b[93m'; _DG = '\x1b[90m'; _R = '\x1b[0m'
+
 PACKAGES_DIR = '/Packages'
 PROGRAMS_LP  = '/Core/Launchpad/programs.lp'
 PKG_BASE     = '/Pulsar/pkg'
@@ -427,35 +430,72 @@ def search(query):
 # Available — list all packages in the repo cache
 # ---------------------------------------------------------------------------
 
+def _installed_map():
+    """Return {name_lower: version} for every installed package."""
+    out = {}
+    try:
+        for entry in uos.listdir(PACKAGES_DIR):
+            try:
+                with open(PACKAGES_DIR + '/' + entry + '/package.cfg', 'r') as f:
+                    meta = _parse_cfg(f.read())
+                nm = meta.get('pkg.name', '')
+                if nm:
+                    out[nm.lower()] = meta.get('pkg.ver', '?')
+            except OSError:
+                pass
+    except OSError:
+        pass
+    return out
+
+
 def available():
-    """List every package in all cached repo indexes."""
+    """List every package in all cached repo indexes — NOT-installed first, then
+    an 'Installed' section at the bottom showing the installed version (and an
+    update marker when the repo has a newer one), so searching is easier."""
     repos = _read_repos()
     if not repos:
         warn("No repos configured. Add one with: pkg repo add <url>")
         return
 
-    multi("  {:<20} {:<10} {:<12} {}".format("NAME", "VERSION", "AUTHOR", "DESCRIPTION"))
-    multi("  " + "-" * 65)
-
-    total = 0
+    inst = _installed_map()
+    avail = []   # (name, ver, author, desc)
+    have  = []   # (name, repover, instver, desc)
     for i in range(len(repos)):
-        pkgs = _load_cache(i)
-        if not pkgs:
-            continue
-        for pkg in pkgs:
-            multi("  {:<20} {:<10} {:<12} {}".format(
-                pkg.get('name', '?'),
-                pkg.get('ver',  '?'),
-                pkg.get('author', '?'),
-                pkg.get('desc', '')[:35]
-            ))
-            total += 1
+        for pkg in (_load_cache(i) or []):
+            name = pkg.get('name', '?')
+            ver  = pkg.get('ver', '?')
+            desc = pkg.get('desc', '')[:35]
+            if name.lower() in inst:
+                have.append((name, ver, inst[name.lower()], desc))
+            else:
+                avail.append((name, ver, pkg.get('author', '?'), desc))
 
-    if total == 0:
+    if not avail and not have:
         multi("  No packages in cache. Run 'pkg update' to fetch repo index.")
-    else:
+        return
+
+    multi("  {:<18} {:<9} {:<11} {}".format("NAME", "VERSION", "AUTHOR", "DESCRIPTION"))
+    multi("  " + "-" * 64)
+    for name, ver, author, desc in avail:
+        multi("  {:<18} {:<9} {:<11} {}".format(name, ver, author, desc))
+    if not avail:
+        multi("  " + _DG + "(everything in the repo is already installed)" + _R)
+
+    if have:
         multi("")
-        multi("  {} package(s) available. Install with: pkg install <name>".format(total))
+        multi("  " + _CY + "── Installed " + ("─" * 51) + _R)
+        multi("  {:<18} {:<9} {:<11} {}".format("NAME", "INSTALLED", "REPO", "DESCRIPTION"))
+        for name, repover, instver, desc in have:
+            upd = (_YL + repover + " ↑" + _R) if repover != instver else (_GR + "up-to-date" + _R)
+            multi("  {:<18} {:<9} {:<22} {}".format(name, instver, upd, desc))
+
+    multi("")
+    msg = "  {} available".format(len(avail))
+    if have:
+        msg += ", {} installed".format(len(have))
+        if any(r != iv for _, r, iv, _ in have):
+            msg += " (↑ = update available — 'pkg upgrade')"
+    multi(msg + ".  Install with: pkg install <name>")
 
 # ---------------------------------------------------------------------------
 # Install — local file

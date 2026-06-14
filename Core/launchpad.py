@@ -608,8 +608,10 @@ def execute_file(name, args):
     candidates = [
         name,
         name + '.py',
+        name + '.mpy',
         cwd + '/' + name,
         cwd + '/' + name + '.py',
+        cwd + '/' + name + '.mpy',
     ]
     path = None
     for c in candidates:
@@ -622,6 +624,24 @@ def execute_file(name, args):
 
     if path is None:
         error("'{}' is not a command or executable file.".format(name))
+        return
+
+    # Compiled module: can't exec() bytecode as text — import it (which runs the
+    # module-level code) and call main(args) if it defines one.
+    if path.endswith('.mpy'):
+        try:
+            slash = path.rfind('/')
+            d = path[:slash] or '/'
+            modname = path[slash + 1:-4]
+            if d not in sys.path:
+                sys.path.append(d)
+            if modname in sys.modules:
+                del sys.modules[modname]      # re-run on each launch
+            mod = __import__(modname)
+            if hasattr(mod, 'main'):
+                mod.main(args)
+        except Exception as e:
+            error("Error running '{}': {}".format(path, e))
         return
 
     try:
