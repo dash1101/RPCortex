@@ -1149,6 +1149,151 @@ def _run_due_tasks(restore=''):
     return ran
 
 
+# --- Background services (Track B) -----------------------------------------
+# A service is a long-running coroutine (e.g. the httpd accept loop) supervised
+# by the async shell so it runs WHILE you keep using the prompt. We store
+# FACTORIES (zero-arg callables that return a FRESH coroutine), never live Task
+# handles — because Ctrl+C discards the whole event loop. On every (re)entry of
+# the supervisor we respawn each desired service from its factory, so a
+# background server survives Ctrl+C (it just rebinds a fresh socket; bind with
+# SO_REUSEADDR). Services stop on logout (the supervisor cancels them) or on an
+# explicit unregister_service(). Packages register via sys.modules['Core.launchpad'].
+#
+# Honest scope: this is COOPERATIVE. A service only makes progress while the
+# loop is idle-waiting; a long synchronous command (or synchronous net.py)
+# blocks it until that command returns. True preemptive background work is v1.0.
+
+_SERVICES_CFG = '/Pulsar/Registry/services.cfg'
+_desired_services = {}    # name -> factory (zero-arg -> fresh coroutine)
+_service_tasks = {}       # name -> asyncio.Task (live, tied to the current loop)
+_async_active = False     # True while the asyncio supervisor's loop is running
+
+
+async def _service_guard(name, factory):
+    """Run one service coro; isolate its failure so it can't kill the loop.
+    Stays in the desired set on a crash (respawned on the next supervisor entry);
+    only an explicit unregister removes it.
+
+    Deliberately does NOT pop _service_tasks[name] on exit: a 'stop; start' on one
+    line cancels the old task and stores the new one with no loop-yield between, so
+    the old coro's unwind would otherwise pop the NEW task by name and orphan a
+    running service. Every consumer treats a .done() task as not-running, so a
+    finished handle just lingers harmlessly until it's replaced or cancel/unregister
+    removes it."""
+    import asyncio
+    try:
+        await factory()
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        try:
+            error('[service] {} stopped: {}'.format(name, e))
+        except Exception:
+            pass
+
+
+def _spawn_service_task(name):
+    """Spawn a live task for a desired service (no-op if already running)."""
+    import asyncio
+    fac = _desired_services.get(name)
+    if fac is None:
+        return
+    t = _service_tasks.get(name)
+    if t is not None and not t.done():
+        return
+    try:
+        _service_tasks[name] = asyncio.create_task(_service_guard(name, fac))
+    except Exception as e:
+        try:
+            error('[service] could not start {}: {}'.format(name, e))
+        except Exception:
+            pass
+
+
+def _spawn_all_services():
+    for name in list(_desired_services.keys()):
+        _spawn_service_task(name)
+
+
+def _cancel_all_service_tasks():
+    for name in list(_service_tasks.keys()):
+        t = _service_tasks.pop(name, None)
+        if t is not None:
+            try:
+                t.cancel()
+            except Exception:
+                pass
+
+
+def register_service(name, factory):
+    """Register a background service and, if the async loop is live, start it now.
+    `factory` is a zero-arg callable returning a FRESH coroutine each call (so the
+    service can be respawned after a Ctrl+C loop reset). Idempotent by name."""
+    _desired_services[name] = factory
+    if _async_active:
+        _spawn_service_task(name)
+    return True
+
+
+def unregister_service(name):
+    """Stop a background service and forget it (it won't respawn)."""
+    had = name in _desired_services
+    _desired_services.pop(name, None)
+    t = _service_tasks.pop(name, None)
+    if t is not None:
+        try:
+            t.cancel()
+        except Exception:
+            pass
+    return had
+
+
+def service_running(name):
+    """True if `name` is a desired service with a live (not-done) task."""
+    t = _service_tasks.get(name)
+    return (name in _desired_services) and (t is not None) and (not t.done())
+
+
+def list_services():
+    """Return [(name, live_bool), ...] for every desired service."""
+    out = []
+    for name in _desired_services:
+        t = _service_tasks.get(name)
+        out.append((name, (t is not None) and (not t.done())))
+    return out
+
+
+def _seed_services():
+    """Run services.cfg to populate the desired set. Each line is a shell command
+    (e.g. 'httpd start --bg') whose handler calls register_service. Called once
+    per async session (from _enter_async_shell, before the loop), so the handlers
+    run in the sync context — register_service just records to the desired set and
+    the first supervisor entry spawns them. Best-effort."""
+    try:
+        with open(_SERVICES_CFG) as f:
+            lines = f.read().split('\n')
+    except OSError:
+        return
+    for line in lines:
+        s = line.strip()
+        if not s or s.startswith('#'):
+            continue
+        try:
+            _run_line(s)
+        except Exception as e:
+            try:
+                warn('[service] seed failed ({}): {}'.format(s, e))
+            except Exception:
+                pass
+
+
+def _reset_service_tasks():
+    """Forget all live task handles WITHOUT cancelling (the loop they belonged to
+    is gone). Used after a Ctrl+C discards the event loop, so the desired set can
+    be respawned cleanly on the next supervisor entry. Keeps _desired_services."""
+    _service_tasks.clear()
+
+
 # --- Track B: asyncio shell (experimental) ---------------------------------
 
 async def _async_input(prompt):
@@ -1188,11 +1333,19 @@ async def _async_input(prompt):
             sys.stdout.write('^C\r\n')
             _shell_state['async_line'] = ''
             return ''
-        elif ch == '\x1b':                    # swallow an escape sequence (arrows)
+        elif ch == '\x1b':                    # swallow a full escape sequence
+            # Arrows / Ctrl+arrows etc. are CSI/SS3 seqs: ESC [ (or ESC O) then
+            # parameter bytes, ended by a final byte 0x40-0x7e. Consume the whole
+            # thing so e.g. Ctrl+Up (ESC [ 1 ; 5 A) never leaks ';5A' onto the line.
             try:
-                if _sel.select([sys.stdin], [], [], 0.01)[0]:
-                    if sys.stdin.read(1) == '[' and _sel.select([sys.stdin], [], [], 0.01)[0]:
-                        sys.stdin.read(1)
+                if _sel.select([sys.stdin], [], [], 0.02)[0]:
+                    nxt = sys.stdin.read(1)
+                    if nxt in ('[', 'O'):
+                        for _ in range(10):
+                            if not _sel.select([sys.stdin], [], [], 0.02)[0]:
+                                break
+                            if '@' <= sys.stdin.read(1) <= '~':   # final byte
+                                break
             except Exception:
                 pass
         elif ord(ch) >= 32:
@@ -1232,14 +1385,26 @@ async def _shell_coro(username):
 
 async def _supervisor(username):
     import asyncio
+    global _async_active
+    _async_active = True
+    # (Re)spawn the desired service set. The desired set is seeded once per
+    # session in _enter_async_shell; here we just create live tasks for it. On a
+    # Ctrl+C re-entry the previous loop's service tasks are dead and already
+    # cleared, so this is what keeps e.g. httpd alive across Ctrl+C.
+    try:
+        _spawn_all_services()
+    except Exception:
+        pass
     sched = asyncio.create_task(_scheduler_coro())
     try:
         await _shell_coro(username)
     finally:
+        _async_active = False
         try:
             sched.cancel()
         except Exception:
             pass
+        _cancel_all_service_tasks()
 
 
 def _enter_async_shell(username):
@@ -1271,12 +1436,48 @@ def _enter_async_shell(username):
     info("Editing is basic here (no history/completion yet). 'logout' to exit.", p="Launchpad")
     try:
         regedit.save('Settings.Async_Booting', '1')
-        asyncio.run(_supervisor(username))
+        # Seed background services (services.cfg) into the desired set ONCE for
+        # this session, before the loop starts. register_service records them now
+        # (sync context, no loop yet); the supervisor spawns them on entry.
+        try:
+            _seed_services()
+        except Exception:
+            pass
+        # Ctrl+C in async mode surfaces as a KeyboardInterrupt from the event
+        # loop's poll (not as a readable \x03 byte), so it would otherwise unwind
+        # asyncio.run and crash the shell. Catch it, reset the loop, and re-enter
+        # the supervisor with a fresh prompt — the line is abandoned, the shell
+        # (and its background services) live on. The interrupt fires at the poll
+        # level, so the supervisor's finally does NOT run: its service task handles
+        # belong to the now-dead loop, so we drop them here and let the next
+        # supervisor entry respawn the desired set from its factories (httpd
+        # rebinds via SO_REUSEADDR). SystemExit (rawrepl) is a separate
+        # BaseException and still propagates out to main.py / the REPL.
+        global _async_active
+        while _shell_state.get('running'):
+            try:
+                asyncio.run(_supervisor(username))
+                break                              # clean exit (logout / exit)
+            except KeyboardInterrupt:
+                sys.stdout.write('^C\r\n')
+                _async_active = False
+                _reset_service_tasks()             # handles belong to the dead loop
+                try:
+                    asyncio.new_event_loop()       # reset after the interrupt
+                except Exception:
+                    pass
     finally:
         try:
             regedit.save('Settings.Async_Booting', '0')
         except Exception:
             pass
+        # End of session: stop and forget all background services, reset the loop.
+        try:
+            _cancel_all_service_tasks()
+        except Exception:
+            pass
+        _desired_services.clear()
+        _async_active = False
         try:
             asyncio.new_event_loop()   # reset loop state for the rest of this boot
         except Exception:

@@ -1324,6 +1324,8 @@ def help(args=None):
         multi("    'task run'           foreground scheduler loop (q / Ctrl+C to stop)")
         multi("    'task background on' fire tasks while you're idle at the prompt (v0.9.5)")
         multi("  asyncmode on|off     EXPERIMENTAL async shell — tasks fire while you type")
+        multi("  service add <cmd>    Background service (async shell), e.g. httpd start --bg")
+        multi("    'service list'       show running services + the auto-start list")
         multi("  autonomy on [user]   Run with NO login (headless); off | status")
         multi("  script <file.rps>    Run a script: set/$vars, if/else, while, end")
         multi("")

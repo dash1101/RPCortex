@@ -365,6 +365,155 @@ def task(args=None):
         info("Usage: task [list|add <secs> <cmd>|remove <n>|clear|run|background on|off]")
 
 
+# ===========================================================================
+# Background services  —  long-running coroutines (e.g. httpd) supervised by the
+# async shell so they run WHILE you keep using the prompt. (v0.9.5 multitasking.)
+#
+# A line in services.cfg is just a shell command that registers a service, e.g.
+# 'httpd start --bg'. The async shell runs services.cfg at login, so anything
+# listed here auto-starts. Live state (running/stopped) is read from the engine.
+#   service                 list services (live state) + the services.cfg list
+#   service add <command>   add a start command to services.cfg (auto-start)
+#   service remove <n>      remove line <n> from services.cfg
+#   service clear           empty services.cfg
+# ===========================================================================
+
+_SERVICES = '/Pulsar/Registry/services.cfg'
+_SHEADER = (
+    "# RPCortex background services — one start command per line, run by the\n"
+    "# async shell at login. e.g.  httpd start --bg\n"
+    "# Manage with: service add/remove/list/clear  (needs 'asyncmode on').\n"
+)
+
+
+def _svc_read():
+    try:
+        with open(_SERVICES, 'r') as f:
+            return [ln.strip() for ln in f
+                    if ln.strip() and not ln.strip().startswith('#')]
+    except OSError:
+        return []
+
+
+def _svc_write(items):
+    try:
+        with open(_SERVICES, 'w') as f:
+            f.write(_SHEADER)
+            for it in items:
+                f.write(it + '\n')
+        return True
+    except OSError as e:
+        error("Could not write services.cfg: {}".format(e))
+        return False
+
+
+def _svc_list():
+    # Live state from the engine (if the async shell is running).
+    lp = sys.modules.get('Core.launchpad') or sys.modules.get('launchpad')
+    live = []
+    if lp is not None and hasattr(lp, 'list_services'):
+        try:
+            live = lp.list_services()
+        except Exception:
+            live = []
+    if live:
+        multi("  Running services (this session):")
+        for name, alive in live:
+            tag = ("\033[92mrunning\033[0m" if alive else "\033[90mstopped\033[0m")
+            multi("    {:<14} {}".format(name, tag))
+        multi("")
+    cfg = _svc_read()
+    if not cfg:
+        multi("  No auto-start services configured.")
+        multi("  Add one:  service add \"httpd start --bg\"   (then: asyncmode on)")
+        return
+    multi("  Auto-start at login (services.cfg):")
+    for i, c in enumerate(cfg):
+        multi("  {:>2}. {}".format(i + 1, c))
+    multi("")
+    import regedit
+    if (regedit.read('Settings.Async_Shell') or 'false') != 'true':
+        warn("  Async shell is OFF — services only run there. Enable:  asyncmode on")
+
+
+def _svc_add(cmd):
+    if not cmd:
+        error("Usage: service add <command>   e.g.  service add \"httpd start --bg\"")
+        return
+    items = _svc_read()
+    if cmd in items:
+        warn("Already a service: {}".format(cmd))
+        return
+    items.append(cmd)
+    if _svc_write(items):
+        ok("Added service: {}".format(cmd))
+        import regedit
+        if (regedit.read('Settings.Async_Shell') or 'false') != 'true':
+            info("It runs in the async shell — enable it:  asyncmode on")
+        else:
+            info("It starts at your next login. Or start it now:  {}".format(cmd))
+
+
+def _svc_remove(arg):
+    items = _svc_read()
+    if not items:
+        warn("No services to remove.")
+        return
+    try:
+        n = int(arg)
+    except (ValueError, TypeError):
+        error("Usage: service remove <number>   (see 'service list')")
+        return
+    if n < 1 or n > len(items):
+        error("No service #{}. There are {}.".format(n, len(items)))
+        return
+    removed = items.pop(n - 1)
+    if _svc_write(items):
+        ok("Removed: {}".format(removed))
+        info("Already-running copies stop at logout, or now with: httpd stop")
+
+
+def _svc_clear():
+    items = _svc_read()
+    if not items:
+        multi("  Already empty.")
+        return
+    if _svc_write([]):
+        ok("Cleared {} service(s).".format(len(items)))
+
+
+def service(args=None):
+    """Manage background services (run in the async shell). See 'service list'."""
+    if not args or not args.strip():
+        _svc_list()
+        return
+    parts = args.split(None, 1)
+    sub = parts[0].lower()
+    rest = parts[1].strip() if len(parts) > 1 else ''
+    # allow quoted commands:  service add "httpd start --bg"
+    if rest and len(rest) >= 2 and rest[0] in ('"', "'") and rest[-1] == rest[0]:
+        rest = rest[1:-1]
+    if sub in ('list', 'status', 'ls'):
+        _svc_list()
+    elif sub == 'add':
+        _svc_add(rest)
+    elif sub in ('remove', 'rm', 'del'):
+        _svc_remove(rest)
+    elif sub == 'clear':
+        _svc_clear()
+    elif sub in ('help', '-h', '--help', '?'):
+        info("service - manage background services (async shell, v0.9.5)")
+        multi("  service                 list running services + auto-start list")
+        multi("  service add <command>   add an auto-start command (services.cfg)")
+        multi("  service remove <n>      remove line <n>")
+        multi("  service clear           empty the list")
+        multi("  Services run in the async shell. Enable it:  asyncmode on")
+        multi("  Example:  service add \"httpd start --bg\"")
+    else:
+        error("Unknown subcommand '{}'.".format(sub))
+        info("Usage: service [list | add <cmd> | remove <n> | clear]")
+
+
 def autonomy(args=None):
     """Run the device with no login.  autonomy status | on [user] | off"""
     import regedit
