@@ -10,7 +10,7 @@ import uos
 if '/Core' not in sys.path:
     sys.path.append('/Core')
 
-from RPCortex import warn, error, info, ok, multi
+from RPCortex import warn, error, info, ok, multi, inpt
 
 
 def _tokenize(s):
@@ -81,11 +81,12 @@ def wget(args=None):
 
 def runurl(args=None):
     if not args:
-        warn("Usage: runurl <url> [--keep]")
+        warn("Usage: runurl <url> [--keep] [-y]")
         return
     parts = args.strip().split()
     url  = parts[0]
     keep = '--keep' in parts
+    yes  = '-y' in parts or '--yes' in parts
 
     from net import run_url, is_available, online
     if not is_available():
@@ -94,6 +95,18 @@ def runurl(args=None):
     if not online():
         error("Not connected to WiFi. Run: wifi connect")
         return
+
+    # Code-execution guard: runurl downloads a .py and runs it with FULL device
+    # access. Make that an explicit, acknowledged act so a stray startup task or
+    # .rps line can't silently pull and run remote code. '-y' bypasses for
+    # trusted automation.
+    if not yes:
+        warn("This downloads and RUNS code from:")
+        multi("  " + url)
+        warn("Only continue if you trust this source — it gets full device access.")
+        if inpt("Run it? (yes/no)").strip().lower() not in ('y', 'yes'):
+            info("Cancelled.")
+            return
     try:
         run_url(url, keep=keep)
     except Exception as e:

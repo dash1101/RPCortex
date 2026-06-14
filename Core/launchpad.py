@@ -1401,6 +1401,18 @@ def launchpad_init(username, password, auth=True):
     load_commands()
     init_session_log()
 
+    # Proactive GC: with the command tables loaded, the heap is at its working
+    # baseline. Setting a threshold makes MicroPython collect *before* the heap
+    # fragments badly (the documented "90 KB free but MemoryError" failure),
+    # instead of only at the default near-exhaustion point. Collect when live
+    # allocation grows by ~a quarter of the current free heap.
+    try:
+        import gc as _gc
+        _gc.collect()
+        _gc.threshold(_gc.mem_free() // 4 + _gc.mem_alloc())
+    except Exception:
+        pass
+
     # Set home directory and start there
     home = '/Users/{}'.format(username)
     _shell_state['home'] = home

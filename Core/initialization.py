@@ -18,6 +18,12 @@ import uos, utime, sys
 
 system_files = {}   # path -> description; checked on every boot
 
+# Cumulative failed-password count for the current login session. Used to
+# escalate the delay between guesses so a scripted serial brute-force is slowed
+# down, while an honest fat-finger (1-2 misses) is barely delayed. Reset on a
+# successful login.
+_login_fails = 0
+
 def get_exist():
     """Verify all required system files exist. Always passes while dict is empty."""
     for path in system_files:
@@ -536,6 +542,7 @@ def login_seq():
             return
 
         # Normal password authentication
+        global _login_fails
         attempts = 0
         while True:
             password = masked_inpt("Password")
@@ -543,17 +550,25 @@ def login_seq():
                 warn("Password cannot be blank.")
                 continue
             if decode(username, password, silent=True):
+                _login_fails = 0
                 regedit.save("Settings.Startup", "0")
                 regedit.save("Settings.Active_User", username)
                 ok("Welcome, {}!".format(username))
                 Startup_Process(username, password)
                 return
-            utime.sleep_ms(500)
+            _login_fails += 1
+            # Escalating backoff: ~0.5 s for the first miss, growing to a 5 s
+            # cap. Slows a scripted brute-force without re-locking the user out
+            # of their own device after one typo.
+            utime.sleep_ms(min(500 + (_login_fails - 1) * 750, 5000))
             attempts += 1
             if attempts < 3:
                 warn("Incorrect password.  Attempt {}/3.".format(attempts))
             else:
                 error("Too many failed attempts.  Returning to username prompt.")
+                if _login_fails >= 6:
+                    warn("Repeated failures detected — cooling down.")
+                    utime.sleep_ms(5000)
                 break
 
 # ---------------------------------------------------------------------------
