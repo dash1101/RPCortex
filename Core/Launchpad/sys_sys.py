@@ -17,6 +17,14 @@ import regedit
 from RPCortex import warn, error, info, ok, multi, inpt
 
 
+# NOTE: reboot / sreboot / freeup below are shadowed at dispatch time by the
+# inline versions in launchpad._CRITICAL (_crit_reboot / _crit_sreboot /
+# _crit_freeup), which are reached FIRST so they still work when the heap is too
+# fragmented to import a command file. These copies stay as the command-table
+# targets (so the names register for help / tab-completion) but are not normally
+# executed. Keep the two in sync if you change shutdown behaviour.
+
+
 def reboot(args=None):
     info("Rebooting system...")
     from RPCortex import close_session_log

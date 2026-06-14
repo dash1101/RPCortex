@@ -90,8 +90,8 @@ OKCYAN    = '\033[96m'
 WARNING   = '\033[93m'
 GRAY      = '\033[90m'
 GREEN     = '\033[32m'
-WHITE     = '\033[0m'
-FAIL      = '\033[91m'
+WHITE     = '\033[0m'   # NB: this is ANSI reset/default, not white — used to reset color.
+FAIL      = '\033[91m'  #     Bright white is WHITE_AT ('\033[97m').
 BOLD      = '\033[1m'
 UNDERLINE = '\033[4m'
 WHITE_AT  = '\033[97m'
@@ -304,8 +304,11 @@ def spin_done(msg=None):
 
 
 def inpt(msg):
-    if post_check:
-        return input("{}{} {}••>  {}".format(WHITE, msg, OKCYAN, WHITE))
+    # Always return a string — callers do inpt(...).strip(). Returning None when
+    # post_check is off (as an earlier version did) was a latent AttributeError.
+    if not post_check:
+        return ''
+    return input("{}{} {}••>  {}".format(WHITE, msg, OKCYAN, WHITE))
 
 
 def masked_inpt(msg):

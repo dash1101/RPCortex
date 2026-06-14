@@ -4,12 +4,17 @@
 /Nebula/
 /Users/
 
-# ── Packages: track built-in stubs only ───────────────────────────
-# /Packages/Launchpad/package.cfg and /Packages/Editor/package.cfg
-# are built-in stubs that must exist. Everything else is runtime-installed.
+# ── Packages: track the BUILT-IN package sources, ignore the rest ──
+# The built-ins are bundled into the .rpc by build.py, so their source must
+# live in version control (a clean clone has to be able to build a complete
+# image). Everything else under /Packages is runtime-installed on the device.
+# NOTE: the *.mpy rule below still ignores any compiled copies inside these.
 /Packages/*
 !/Packages/Launchpad
 !/Packages/Editor
+!/Packages/PicoFetch
+!/Packages/NTP
+!/Packages/RPCMark
 
 # ── Python / MicroPython bytecode ────────────────────────────────
 __pycache__/
