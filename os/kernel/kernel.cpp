@@ -8,6 +8,9 @@
 #include <stdarg.h>
 #include <malloc.h>
 #include "pico/stdlib.h"
+#include "pico/aon_timer.h"
+#include <time.h>
+#include <string.h>
 
 extern "C" {
 extern char __StackLimit;
@@ -58,5 +61,14 @@ bool kboot(void) {
     persist_load_all();
     klog(LOG_INFO, "registry %u keys, %u accounts",
          (unsigned)reg_count(), (unsigned)users_count());
+
+    // Start the always-on clock so `date` works from boot. A default epoch, not
+    // a real time — the user sets it, or NTP will once networking lands. Started
+    // only if it is not already running across a warm reset.
+    if (!aon_timer_is_running()) {
+        struct tm t; memset(&t, 0, sizeof(t));
+        t.tm_year = 2026 - 1900; t.tm_mon = 0; t.tm_mday = 1;
+        aon_timer_start_calendar(&t);
+    }
     return true;
 }

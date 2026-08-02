@@ -28,6 +28,7 @@ add_executable(rpcortex_v2
     ${OS_ROOT}/kernel/kernel.cpp
     ${OS_ROOT}/core/path.cpp
     ${OS_ROOT}/core/pkgindex.cpp
+    ${OS_ROOT}/core/textcore.cpp
     ${OS_ROOT}/core/sha256.cpp
     ${OS_ROOT}/core/registry.cpp
     ${OS_ROOT}/core/users.cpp
@@ -37,6 +38,8 @@ add_executable(rpcortex_v2
     ${OS_ROOT}/shell/fs.cpp
     ${OS_ROOT}/shell/apps.cpp
     ${OS_ROOT}/shell/pkg.cpp
+    ${OS_ROOT}/shell/text.cpp
+    ${OS_ROOT}/shell/sys.cpp
     ${OS_ROOT}/shell/shell.cpp
     ${SPIKE}/firmware/loader.cpp
     ${SPIKE}/firmware/storage.cpp
@@ -60,7 +63,7 @@ target_compile_options(rpcortex_v2 PRIVATE
     $<$<COMPILE_LANGUAGE:CXX>:-fno-rtti>
     $<$<COMPILE_LANGUAGE:CXX>:-fno-use-cxa-atexit>)
 
-target_link_libraries(rpcortex_v2 pico_stdlib hardware_flash hardware_sync pico_rand)
+target_link_libraries(rpcortex_v2 pico_stdlib hardware_flash hardware_sync pico_rand pico_aon_timer)
 pico_enable_stdio_usb(rpcortex_v2 1)
 pico_enable_stdio_uart(rpcortex_v2 0)
 pico_add_extra_outputs(rpcortex_v2)

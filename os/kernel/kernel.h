@@ -8,6 +8,8 @@
 
 #include <stdint.h>
 
+#define RPC_OS_VERSION "2.0.0-dev"
+
 enum LogLevel { LOG_INFO = 0, LOG_WARN = 1, LOG_ERROR = 2 };
 
 // Logging goes to the serial console now and to a flash ring later. Kept behind

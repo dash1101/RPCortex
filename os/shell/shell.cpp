@@ -31,6 +31,8 @@ extern "C" volatile const char *g_current_app;
 // The filesystem commands live in fs.cpp and carry the cwd.
 void fs_register(void);
 const char *fs_cwd(void);
+void text_register(void);
+void sys_register(void);
 
 // --- line input -------------------------------------------------------------
 
@@ -73,7 +75,7 @@ static int cmd_help(int argc, char **argv) {
 
 static int cmd_ver(int argc, char **argv) {
     (void)argc; (void)argv;
-    printf("RPCortex v2  (C++)  board %s\n", PICO_BOARD);
+    printf("RPCortex %s  (C++)  board %s\n", RPC_OS_VERSION, PICO_BOARD);
     return 0;
 }
 
@@ -194,6 +196,8 @@ void shell_register_builtins(void) {
     apps_register();        // apps / unload for resident packages
     pkg_init();             // ensure /pkg exists
     pkg_register();         // install / remove / list
+    text_register();        // echo / grep / wc / head / tail / find
+    sys_register();         // uptime / date / sysinfo
 }
 
 void shell_run(void) {
