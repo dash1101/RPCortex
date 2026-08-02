@@ -34,4 +34,9 @@ bool     storage_walk(const char *path, StorageWalkFn cb, void *ctx);
 uint32_t storage_free_bytes(void);
 uint32_t storage_total_bytes(void);   // the whole filesystem partition, for df
 
+// Last modification time as a Unix epoch, or 0 when it was never recorded (the
+// clock had not been set when the file was written). Held as a littlefs custom
+// attribute, since littlefs itself stores no timestamps.
+uint32_t storage_mtime(const char *path);
+
 #endif  // RPC_STORAGE_H

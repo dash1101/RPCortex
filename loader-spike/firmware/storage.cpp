@@ -96,6 +96,35 @@ bool storage_init(bool format_if_needed) {
     return g_mounted;
 }
 
+// --- modification times -----------------------------------------------------
+//
+// littlefs v2 stores no timestamps, so they are kept as a custom attribute: type
+// ATTR_MTIME, four bytes of Unix epoch. Every path that creates or changes a
+// file must stamp it, because a listing where SOME entries have a date is worse
+// than one where none do — the missing ones read as corruption rather than as an
+// unsupported feature.
+//
+// rpc_now_epoch is a seam like rpc_rand32: the device backs it with the
+// always-on clock, the host test with its own source, so storage.cpp stays free
+// of hardware headers.
+#define ATTR_MTIME 't'
+
+extern "C" uint32_t rpc_now_epoch(void);
+
+static void touch(const char *path) {
+    uint32_t now = rpc_now_epoch();
+    if (!now) return;                  // clock never set: leave it unstamped
+    lfs_setattr(&g_lfs, path, ATTR_MTIME, &now, sizeof(now));
+}
+
+uint32_t storage_mtime(const char *path) {
+    if (!g_mounted) return 0;
+    uint32_t t = 0;
+    if (lfs_getattr(&g_lfs, path, ATTR_MTIME, &t, sizeof(t)) != (lfs_ssize_t)sizeof(t))
+        return 0;
+    return t;
+}
+
 bool storage_write_file(const char *name, const uint8_t *data, uint32_t len) {
     if (!g_mounted) return false;
     lfs_file_t f;
@@ -103,7 +132,9 @@ bool storage_write_file(const char *name, const uint8_t *data, uint32_t len) {
         return false;
     lfs_ssize_t n = lfs_file_write(&g_lfs, &f, data, len);
     lfs_file_close(&g_lfs, &f);
-    return n == (lfs_ssize_t)len;
+    if (n != (lfs_ssize_t)len) return false;
+    touch(name);
+    return true;
 }
 
 bool storage_append_file(const char *name, const uint8_t *data, uint32_t len) {
@@ -113,7 +144,9 @@ bool storage_append_file(const char *name, const uint8_t *data, uint32_t len) {
         return false;
     lfs_ssize_t n = lfs_file_write(&g_lfs, &f, data, len);
     lfs_file_close(&g_lfs, &f);
-    return n == (lfs_ssize_t)len;
+    if (n != (lfs_ssize_t)len) return false;
+    touch(name);
+    return true;
 }
 
 uint32_t storage_read_file(const char *name, uint8_t *buf, uint32_t cap) {
@@ -177,7 +210,9 @@ void storage_list(void) {
 }
 
 bool storage_mkdir(const char *path) {
-    return g_mounted && lfs_mkdir(&g_lfs, path) >= 0;
+    if (!g_mounted || lfs_mkdir(&g_lfs, path) < 0) return false;
+    touch(path);
+    return true;
 }
 
 bool storage_remove(const char *path) {
@@ -185,6 +220,8 @@ bool storage_remove(const char *path) {
 }
 
 bool storage_rename(const char *from, const char *to) {
+    // No touch(): littlefs carries the attributes across, and mv changes a name
+    // rather than content — refreshing the timestamp would misreport it.
     return g_mounted && lfs_rename(&g_lfs, from, to) >= 0;
 }
 
@@ -217,6 +254,9 @@ bool storage_copy(const char *from, const char *to) {
     }
     lfs_file_close(&g_lfs, &in);
     lfs_file_close(&g_lfs, &out);
+    // The copy is a new file, so it gets NOW rather than the source's time —
+    // matching cp without -p, which is what people expect from a bare copy.
+    if (ok) touch(to);
     return ok;
 }
 

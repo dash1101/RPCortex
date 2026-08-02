@@ -23,6 +23,7 @@ declare -A SRC=(
     [path_test]="$CORE/path.cpp"
     [cmdline_test]="$CORE/cmdline.cpp"
     [lineedit_test]="$CORE/lineedit.cpp"
+    [fmt_test]="$CORE/fmt.cpp"
     [pkgindex_test]="$CORE/pkgindex.cpp"
     [textcore_test]="$CORE/textcore.cpp"
     [history_test]="$CORE/history.cpp"

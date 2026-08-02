@@ -94,7 +94,13 @@ static int cmd_date(int argc, char **argv) {
         t.tm_hour = H; t.tm_min = Mi; t.tm_sec = S;
         t.tm_isdst = 0;
         if (!aon_timer_set_time_calendar(&t)) { out_err("Could not set the clock."); return 1; }
+        // Until this happens the clock is RUNNING but not RIGHT (kboot seeds a
+        // placeholder), so file timestamps are withheld. Setting it is what makes
+        // them trustworthy, and therefore what turns them on.
+        bool first = strcmp(reg_get("System.Clock_Set", "false"), "true") != 0;
+        reg_set("System.Clock_Set", "true");
         out_ok("Clock set.");
+        if (first) out_multi("  File timestamps are recorded from now on.");
         return 0;
     }
     if (argc >= 2) { out_warn("Usage: date   |   date set YYYY-MM-DD [HH:MM:SS]"); return 1; }

@@ -9,6 +9,7 @@
 #include "out.h"
 #include "storage.h"
 #include "path.h"
+#include "fmt.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -38,21 +39,61 @@ static int cmd_cd(int argc, char **argv) {
     return 0;
 }
 
-// ls prints directories first (each with a trailing '/'), then files with sizes.
-// Two walks rather than buffering the listing — the directory is on flash and
-// the panel-era habit of not holding a whole listing in RAM still applies.
-struct LsCtx { bool dirs; };
+// ls — v1's table: TYPE, SIZE, MODIFIED, NAME under a rule, directories first.
+//
+// The columns are the whole point. Someone who knows what a listing looks like
+// on Vela should see the same shape here, so the widths, the separator row and
+// the colours (cyan directories, yellow files, grey metadata) are v1's.
+//
+// Two walks rather than one buffered listing: the directory lives on flash and
+// holding a whole listing in RAM to sort it is the habit this OS exists to
+// avoid. Directories come first because that is the order v1 sorted into.
+#define LS_DIR_COLOUR  "\033[96m"     // cyan   — v1's _CD
+#define LS_FILE_COLOUR "\033[93m"     // yellow — v1's _CF
+#define LS_META_COLOUR "\033[90m"     // grey   — v1's _CT
+
+struct LsCtx { const char *base; bool dirs; uint32_t shown; };
+
 static void ls_cb(void *ctx, const char *name, bool is_dir, uint32_t size) {
     LsCtx *c = (LsCtx *)ctx;
-    if (c->dirs && is_dir) out_multi("  %s%s/%s", C_BLUE, name, C_RESET);
-    else if (!c->dirs && !is_dir) out_multi("  %-24s %s%6u B%s", name, C_GRAY, (unsigned)size, C_RESET);
+    if (c->dirs != is_dir) return;
+    c->shown++;
+
+    char full[192];
+    if (strcmp(c->base, "/") == 0) snprintf(full, sizeof(full), "/%s", name);
+    else                          snprintf(full, sizeof(full), "%s/%s", c->base, name);
+
+    char size_s[12];
+    if (is_dir) snprintf(size_s, sizeof(size_s), "-");
+    else        fmt_size(size, size_s, sizeof(size_s));
+
+    char when[24];
+    fmt_time(storage_mtime(full), when, sizeof(when));
+
+    const char *colour = is_dir ? LS_DIR_COLOUR : LS_FILE_COLOUR;
+    out_multi("  %s%-5s%s  %s%-7s%s  %s%-19s%s  %s%s%s%s",
+              colour, is_dir ? "DIR" : "FILE", C_RESET,
+              LS_META_COLOUR, size_s, C_RESET,
+              LS_META_COLOUR, when, C_RESET,
+              colour, name, is_dir ? "/" : "", C_RESET);
 }
+
 static int cmd_ls(int argc, char **argv) {
     char path[128];
     resolve(argc >= 2 ? argv[1] : ".", path, sizeof(path));
-    LsCtx d{true}, f{false};
-    if (!storage_walk(path, ls_cb, &d)) { out_err("Cannot list %s", path); return 1; }
+
+    bool is_dir = false;
+    if (!storage_stat(path, &is_dir, nullptr)) { out_err("Cannot list directory '%s'", path); return 1; }
+    if (!is_dir) { out_err("Not a directory: %s", path); return 1; }
+
+    out_multi("  %-5s  %-7s  %-19s  %s", "TYPE", "SIZE", "MODIFIED", "NAME");
+    out_multi("  %s──────────────────────────────────────────────────────────%s",
+              LS_META_COLOUR, C_RESET);
+
+    LsCtx d{path, true, 0}, f{path, false, 0};
+    if (!storage_walk(path, ls_cb, &d)) { out_err("Cannot list directory '%s'", path); return 1; }
     storage_walk(path, ls_cb, &f);
+    if (d.shown + f.shown == 0) out_warn("Directory is empty.");
     return 0;
 }
 
