@@ -1,2 +1,0 @@
-/home/dash/RPC-Workspace/RPCortex-v2/os/build/_deps/picotool-build/enc_bootloader/CMakeFiles/edit_cache.dir
-/home/dash/RPC-Workspace/RPCortex-v2/os/build/_deps/picotool-build/enc_bootloader/CMakeFiles/rebuild_cache.dir

@@ -4,3 +4,7 @@ littlefs/
 # Build output.
 loader-spike/build/
 loader-spike/build-*/
+
+# OS build output
+os/build/
+os/build-*/
