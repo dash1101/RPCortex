@@ -49,6 +49,7 @@ add_executable(rpcortex_v2
     ${OS_ROOT}/shell/user.cpp
     ${OS_ROOT}/shell/help.cpp
     ${OS_ROOT}/shell/net.cpp
+    ${OS_ROOT}/shell/netapps.cpp
     ${OS_ROOT}/shell/shell.cpp
     ${SPIKE}/firmware/loader.cpp
     ${SPIKE}/firmware/storage.cpp
@@ -95,13 +96,19 @@ pico_enable_stdio_uart(rpcortex_v2 0)
 pico_add_extra_outputs(rpcortex_v2)
 
 # --- apps (relocatable objects, never linked) ------------------------------
-set(APP_FLAGS -mthumb -Os -std=c++17 -fno-exceptions -fno-rtti -fno-common
+# Packages are built for cortex-m0plus REGARDLESS of the board being built.
+#
+# ARMv6-M is a strict subset of ARMv8-M Mainline, so an M0+ binary runs on an
+# M33 — the reverse is not true. Building per-architecture would mean two
+# packages per release in the repository, two things to get wrong at install
+# time, and a wrong-arch package that hard-faults rather than failing cleanly.
+# One portable binary costs a little speed on the RP2350 and removes that whole
+# category. The relocation types GCC emits are identical for both targets
+# (R_ARM_ABS32, R_ARM_THM_CALL, R_ARM_THM_JUMP24), which is what makes this safe
+# for the loader.
+set(APP_FLAGS -mthumb -mcpu=cortex-m0plus -Os -std=c++17
+    -fno-exceptions -fno-rtti -fno-common
     -fno-use-cxa-atexit -ffunction-sections -fdata-sections -I${OS_ROOT}/include)
-if(PICO_PLATFORM STREQUAL "rp2040")
-    list(APPEND APP_FLAGS -mcpu=cortex-m0plus)
-else()
-    list(APPEND APP_FLAGS -mcpu=cortex-m33)
-endif()
 
 function(rpc_add_app name)
     add_custom_command(

@@ -73,13 +73,24 @@ static const char *kSystem[] = {
 };
 
 static const char *kNetwork[] = {
-    "  wifi                    Show the connection status",
+    "  wifi                    Connection status",
     "  wifi scan               List nearby networks",
-    "  wifi connect <ssid> [pw]  Join a network and save it",
+    "  wifi connect [ssid]     Join a network  (asks for the password)",
+    "  wifi autoconnect        Join the strongest saved network",
+    "  wifi add <ssid>         Save a network without connecting",
     "  wifi disconnect         Drop the connection",
     "  wifi list               Saved networks",
     "  wifi forget <ssid>      Remove a saved network",
-    "  wifi auto on|off        Reconnect to a saved network at boot",
+    "  wifi auto on|off        Rejoin a saved network at boot",
+    "  wifi on | off           Power the radio up or down",
+    "",
+    "  ping <host> [count]     ICMP echo, with round-trip times",
+    "  nslookup <host>         Resolve a name to an address",
+    "  ntp [sync]              Set the clock from an NTP server",
+    "  ntp show                Read the time without setting the clock",
+    "  ntp server [host]       Show or change the server (default pool.ntp.org)",
+    "",
+    "  An SSID with spaces needs no quoting: wifi connect my home network",
 };
 
 static const char *kPackages[] = {
@@ -135,7 +146,7 @@ static const Category kCategories[] = {
     CAT(kSystem, "system", "System Commands",
         "sysinfo  meminfo  uptime  date  ver  reboot  sreboot  bootloader  sleep  which  clear  pulse  freeup  env  reg"),
     CAT(kNetwork, "network", "Network Commands",
-        "wifi  (scan  connect  disconnect  list  forget  auto)"),
+        "wifi  ping  nslookup  ntp"),
     CAT(kPackages, "packages", "Packages",
         "pkg install|remove|list   apps  unload  run"),
     CAT(kUsers, "users", "User Accounts",

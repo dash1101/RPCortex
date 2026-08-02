@@ -41,6 +41,7 @@ void sys_register(void);
 void user_register(void);
 void help_register(void);
 void net_register(void);
+void netapps_register(void);
 
 // --- line input -------------------------------------------------------------
 //
@@ -230,6 +231,7 @@ void shell_register_builtins(void) {
     sys_register();         // sysinfo / meminfo / date / pulse ...
     user_register();        // whoami / users / passwd / logout ...
     net_register();         // wifi
+    netapps_register();     // ping / nslookup / ntp
     apps_register();        // apps / unload for resident packages
     pkg_init();             // ensure /pkg exists
     pkg_register();         // install / remove / list

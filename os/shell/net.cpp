@@ -355,6 +355,15 @@ void net_autoconnect(void) {
 
 bool net_available(void) { return true; }
 
+// True when the interface is up AND has an address — "joined" is not the same as
+// "usable", and a command that needs to send a packet cares about the second.
+bool net_is_connected(void) {
+    if (!g_radio_up) return false;
+    if (cyw43_wifi_link_status(&cyw43_state, CYW43_ITF_STA) != CYW43_LINK_UP) return false;
+    return netif_default && netif_is_up(netif_default) &&
+           !ip4_addr_isany(netif_ip4_addr(netif_default));
+}
+
 // The guided join used by first-run setup: scan, show a numbered list, let the
 // user pick one (or 0 to type a hidden SSID), ask for the password, connect.
 // This is v1's setup step 4, and it lives here rather than in session.cpp so the
@@ -559,6 +568,7 @@ static int cmd_wifi(int argc, char **argv) {
 
 void net_autoconnect(void) {}
 bool net_available(void) { return false; }
+bool net_is_connected(void) { return false; }
 int  net_setup_scan_and_join(void) { return 1; }
 
 static int cmd_wifi(int, char **) {
