@@ -16,6 +16,7 @@
 #include "persist.h"
 #include "apps.h"
 #include "pkg.h"
+#include "history.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -35,15 +36,40 @@ void text_register(void);
 void sys_register(void);
 
 // --- line input -------------------------------------------------------------
+//
+// Reads a line with backspace and up/down history recall. The prompt is passed
+// in so a history recall can redraw the whole line (\r, clear-to-EOL, prompt,
+// recalled text). Cursor-in-the-middle editing is deliberately not here yet;
+// history is the recall people reach for first.
 
-static bool read_line(char *buf, size_t max) {
+static bool read_line(const char *prompt, char *buf, size_t max) {
     size_t n = 0;
+    int browse = -1;                 // -1 = the live line; 0..count-1 = history depth
+    printf("%s", prompt);
     while (true) {
         int c = getchar_timeout_us(0);
         if (c == PICO_ERROR_TIMEOUT) { sleep_ms(2); continue; }
         if (c == '\r' || c == '\n') { putchar('\n'); buf[n] = 0; return true; }
-        if ((c == 8 || c == 127) && n) { n--; printf("\b \b"); continue; }
-        if (c >= 32 && c < 127 && n + 1 < max) { buf[n++] = (char)c; putchar(c); }
+        if ((c == 8 || c == 127) && n) { n--; browse = -1; printf("\b \b"); continue; }
+        if (c == 0x1b) {
+            // An arrow key is ESC '[' 'A'/'B'. The two bytes follow immediately;
+            // a lone ESC (nothing after) is ignored.
+            int a = getchar_timeout_us(3000);
+            int b = getchar_timeout_us(3000);
+            if (a == '[' && (b == 'A' || b == 'B')) {
+                int want = browse + (b == 'A' ? 1 : -1);
+                if (want < -1) want = -1;
+                if (want > hist_count() - 1) want = hist_count() - 1;
+                const char *h = (want < 0) ? "" : hist_get(want);
+                if (h) {
+                    browse = want;
+                    printf("\r\x1b[K%s%s", prompt, h);   // redraw the line
+                    strncpy(buf, h, max - 1); buf[max - 1] = 0; n = strlen(buf);
+                }
+            }
+            continue;
+        }
+        if (c >= 32 && c < 127 && n + 1 < max) { buf[n++] = (char)c; browse = -1; putchar(c); }
     }
 }
 
@@ -205,8 +231,10 @@ void shell_run(void) {
     char *argv[16];
     printf("\ntype 'help'\n");
     while (true) {
-        printf("%s:%s> ", session_user(), fs_cwd());
-        if (!read_line(line, sizeof(line))) continue;
+        char prompt[64];
+        snprintf(prompt, sizeof(prompt), "%s:%s> ", session_user(), fs_cwd());
+        if (!read_line(prompt, line, sizeof(line))) continue;
+        hist_add(line);          // record before split_args chops it up
         int argc = split_args(line, argv, 16);
         if (argc == 0) continue;
         const Command *c = cmd_find(argv[0]);

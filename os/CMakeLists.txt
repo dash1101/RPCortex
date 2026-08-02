@@ -29,6 +29,7 @@ add_executable(rpcortex_v2
     ${OS_ROOT}/core/path.cpp
     ${OS_ROOT}/core/pkgindex.cpp
     ${OS_ROOT}/core/textcore.cpp
+    ${OS_ROOT}/core/history.cpp
     ${OS_ROOT}/core/sha256.cpp
     ${OS_ROOT}/core/registry.cpp
     ${OS_ROOT}/core/users.cpp
