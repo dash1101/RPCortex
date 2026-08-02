@@ -187,15 +187,41 @@ static int scan_cb(void *, const cyw43_ev_scan_result_t *r) {
     return 0;
 }
 
-// RSSI as bars, because -47 dBm means nothing to most people and ▂▄▆█ does.
-static const char *signal_bars(int16_t rssi) {
-    if (rssi >= -55) return "▂▄▆█";
-    if (rssi >= -65) return "▂▄▆ ";
-    if (rssi >= -75) return "▂▄  ";
-    return "▂   ";
+// A scan result's auth_mode is NOT one of the CYW43_AUTH_* constants, despite
+// the header pointing at them. cyw43_ll.c builds it as a three-bit summary of
+// the beacon's information elements: bit 0 WEP, bit 1 WPA, bit 2 WPA2. The
+// CYW43_AUTH_* values (0x00400004 and friends) are what you pass to JOIN. They
+// are different encodings and comparing one against the other silently mislabels
+// every secured network as "open".
+#define SEC_WEP  0x01
+#define SEC_WPA  0x02
+#define SEC_WPA2 0x04
+
+static const char *auth_text(uint8_t sec) {
+    if (sec == 0)                             return "open";
+    if ((sec & SEC_WPA2) && (sec & SEC_WPA))  return "WPA/WPA2";
+    if (sec & SEC_WPA2)                       return "WPA2";
+    if (sec & SEC_WPA)                        return "WPA";
+    if (sec & SEC_WEP)                        return "WEP";
+    return "secured";
 }
 
-static int wifi_scan(void) {
+// The join constant for a network we have scanned. Without a scan entry the
+// mixed mode is the right default: it accepts WPA or WPA2, where the AES-only
+// constant fails outright against a WPA-only access point.
+static uint32_t auth_for(const char *ssid) {
+    for (uint32_t i = 0; i < g_scan.n; i++) {
+        if (strcmp(g_scan.e[i].ssid, ssid) != 0) continue;
+        uint8_t sec = g_scan.e[i].auth;
+        if (sec == 0) return CYW43_AUTH_OPEN;
+        if (sec & SEC_WPA2) return (sec & SEC_WPA) ? CYW43_AUTH_WPA2_MIXED_PSK
+                                                   : CYW43_AUTH_WPA2_AES_PSK;
+        if (sec & SEC_WPA)  return CYW43_AUTH_WPA_TKIP_PSK;
+    }
+    return CYW43_AUTH_WPA2_MIXED_PSK;
+}
+
+static int scan_collect(void) {
     if (!radio_up()) return 1;
     g_scan.n = 0;
     cyw43_wifi_scan_options_t opts;
@@ -221,15 +247,25 @@ static int wifi_scan(void) {
         while (j > 0 && g_scan.e[j - 1].rssi < key.rssi) { g_scan.e[j] = g_scan.e[j - 1]; j--; }
         g_scan.e[j] = key;
     }
+    return 0;
+}
 
-    out_info("%u network%s found:", (unsigned)g_scan.n, g_scan.n == 1 ? "" : "s");
+// The user-facing scan: collect, then print v1's table.
+static int wifi_scan(void) {
+    if (scan_collect() != 0) return 1;
+
+    // v1's table: RSSI, CH, SECURITY, SSID under a 48-hyphen rule.
+    out_blank();
+    out_multi("  %-4s  %-6s  %-10s  %s", "RSSI", "CH", "SECURITY", "SSID");
+    out_multi("  %s------------------------------------------------%s", C_GRAY, C_RESET);
     for (uint32_t i = 0; i < g_scan.n; i++) {
         const ScanEntry &e = g_scan.e[i];
-        out_multi("  %s  %-32s %sch %-3u  %4d dBm%s%s", signal_bars(e.rssi), e.ssid,
-                  C_GRAY, (unsigned)e.channel, (int)e.rssi, C_RESET,
-                  e.auth == CYW43_AUTH_OPEN ? "  open" :
-                  (saved_find(e.ssid) >= 0 ? "  saved" : ""));
+        out_multi("  %4d  %5u  %-10s  %s%s%s", (int)e.rssi, (unsigned)e.channel,
+                  auth_text(e.auth), C_CYAN, e.ssid, C_RESET);
     }
+    out_blank();
+    out_multi("  %u network(s) found.", (unsigned)g_scan.n);
+    out_blank();
     return 0;
 }
 
@@ -243,7 +279,7 @@ static int wifi_connect(const char *ssid, const char *pw) {
     char saved_pw[REG_VAL_MAX];
     if (!pw && saved_get(ssid, saved_pw, sizeof(saved_pw)) && saved_pw[0]) pw = saved_pw;
 
-    uint32_t auth = (pw && pw[0]) ? CYW43_AUTH_WPA2_AES_PSK : CYW43_AUTH_OPEN;
+    uint32_t auth = (pw && pw[0]) ? auth_for(ssid) : CYW43_AUTH_OPEN;
     out_info("Connecting to '%s'...", ssid);
     int rc = cyw43_arch_wifi_connect_timeout_ms(ssid, (pw && pw[0]) ? pw : nullptr,
                                                 auth, JOIN_TIMEOUT);
@@ -329,7 +365,7 @@ int net_setup_scan_and_join(void) {
     for (uint32_t i = 0; i < g_scan.n; i++)
         out_multi("   %2u. %-24s %4d dBm  %s", (unsigned)(i + 1), g_scan.e[i].ssid,
                   (int)g_scan.e[i].rssi,
-                  g_scan.e[i].auth == CYW43_AUTH_OPEN ? "open" : "secured");
+                  auth_text(g_scan.e[i].auth));
     out_multi("    0. Other / hidden network (type the name)");
     out_blank();
 
@@ -346,7 +382,7 @@ int net_setup_scan_and_join(void) {
     } else {
         if (n < 1 || (uint32_t)n > g_scan.n) { out_warn("  No such entry."); return 1; }
         snprintf(ssid, sizeof(ssid), "%s", g_scan.e[n - 1].ssid);
-        open_net = g_scan.e[n - 1].auth == CYW43_AUTH_OPEN;
+        open_net = (g_scan.e[n - 1].auth == 0);
     }
 
     char pw[REG_VAL_MAX] = {0};
@@ -354,42 +390,168 @@ int net_setup_scan_and_join(void) {
     return wifi_connect(ssid, pw[0] ? pw : nullptr);
 }
 
+// An SSID may contain spaces, and quoting it is not something anyone remembers
+// to do. Everything after the subcommand is therefore joined back into one name,
+// so `wifi connect my home network` works — which is how v1 behaved, because
+// MicroPython handed it the rest of the line instead of a split argv.
+//
+// Quoting still works, and is the way to keep a leading or trailing space.
+static void join_args(int argc, char **argv, int from, char *out, uint32_t cap) {
+    out[0] = 0;
+    uint32_t n = 0;
+    for (int i = from; i < argc && n + 1 < cap; i++) {
+        if (n && n + 1 < cap) out[n++] = ' ';
+        uint32_t l = (uint32_t)strlen(argv[i]);
+        if (n + l >= cap) l = cap - n - 1;
+        memcpy(out + n, argv[i], l);
+        n += l;
+    }
+    out[n] = 0;
+}
+
+// v1's join flow: a saved password is reused silently, otherwise the password is
+// ASKED for rather than taken from the command line. That keeps the key out of
+// the shell history, and it is the interaction people already know.
+static int wifi_connect_interactive(const char *ssid, bool quiet) {
+    char pw[REG_VAL_MAX] = {0};
+    if (saved_get(ssid, pw, sizeof(pw)) && pw[0]) {
+        if (!quiet) out_multi("Using saved password for '%s'.", ssid);
+        return wifi_connect(ssid, pw);
+    }
+    if (quiet) {
+        out_err("No saved password for '%s'. Use 'wifi add' first.", ssid);
+        return 1;
+    }
+    session_prompt("Password (blank for open network)", pw, sizeof(pw), true);
+    return wifi_connect(ssid, pw[0] ? pw : nullptr);
+}
+
+// wifi autoconnect — scan, then join the SAVED network with the strongest
+// signal. Picking by signal rather than by slot order is what makes this useful
+// on a device that moves between two known places.
+static int wifi_autoconnect(bool quiet) {
+    char k[REG_KEY_MAX];
+    bool any = false;
+    for (int i = 0; i < NET_SAVED && !any; i++) {
+        saved_key(i, "SSID", k, sizeof(k));
+        const char *v = reg_get(k, nullptr);
+        if (v && v[0]) any = true;
+    }
+    if (!any) {
+        if (quiet) out_err("No saved networks for autoconnect.");
+        else       out_warn("No saved networks. Use 'wifi add <ssid>' first.");
+        return 1;
+    }
+
+    if (!quiet) out_info("Scanning for saved networks...");
+    if (scan_collect() != 0) return 1;
+
+    const char *best = nullptr;
+    int16_t best_rssi = -200;
+    for (uint32_t i = 0; i < g_scan.n; i++) {
+        if (saved_find(g_scan.e[i].ssid) < 0) continue;
+        if (g_scan.e[i].rssi <= best_rssi) continue;
+        best_rssi = g_scan.e[i].rssi;
+        best = g_scan.e[i].ssid;
+    }
+    if (!best) { out_warn("None of the saved networks are in range."); return 1; }
+
+    char pw[REG_VAL_MAX] = {0};
+    saved_get(best, pw, sizeof(pw));
+    if (!quiet) out_multi("Strongest saved network: '%s'  (%d dBm)", best, (int)best_rssi);
+    return wifi_connect(best, pw[0] ? pw : nullptr);
+}
+
+static void wifi_usage(void) {
+    out_info("=== WiFi Commands ===");
+    out_multi("  wifi status                Connection status");
+    out_multi("  wifi scan                  Scan for nearby networks");
+    out_multi("  wifi connect [-s] [ssid]   Connect to a network  (-s = quiet)");
+    out_multi("  wifi autoconnect [-s]      Connect to strongest saved network  (-s = quiet)");
+    out_multi("  wifi disconnect            Disconnect");
+    out_multi("  wifi list                  List saved networks");
+    out_multi("  wifi add <ssid>            Save a network");
+    out_multi("  wifi forget <ssid>         Remove a saved network");
+    out_multi("  wifi auto on|off           Rejoin a saved network at boot");
+    out_multi("  wifi on | off              Power the radio up or down");
+}
+
 static int cmd_wifi(int argc, char **argv) {
-    if (argc < 2)                       return wifi_status();
+    if (argc < 2) return wifi_status();
     const char *sub = argv[1];
 
-    if (!strcmp(sub, "status"))         return wifi_status();
-    if (!strcmp(sub, "scan"))           return wifi_scan();
-    if (!strcmp(sub, "list"))           return wifi_list();
-    if (!strcmp(sub, "disconnect"))     return wifi_disconnect();
+    // -s after the subcommand means quiet, as v1 accepted it.
+    bool quiet = false;
+    int  first = 2;
+    while (first < argc && !strcmp(argv[first], "-s")) { quiet = true; first++; }
 
-    if (!strcmp(sub, "on"))  { return radio_up() ? 0 : 1; }
+    if (!strcmp(sub, "status"))     return wifi_status();
+    if (!strcmp(sub, "scan"))       return wifi_scan();
+    if (!strcmp(sub, "list"))       return wifi_list();
+    if (!strcmp(sub, "disconnect")) return wifi_disconnect();
+    if (!strcmp(sub, "help") || !strcmp(sub, "-h")) { wifi_usage(); return 0; }
+
+    if (!strcmp(sub, "on"))  return radio_up() ? 0 : 1;
     if (!strcmp(sub, "off")) { wifi_disconnect(); radio_down(); out_ok("Radio off."); return 0; }
 
+    if (!strcmp(sub, "autoconnect")) return wifi_autoconnect(quiet);
+
     if (!strcmp(sub, "connect")) {
-        if (argc < 3) { out_warn("Usage: wifi connect <ssid> [password]"); return 1; }
-        return wifi_connect(argv[2], argc >= 4 ? argv[3] : nullptr);
+        char ssid[33];
+        if (first >= argc) {
+            // No name given: offer the saved ones, as v1 did, and let a blank
+            // answer take the first.
+            wifi_list();
+            session_prompt("SSID (blank to connect to first saved)", ssid, sizeof(ssid), false);
+            if (ssid[0] == 0) {
+                char k[REG_KEY_MAX];
+                for (int i = 0; i < NET_SAVED; i++) {
+                    saved_key(i, "SSID", k, sizeof(k));
+                    const char *v = reg_get(k, nullptr);
+                    if (v && v[0]) { snprintf(ssid, sizeof(ssid), "%s", v); break; }
+                }
+                if (ssid[0] == 0) { out_warn("No SSID entered."); return 1; }
+            }
+        } else {
+            join_args(argc, argv, first, ssid, sizeof(ssid));
+        }
+        return wifi_connect_interactive(ssid, quiet);
     }
-    if (!strcmp(sub, "forget")) {
-        if (argc < 3) { out_warn("Usage: wifi forget <ssid>"); return 1; }
-        if (!saved_forget(argv[2])) { out_err("'%s' is not saved.", argv[2]); return 1; }
-        out_ok("Forgot '%s'.", argv[2]);
+
+    if (!strcmp(sub, "add")) {
+        if (first >= argc) { out_warn("Usage: wifi add <ssid>"); return 1; }
+        char ssid[33];
+        join_args(argc, argv, first, ssid, sizeof(ssid));
+        char pw[REG_VAL_MAX] = {0};
+        session_prompt("Password (blank for open network)", pw, sizeof(pw), true);
+        saved_put(ssid, pw);
+        out_ok("Saved '%s'.", ssid);
         return 0;
     }
+
+    if (!strcmp(sub, "forget")) {
+        if (first >= argc) { out_warn("Usage: wifi forget <ssid>"); return 1; }
+        char ssid[33];
+        join_args(argc, argv, first, ssid, sizeof(ssid));
+        if (!saved_forget(ssid)) { out_err("'%s' is not saved.", ssid); return 1; }
+        out_ok("Forgot '%s'.", ssid);
+        return 0;
+    }
+
     if (!strcmp(sub, "auto")) {
-        if (argc < 3) {
+        if (first >= argc) {
             out_multi("  Autoconnect : %s", reg_get("WiFi.Auto", "false"));
             return 0;
         }
-        bool on = !strcmp(argv[2], "on");
-        if (!on && strcmp(argv[2], "off")) { out_warn("Usage: wifi auto on|off"); return 1; }
+        bool on = !strcmp(argv[first], "on");
+        if (!on && strcmp(argv[first], "off")) { out_warn("Usage: wifi auto on|off"); return 1; }
         reg_set("WiFi.Auto", on ? "true" : "false");
         out_ok("Autoconnect %s.", on ? "on" : "off");
         return 0;
     }
 
-    out_warn("Usage: wifi [status | scan | connect <ssid> [pw] | disconnect |");
-    out_multi("             list | forget <ssid> | auto on|off | on | off]");
+    out_warn("Unknown subcommand '%s'.", sub);
+    wifi_usage();
     return 1;
 }
 
