@@ -68,10 +68,10 @@ static int cmd_cat(int argc, char **argv) {
         uint32_t want = src.size - off; if (want > sizeof(chunk)) want = sizeof(chunk);
         int n = src.read(src.ctx, off, chunk, want);
         if (n <= 0) break;
-        for (int i = 0; i < n; i++) putchar(chunk[i]);
+        out_write((const char *)chunk, (uint32_t)n);
         off += (uint32_t)n;
     }
-    if (off) putchar('\n');          // ensure the prompt starts on a fresh line
+    if (off) out_write("\n", 1);     // ensure the prompt starts on a fresh line
     storage_close_source(h);
     return 0;
 }
@@ -127,7 +127,7 @@ static void tree_walk(const char *base, int depth);
 static void tree_print(void *ctx, const char *name, bool is_dir, uint32_t size) {
     (void)size;
     TreeCtx *c = (TreeCtx *)ctx;
-    for (int i = 0; i < c->depth; i++) printf("  ");
+    for (int i = 0; i < c->depth; i++) out_write("  ", 2);
     out_multi("%s%s%s", is_dir ? C_BLUE : "", name, is_dir ? "/" C_RESET : "");
     if (is_dir && c->depth < 8) {
         char child[128];

@@ -71,6 +71,29 @@ void out_pad(const char *s, int width, char *dst, int cap);
 void out_clear_error(void);
 bool out_had_error(void);
 
+// Raw bytes on the data channel — what `cat` and `hex` emit. Goes wherever
+// out_multi goes, so a redirect or a pipe catches it too. Anything writing file
+// content must use this rather than putchar, or `cat x > y` silently produces
+// an empty y while the content goes to the console.
+void out_write(const char *data, uint32_t len);
+
+// --- capture ----------------------------------------------------------------
+//
+// Redirect the DATA channel into a buffer, leaving the status channel on the
+// console. This is what makes `a | b` and `a > f` work, and it is why out_multi
+// and the tagged helpers were separated in the first place: during `ls > f` the
+// listing belongs in the file, but an error about it still belongs on screen
+// where someone will see it.
+//
+// Not nestable — one shell, one pipeline at a time. Beginning a capture while
+// one is active is a bug in the caller, so it is refused rather than tracked.
+bool     out_capture_begin(char *buf, uint32_t cap);
+uint32_t out_capture_end(void);       // bytes captured; ends the capture
+bool     out_capturing(void);
+// True if the capture ran out of room. A truncated pipe should say so rather
+// than quietly hand the next stage half its input.
+bool     out_capture_overflowed(void);
+
 // v1's input prompt: "<message> ••>  ". Shared by the shell and the login flow
 // so every prompt on the device looks the same.
 void out_prompt(const char *msg);

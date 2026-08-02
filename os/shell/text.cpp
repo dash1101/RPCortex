@@ -19,10 +19,33 @@
 #define TEXT_CAP 16384
 
 const char *fs_cwd(void);       // the shell's working directory (fs.cpp)
+const char *shell_stdin(void);  // this stage's piped input, or nullptr (shell.cpp)
+uint32_t    shell_stdin_len(void);
+
+// A copy of the piped input, so every caller can free() its buffer the same way
+// whether the bytes came from a file or a pipe.
+static char *dup_stdin(uint32_t *out_len) {
+    const char *in = shell_stdin();
+    if (!in) return nullptr;
+    uint32_t n = shell_stdin_len();
+    char *buf = (char *)malloc(n + 1);
+    if (!buf) return nullptr;
+    memcpy(buf, in, n);
+    buf[n] = 0;
+    if (out_len) *out_len = n;
+    return buf;
+}
 
 // Read a file (resolved against cwd) into a fresh buffer. Caller frees. Returns
 // nullptr if the file is missing; sets *truncated if it was longer than the cap.
+//
+// Piped input always wins over a file argument. Inside a pipeline the remaining
+// arguments are options, not filenames — `cat log | head 5` means five lines,
+// and reading a file called "5" instead is the bug this rule exists to prevent.
+// The cost is that `cat a | grep x b` ignores b, which no one types.
 static char *read_text(const char *arg, uint32_t *out_len, bool *truncated) {
+    if (truncated) *truncated = false;
+    if (shell_stdin() || !arg) return dup_stdin(out_len);
     char path[128];
     path_resolve(fs_cwd(), arg, path, sizeof(path));
     bool is_dir = false;
@@ -37,8 +60,13 @@ static char *read_text(const char *arg, uint32_t *out_len, bool *truncated) {
 }
 
 static int cmd_echo(int argc, char **argv) {
-    for (int i = 1; i < argc; i++) printf("%s%s", argv[i], i + 1 < argc ? " " : "");
-    printf("\n");
+    // Through the data channel, not printf: `echo hi > f` has to put "hi" in the
+    // file, and a raw printf would send it to the console and leave f empty.
+    for (int i = 1; i < argc; i++) {
+        out_write(argv[i], (uint32_t)strlen(argv[i]));
+        if (i + 1 < argc) out_write(" ", 1);
+    }
+    out_write("\n", 1);
     return 0;
 }
 
@@ -48,10 +76,10 @@ static void grep_line(void *ctx, const char *line, uint32_t n) {
     if (strstr(line, g->pat)) { out_multi("%s%u:%s %s", C_GRAY, (unsigned)n, C_RESET, line); g->hits++; }
 }
 static int cmd_grep(int argc, char **argv) {
-    if (argc < 3) { out_multi("Usage: grep <pattern> <file>"); return 1; }
+    if (argc < 3 && !shell_stdin()) { out_multi("Usage: grep <pattern> <file>"); return 1; }
     uint32_t len = 0; bool trunc = false;
-    char *buf = read_text(argv[2], &len, &trunc);
-    if (!buf) { out_err("No such file: %s", argv[2]); return 1; }
+    char *buf = read_text(argc > 2 ? argv[2] : nullptr, &len, &trunc);
+    if (!buf) { out_err("No such file: %s", argc > 2 ? argv[2] : "(stdin)"); return 1; }
     GrepCtx g{argv[1], 0};
     text_for_lines(buf, len, grep_line, &g);
     if (trunc) out_warn("File truncated at %u KB.", TEXT_CAP / 1024);
@@ -60,10 +88,10 @@ static int cmd_grep(int argc, char **argv) {
 }
 
 static int cmd_wc(int argc, char **argv) {
-    if (argc < 2) { out_multi("Usage: wc <file>"); return 1; }
+    if (argc < 2 && !shell_stdin()) { out_multi("Usage: wc <file>"); return 1; }
     uint32_t len = 0; bool trunc = false;
-    char *buf = read_text(argv[1], &len, &trunc);
-    if (!buf) { out_err("No such file: %s", argv[1]); return 1; }
+    char *buf = read_text(argc > 1 ? argv[1] : nullptr, &len, &trunc);
+    if (!buf) { out_err("No such file: %s", argc > 1 ? argv[1] : "(stdin)"); return 1; }
     uint32_t l, w, b;
     text_count(buf, len, &l, &w, &b);
     out_multi("  %u lines  %u words  %u bytes%s",
@@ -72,17 +100,29 @@ static int cmd_wc(int argc, char **argv) {
     return 0;
 }
 
+// The line count for head/tail. Reading from a file it is argv[2]; reading a
+// pipe there is no file argument, so `head 5` means five lines.
+static uint32_t line_limit(int argc, char **argv) {
+    int idx = shell_stdin() ? 1 : 2;
+    if (argc > idx) {
+        char *end = nullptr;
+        unsigned long v = strtoul(argv[idx], &end, 10);
+        if (end != argv[idx] && *end == 0 && v > 0) return (uint32_t)v;
+    }
+    return 10;
+}
+
 struct HeadCtx { uint32_t limit, shown; };
 static void head_line(void *ctx, const char *line, uint32_t n) {
     HeadCtx *h = (HeadCtx *)ctx;
     if (n <= h->limit) { out_multi("%s", line); h->shown++; }
 }
 static int cmd_head(int argc, char **argv) {
-    if (argc < 2) { out_multi("Usage: head <file> [n]"); return 1; }
-    uint32_t n = (argc >= 3) ? (uint32_t)strtoul(argv[2], nullptr, 10) : 10;
+    if (argc < 2 && !shell_stdin()) { out_multi("Usage: head <file> [n]"); return 1; }
+    uint32_t n = line_limit(argc, argv);
     uint32_t len = 0;
-    char *buf = read_text(argv[1], &len, nullptr);
-    if (!buf) { out_err("No such file: %s", argv[1]); return 1; }
+    char *buf = read_text(argc > 1 ? argv[1] : nullptr, &len, nullptr);
+    if (!buf) { out_err("No such file: %s", argc > 1 ? argv[1] : "(stdin)"); return 1; }
     HeadCtx h{n, 0};
     text_for_lines(buf, len, head_line, &h);
     free(buf);
@@ -95,11 +135,11 @@ static void tail_line(void *ctx, const char *line, uint32_t idx) {
     if (idx > t->total - t->keep) out_multi("%s", line);
 }
 static int cmd_tail(int argc, char **argv) {
-    if (argc < 2) { out_multi("Usage: tail <file> [n]"); return 1; }
-    uint32_t n = (argc >= 3) ? (uint32_t)strtoul(argv[2], nullptr, 10) : 10;
+    if (argc < 2 && !shell_stdin()) { out_multi("Usage: tail <file> [n]"); return 1; }
+    uint32_t n = line_limit(argc, argv);
     uint32_t len = 0;
-    char *buf = read_text(argv[1], &len, nullptr);
-    if (!buf) { out_err("No such file: %s", argv[1]); return 1; }
+    char *buf = read_text(argc > 1 ? argv[1] : nullptr, &len, nullptr);
+    if (!buf) { out_err("No such file: %s", argc > 1 ? argv[1] : "(stdin)"); return 1; }
     uint32_t total = text_line_count(buf, len);
     TailCtx t{total, n < total ? n : total, 0};
     text_for_lines(buf, len, tail_line, &t);
@@ -140,10 +180,10 @@ static int cmd_find(int argc, char **argv) {
 #define SORT_MAX 2000
 
 static int cmd_sort(int argc, char **argv) {
-    if (argc < 2) { out_multi("Usage: sort <file>"); return 1; }
+    if (argc < 2 && !shell_stdin()) { out_multi("Usage: sort <file>"); return 1; }
     uint32_t len = 0; bool trunc = false;
-    char *buf = read_text(argv[1], &len, &trunc);
-    if (!buf) { out_err("No such file: %s", argv[1]); return 1; }
+    char *buf = read_text(argc > 1 ? argv[1] : nullptr, &len, &trunc);
+    if (!buf) { out_err("No such file: %s", argc > 1 ? argv[1] : "(stdin)"); return 1; }
 
     char **lines = (char **)malloc(SORT_MAX * sizeof(char *));
     if (!lines) { free(buf); out_err("Not enough memory to sort."); return 1; }
@@ -190,10 +230,10 @@ static void uniq_line(void *ctx, const char *line, uint32_t) {
     u->has_prev = true;
 }
 static int cmd_uniq(int argc, char **argv) {
-    if (argc < 2) { out_multi("Usage: uniq <file>"); return 1; }
+    if (argc < 2 && !shell_stdin()) { out_multi("Usage: uniq <file>"); return 1; }
     uint32_t len = 0;
-    char *buf = read_text(argv[1], &len, nullptr);
-    if (!buf) { out_err("No such file: %s", argv[1]); return 1; }
+    char *buf = read_text(argc > 1 ? argv[1] : nullptr, &len, nullptr);
+    if (!buf) { out_err("No such file: %s", argc > 1 ? argv[1] : "(stdin)"); return 1; }
     UniqCtx u; u.prev[0] = 0; u.has_prev = false; u.dropped = 0;
     text_for_lines(buf, len, uniq_line, &u);
     free(buf);
@@ -216,15 +256,16 @@ static int cmd_hex(int argc, char **argv) {
         uint32_t n = want - off; if (n > 16) n = 16;
         int got = src.read(src.ctx, off, row, n);
         if (got <= 0) break;
-        printf("%s%08lx%s  ", C_GRAY, (unsigned long)off, C_RESET);
+        char hexpart[52] = {0}, text[20] = {0};
+        int hp = 0;
         for (int i = 0; i < 16; i++) {
-            if (i < got) printf("%02x ", row[i]); else printf("   ");
-            if (i == 7) putchar(' ');
+            if (i < got) hp += snprintf(hexpart + hp, sizeof(hexpart) - hp, "%02x ", row[i]);
+            else         hp += snprintf(hexpart + hp, sizeof(hexpart) - hp, "   ");
+            if (i == 7)  hp += snprintf(hexpart + hp, sizeof(hexpart) - hp, " ");
         }
-        printf(" |");
         for (int i = 0; i < got; i++)
-            putchar((row[i] >= 32 && row[i] < 127) ? row[i] : '.');
-        printf("|\n");
+            text[i] = (row[i] >= 32 && row[i] < 127) ? (char)row[i] : '.';
+        out_multi("%s%08lx%s  %s |%s|", C_GRAY, (unsigned long)off, C_RESET, hexpart, text);
     }
     storage_close_source(h);
     return 0;

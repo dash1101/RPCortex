@@ -106,6 +106,16 @@ bool storage_write_file(const char *name, const uint8_t *data, uint32_t len) {
     return n == (lfs_ssize_t)len;
 }
 
+bool storage_append_file(const char *name, const uint8_t *data, uint32_t len) {
+    if (!g_mounted) return false;
+    lfs_file_t f;
+    if (lfs_file_open(&g_lfs, &f, name, LFS_O_WRONLY | LFS_O_CREAT | LFS_O_APPEND) < 0)
+        return false;
+    lfs_ssize_t n = lfs_file_write(&g_lfs, &f, data, len);
+    lfs_file_close(&g_lfs, &f);
+    return n == (lfs_ssize_t)len;
+}
+
 uint32_t storage_read_file(const char *name, uint8_t *buf, uint32_t cap) {
     if (!g_mounted) return 0;
     lfs_file_t f;

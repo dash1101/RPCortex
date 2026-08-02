@@ -27,6 +27,7 @@ add_executable(rpcortex_v2
     ${OS_ROOT}/platform_rp2.cpp
     ${OS_ROOT}/kernel/kernel.cpp
     ${OS_ROOT}/core/path.cpp
+    ${OS_ROOT}/core/cmdline.cpp
     ${OS_ROOT}/core/pkgindex.cpp
     ${OS_ROOT}/core/textcore.cpp
     ${OS_ROOT}/core/history.cpp

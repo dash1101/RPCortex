@@ -2,6 +2,7 @@
 
 #include <stdio.h>
 #include <stdarg.h>
+#include <string.h>
 
 static bool g_had_error;
 
@@ -61,11 +62,56 @@ void out_fatal(const char *fmt, ...) {
     va_end(ap);
 }
 
+// --- capture ----------------------------------------------------------------
+
+static char    *g_cap;
+static uint32_t g_cap_size, g_cap_len;
+static bool     g_cap_over;
+
+bool out_capturing(void)           { return g_cap != nullptr; }
+bool out_capture_overflowed(void)  { return g_cap_over; }
+
+bool out_capture_begin(char *buf, uint32_t cap) {
+    if (g_cap || !buf || cap == 0) return false;
+    g_cap = buf; g_cap_size = cap; g_cap_len = 0; g_cap_over = false;
+    g_cap[0] = 0;
+    return true;
+}
+
+uint32_t out_capture_end(void) {
+    uint32_t n = g_cap_len;
+    g_cap = nullptr;
+    return n;
+}
+
+void out_write(const char *data, uint32_t len) {
+    if (!g_cap) { fwrite(data, 1, len, stdout); return; }
+    // Leave a byte for the terminator so the buffer is always a valid C string
+    // for whatever reads it next.
+    uint32_t room = g_cap_size - 1 - g_cap_len;
+    if (len > room) { len = room; g_cap_over = true; }
+    memcpy(g_cap + g_cap_len, data, len);
+    g_cap_len += len;
+    g_cap[g_cap_len] = 0;
+}
+
 void out_multi(const char *fmt, ...) {
     va_list ap; va_start(ap, fmt);
-    vprintf(fmt, ap);
+    if (!g_cap) {
+        vprintf(fmt, ap);
+        va_end(ap);
+        printf("\n");
+        return;
+    }
+    // Format straight into the remaining space. vsnprintf returns the length it
+    // WANTED, so a return past the room available is how truncation is detected.
+    uint32_t room = g_cap_size - 1 - g_cap_len;
+    int want = vsnprintf(g_cap + g_cap_len, room + 1, fmt, ap);
     va_end(ap);
-    printf("\n");
+    if (want < 0) return;
+    if ((uint32_t)want > room) { g_cap_len = g_cap_size - 1; g_cap_over = true; }
+    else                        g_cap_len += (uint32_t)want;
+    out_write("\n", 1);
 }
 
 void out_blank(void) { putchar('\n'); }

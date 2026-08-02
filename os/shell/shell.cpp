@@ -18,6 +18,8 @@
 #include "pkg.h"
 #include "history.h"
 #include "out.h"
+#include "path.h"
+#include "cmdline.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -77,18 +79,6 @@ static bool read_line(const char *prompt, char *buf, size_t max) {
     }
 }
 
-static int split_args(char *line, char **argv, int max) {
-    int argc = 0;
-    char *p = line;
-    while (*p && argc < max) {
-        while (*p == ' ') p++;
-        if (!*p) break;
-        argv[argc++] = p;
-        while (*p && *p != ' ') p++;
-        if (*p) *p++ = 0;
-    }
-    return argc;
-}
 
 // --- built-in commands ------------------------------------------------------
 
@@ -173,27 +163,143 @@ void shell_register_builtins(void) {
              (unsigned)cmd_refused());
 }
 
+// --- pipelines, chaining and redirection ------------------------------------
+//
+// v1 advertised `|`, `&&`, `||` and `;` in its help, and they carried real
+// weight in day-to-day use, so they are here too with the same semantics:
+//
+//   a ; b     run b regardless
+//   a && b    run b only if a succeeded
+//   a || b    run b only if a failed
+//   a | b     run a with its DATA output captured, hand it to b
+//   a > f     write a's data output to f      (a >> f appends)
+//
+// Only the data channel is captured. During `ls > f` the listing goes to the
+// file but an error about it still reaches the console, which is the whole
+// reason out_multi and the tagged helpers were split apart.
+
+#define PIPE_BUF 2048          // one stage's captured output
+
+// A piped stage's input, for commands that can read it instead of a file.
+static const char *g_stdin;
+static uint32_t    g_stdin_len;
+
+const char *shell_stdin(void)     { return g_stdin; }
+uint32_t    shell_stdin_len(void) { return g_stdin_len; }
+
+
+
+
+
+// Run one command (no connectors, no pipes, no redirect left in it).
+// Returns its exit status; a missing command is status 1.
+static int run_one(char *seg) {
+    char *argv[16];
+    int argc = cmdline_split_args(seg, argv, 16);
+    if (argc == 0) return 0;
+    const Command *c = cmd_resolve(argv[0]);
+    if (!c) { out_err("'%s' is not a command or executable file.", argv[0]); return 1; }
+    return c->fn(argc, argv);
+}
+
+// Run one segment: its pipeline, then its redirect if it has one.
+static int run_segment(char *seg) {
+    bool append = false;
+    char *outfile = cmdline_split_redirect(seg, &append);
+
+    // Walk the pipeline left to right. Every stage but the last is captured and
+    // handed to the next; the last prints normally unless it is redirected.
+    char *stage = seg;
+    char *buf_a = nullptr, *buf_b = nullptr;
+    int status = 0;
+
+    g_stdin = nullptr; g_stdin_len = 0;
+
+    while (stage) {
+        char *pipe = cmdline_next_pipe(stage);
+        bool last = (pipe == nullptr);
+        if (pipe) *pipe = 0;
+
+        bool capturing = !last || outfile;
+        if (capturing) {
+            if (!buf_a) buf_a = (char *)malloc(PIPE_BUF);
+            if (!buf_a) { out_err("Not enough memory for a pipeline."); status = 1; break; }
+            out_capture_begin(buf_a, PIPE_BUF);
+        }
+
+        status = run_one(cmdline_trim(stage));
+
+        if (capturing) {
+            uint32_t n = out_capture_end();
+            if (out_capture_overflowed())
+                out_warn("Output truncated at %u bytes.", (unsigned)(PIPE_BUF - 1));
+            if (last && outfile) {
+                char path[128];
+                path_resolve(fs_cwd(), outfile, path, sizeof(path));
+                bool ok = append ? storage_append_file(path, (const uint8_t *)buf_a, n)
+                                 : storage_write_file(path, (const uint8_t *)buf_a, n);
+                if (!ok) { out_err("Could not write %s.", path); status = 1; }
+            } else {
+                // Hand this stage's output to the next as its input. The buffers
+                // swap rather than copy: the next stage captures into the other
+                // one while reading from this.
+                if (!buf_b) buf_b = (char *)malloc(PIPE_BUF);
+                if (!buf_b) { out_err("Not enough memory for a pipeline."); status = 1; break; }
+                char *t = buf_a; buf_a = buf_b; buf_b = t;
+                g_stdin = buf_b; g_stdin_len = n;
+            }
+        }
+
+        stage = pipe ? pipe + 1 : nullptr;
+    }
+
+    g_stdin = nullptr; g_stdin_len = 0;
+    free(buf_a);
+    free(buf_b);
+    return status;
+}
+
+// Execute a whole input line: ; sequencing, && / || conditionals, | pipes.
+static void run_line(char *line) {
+    Connector kind = CON_FIRST;
+    int  last_status = 0;
+    char *rest = line;
+
+    while (rest && *rest) {
+        Connector next_kind = CON_SEQ;
+        int skip = 0;
+        char *conn = cmdline_next_connector(rest, &next_kind, &skip);
+        char *seg  = rest;
+        if (conn) { *conn = 0; rest = conn + skip; }
+        else      { rest = nullptr; }
+
+        seg = cmdline_trim(seg);
+        bool skip_it = (kind == CON_AND && last_status != 0) ||
+                       (kind == CON_OR  && last_status == 0);
+        if (*seg && !skip_it) {
+            out_clear_error();
+            last_status = run_segment(seg);
+            // A command that printed an error but returned 0 still failed, as
+            // far as && is concerned. v1's had_error() served the same purpose.
+            if (last_status == 0 && out_had_error()) last_status = 1;
+            persist_save_dirty();
+        }
+        kind = next_kind;
+    }
+}
+
 void shell_run(void) {
     char line[128];
-    char *argv[16];
-    
+
     while (true) {
-        char prompt[64];
+        char prompt[80];
         // v1's prompt, colour for colour: cyan user, grey @host, blue path.
         snprintf(prompt, sizeof(prompt), "%s%s%s@%s%s:%s%s%s%s>%s ",
                  C_CYAN, session_user(), C_GRAY,
                  reg_get("System.Device_ID", "vela"), C_RESET,
                  C_BLUE, fs_cwd(), C_RESET, C_CYAN, C_RESET);
         if (!read_line(prompt, line, sizeof(line))) continue;
-        hist_add(line);          // record before split_args chops it up
-        int argc = split_args(line, argv, 16);
-        if (argc == 0) continue;
-        out_clear_error();
-        const Command *c = cmd_resolve(argv[0]);
-        if (!c) { out_err("'%s' is not a command or executable file.", argv[0]); continue; }
-        c->fn(argc, argv);
-        // Persist registry/users only if a command actually changed them — the
-        // dirty flags guard the flash write, so this is free when nothing moved.
-        persist_save_dirty();
+        hist_add(line);          // record before the parser chops it up
+        run_line(line);
     }
 }

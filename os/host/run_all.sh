@@ -21,6 +21,7 @@ trap 'rm -rf "$OUT"' EXIT
 # test name -> extra sources
 declare -A SRC=(
     [path_test]="$CORE/path.cpp"
+    [cmdline_test]="$CORE/cmdline.cpp"
     [pkgindex_test]="$CORE/pkgindex.cpp"
     [textcore_test]="$CORE/textcore.cpp"
     [history_test]="$CORE/history.cpp"

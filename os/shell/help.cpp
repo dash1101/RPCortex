@@ -106,6 +106,19 @@ static const char *kMisc[] = {
     "  history              Recent commands  (up/down arrows recall them)",
 };
 
+static const char *kShell[] = {
+    "  a ; b                Run b regardless of how a finished",
+    "  a && b               Run b only if a succeeded",
+    "  a || b               Run b only if a failed",
+    "  a | b                Send a's output into b",
+    "  a > file             Write a's output to a file  (>> appends)",
+    "  \"two words\"          Quote an argument containing spaces",
+    "",
+    "  Only the data channel is piped or redirected — status lines like",
+    "  [@] and [!] still reach the console, so an error during 'ls > f'",
+    "  is not silently written into f.",
+};
+
 #define CAT(id, name, title, summary) \
     {name, title, summary, id, (unsigned)(sizeof(id) / sizeof(id[0]))}
 
@@ -124,6 +137,8 @@ static const Category kCategories[] = {
         "whoami  users  mkacct  passwd  usermod  rmuser  logout"),
     CAT(kMisc, "misc", "Misc",
         "help  history"),
+    CAT(kShell, "shell", "Shell Syntax",
+        "pipes |   chaining && ||   sequencing ;   redirect > >>"),
 };
 #define N_CATEGORIES (sizeof(kCategories) / sizeof(kCategories[0]))
 
@@ -162,7 +177,7 @@ static int cmd_help(int argc, char **argv) {
         for (unsigned i = 0; i < N_CATEGORIES; i++) print_index_line(&kCategories[i]);
         out_blank();
         out_multi("  Type 'help <category>' for details, or 'help all' for every command.");
-        out_multi("  Categories: filesystem  text  system  network  packages  users  misc");
+        out_multi("  Categories: filesystem  text  system  network  packages  users  misc  shell");
         return 0;
     }
 

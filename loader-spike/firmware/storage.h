@@ -9,6 +9,9 @@
 // least format-compatible with what v2.0 would mount.
 bool     storage_init(bool format_if_needed);
 bool     storage_write_file(const char *name, const uint8_t *data, uint32_t len);
+// Append rather than truncate, for the shell's '>>' redirect. Creates the file
+// if it does not exist.
+bool     storage_append_file(const char *name, const uint8_t *data, uint32_t len);
 // Read a whole file into buf. Returns bytes read, or 0 if absent/too big. Used
 // for the small config files (registry, users), not for app images — those
 // stream through storage_open_source so a large one never lands in RAM whole.
