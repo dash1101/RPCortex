@@ -7,6 +7,7 @@
 // unbounded file in RAM to count its lines.
 
 #include "command.h"
+#include "out.h"
 #include "storage.h"
 #include "textcore.h"
 #include "path.h"
@@ -44,29 +45,29 @@ static int cmd_echo(int argc, char **argv) {
 struct GrepCtx { const char *pat; int hits; };
 static void grep_line(void *ctx, const char *line, uint32_t n) {
     GrepCtx *g = (GrepCtx *)ctx;
-    if (strstr(line, g->pat)) { printf("%u: %s\n", (unsigned)n, line); g->hits++; }
+    if (strstr(line, g->pat)) { out_multi("%s%u:%s %s", C_GRAY, (unsigned)n, C_RESET, line); g->hits++; }
 }
 static int cmd_grep(int argc, char **argv) {
-    if (argc < 3) { printf("usage: grep <pattern> <file>\n"); return 1; }
+    if (argc < 3) { out_multi("Usage: grep <pattern> <file>"); return 1; }
     uint32_t len = 0; bool trunc = false;
     char *buf = read_text(argv[2], &len, &trunc);
-    if (!buf) { printf("no such file: %s\n", argv[2]); return 1; }
+    if (!buf) { out_err("No such file: %s", argv[2]); return 1; }
     GrepCtx g{argv[1], 0};
     text_for_lines(buf, len, grep_line, &g);
-    if (trunc) printf("(file truncated at %u KB)\n", TEXT_CAP / 1024);
+    if (trunc) out_warn("File truncated at %u KB.", TEXT_CAP / 1024);
     free(buf);
     return g.hits ? 0 : 1;       // grep's convention: no match is non-zero
 }
 
 static int cmd_wc(int argc, char **argv) {
-    if (argc < 2) { printf("usage: wc <file>\n"); return 1; }
+    if (argc < 2) { out_multi("Usage: wc <file>"); return 1; }
     uint32_t len = 0; bool trunc = false;
     char *buf = read_text(argv[1], &len, &trunc);
-    if (!buf) { printf("no such file: %s\n", argv[1]); return 1; }
+    if (!buf) { out_err("No such file: %s", argv[1]); return 1; }
     uint32_t l, w, b;
     text_count(buf, len, &l, &w, &b);
-    printf("  %u lines  %u words  %u bytes%s\n",
-           (unsigned)l, (unsigned)w, (unsigned)b, trunc ? "  (truncated)" : "");
+    out_multi("  %u lines  %u words  %u bytes%s",
+              (unsigned)l, (unsigned)w, (unsigned)b, trunc ? "  (truncated)" : "");
     free(buf);
     return 0;
 }
@@ -74,14 +75,14 @@ static int cmd_wc(int argc, char **argv) {
 struct HeadCtx { uint32_t limit, shown; };
 static void head_line(void *ctx, const char *line, uint32_t n) {
     HeadCtx *h = (HeadCtx *)ctx;
-    if (n <= h->limit) { printf("%s\n", line); h->shown++; }
+    if (n <= h->limit) { out_multi("%s", line); h->shown++; }
 }
 static int cmd_head(int argc, char **argv) {
-    if (argc < 2) { printf("usage: head <file> [n]\n"); return 1; }
+    if (argc < 2) { out_multi("Usage: head <file> [n]"); return 1; }
     uint32_t n = (argc >= 3) ? (uint32_t)strtoul(argv[2], nullptr, 10) : 10;
     uint32_t len = 0;
     char *buf = read_text(argv[1], &len, nullptr);
-    if (!buf) { printf("no such file: %s\n", argv[1]); return 1; }
+    if (!buf) { out_err("No such file: %s", argv[1]); return 1; }
     HeadCtx h{n, 0};
     text_for_lines(buf, len, head_line, &h);
     free(buf);
@@ -91,14 +92,14 @@ static int cmd_head(int argc, char **argv) {
 struct TailCtx { uint32_t total, keep, seen; };
 static void tail_line(void *ctx, const char *line, uint32_t idx) {
     TailCtx *t = (TailCtx *)ctx;
-    if (idx > t->total - t->keep) printf("%s\n", line);
+    if (idx > t->total - t->keep) out_multi("%s", line);
 }
 static int cmd_tail(int argc, char **argv) {
-    if (argc < 2) { printf("usage: tail <file> [n]\n"); return 1; }
+    if (argc < 2) { out_multi("Usage: tail <file> [n]"); return 1; }
     uint32_t n = (argc >= 3) ? (uint32_t)strtoul(argv[2], nullptr, 10) : 10;
     uint32_t len = 0;
     char *buf = read_text(argv[1], &len, nullptr);
-    if (!buf) { printf("no such file: %s\n", argv[1]); return 1; }
+    if (!buf) { out_err("No such file: %s", argv[1]); return 1; }
     uint32_t total = text_line_count(buf, len);
     TailCtx t{total, n < total ? n : total, 0};
     text_for_lines(buf, len, tail_line, &t);
@@ -114,7 +115,7 @@ static void find_cb(void *ctx, const char *name, bool is_dir, uint32_t) {
     char full[128];
     if (strcmp(f->base, "/") == 0) snprintf(full, sizeof(full), "/%s", name);
     else snprintf(full, sizeof(full), "%s/%s", f->base, name);
-    if (strstr(name, f->needle)) printf("  %s%s\n", full, is_dir ? "/" : "");
+    if (strstr(name, f->needle)) out_multi("  %s%s", full, is_dir ? "/" : "");
     if (is_dir && f->depth < 8) find_walk(full, f->needle, f->depth + 1);
 }
 static void find_walk(const char *base, const char *needle, int depth) {
@@ -122,21 +123,146 @@ static void find_walk(const char *base, const char *needle, int depth) {
     storage_walk(base, find_cb, &f);
 }
 static int cmd_find(int argc, char **argv) {
-    if (argc < 2) { printf("usage: find <name> [path]\n"); return 1; }
+    if (argc < 2) { out_multi("Usage: find <name> [path]"); return 1; }
     char base[128];
     path_resolve(fs_cwd(), argc >= 3 ? argv[2] : ".", base, sizeof(base));
     find_walk(base, argv[1], 0);
     return 0;
 }
 
+// sort — alphabetical, in place over an index of line pointers.
+//
+// The lines are not copied; the buffer is split on '\n' and an array of pointers
+// into it is sorted. That is one allocation of 4 bytes per line instead of a
+// second copy of the file, which is the difference between sorting a 16 KB file
+// and failing to. Insertion sort: n is bounded by SORT_MAX and a quicksort's
+// recursion is a worse trade on a 4 KB stack than n²/4 comparisons on 2000 items.
+#define SORT_MAX 2000
+
+static int cmd_sort(int argc, char **argv) {
+    if (argc < 2) { out_multi("Usage: sort <file>"); return 1; }
+    uint32_t len = 0; bool trunc = false;
+    char *buf = read_text(argv[1], &len, &trunc);
+    if (!buf) { out_err("No such file: %s", argv[1]); return 1; }
+
+    char **lines = (char **)malloc(SORT_MAX * sizeof(char *));
+    if (!lines) { free(buf); out_err("Not enough memory to sort."); return 1; }
+
+    uint32_t n = 0;
+    char *p = buf;
+    while (p < buf + len && n < SORT_MAX) {
+        lines[n++] = p;
+        char *nl = strchr(p, '\n');
+        if (!nl) break;
+        *nl = 0;
+        p = nl + 1;
+    }
+    // Strip a trailing '\r' so a CRLF file sorts on its real content.
+    for (uint32_t i = 0; i < n; i++) {
+        size_t l = strlen(lines[i]);
+        if (l && lines[i][l - 1] == '\r') lines[i][l - 1] = 0;
+    }
+
+    for (uint32_t i = 1; i < n; i++) {
+        char *key = lines[i];
+        uint32_t j = i;
+        while (j > 0 && strcmp(lines[j - 1], key) > 0) { lines[j] = lines[j - 1]; j--; }
+        lines[j] = key;
+    }
+
+    for (uint32_t i = 0; i < n; i++) out_multi("%s", lines[i]);
+    if (trunc)        out_warn("File truncated at %u KB.", TEXT_CAP / 1024);
+    if (n == SORT_MAX) out_warn("Stopped at %u lines.", (unsigned)SORT_MAX);
+    free(lines);
+    free(buf);
+    return 0;
+}
+
+// uniq — drop CONSECUTIVE duplicates, which is what uniq means everywhere and
+// what v1 did. It needs no buffer of its own: only the previous line.
+struct UniqCtx { char prev[128]; bool has_prev; uint32_t dropped; };
+static void uniq_line(void *ctx, const char *line, uint32_t) {
+    UniqCtx *u = (UniqCtx *)ctx;
+    if (u->has_prev && strncmp(u->prev, line, sizeof(u->prev) - 1) == 0) { u->dropped++; return; }
+    out_multi("%s", line);
+    strncpy(u->prev, line, sizeof(u->prev) - 1);
+    u->prev[sizeof(u->prev) - 1] = 0;
+    u->has_prev = true;
+}
+static int cmd_uniq(int argc, char **argv) {
+    if (argc < 2) { out_multi("Usage: uniq <file>"); return 1; }
+    uint32_t len = 0;
+    char *buf = read_text(argv[1], &len, nullptr);
+    if (!buf) { out_err("No such file: %s", argv[1]); return 1; }
+    UniqCtx u; u.prev[0] = 0; u.has_prev = false; u.dropped = 0;
+    text_for_lines(buf, len, uniq_line, &u);
+    free(buf);
+    return 0;
+}
+
+// hex — the classic 16-byte dump: offset, hex, printable. Streams the file so a
+// hexdump of something large does not need it in RAM.
+static int cmd_hex(int argc, char **argv) {
+    if (argc < 2) { out_multi("Usage: hex <file> [n]"); return 1; }
+    uint32_t want = (argc >= 3) ? (uint32_t)strtoul(argv[2], nullptr, 10) : 256;
+    char path[128];
+    path_resolve(fs_cwd(), argv[1], path, sizeof(path));
+    AppSource src; void *h = nullptr;
+    if (!storage_open_source(path, &src, &h)) { out_err("No such file: %s", path); return 1; }
+    if (want > src.size) want = src.size;
+
+    uint8_t row[16];
+    for (uint32_t off = 0; off < want; off += 16) {
+        uint32_t n = want - off; if (n > 16) n = 16;
+        int got = src.read(src.ctx, off, row, n);
+        if (got <= 0) break;
+        printf("%s%08lx%s  ", C_GRAY, (unsigned long)off, C_RESET);
+        for (int i = 0; i < 16; i++) {
+            if (i < got) printf("%02x ", row[i]); else printf("   ");
+            if (i == 7) putchar(' ');
+        }
+        printf(" |");
+        for (int i = 0; i < got; i++)
+            putchar((row[i] >= 32 && row[i] < 127) ? row[i] : '.');
+        printf("|\n");
+    }
+    storage_close_source(h);
+    return 0;
+}
+
+static int cmd_basename(int argc, char **argv) {
+    if (argc < 2) { out_multi("Usage: basename <path>"); return 1; }
+    const char *s = strrchr(argv[1], '/');
+    out_multi("%s", (s && s[1]) ? s + 1 : (s ? "/" : argv[1]));
+    return 0;
+}
+
+static int cmd_dirname(int argc, char **argv) {
+    if (argc < 2) { out_multi("Usage: dirname <path>"); return 1; }
+    const char *s = strrchr(argv[1], '/');
+    if (!s)        { out_multi("."); return 0; }
+    if (s == argv[1]) { out_multi("/"); return 0; }
+    out_multi("%.*s", (int)(s - argv[1]), argv[1]);
+    return 0;
+}
+
 void text_register(void) {
     static const Command cmds[] = {
-        {"echo", "print arguments",        cmd_echo, nullptr},
-        {"grep", "grep <pattern> <file>",  cmd_grep, nullptr},
-        {"wc",   "count lines/words/bytes", cmd_wc,  nullptr},
-        {"head", "first lines of a file",  cmd_head, nullptr},
-        {"tail", "last lines of a file",   cmd_tail, nullptr},
-        {"find", "find <name> [path]",     cmd_find, nullptr},
+        {"echo",     "print arguments",           cmd_echo,     nullptr},
+        {"grep",     "grep <pattern> <file>",     cmd_grep,     nullptr},
+        {"wc",       "count lines/words/bytes",   cmd_wc,       nullptr},
+        {"head",     "first lines of a file",     cmd_head,     nullptr},
+        {"tail",     "last lines of a file",      cmd_tail,     nullptr},
+        {"find",     "find <name> [path]",        cmd_find,     nullptr},
+        {"sort",     "sort a file's lines",       cmd_sort,     nullptr},
+        {"uniq",     "drop repeated lines",       cmd_uniq,     nullptr},
+        {"hex",      "hex <file> [n]",            cmd_hex,      nullptr},
+        {"basename", "file name part of a path",  cmd_basename, nullptr},
+        {"dirname",  "directory part of a path",  cmd_dirname,  nullptr},
     };
     for (const auto &c : cmds) cmd_register(&c);
+
+    cmd_alias("print",   "echo");
+    cmd_alias("count",   "wc");
+    cmd_alias("hexdump", "hex");
 }

@@ -49,6 +49,15 @@ bool users_is_nopass(const char *name);
 // may call it. Returns false if the user is absent or the value is over length.
 bool users_set_password(const char *name, const char *password);
 
+// Promote or demote an account. Refuses to demote root — an account named root
+// that cannot administer the device is a trap in a recovery situation.
+bool users_set_admin(const char *name, bool admin);
+
+// Turn NOPASS on. Refused for an admin account (an admin that accepts any
+// password is an open door) and refused for `false`, because clearing NOPASS
+// means setting a real password: call users_set_password for that.
+bool users_set_nopass(const char *name, bool nopass);
+
 // Remove an account. root and guest are protected and always refused, matching
 // v1 (factoryreset is the only thing that clears them, and that is a separate
 // path). Returns false if refused or absent.

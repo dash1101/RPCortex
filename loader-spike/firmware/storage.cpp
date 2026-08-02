@@ -224,6 +224,8 @@ bool storage_walk(const char *path, StorageWalkFn cb, void *ctx) {
     return true;
 }
 
+uint32_t storage_total_bytes(void) { return FS_SIZE; }
+
 uint32_t storage_free_bytes(void) {
     if (!g_mounted) return 0;
     lfs_ssize_t used = lfs_fs_size(&g_lfs);

@@ -43,8 +43,32 @@ bool cmd_register(const Command *cmd);
 // owner is nullptr, are never touched.
 void cmd_remove_owner(void *owner);
 
+// Aliases live in their own table, not the command one. v1's system.lp mapped
+// ~40 extra names onto the same functions (ll/la/dir -> ls, del/rmdir -> rm,
+// more/less/view -> cat); registering each as a full Command would spend a
+// registry slot and a help line on what is really just a second spelling. Here
+// an alias is two pointers, resolved before dispatch, and `help` stays readable
+// because it lists commands rather than every name that reaches them.
+struct Alias { const char *name; const char *target; };
+
+#define ALIAS_MAX 64
+
+bool         cmd_alias(const char *name, const char *target);
+// The command an alias points at, or nullptr if `name` is not an alias.
+const char  *cmd_alias_target(const char *name);
+uint32_t     cmd_alias_count(void);
+const Alias *cmd_alias_at(uint32_t i);
+
+// Looks up a real command only. Use cmd_resolve for the dispatch path.
 const Command *cmd_find(const char *name);
+// cmd_find, then one alias hop. One hop, not a chain: an alias to an alias is a
+// configuration mistake, and following it would need loop detection to be safe.
+const Command *cmd_resolve(const char *name);
 uint32_t       cmd_count(void);
+// How many registrations were refused (table full, or a duplicate name). Checked
+// once after boot: a command that silently failed to register is a bug that
+// otherwise only surfaces when someone types it.
+uint32_t       cmd_refused(void);
 const Command *cmd_at(uint32_t i);
 
 #endif  // RPC_COMMAND_H

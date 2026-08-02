@@ -9,11 +9,14 @@
 #include "shell.h"
 #include "session.h"
 #include "pkg.h"
+#include "banner.h"
 
 int main(void) {
     stdio_init_all();
     for (int i = 0; i < 300 && !stdio_usb_connected(); i++) sleep_ms(10);
     sleep_ms(150);
+
+    banner_print();
 
     if (!kboot()) {
         // A usable shell is impossible (no storage). A real recovery prompt goes

@@ -29,5 +29,6 @@ bool     storage_copy(const char *from, const char *to);  // streamed, no whole-
 typedef void (*StorageWalkFn)(void *ctx, const char *name, bool is_dir, uint32_t size);
 bool     storage_walk(const char *path, StorageWalkFn cb, void *ctx);
 uint32_t storage_free_bytes(void);
+uint32_t storage_total_bytes(void);   // the whole filesystem partition, for df
 
 #endif  // RPC_STORAGE_H

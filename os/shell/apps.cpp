@@ -1,5 +1,6 @@
 #include "apps.h"
 #include "command.h"
+#include "out.h"
 #include "storage.h"
 #include "kernel.h"
 
@@ -52,7 +53,7 @@ int apps_launch(const char *file, int arg, bool quiet) {
     AppSource src;
     void *handle = nullptr;
     if (!storage_open_source(file, &src, &handle)) {
-        if (!quiet) printf("no such app: %s\n", file);
+        if (!quiet) out_err("No such app: %s", file);
         return -1;
     }
     uint32_t before = heap_free();
@@ -60,8 +61,8 @@ int apps_launch(const char *file, int arg, bool quiet) {
     LoadResult rc = app_load(src, &app);
     storage_close_source(handle);
     if (rc != LOAD_OK) {
-        if (!quiet) printf("load failed: %s%s%s\n", load_result_str(rc),
-                           app.detail[0] ? " - " : "", app.detail);
+        if (!quiet) out_err("Load failed: %s%s%s", load_result_str(rc),
+                            app.detail[0] ? " - " : "", app.detail);
         return -1;
     }
 
@@ -78,20 +79,21 @@ int apps_launch(const char *file, int arg, bool quiet) {
 
     if (resident) {
         if (apps_store(&app)) {
-            if (!quiet) printf("'%s' loaded as a package (ret %d)\n", app.header.name, ret);
+            if (!quiet) out_ok("Package '%s' loaded.", app.header.name);
         } else {
             // Table full or already loaded: pull the commands back rather than
             // orphan them, and unload.
             cmd_remove_owner(app.image);
             app_unload(&app);
-            if (!quiet) printf("'%s' could not stay resident\n", app.header.name);
+            if (!quiet) out_err("'%s' could not stay resident.", app.header.name);
         }
     } else {
         app_unload(&app);
         if (!quiet) {
             uint32_t after = heap_free();
-            printf("'%s' ran (ret %d), unloaded; heap %s\n", app.header.name, ret,
-                   after == before ? "reclaimed" : "LEAKED");
+            if (after == before) out_ok("'%s' finished  (exit %d).", app.header.name, ret);
+            else out_warn("'%s' finished (exit %d) but did not release %u bytes.",
+                          app.header.name, ret, (unsigned)(before - after));
         }
     }
     return ret;
@@ -101,18 +103,18 @@ static int cmd_apps(int, char **) {
     int n = 0;
     for (int i = 0; i < APPS_MAX; i++) {
         if (!g_used[i]) continue;
-        printf("  %-16s %u B\n", g_apps[i].header.name,
-               (unsigned)g_apps[i].bytes_allocated);
+        out_multi("  %s%-16s%s %u B", C_CYAN, g_apps[i].header.name, C_RESET,
+                  (unsigned)g_apps[i].bytes_allocated);
         n++;
     }
-    if (!n) printf("  (no resident packages)\n");
+    if (!n) out_multi("  (no packages loaded)");
     return 0;
 }
 
 static int cmd_unload(int argc, char **argv) {
-    if (argc < 2) { printf("usage: unload <package>\n"); return 1; }
-    if (!apps_unload(argv[1])) { printf("not loaded: %s\n", argv[1]); return 1; }
-    printf("unloaded %s\n", argv[1]);
+    if (argc < 2) { out_multi("Usage: unload <package>"); return 1; }
+    if (!apps_unload(argv[1])) { out_err("Not loaded: %s", argv[1]); return 1; }
+    out_ok("Unloaded %s.", argv[1]);
     return 0;
 }
 

@@ -1,10 +1,22 @@
-// System commands — uptime, date, sysinfo. The everyday v1 sys_sys.py set.
+// System commands — the v1 sys_sys.py set, wording and layout preserved.
+//
+// These are the commands people type to find out whether the device is healthy,
+// so their output is reproduced from v1 line for line: the same labels, the same
+// 12-character label column, the same order. Someone who knows what `sysinfo`
+// looks like on Vela should not have to re-learn it here.
+//
+// Where v1 reported something that has no v2 equivalent (the MicroPython build
+// string) the line is replaced with the true equivalent rather than faked — a
+// version field that lies is worse than one that is absent.
 
 #include "command.h"
+#include "out.h"
 #include "kernel.h"
 #include "storage.h"
 #include "session.h"
+#include "registry.h"
 #include "users.h"
+#include "history.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -12,65 +24,315 @@
 #include <time.h>
 #include "pico/stdlib.h"
 #include "pico/aon_timer.h"
+#include "hardware/clocks.h"
+#include "hardware/watchdog.h"
+
+// The board's image kind, for the "Image" line. One string, one place.
+#if PICO_RP2040
+  #define RPC_ARCH "RP2040"
+#else
+  #define RPC_ARCH "RP2350"
+#endif
+
+const char *fs_cwd(void);
+
+// --- helpers ----------------------------------------------------------------
+
+// The largest block malloc can actually hand out right now, found by probing.
+//
+// This is v1's _largest_block, and it matters here for the same reason: free
+// bytes are not the number that predicts whether the next allocation succeeds.
+// A C++ heap fragments too — newlib's malloc coalesces adjacent free chunks but
+// cannot move a live one — so a device can hold 60 KB free with no single run
+// big enough for a TLS record. Reporting only "free" is what made "plenty of
+// memory" and "allocation failed" look like a contradiction on v1.
+//
+// v1's cap had to sit above any plausible answer or the probe reported its own
+// ceiling as catastrophic fragmentation; the same trap applies, so the cap is
+// the whole arena.
+static uint32_t largest_block(void) {
+    uint32_t lo = 0, hi = heap_total(), best = 0;
+    while (lo <= hi) {
+        uint32_t mid = lo + (hi - lo) / 2;
+        if (mid == 0) break;
+        void *p = malloc(mid);
+        if (p) { free(p); best = mid; lo = mid + 1024; }
+        else   { if (mid < 1024) break; hi = mid - 1024; }
+    }
+    return best;
+}
+
+static unsigned cpu_mhz(void) { return clock_get_hz(clk_sys) / 1000000u; }
+
+// --- commands ---------------------------------------------------------------
 
 static int cmd_uptime(int, char **) {
-    uint64_t s = time_us_64() / 1000000ull;
-    unsigned d = (unsigned)(s / 86400); s %= 86400;
-    unsigned h = (unsigned)(s / 3600);  s %= 3600;
-    unsigned m = (unsigned)(s / 60);    unsigned sec = (unsigned)(s % 60);
-    if (d) printf("up %ud %uh %um %us\n", d, h, m, sec);
-    else   printf("up %uh %um %us\n", h, m, sec);
+    uint64_t total = time_us_64() / 1000000ull;
+    unsigned s = (unsigned)(total % 60);
+    unsigned m = (unsigned)((total / 60) % 60);
+    unsigned h = (unsigned)(total / 3600);
+    if (h)      out_multi("Uptime: %uh %um %us", h, m, s);
+    else if (m) out_multi("Uptime: %um %us", m, s);
+    else        out_multi("Uptime: %us", s);
     return 0;
 }
 
 // date — read or set the always-on clock. The calendar API works the same on
-// RP2040 (RTC) and RP2350 (powman AON timer), so this is portable.
+// RP2040 (RTC) and RP2350 (powman AON timer), so this is portable. The display
+// offset comes from System.TZ_Offset, the same key v1 used.
 static int cmd_date(int argc, char **argv) {
-    if (argc >= 3 && !strcmp(argv[1], "set")) {
-        // date set YYYY-MM-DD [HH:MM:SS]
+    if (argc >= 2 && !strcmp(argv[1], "set")) {
+        if (argc < 3) { out_warn("Usage: date set YYYY-MM-DD [HH:MM:SS]"); return 1; }
         struct tm t; memset(&t, 0, sizeof(t));
         int Y, Mo, D, H = 0, Mi = 0, S = 0;
         if (sscanf(argv[2], "%d-%d-%d", &Y, &Mo, &D) != 3) {
-            printf("usage: date set YYYY-MM-DD [HH:MM:SS]\n"); return 1;
+            out_err("Bad format. Use: date set YYYY-MM-DD HH:MM:SS"); return 1;
         }
         if (argc >= 4) sscanf(argv[3], "%d:%d:%d", &H, &Mi, &S);
         t.tm_year = Y - 1900; t.tm_mon = Mo - 1; t.tm_mday = D;
         t.tm_hour = H; t.tm_min = Mi; t.tm_sec = S;
-        if (!aon_timer_set_time_calendar(&t)) { printf("could not set clock\n"); return 1; }
-        printf("clock set\n");
+        t.tm_isdst = 0;
+        if (!aon_timer_set_time_calendar(&t)) { out_err("Could not set the clock."); return 1; }
+        out_ok("Clock set.");
         return 0;
     }
+    if (argc >= 2) { out_warn("Usage: date   |   date set YYYY-MM-DD [HH:MM:SS]"); return 1; }
+
     struct tm t;
-    if (!aon_timer_get_time_calendar(&t)) { printf("clock not running\n"); return 1; }
-    printf("%04d-%02d-%02d %02d:%02d:%02d\n",
-           t.tm_year + 1900, t.tm_mon + 1, t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec);
+    if (!aon_timer_get_time_calendar(&t)) { out_err("Clock is not running."); return 1; }
+    int off = (int)reg_get_int("System.TZ_Offset", 0);
+    if (off) {
+        // Re-normalise through the epoch so an offset can roll the date over.
+        time_t e = mktime(&t) + (time_t)off * 3600;
+        struct tm *l = gmtime(&e);
+        if (l) t = *l;
+        out_multi("%04d-%02d-%02d  %02d:%02d:%02d  (UTC%+d)",
+                  t.tm_year + 1900, t.tm_mon + 1, t.tm_mday,
+                  t.tm_hour, t.tm_min, t.tm_sec, off);
+    } else {
+        out_multi("%04d-%02d-%02d  %02d:%02d:%02d",
+                  t.tm_year + 1900, t.tm_mon + 1, t.tm_mday,
+                  t.tm_hour, t.tm_min, t.tm_sec);
+    }
     return 0;
 }
 
 static int cmd_sysinfo(int, char **) {
-    printf("RPCortex %s   (C++)\n", RPC_OS_VERSION);
-    printf("  board  : %s\n", PICO_BOARD);
-    printf("  user   : %s%s\n", session_user(),
-           users_is_admin(session_user()) ? " (admin)" : "");
-    printf("  accounts: %u\n", (unsigned)users_count());
-    uint64_t s = time_us_64() / 1000000ull;
-    printf("  uptime : %uh %um %us\n",
-           (unsigned)(s / 3600), (unsigned)((s / 60) % 60), (unsigned)(s % 60));
-    printf("  heap   : %u / %u KB free\n",
-           (unsigned)(heap_free() / 1024), (unsigned)(heap_total() / 1024));
-    printf("  disk   : %u KB free\n", (unsigned)(storage_free_bytes() / 1024));
-    struct tm t;
-    if (aon_timer_get_time_calendar(&t))
-        printf("  clock  : %04d-%02d-%02d %02d:%02d:%02d\n",
-               t.tm_year + 1900, t.tm_mon + 1, t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec);
+    uint32_t free_ram  = heap_free();
+    uint32_t total_ram = heap_total();
+
+    out_info("=== RPCortex %s — System Info ===", RPC_OS_CODENAME);
+    out_multi("  OS Version  : %s", RPC_OS_VERSION);
+    out_multi("  Codename    : %s", RPC_OS_CODENAME);
+    out_multi("  Build       : %s  (%s)",
+              reg_get("System.Build", "1"), reg_get("System.Stage", "dev"));
+    out_multi("  Image       : C++ native (%s)", RPC_ARCH);
+    const char *owner = reg_get("System.Owner", nullptr);
+    if (owner && owner[0]) out_multi("  Owner       : %s", owner);
+    out_multi("  Device ID   : %s", reg_get("System.Device_ID", "vela"));
+    out_multi("  Active User : %s", session_user());
+    out_multi("  Platform    : %s", PICO_BOARD);
+    out_multi("  Compiler    : GCC %s", __VERSION__);
+    out_multi("  CPU Freq    : %u MHz", cpu_mhz());
+    out_multi("  Boot Clock  : %s", reg_get("Hardware.Boot_Clock", "not set"));
+    out_multi("  Max Clock   : %s", reg_get("Hardware.Max_Clock", "unknown"));
+    out_multi("  RAM Total   : %u KB", (unsigned)(total_ram / 1024));
+    out_multi("  RAM Free    : %u KB  (%u%%)", (unsigned)(free_ram / 1024),
+              (unsigned)(total_ram ? free_ram * 100 / total_ram : 0));
+    out_multi("  Flash Free  : %u KB", (unsigned)(storage_free_bytes() / 1024));
     return 0;
+}
+
+static int cmd_meminfo(int, char **) {
+    uint32_t free  = heap_free();
+    uint32_t total = heap_total();
+    uint32_t alloc = total - free;
+    out_multi("  Total : %u KB", (unsigned)(total / 1024));
+    out_multi("  Used  : %u KB  (%u%%)", (unsigned)(alloc / 1024),
+              (unsigned)(total ? alloc * 100 / total : 0));
+    out_multi("  Free  : %u KB", (unsigned)(free / 1024));
+    uint32_t big = largest_block();
+    unsigned frag = free ? (unsigned)(100 - (big * 100 / free)) : 0;
+    if (big > free) frag = 0;
+    out_multi("  Largest block : %u KB   (fragmentation %u%%)",
+              (unsigned)(big / 1024), frag);
+    return 0;
+}
+
+static int cmd_ver(int, char **) {
+    out_multi("RPCortex %s  —  %s", RPC_OS_VERSION, RPC_OS_CODENAME);
+    out_multi("Build: %s  (%s)  [C++ native]",
+              reg_get("System.Build", "1"), reg_get("System.Stage", "dev"));
+    out_multi("GCC %s   Platform: %s (%s)", __VERSION__, PICO_BOARD, RPC_ARCH);
+    return 0;
+}
+
+static int cmd_clear(int, char **) { printf("\x1b[2J\x1b[H"); return 0; }
+
+static int cmd_freeup(int, char **) {
+    // There is no GC to run. What CAN be reclaimed is the fragmentation malloc
+    // itself can coalesce, so this reports honestly rather than pretending to
+    // sweep: the number that matters is the largest run, not the total.
+    uint32_t before = largest_block();
+    uint32_t free   = heap_free();
+    out_ok("Heap: %u KB free, largest run %u KB.",
+           (unsigned)(free / 1024), (unsigned)(before / 1024));
+    if (before < 16 * 1024)
+        out_warn("Largest run is under 16 KB — reboot to defragment.");
+    return 0;
+}
+
+static int cmd_which(int argc, char **argv) {
+    if (argc < 2) { out_warn("Usage: which <command>"); return 1; }
+    const char *t = cmd_alias_target(argv[1]);
+    if (t) {
+        out_multi("  %s = %s  (alias)", argv[1], t);
+        return 0;
+    }
+    const Command *c = cmd_find(argv[1]);
+    if (!c) { out_warn("'%s': not found.", argv[1]); return 1; }
+    out_multi("  %s : %s", c->name, c->owner ? "package command" : "built-in command");
+    return 0;
+}
+
+static int cmd_history(int, char **) {
+    int n = hist_count();
+    if (!n) { out_multi("  (no history yet)"); return 0; }
+    // hist_get(0) is the most recent; print oldest-first with 1-based numbers so
+    // the listing reads like v1's.
+    for (int i = n - 1; i >= 0; i--)
+        out_multi("  %4d  %s", n - i, hist_get(i));
+    return 0;
+}
+
+static int cmd_sleep(int argc, char **argv) {
+    if (argc < 2) { out_warn("Usage: sleep <seconds>"); return 1; }
+    char *end = nullptr;
+    double secs = strtod(argv[1], &end);
+    if (end == argv[1] || secs < 0) { out_warn("Invalid number: '%s'", argv[1]); return 1; }
+    if (secs > 3600) secs = 3600;             // a shell that sleeps for a day is a hang
+    sleep_ms((uint32_t)(secs * 1000.0));
+    return 0;
+}
+
+// env — the registry as a browsable listing, grouped by the prefix before the
+// dot. v1 read the INI file and printed its sections; v2's registry is flat, so
+// the prefix IS the section and grouping reproduces the same output.
+static int cmd_env(int argc, char **argv) {
+    char want[REG_KEY_MAX] = {0};
+    if (argc >= 2) { snprintf(want, sizeof(want), "%s", argv[1]); }
+    char shown[8][REG_KEY_MAX];
+    uint32_t n_shown = 0;
+
+    for (uint32_t i = 0; i < reg_count(); i++) {
+        const char *k = reg_key_at(i);
+        const char *dot = strchr(k, '.');
+        char section[REG_KEY_MAX];
+        uint32_t len = dot ? (uint32_t)(dot - k) : (uint32_t)strlen(k);
+        if (len >= sizeof(section)) len = sizeof(section) - 1;
+        memcpy(section, k, len); section[len] = 0;
+
+        if (want[0] && strcasecmp(section, want) != 0) continue;
+
+        bool seen = false;
+        for (uint32_t s = 0; s < n_shown; s++)
+            if (strcmp(shown[s], section) == 0) { seen = true; break; }
+        if (!seen && n_shown < 8) {
+            snprintf(shown[n_shown], REG_KEY_MAX, "%s", section);
+            n_shown++;
+            out_blank();
+            out_multi("%s[%s]%s", C_CYAN, section, C_RESET);
+        }
+        out_multi("  %s = %s", dot ? dot + 1 : k, reg_get(k, ""));
+    }
+    if (!n_shown) { out_warn("No settings under '%s'.", want); return 1; }
+    out_blank();
+    return 0;
+}
+
+// pulse — CPU clock management, v1's command and its layout. Setting the system
+// clock is a real hardware change, so a rejected frequency says so rather than
+// silently leaving the old one in place.
+static int cmd_pulse(int argc, char **argv) {
+    if (argc < 2) {
+        out_info("=== pulse — CPU clock management ===");
+        out_multi("  Current    : %u MHz", cpu_mhz());
+        out_multi("  Boot Clock : %s", reg_get("Hardware.Boot_Clock", "not set"));
+        out_multi("  Max Clock  : %s", reg_get("Hardware.Max_Clock", "unknown"));
+        out_blank();
+        out_multi("  pulse status          Show clock info");
+        out_multi("  pulse set <MHz>       Set clock now         (e.g. pulse set 200)");
+        out_multi("  pulse boot <MHz>      Set the boot clock    (e.g. pulse boot 150)");
+        return 0;
+    }
+    if (!strcmp(argv[1], "status")) {
+        out_multi("  Current    : %u MHz", cpu_mhz());
+        out_multi("  Boot Clock : %s", reg_get("Hardware.Boot_Clock", "not set"));
+        return 0;
+    }
+    if (!strcmp(argv[1], "set") && argc >= 3) {
+        unsigned mhz = (unsigned)strtoul(argv[2], nullptr, 10);
+        if (mhz < 48 || mhz > 400) { out_err("Out of range. Use 48-400 MHz."); return 1; }
+        if (!set_sys_clock_khz(mhz * 1000, /*required*/false)) {
+            out_err("%u MHz is not reachable from this crystal.", mhz);
+            return 1;
+        }
+        // stdio's UART/USB divisors were computed for the old clock.
+        stdio_init_all();
+        out_ok("Clock set to %u MHz.", cpu_mhz());
+        return 0;
+    }
+    if (!strcmp(argv[1], "boot") && argc >= 3) {
+        unsigned mhz = (unsigned)strtoul(argv[2], nullptr, 10);
+        if (mhz < 48 || mhz > 400) { out_err("Out of range. Use 48-400 MHz."); return 1; }
+        reg_set("Hardware.Boot_Clock", argv[2]);
+        out_ok("Boot clock set to %u MHz (applies from the next boot).", mhz);
+        return 0;
+    }
+    out_warn("Usage: pulse [status | set <MHz> | boot <MHz>]");
+    return 1;
+}
+
+static int cmd_reboot(int, char **) {
+    out_info("Rebooting system...");
+    sleep_ms(120);
+    watchdog_reboot(0, 0, 0);
+    while (1) {}
+}
+
+// A "soft" reboot on bare metal is still a reset — there is no interpreter to
+// drop back into. It is kept as a separate command because muscle memory from v1
+// reaches for it, and doing the sensible thing beats "unknown command".
+static int cmd_sreboot(int, char **) {
+    out_info("Performing soft reboot...");
+    sleep_ms(120);
+    watchdog_reboot(0, 0, 0);
+    while (1) {}
 }
 
 void sys_register(void) {
     static const Command cmds[] = {
-        {"uptime",  "time since boot",        cmd_uptime,  nullptr},
-        {"date",    "date [set YYYY-MM-DD ..]", cmd_date,  nullptr},
-        {"sysinfo", "system overview",        cmd_sysinfo, nullptr},
+        {"uptime",  "time since boot",              cmd_uptime,  nullptr},
+        {"date",    "date [set YYYY-MM-DD ..]",     cmd_date,    nullptr},
+        {"sysinfo", "system overview",              cmd_sysinfo, nullptr},
+        {"meminfo", "RAM usage and fragmentation",  cmd_meminfo, nullptr},
+        {"ver",     "version and board",            cmd_ver,     nullptr},
+        {"clear",   "clear the screen",             cmd_clear,   nullptr},
+        {"freeup",  "report reclaimable memory",    cmd_freeup,  nullptr},
+        {"which",   "which <command>",              cmd_which,   nullptr},
+        {"history", "recent commands",              cmd_history, nullptr},
+        {"sleep",   "sleep <seconds>",              cmd_sleep,   nullptr},
+        {"env",     "registry settings by section", cmd_env,     nullptr},
+        {"pulse",   "CPU clock management",         cmd_pulse,   nullptr},
+        {"reboot",  "restart the device",           cmd_reboot,  nullptr},
+        {"sreboot", "restart the device",           cmd_sreboot, nullptr},
     };
     for (const auto &c : cmds) cmd_register(&c);
+
+    cmd_alias("cls",       "clear");
+    cmd_alias("version",   "ver");
+    cmd_alias("uname",     "ver");
+    cmd_alias("free",      "meminfo");
+    cmd_alias("gc",        "freeup");
+    cmd_alias("softreset", "sreboot");
 }

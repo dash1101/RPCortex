@@ -13,4 +13,13 @@ const char *session_user(void);
 // Log out: clear the active user so session_boot's login loop runs again.
 void session_logout(void);
 
+// One line of input at the standard prompt, optionally masked. Shared with the
+// user-management commands so every prompt on the device — login, passwd,
+// "are you sure" — looks and behaves the same.
+void session_prompt(const char *msg, char *buf, unsigned max, bool secret);
+
+// Ask a yes/no question. True only for a full "yes", matching v1: a destructive
+// action should not proceed on a stray keypress.
+bool session_confirm(const char *msg);
+
 #endif  // RPC_SESSION_H

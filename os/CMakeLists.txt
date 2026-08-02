@@ -34,6 +34,8 @@ add_executable(rpcortex_v2
     ${OS_ROOT}/core/registry.cpp
     ${OS_ROOT}/core/users.cpp
     ${OS_ROOT}/core/persist.cpp
+    ${OS_ROOT}/core/out.cpp
+    ${OS_ROOT}/core/banner.cpp
     ${OS_ROOT}/shell/command.cpp
     ${OS_ROOT}/shell/session.cpp
     ${OS_ROOT}/shell/fs.cpp
@@ -41,6 +43,9 @@ add_executable(rpcortex_v2
     ${OS_ROOT}/shell/pkg.cpp
     ${OS_ROOT}/shell/text.cpp
     ${OS_ROOT}/shell/sys.cpp
+    ${OS_ROOT}/shell/user.cpp
+    ${OS_ROOT}/shell/help.cpp
+    ${OS_ROOT}/shell/net.cpp
     ${OS_ROOT}/shell/shell.cpp
     ${SPIKE}/firmware/loader.cpp
     ${SPIKE}/firmware/storage.cpp
@@ -65,6 +70,17 @@ target_compile_options(rpcortex_v2 PRIVATE
     $<$<COMPILE_LANGUAGE:CXX>:-fno-use-cxa-atexit>)
 
 target_link_libraries(rpcortex_v2 pico_stdlib hardware_flash hardware_sync pico_rand pico_aon_timer)
+
+# Wireless is per-BOARD, not per-architecture: the CYW43 part is on the W boards
+# only. PICO_CYW43_SUPPORTED comes from the board header, and net.cpp compiles to
+# "no radio on this board" stubs without it — so a non-W image still builds, and
+# `wifi` still exists to say why it cannot work rather than being missing.
+#
+# threadsafe_background, not poll: the shell blocks in getchar, so a poll-mode
+# stack would never get a turn and DHCP would never complete.
+if(PICO_CYW43_SUPPORTED)
+    target_link_libraries(rpcortex_v2 pico_cyw43_arch_lwip_threadsafe_background)
+endif()
 pico_enable_stdio_usb(rpcortex_v2 1)
 pico_enable_stdio_uart(rpcortex_v2 0)
 pico_add_extra_outputs(rpcortex_v2)

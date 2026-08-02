@@ -1,6 +1,7 @@
 #include "pkg.h"
 #include "apps.h"
 #include "command.h"
+#include "out.h"
 #include "loader.h"
 #include "storage.h"
 #include "pkgindex.h"
@@ -57,13 +58,13 @@ static bool pkg_install(const char *file) {
     // every relocation, not just that a file exists. The header gives the name
     // and version to record.
     AppSource src; void *h = nullptr;
-    if (!storage_open_source(file, &src, &h)) { printf("no such file: %s\n", file); return false; }
+    if (!storage_open_source(file, &src, &h)) { out_err("No such file: %s", file); return false; }
     LoadedApp probe;
     LoadResult rc = app_load(src, &probe);
     storage_close_source(h);
     if (rc != LOAD_OK) {
-        printf("not a valid package: %s%s%s\n", load_result_str(rc),
-               probe.detail[0] ? " - " : "", probe.detail);
+        out_err("Not a valid package: %s%s%s", load_result_str(rc),
+            probe.detail[0] ? " - " : "", probe.detail);
         return false;
     }
     char name[24], version[12];
@@ -76,11 +77,11 @@ static bool pkg_install(const char *file) {
 
     char dst[40]; pkg_path(name, dst, sizeof(dst));
     if (strcmp(file, dst) != 0 && !storage_copy(file, dst)) {
-        printf("could not copy package into %s\n", PKG_DIR);
+        out_err("Could not copy package into %s.", PKG_DIR);
         return false;
     }
     index_add(name, version);
-    printf("installed %s %s\n", name, version);
+    out_okp("pkg", "Installed %s %s", name, version);
     // Load it now so its commands are available without a reboot.
     apps_launch(dst, 0, /*quiet*/true);
     return true;
@@ -92,16 +93,16 @@ static bool pkg_remove(const char *name) {
     apps_unload(name);                 // stop it and free it if resident
     storage_remove(path);
     index_remove(name);
-    if (!known) { printf("not installed: %s\n", name); return false; }
-    printf("removed %s\n", name);
+    if (!known) { out_err("Not installed: %s", name); return false; }
+    out_okp("pkg", "Removed %s", name);
     return true;
 }
 
 static void list_cb(void *, const char *name, const char *version) {
-    printf("  %-16s %-8s\n", name, version);
+    out_multi("  %s%-16s%s %-8s", C_CYAN, name, C_RESET, version);
 }
 static void pkg_list(void) {
-    printf("installed packages:\n");
+    out_info("Installed packages:");
     index_walk(list_cb, nullptr);
 }
 
@@ -120,7 +121,7 @@ static int cmd_pkg(int argc, char **argv) {
     if (argc >= 3 && !strcmp(argv[1], "install")) return pkg_install(argv[2]) ? 0 : 1;
     if (argc >= 3 && !strcmp(argv[1], "remove"))  return pkg_remove(argv[2]) ? 0 : 1;
     if (argc >= 2 && !strcmp(argv[1], "list"))    { pkg_list(); return 0; }
-    printf("usage: pkg install <file> | pkg remove <name> | pkg list\n");
+    out_multi("Usage: pkg install <file> | pkg remove <name> | pkg list");
     return 1;
 }
 

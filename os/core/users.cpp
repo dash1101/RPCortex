@@ -120,6 +120,30 @@ bool users_set_password(const char *name, const char *password) {
     return true;
 }
 
+bool users_set_admin(const char *name, bool admin) {
+    int i = find(name);
+    if (i < 0) return false;
+    // root's role is not negotiable: an account named root that is not an admin
+    // is a trap for whoever reaches for it in a recovery situation.
+    if (!admin && strcmp(name, "root") == 0) return false;
+    g_users[i].role = admin ? ROLE_ADMIN : ROLE_USER;
+    g_dirty = true;
+    return true;
+}
+
+bool users_set_nopass(const char *name, bool nopass) {
+    int i = find(name);
+    if (i < 0) return false;
+    // An admin that signs in with any password is not an account, it is an open
+    // door. Turning nopass ON is refused for admins; the caller sets a real
+    // password to turn it off.
+    if (nopass && g_users[i].role == ROLE_ADMIN) return false;
+    if (!nopass) return false;          // clearing it requires a password: use users_set_password
+    strcpy(g_users[i].cred, NOPASS);
+    g_dirty = true;
+    return true;
+}
+
 bool users_remove(const char *name) {
     if (!name) return false;
     if (strcmp(name, "root") == 0 || strcmp(name, "guest") == 0) return false;  // protected
