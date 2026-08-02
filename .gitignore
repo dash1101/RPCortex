@@ -9,3 +9,8 @@ loader-spike/build-*/
 os/build/
 os/build-*/
 os/build_*/
+
+# Built images. build.sh regenerates these, and at ~880 KB each they would add a
+# megabyte to history on every build. Release artifacts belong on a release, not
+# in the tree.
+out/
