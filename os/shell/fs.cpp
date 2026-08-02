@@ -15,6 +15,9 @@
 #include <string.h>
 #include "pico/stdlib.h"
 
+const char *shell_stdin(void);      // this stage's piped input, or nullptr
+uint32_t    shell_stdin_len(void);
+
 static char g_cwd[128] = "/";
 
 const char *fs_cwd(void) { return g_cwd; }
@@ -97,24 +100,52 @@ static int cmd_ls(int argc, char **argv) {
     return 0;
 }
 
-static int cmd_cat(int argc, char **argv) {
-    if (argc < 2) { out_multi("Usage: cat <file>"); return 1; }
-    char path[128];
-    resolve(argv[1], path, sizeof(path));
+// cat — one or several files, as v1's `read` did. With more than one, each gets
+// a "==> path <==" header so the output is attributable; with one, nothing is
+// added, because a header on a single file is noise.
+static bool cat_one(const char *path) {
     AppSource src; void *h = nullptr;
-    if (!storage_open_source(path, &src, &h)) { out_err("No such file: %s", path); return 1; }
+    if (!storage_open_source(path, &src, &h)) { out_err("Cannot read '%s'", path); return false; }
     uint8_t chunk[128];
     uint32_t off = 0;
+    bool ends_nl = true;
     while (off < src.size) {
         uint32_t want = src.size - off; if (want > sizeof(chunk)) want = sizeof(chunk);
         int n = src.read(src.ctx, off, chunk, want);
         if (n <= 0) break;
         out_write((const char *)chunk, (uint32_t)n);
+        ends_nl = (chunk[n - 1] == '\n');
         off += (uint32_t)n;
     }
-    if (off) out_write("\n", 1);     // ensure the prompt starts on a fresh line
+    // Only add a newline when the file did not end with one, so `cat a > b`
+    // reproduces the file byte for byte instead of growing it each round trip.
+    if (off && !ends_nl) out_write("\n", 1);
     storage_close_source(h);
-    return 0;
+    return true;
+}
+
+static int cmd_cat(int argc, char **argv) {
+    // With piped input and no argument, echo it — that is what makes
+    // `grep x log | cat` behave.
+    if (argc < 2) {
+        if (shell_stdin()) { out_write(shell_stdin(), shell_stdin_len()); return 0; }
+        out_multi("Usage: cat <file> [file2 ...]");
+        return 1;
+    }
+    int bad = 0;
+    for (int i = 1; i < argc; i++) {
+        char path[128];
+        resolve(argv[i], path, sizeof(path));
+        bool is_dir = false;
+        if (storage_stat(path, &is_dir, nullptr) && is_dir) {
+            out_err("'%s' is a directory.", path);
+            bad++;
+            continue;
+        }
+        if (argc > 2) out_multi("%s==> %s <==%s", C_CYAN, path, C_RESET);
+        if (!cat_one(path)) bad++;
+    }
+    return bad ? 1 : 0;
 }
 
 static int cmd_mkdir(int argc, char **argv) {
@@ -159,35 +190,64 @@ static int cmd_touch(int argc, char **argv) {
     return 0;
 }
 
-// tree — recursive listing, depth-capped at 8, the guard v1 used so a deep or
-// cyclic-looking hierarchy cannot blow the stack. It recurses by re-walking each
-// subdirectory with its full path, which the callback carries in its context.
-struct TreeCtx { const char *base; int depth; };
-static void tree_walk(const char *base, int depth);
+// tree — recursive listing with v1's box-drawing connectors: "├── " for an
+// entry with siblings below it, "└── " for the last, and "│   " carried down the
+// prefix so the vertical lines join up. Plain indentation reads as a different
+// program; the connectors are what make it look like tree.
+//
+// Drawing the last entry differently means knowing how many entries there are
+// before printing any, so each directory is walked twice: once to count, once to
+// print. Two flash reads beats buffering a listing in RAM, which is the trade
+// this OS makes everywhere else.
+//
+// Depth-capped at 8, the guard v1 used so a deep hierarchy cannot blow the stack.
+#define TREE_MAX_DEPTH 8
 
-static void tree_print(void *ctx, const char *name, bool is_dir, uint32_t size) {
-    (void)size;
+struct CountCtx { uint32_t n; };
+static void count_cb(void *ctx, const char *, bool, uint32_t) { ((CountCtx *)ctx)->n++; }
+
+struct TreeCtx {
+    const char *base;
+    const char *prefix;
+    int         depth;
+    uint32_t    total;
+    uint32_t    seen;
+};
+static void tree_walk(const char *base, const char *prefix, int depth);
+
+static void tree_print(void *ctx, const char *name, bool is_dir, uint32_t) {
     TreeCtx *c = (TreeCtx *)ctx;
-    for (int i = 0; i < c->depth; i++) out_write("  ", 2);
-    out_multi("%s%s%s", is_dir ? C_BLUE : "", name, is_dir ? "/" C_RESET : "");
-    if (is_dir && c->depth < 8) {
-        char child[128];
-        if (strcmp(c->base, "/") == 0) snprintf(child, sizeof(child), "/%s", name);
-        else snprintf(child, sizeof(child), "%s/%s", c->base, name);
-        tree_walk(child, c->depth + 1);
-    }
+    bool last = (++c->seen == c->total);
+
+    out_multi("%s%s%s%s%s", c->prefix, last ? "└── " : "├── ",
+              is_dir ? C_BLUE : "", name, is_dir ? "/" C_RESET : "");
+
+    if (!is_dir || c->depth >= TREE_MAX_DEPTH) return;
+
+    char child[128], prefix[96];
+    if (strcmp(c->base, "/") == 0) snprintf(child, sizeof(child), "/%s", name);
+    else                          snprintf(child, sizeof(child), "%s/%s", c->base, name);
+    // A last entry's children hang under blank space; anything else continues
+    // the vertical line.
+    snprintf(prefix, sizeof(prefix), "%s%s", c->prefix, last ? "    " : "│   ");
+    tree_walk(child, prefix, c->depth + 1);
 }
 
-static void tree_walk(const char *base, int depth) {
-    TreeCtx c{base, depth};
+static void tree_walk(const char *base, const char *prefix, int depth) {
+    CountCtx n{0};
+    storage_walk(base, count_cb, &n);
+    if (!n.n) return;
+    TreeCtx c{base, prefix, depth, n.n, 0};
     storage_walk(base, tree_print, &c);
 }
 
 static int cmd_tree(int argc, char **argv) {
     char path[128];
     resolve(argc >= 2 ? argv[1] : ".", path, sizeof(path));
+    bool is_dir = false;
+    if (!storage_stat(path, &is_dir, nullptr)) { out_err("No such path: %s", path); return 1; }
     out_multi("%s%s%s", C_BLUE, path, C_RESET);
-    tree_walk(path, 1);
+    if (is_dir) tree_walk(path, "", 0);
     return 0;
 }
 
@@ -252,17 +312,19 @@ static int cmd_du(int argc, char **argv) {
     char path[128];
     resolve(argc >= 2 ? argv[1] : ".", path, sizeof(path));
     bool is_dir = false; uint32_t size = 0;
-    if (!storage_stat(path, &is_dir, &size)) { out_err("No such path: %s", path); return 1; }
-    if (!is_dir) {
-        out_multi("  %-24s %6u B", path, (unsigned)size);
-        return 0;
+    if (!storage_stat(path, &is_dir, &size)) { out_err("'%s' does not exist.", path); return 1; }
+
+    uint32_t total = size;
+    if (is_dir) {
+        DuCtx c{path, 0, 0, 0, 0};
+        du_walk(path, 0, &c);
+        total = c.bytes;
     }
-    DuCtx c{path, 0, 0, 0, 0};
-    du_walk(path, 0, &c);
-    out_multi("  %s", path);
-    out_multi("  %u B  in %u file%s, %u director%s",
-              (unsigned)c.bytes, (unsigned)c.files, c.files == 1 ? "" : "s",
-              (unsigned)c.dirs, c.dirs == 1 ? "y" : "ies");
+    // v1's shape: one line, the size right-aligned in eight columns, then the
+    // path. A file and a directory read the same way.
+    char human[12];
+    fmt_size(total, human, sizeof(human));
+    out_multi("  %8s  %s", human, path);
     return 0;
 }
 
