@@ -131,14 +131,14 @@ bool users_set_admin(const char *name, bool admin) {
     return true;
 }
 
-bool users_set_nopass(const char *name, bool nopass) {
+bool users_set_nopass(const char *name) {
     int i = find(name);
     if (i < 0) return false;
     // An admin that signs in with any password is not an account, it is an open
-    // door. Turning nopass ON is refused for admins; the caller sets a real
-    // password to turn it off.
-    if (nopass && g_users[i].role == ROLE_ADMIN) return false;
-    if (!nopass) return false;          // clearing it requires a password: use users_set_password
+    // door. There is no matching "clear nopass" call because clearing it means
+    // setting a real password — users_set_password does that and is the only
+    // way back.
+    if (g_users[i].role == ROLE_ADMIN) return false;
     strcpy(g_users[i].cred, NOPASS);
     g_dirty = true;
     return true;

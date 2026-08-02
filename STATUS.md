@@ -53,6 +53,13 @@ make it feel like the same OS. This is the base the Nova D1 gets ported onto.
 - **Wireless is unproven on hardware.** It compiles and links against the real
   cyw43 driver, but no scan has ever run — treat `wifi` as DEVICE-UNCONFIRMED
   until a board says otherwise.
+- **`meminfo`'s fragmentation figure is DEVICE-UNCONFIRMED.** `heap_free()`
+  reports the arena minus live allocations (`mallinfo().uordblks`), which is
+  honest rather than a high-water mark, and `largest_block()` probes with real
+  `malloc` calls — but the two have never been compared on a running board. If
+  they disagree, a healthy device will report high fragmentation, which is
+  exactly the "diagnostic that invents a problem" failure v1 hit and the reason
+  its probe cap had to be raised. Check this against a fresh boot first.
 - **No OTA / update command.** Flashing is drag-and-drop `.uf2` for now.
 - **Missing v1 commands** — `watch`, `edit`/`nano`, `script`, `task`/`service`/
   `startup`, `safeboot`, `diag`/`fscheck`/`logdump`, `alias`/`unalias` at

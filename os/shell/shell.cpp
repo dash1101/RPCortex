@@ -206,6 +206,14 @@ static int run_one(char *seg) {
 static int run_segment(char *seg) {
     bool append = false;
     char *outfile = cmdline_split_redirect(seg, &append);
+    // The redirect is split off the whole segment before the pipeline is, so a
+    // malformed `a > f | b` would otherwise create a file literally named
+    // "f | b". Refuse rather than write it: a garbage filename on flash is
+    // harder to notice, and harder to delete, than an error.
+    if (outfile && (strchr(outfile, '|') || strchr(outfile, ' '))) {
+        out_err("A redirect takes one filename; put it at the end of the line.");
+        return 1;
+    }
 
     // Walk the pipeline left to right. Every stage but the last is captured and
     // handed to the next; the last prints normally unless it is redirected.

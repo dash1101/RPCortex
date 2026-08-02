@@ -53,10 +53,11 @@ bool users_set_password(const char *name, const char *password);
 // that cannot administer the device is a trap in a recovery situation.
 bool users_set_admin(const char *name, bool admin);
 
-// Turn NOPASS on. Refused for an admin account (an admin that accepts any
-// password is an open door) and refused for `false`, because clearing NOPASS
-// means setting a real password: call users_set_password for that.
-bool users_set_nopass(const char *name, bool nopass);
+// Turn NOPASS on: the account then signs in without a password. Refused for an
+// admin, because an admin that accepts any password is an open door. There is no
+// matching "clear" — clearing NOPASS means setting a real password, so
+// users_set_password is the only way back, and that is deliberate.
+bool users_set_nopass(const char *name);
 
 // Remove an account. root and guest are protected and always refused, matching
 // v1 (factoryreset is the only thing that clears them, and that is a separate

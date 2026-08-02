@@ -279,21 +279,36 @@ static int wifi_list(void) {
     return 0;
 }
 
-// Join the saved network at boot, if one is saved and autoconnect is on. Called
-// from the boot path, so it must never block the shell coming up for long — the
-// join has its own timeout and a failure is reported, not fatal.
+// Join a saved network at boot, if autoconnect is on.
+//
+// ONE attempt, not one per saved slot. Walking all four with a 20 s join timeout
+// each is 80 seconds of a dead-looking console before the login prompt, which
+// reads as a hang rather than as a feature — and someone sitting at a device
+// that will not let them log in does not care that it is busy being helpful.
+// The network tried is the one last connected to, falling back to the first
+// saved; anything else is a deliberate `wifi connect` away.
 void net_autoconnect(void) {
     if (strcmp(reg_get("WiFi.Auto", "false"), "true") != 0) return;
+
     char k[REG_KEY_MAX];
-    for (int i = 0; i < NET_SAVED; i++) {
-        saved_key(i, "SSID", k, sizeof(k));
-        const char *ssid = reg_get(k, nullptr);
-        if (!ssid || !ssid[0]) continue;
-        char pw[REG_VAL_MAX];
-        saved_key(i, "PW", k, sizeof(k));
-        snprintf(pw, sizeof(pw), "%s", reg_get(k, ""));
-        if (wifi_connect(ssid, pw) == 0) return;
+    int slot = -1;
+    const char *last = reg_get("WiFi.Active", "");
+    if (last[0]) slot = saved_find(last);
+    if (slot < 0) {
+        for (int i = 0; i < NET_SAVED; i++) {
+            saved_key(i, "SSID", k, sizeof(k));
+            const char *v = reg_get(k, nullptr);
+            if (v && v[0]) { slot = i; break; }
+        }
     }
+    if (slot < 0) return;
+
+    char ssid[33], pw[REG_VAL_MAX];
+    saved_key(slot, "SSID", k, sizeof(k)); snprintf(ssid, sizeof(ssid), "%s", reg_get(k, ""));
+    saved_key(slot, "PW",   k, sizeof(k)); snprintf(pw, sizeof(pw), "%s", reg_get(k, ""));
+    if (!ssid[0]) return;
+
+    wifi_connect(ssid, pw);      // reports its own success or failure
 }
 
 // --- first-run helper -------------------------------------------------------

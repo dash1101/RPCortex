@@ -140,7 +140,7 @@ static int cmd_usermod(int argc, char **argv) {
     if (!strcmp(sub, "nopass")) {
         if (argc < 4) { out_warn("Usage: usermod <user> nopass on|off"); return 1; }
         if (!strcmp(argv[3], "on")) {
-            if (!users_set_nopass(user, true)) { out_err("Could not change '%s'.", user); return 1; }
+            if (!users_set_nopass(user)) { out_err("Could not change '%s' — admins must keep a password.", user); return 1; }
             persist_save_users();
             out_ok("'%s' now signs in without a password.", user);
             return 0;
