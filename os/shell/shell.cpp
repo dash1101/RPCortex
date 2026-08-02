@@ -1,0 +1,196 @@
+// The shell: a prompt, a line parser, and the built-in commands.
+//
+// The v1 launchpad in miniature and without the interpreter machinery — no
+// _get_scope, no .mpy resolution, no _cmd_cache, none of the apparatus that
+// existed to manage Python modules. A line is split into argv, the first token
+// is looked up in the registry, and the command runs. That is the whole engine.
+
+#include "shell.h"
+#include "command.h"
+#include "kernel.h"
+#include "loader.h"
+#include "storage.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "pico/stdlib.h"
+#include "hardware/watchdog.h"
+
+// Set by the shell around app_main so a registered command is tagged with its
+// app (api.cpp), and so a fault names the culprit (fault.cpp).
+extern "C" void api_set_current_app(void *owner);
+extern "C" volatile const char *g_current_app;
+
+// --- line input -------------------------------------------------------------
+
+static bool read_line(char *buf, size_t max) {
+    size_t n = 0;
+    while (true) {
+        int c = getchar_timeout_us(0);
+        if (c == PICO_ERROR_TIMEOUT) { sleep_ms(2); continue; }
+        if (c == '\r' || c == '\n') { putchar('\n'); buf[n] = 0; return true; }
+        if ((c == 8 || c == 127) && n) { n--; printf("\b \b"); continue; }
+        if (c >= 32 && c < 127 && n + 1 < max) { buf[n++] = (char)c; putchar(c); }
+    }
+}
+
+static int split_args(char *line, char **argv, int max) {
+    int argc = 0;
+    char *p = line;
+    while (*p && argc < max) {
+        while (*p == ' ') p++;
+        if (!*p) break;
+        argv[argc++] = p;
+        while (*p && *p != ' ') p++;
+        if (*p) *p++ = 0;
+    }
+    return argc;
+}
+
+// --- built-in commands ------------------------------------------------------
+
+static int cmd_help(int argc, char **argv) {
+    (void)argc; (void)argv;
+    printf("commands (%u):\n", (unsigned)cmd_count());
+    for (uint32_t i = 0; i < cmd_count(); i++) {
+        const Command *c = cmd_at(i);
+        printf("  %-10s %s%s\n", c->name, c->help,
+               c->owner ? "  [app]" : "");
+    }
+    return 0;
+}
+
+static int cmd_ver(int argc, char **argv) {
+    (void)argc; (void)argv;
+    printf("RPCortex v2  (C++)  board %s\n", PICO_BOARD);
+    return 0;
+}
+
+static int cmd_mem(int argc, char **argv) {
+    (void)argc; (void)argv;
+    printf("  heap : %u / %u KB free\n", heap_free() / 1024, heap_total() / 1024);
+    printf("  disk : %u KB free\n", storage_free_bytes() / 1024);
+    return 0;
+}
+
+static int cmd_ls(int argc, char **argv) {
+    (void)argc; (void)argv;
+    storage_list();
+    return 0;
+}
+
+static int cmd_clear(int argc, char **argv) {
+    (void)argc; (void)argv;
+    printf("\x1b[2J\x1b[H");
+    return 0;
+}
+
+static int cmd_reboot(int argc, char **argv) {
+    (void)argc; (void)argv;
+    printf("rebooting\n");
+    sleep_ms(100);
+    watchdog_reboot(0, 0, 0);
+    while (1) {}
+    return 0;
+}
+
+static int cmd_put(int argc, char **argv) {
+    if (argc < 3) { printf("usage: put <name> <len>\n"); return 1; }
+    uint32_t len = (uint32_t)strtoul(argv[2], nullptr, 10);
+    if (len == 0 || len > 256 * 1024) { printf("bad length\n"); return 1; }
+    uint8_t *buf = (uint8_t *)malloc(len);
+    if (!buf) { printf("out of memory\n"); return 1; }
+    printf("send %u raw bytes\n", len);
+    for (uint32_t i = 0; i < len; i++) {
+        int c;
+        do { c = getchar_timeout_us(5000000); } while (c == PICO_ERROR_TIMEOUT);
+        buf[i] = (uint8_t)c;
+    }
+    bool ok = storage_write_file(argv[1], buf, len);
+    free(buf);
+    printf("%s %s (%u B)\n", ok ? "wrote" : "FAILED", argv[1], len);
+    return ok ? 0 : 1;
+}
+
+// run — load an app, let it register/execute, unload. The C++ equivalent of
+// launching a package: everything the app added stays only as long as it does.
+static int cmd_run(int argc, char **argv) {
+    if (argc < 2) { printf("usage: run <app> [arg]\n"); return 1; }
+    int arg = (argc >= 3) ? (int)strtol(argv[2], nullptr, 10) : 0;
+
+    AppSource src;
+    void *handle = nullptr;
+    if (!storage_open_source(argv[1], &src, &handle)) {
+        printf("no such app: %s\n", argv[1]);
+        return 1;
+    }
+
+    uint32_t before = heap_free();
+    LoadedApp app;
+    LoadResult rc = app_load(src, &app);
+    storage_close_source(handle);
+    if (rc != LOAD_OK) {
+        printf("load failed: %s%s%s\n", load_result_str(rc),
+               app.detail[0] ? " - " : "", app.detail);
+        return 1;
+    }
+
+    // Tag anything the app registers with the app as owner, and name it for the
+    // fault handler, for the duration of app_main.
+    api_set_current_app(app.image);
+    g_current_app = app.header.name;
+    int ret = app.entry(arg);
+    g_current_app = nullptr;
+    api_set_current_app(nullptr);
+
+    // If the app registered commands, it is a resident package: keep it loaded
+    // and its commands live. Otherwise it was a one-shot: unload it now. Owner
+    // is the image pointer, so "did it register anything" is a registry query.
+    bool resident = false;
+    for (uint32_t i = 0; i < cmd_count(); i++)
+        if (cmd_at(i)->owner == app.image) { resident = true; break; }
+
+    if (resident) {
+        printf("'%s' loaded, registered commands (ret %d)\n",
+               app.header.name, ret);
+        // NOTE: the LoadedApp record must persist for cmd_remove_owner + unload
+        // to work later. That table is the next increment; for now a resident
+        // app stays until reboot, which is correct if not yet reclaimable.
+    } else {
+        app_unload(&app);
+        uint32_t after = heap_free();
+        printf("'%s' ran (ret %d), unloaded; heap %s\n", app.header.name, ret,
+               after == before ? "reclaimed" : "LEAKED");
+    }
+    return ret;
+}
+
+void shell_register_builtins(void) {
+    static const Command builtins[] = {
+        {"help",   "list commands",                 cmd_help,   nullptr},
+        {"ver",    "version and board",             cmd_ver,    nullptr},
+        {"mem",    "heap and disk free",            cmd_mem,    nullptr},
+        {"ls",     "list stored apps",              cmd_ls,     nullptr},
+        {"run",    "run <app> [arg]",               cmd_run,    nullptr},
+        {"put",    "put <name> <len>  upload bytes", cmd_put,   nullptr},
+        {"clear",  "clear the screen",              cmd_clear,  nullptr},
+        {"reboot", "restart the device",            cmd_reboot, nullptr},
+    };
+    for (const auto &c : builtins) cmd_register(&c);
+}
+
+void shell_run(void) {
+    char line[128];
+    char *argv[16];
+    printf("\ntype 'help'\n");
+    while (true) {
+        printf("rpc> ");
+        if (!read_line(line, sizeof(line))) continue;
+        int argc = split_args(line, argv, 16);
+        if (argc == 0) continue;
+        const Command *c = cmd_find(argv[0]);
+        if (!c) { printf("unknown: %s\n", argv[0]); continue; }
+        c->fn(argc, argv);
+    }
+}

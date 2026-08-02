@@ -1,0 +1,6 @@
+/home/dash/RPC-Workspace/RPCortex-v2/os/build/_deps/picotool/picotool
+/home/dash/RPC-Workspace/RPCortex-v2/os/build/_deps/picotool/picotoolTargets.cmake
+/home/dash/RPC-Workspace/RPCortex-v2/os/build/_deps/picotool/picotoolTargets-release.cmake
+/home/dash/RPC-Workspace/RPCortex-v2/os/build/_deps/picotool/picotoolConfig.cmake
+/home/dash/RPC-Workspace/RPCortex-v2/os/build/_deps/picotool/picotoolConfigVersion.cmake
+/home/dash/RPC-Workspace/RPCortex-v2/os/build/_deps/picotool/enc_bootloader.elf
