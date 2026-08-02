@@ -21,7 +21,7 @@ shell that reads like RPCortex Vela on the same terminal.
 | **system** | overview, memory, clock control | ver sysinfo meminfo uptime date pulse freeup which history sleep reboot sreboot clear |
 | **wireless** | cyw43 + lwIP, saved networks, autoconnect | wifi scan/connect/disconnect/list/forget/auto |
 | **packages** | install / remove / list, boot-load, unload | pkg run apps unload put |
-| **shell** | history recall, pipes, `&&` / `\|\|` / `;`, `>` / `>>`, quoting | help |
+| **shell** | full line editing, tab completion, pipes, `&&` / `\|\|` / `;`, `>` / `>>`, quoting | help |
 
 Roughly 50 commands plus ~30 aliases (`ll`, `dir`, `more`, `del`, `free`, `gc`,
 `id`, `exit`, …) in a separate table, so a second spelling costs two pointers
@@ -36,8 +36,10 @@ core · path · pkgindex · textcore · history · apps · loader · **out** (th
 output layer's escape sequences, byte for byte against v1) · **cmdline** (41
 checks on the pipeline/quote/redirect parser).
 
-**Footprint** — 290 KB `.uf2` on RP2350, 301 KB on RP2040; both comfortably
-inside their flash, and the RP2040 is the board v1 had to drop.
+**Footprint** — 878 KB `.uf2` on RP2350, 901 KB on RP2040. The jump from ~290 KB
+is the CYW43 firmware blob (225 KB) plus lwIP, which only started compiling in
+once the board-detection bug was fixed. Both sit comfortably inside their flash
+alongside the 512 KB filesystem, and the RP2040 is the board v1 had to drop.
 
 ## What that means
 
@@ -50,9 +52,11 @@ make it feel like the same OS. This is the base the Nova D1 gets ported onto.
   First hardware step: BOOTSEL, copy `out/rpcortex-v2-pico2_w.uf2` onto the
   RPI-RP2 drive, walk the first-run prompts, then `put greet.app <len>` +
   `pkg install greet.app`.
-- **Wireless is unproven on hardware.** It compiles and links against the real
-  cyw43 driver, but no scan has ever run — treat `wifi` as DEVICE-UNCONFIRMED
-  until a board says otherwise.
+- **Wireless is unproven on hardware.** The board-detection bug is fixed (the
+  driver was linked but the C++ side compiled the "no hardware" stub, because
+  PICO_CYW43_SUPPORTED is a CMake variable and never reaches the preprocessor),
+  so the real code now builds in — the firmware blob alone accounts for 225 KB
+  of the image. But no scan has ever run. DEVICE-UNCONFIRMED.
 - **`meminfo`'s fragmentation figure is DEVICE-UNCONFIRMED.** `heap_free()`
   reports the arena minus live allocations (`mallinfo().uordblks`), which is
   honest rather than a high-water mark, and `largest_block()` probes with real
@@ -66,6 +70,11 @@ make it feel like the same OS. This is the base the Nova D1 gets ported onto.
   runtime, `ping`/`wget`/`curl`. The last group needs more lwIP surface; `edit`
   is a TUI, not an afternoon.
 - **Nova D1 in C++** — Tier 3, the big one.
+- **A MicroPython port for running .py apps** — wanted, deferred. Worth knowing
+  before it starts: embedding MicroPython puts its GC-managed heap alongside
+  newlib's malloc arena, so `meminfo` would then be reporting one of two heaps
+  and "free memory" stops having a single answer. That shapes the design, and it
+  is obvious now in a way it will not be in three months.
 - **USB HID / BadUSB / U2F** — Tier 4, beyond parity.
 - `date` pulls in newlib's `sscanf` (~30 KB); worth hand-parsing later.
 

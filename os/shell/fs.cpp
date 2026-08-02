@@ -89,8 +89,11 @@ static int cmd_ls(int argc, char **argv) {
     if (!storage_stat(path, &is_dir, nullptr)) { out_err("Cannot list directory '%s'", path); return 1; }
     if (!is_dir) { out_err("Not a directory: %s", path); return 1; }
 
+    // v1's header and its 58-hyphen rule. Plain ASCII, not box-drawing: the
+    // listing has to survive a terminal that is not in UTF-8, and this is the
+    // line that would break first.
     out_multi("  %-5s  %-7s  %-19s  %s", "TYPE", "SIZE", "MODIFIED", "NAME");
-    out_multi("  %s──────────────────────────────────────────────────────────%s",
+    out_multi("  %s----------------------------------------------------------%s",
               LS_META_COLOUR, C_RESET);
 
     LsCtx d{path, true, 0}, f{path, false, 0};
