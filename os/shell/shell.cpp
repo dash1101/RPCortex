@@ -26,6 +26,10 @@
 extern "C" void api_set_current_app(void *owner);
 extern "C" volatile const char *g_current_app;
 
+// The filesystem commands live in fs.cpp and carry the cwd.
+void fs_register(void);
+const char *fs_cwd(void);
+
 // --- line input -------------------------------------------------------------
 
 static bool read_line(char *buf, size_t max) {
@@ -73,8 +77,9 @@ static int cmd_ver(int argc, char **argv) {
 
 static int cmd_mem(int argc, char **argv) {
     (void)argc; (void)argv;
-    printf("  heap : %u / %u KB free\n", heap_free() / 1024, heap_total() / 1024);
-    printf("  disk : %u KB free\n", storage_free_bytes() / 1024);
+    printf("  heap : %u / %u KB free\n",
+           (unsigned)(heap_free() / 1024), (unsigned)(heap_total() / 1024));
+    printf("  disk : %u KB free\n", (unsigned)(storage_free_bytes() / 1024));
     return 0;
 }
 
@@ -105,7 +110,7 @@ static int cmd_put(int argc, char **argv) {
     if (len == 0 || len > 256 * 1024) { printf("bad length\n"); return 1; }
     uint8_t *buf = (uint8_t *)malloc(len);
     if (!buf) { printf("out of memory\n"); return 1; }
-    printf("send %u raw bytes\n", len);
+    printf("send %u raw bytes\n", (unsigned)len);
     for (uint32_t i = 0; i < len; i++) {
         int c;
         do { c = getchar_timeout_us(5000000); } while (c == PICO_ERROR_TIMEOUT);
@@ -113,7 +118,7 @@ static int cmd_put(int argc, char **argv) {
     }
     bool ok = storage_write_file(argv[1], buf, len);
     free(buf);
-    printf("%s %s (%u B)\n", ok ? "wrote" : "FAILED", argv[1], len);
+    printf("%s %s (%u B)\n", ok ? "wrote" : "FAILED", argv[1], (unsigned)len);
     return ok ? 0 : 1;
 }
 
@@ -228,6 +233,7 @@ void shell_register_builtins(void) {
         {"logout", "return to the login prompt",    cmd_logout, nullptr},
     };
     for (const auto &c : builtins) cmd_register(&c);
+    fs_register();          // cd/ls/cat/... register alongside
 }
 
 void shell_run(void) {
@@ -235,7 +241,7 @@ void shell_run(void) {
     char *argv[16];
     printf("\ntype 'help'\n");
     while (true) {
-        printf("%s@rpc> ", session_user());
+        printf("%s:%s> ", session_user(), fs_cwd());
         if (!read_line(line, sizeof(line))) continue;
         int argc = split_args(line, argv, 16);
         if (argc == 0) continue;

@@ -26,12 +26,14 @@ add_executable(rpcortex_v2
     ${OS_ROOT}/api.cpp
     ${OS_ROOT}/platform_rp2.cpp
     ${OS_ROOT}/kernel/kernel.cpp
+    ${OS_ROOT}/core/path.cpp
     ${OS_ROOT}/core/sha256.cpp
     ${OS_ROOT}/core/registry.cpp
     ${OS_ROOT}/core/users.cpp
     ${OS_ROOT}/core/persist.cpp
     ${OS_ROOT}/shell/command.cpp
     ${OS_ROOT}/shell/session.cpp
+    ${OS_ROOT}/shell/fs.cpp
     ${OS_ROOT}/shell/shell.cpp
     ${SPIKE}/firmware/loader.cpp
     ${SPIKE}/firmware/storage.cpp

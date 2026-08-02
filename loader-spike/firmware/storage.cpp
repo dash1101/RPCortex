@@ -166,6 +166,64 @@ void storage_list(void) {
     if (!n) printf("  (empty -- use `put <name> <len>` to upload an app)\n");
 }
 
+bool storage_mkdir(const char *path) {
+    return g_mounted && lfs_mkdir(&g_lfs, path) >= 0;
+}
+
+bool storage_remove(const char *path) {
+    return g_mounted && lfs_remove(&g_lfs, path) >= 0;
+}
+
+bool storage_rename(const char *from, const char *to) {
+    return g_mounted && lfs_rename(&g_lfs, from, to) >= 0;
+}
+
+bool storage_stat(const char *path, bool *is_dir, uint32_t *size) {
+    if (!g_mounted) return false;
+    struct lfs_info info;
+    // The root always exists but does not stat on littlefs; report it directly.
+    if (path[0] == '/' && path[1] == 0) { if (is_dir) *is_dir = true; if (size) *size = 0; return true; }
+    if (lfs_stat(&g_lfs, path, &info) < 0) return false;
+    if (is_dir) *is_dir = (info.type == LFS_TYPE_DIR);
+    if (size)   *size = info.size;
+    return true;
+}
+
+bool storage_copy(const char *from, const char *to) {
+    if (!g_mounted) return false;
+    lfs_file_t in, out;
+    if (lfs_file_open(&g_lfs, &in, from, LFS_O_RDONLY) < 0) return false;
+    if (lfs_file_open(&g_lfs, &out, to, LFS_O_WRONLY | LFS_O_CREAT | LFS_O_TRUNC) < 0) {
+        lfs_file_close(&g_lfs, &in);
+        return false;
+    }
+    uint8_t chunk[256];
+    bool ok = true;
+    while (true) {
+        lfs_ssize_t n = lfs_file_read(&g_lfs, &in, chunk, sizeof(chunk));
+        if (n < 0) { ok = false; break; }
+        if (n == 0) break;
+        if (lfs_file_write(&g_lfs, &out, chunk, n) != n) { ok = false; break; }
+    }
+    lfs_file_close(&g_lfs, &in);
+    lfs_file_close(&g_lfs, &out);
+    return ok;
+}
+
+bool storage_walk(const char *path, StorageWalkFn cb, void *ctx) {
+    if (!g_mounted) return false;
+    lfs_dir_t dir;
+    if (lfs_dir_open(&g_lfs, &dir, path) < 0) return false;
+    struct lfs_info info;
+    while (lfs_dir_read(&g_lfs, &dir, &info) > 0) {
+        if (info.name[0] == '.' && (info.name[1] == 0 ||
+            (info.name[1] == '.' && info.name[2] == 0))) continue;   // skip . and ..
+        cb(ctx, info.name, info.type == LFS_TYPE_DIR, info.size);
+    }
+    lfs_dir_close(&g_lfs, &dir);
+    return true;
+}
+
 uint32_t storage_free_bytes(void) {
     if (!g_mounted) return 0;
     lfs_ssize_t used = lfs_fs_size(&g_lfs);
