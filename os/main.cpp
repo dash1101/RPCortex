@@ -7,6 +7,7 @@
 #include "pico/stdlib.h"
 #include "kernel.h"
 #include "shell.h"
+#include "session.h"
 
 int main(void) {
     stdio_init_all();
@@ -20,6 +21,7 @@ int main(void) {
     }
 
     shell_register_builtins();
+    session_boot();          // first-run setup, then login
     shell_run();
     return 0;
 }

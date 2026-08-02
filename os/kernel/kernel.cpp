@@ -1,5 +1,8 @@
 #include "kernel.h"
 #include "storage.h"
+#include "persist.h"
+#include "registry.h"
+#include "users.h"
 
 #include <stdio.h>
 #include <stdarg.h>
@@ -49,5 +52,11 @@ bool kboot(void) {
         return false;
     }
     klog(LOG_INFO, "storage mounted  %u KB free", storage_free_bytes() / 1024);
+
+    // Load the registry and accounts from flash. On a first boot both come back
+    // empty; the session layer seeds root/guest and writes them.
+    persist_load_all();
+    klog(LOG_INFO, "registry %u keys, %u accounts",
+         (unsigned)reg_count(), (unsigned)users_count());
     return true;
 }

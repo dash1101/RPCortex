@@ -106,6 +106,15 @@ bool storage_write_file(const char *name, const uint8_t *data, uint32_t len) {
     return n == (lfs_ssize_t)len;
 }
 
+uint32_t storage_read_file(const char *name, uint8_t *buf, uint32_t cap) {
+    if (!g_mounted) return 0;
+    lfs_file_t f;
+    if (lfs_file_open(&g_lfs, &f, name, LFS_O_RDONLY) < 0) return 0;
+    lfs_ssize_t n = lfs_file_read(&g_lfs, &f, buf, cap);
+    lfs_file_close(&g_lfs, &f);
+    return n > 0 ? (uint32_t)n : 0;
+}
+
 // --- AppSource over a littlefs file ----------------------------------------
 // Random access straight out of the file rather than slurping it into RAM. An
 // app ELF is a few kilobytes here, but the loader is meant to survive one that

@@ -10,6 +10,10 @@
 #include "kernel.h"
 #include "loader.h"
 #include "storage.h"
+#include "session.h"
+#include "registry.h"
+#include "users.h"
+#include "persist.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -166,6 +170,48 @@ static int cmd_run(int argc, char **argv) {
     return ret;
 }
 
+static int cmd_whoami(int, char **) {
+    printf("%s%s\n", session_user(), users_is_admin(session_user()) ? " (admin)" : "");
+    return 0;
+}
+
+static int cmd_users(int, char **) {
+    for (uint32_t i = 0; i < users_count(); i++) {
+        const char *n = users_name_at(i);
+        printf("  %-16s%s%s\n", n,
+               users_is_admin(n)  ? " admin"  : "",
+               users_is_nopass(n) ? " nopass" : "");
+    }
+    return 0;
+}
+
+static int cmd_reg(int argc, char **argv) {
+    if (argc == 1) {
+        for (uint32_t i = 0; i < reg_count(); i++) {
+            const char *k = reg_key_at(i);
+            printf("  %s=%s\n", k, reg_get(k, ""));
+        }
+        return 0;
+    }
+    if (!strcmp(argv[1], "get") && argc >= 3) {
+        printf("%s\n", reg_get(argv[2], "(unset)"));
+        return 0;
+    }
+    if (!strcmp(argv[1], "set") && argc >= 4) {
+        if (!reg_set(argv[2], argv[3])) { printf("could not set\n"); return 1; }
+        return 0;   // written to flash by the shell's post-command save
+    }
+    printf("usage: reg | reg get <key> | reg set <key> <value>\n");
+    return 1;
+}
+
+static int cmd_logout(int, char **) {
+    printf("logging out\n");
+    session_logout();
+    session_boot();      // back to the login prompt
+    return 0;
+}
+
 void shell_register_builtins(void) {
     static const Command builtins[] = {
         {"help",   "list commands",                 cmd_help,   nullptr},
@@ -176,6 +222,10 @@ void shell_register_builtins(void) {
         {"put",    "put <name> <len>  upload bytes", cmd_put,   nullptr},
         {"clear",  "clear the screen",              cmd_clear,  nullptr},
         {"reboot", "restart the device",            cmd_reboot, nullptr},
+        {"whoami", "the logged-in user",            cmd_whoami, nullptr},
+        {"users",  "list accounts",                 cmd_users,  nullptr},
+        {"reg",    "reg | reg get K | reg set K V", cmd_reg,    nullptr},
+        {"logout", "return to the login prompt",    cmd_logout, nullptr},
     };
     for (const auto &c : builtins) cmd_register(&c);
 }
@@ -185,12 +235,15 @@ void shell_run(void) {
     char *argv[16];
     printf("\ntype 'help'\n");
     while (true) {
-        printf("rpc> ");
+        printf("%s@rpc> ", session_user());
         if (!read_line(line, sizeof(line))) continue;
         int argc = split_args(line, argv, 16);
         if (argc == 0) continue;
         const Command *c = cmd_find(argv[0]);
         if (!c) { printf("unknown: %s\n", argv[0]); continue; }
         c->fn(argc, argv);
+        // Persist registry/users only if a command actually changed them — the
+        // dirty flags guard the flash write, so this is free when nothing moved.
+        persist_save_dirty();
     }
 }

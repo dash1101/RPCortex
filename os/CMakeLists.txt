@@ -24,8 +24,14 @@ set(LFS_DIR   ${OS_ROOT}/../littlefs)
 add_executable(rpcortex_v2
     ${OS_ROOT}/main.cpp
     ${OS_ROOT}/api.cpp
+    ${OS_ROOT}/platform_rp2.cpp
     ${OS_ROOT}/kernel/kernel.cpp
+    ${OS_ROOT}/core/sha256.cpp
+    ${OS_ROOT}/core/registry.cpp
+    ${OS_ROOT}/core/users.cpp
+    ${OS_ROOT}/core/persist.cpp
     ${OS_ROOT}/shell/command.cpp
+    ${OS_ROOT}/shell/session.cpp
     ${OS_ROOT}/shell/shell.cpp
     ${SPIKE}/firmware/loader.cpp
     ${SPIKE}/firmware/storage.cpp
@@ -35,7 +41,7 @@ add_executable(rpcortex_v2
 )
 
 target_include_directories(rpcortex_v2 PRIVATE
-    ${OS_ROOT} ${OS_ROOT}/include ${OS_ROOT}/kernel ${OS_ROOT}/shell
+    ${OS_ROOT} ${OS_ROOT}/include ${OS_ROOT}/kernel ${OS_ROOT}/shell ${OS_ROOT}/core
     ${SPIKE}/firmware
     ${LFS_DIR}
 )
@@ -49,7 +55,7 @@ target_compile_options(rpcortex_v2 PRIVATE
     $<$<COMPILE_LANGUAGE:CXX>:-fno-rtti>
     $<$<COMPILE_LANGUAGE:CXX>:-fno-use-cxa-atexit>)
 
-target_link_libraries(rpcortex_v2 pico_stdlib hardware_flash hardware_sync)
+target_link_libraries(rpcortex_v2 pico_stdlib hardware_flash hardware_sync pico_rand)
 pico_enable_stdio_usb(rpcortex_v2 1)
 pico_enable_stdio_uart(rpcortex_v2 0)
 pico_add_extra_outputs(rpcortex_v2)
