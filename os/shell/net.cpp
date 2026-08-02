@@ -467,6 +467,18 @@ static int wifi_autoconnect(bool quiet) {
 
     char pw[REG_VAL_MAX] = {0};
     saved_get(best, pw, sizeof(pw));
+
+    // A saved entry with a blank password against a SECURED network means the
+    // password was never captured — someone pressed Enter at the prompt. Joining
+    // it as an open network fails with "no such network in range", which sends
+    // people looking for a signal problem that does not exist. Say what actually
+    // happened instead.
+    if (!pw[0] && auth_for(best) != CYW43_AUTH_OPEN) {
+        out_err("'%s' is saved without a password, but the network is secured.", best);
+        out_multi("  Run 'wifi add %s' to store it.", best);
+        return 1;
+    }
+
     if (!quiet) out_multi("Strongest saved network: '%s'  (%d dBm)", best, (int)best_rssi);
     return wifi_connect(best, pw[0] ? pw : nullptr);
 }
@@ -535,6 +547,11 @@ static int cmd_wifi(int argc, char **argv) {
         session_prompt("Password (blank for open network)", pw, sizeof(pw), true);
         saved_put(ssid, pw);
         out_ok("Saved '%s'.", ssid);
+        // If a scan has been run and says this network is secured, a blank
+        // password is almost certainly a mis-press. Better to say so now than
+        // to let autoconnect fail confusingly later.
+        if (!pw[0] && g_scan.n && auth_for(ssid) != CYW43_AUTH_OPEN)
+            out_warn("  That network looks secured — a blank password will not connect.");
         return 0;
     }
 
