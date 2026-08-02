@@ -1,0 +1,6 @@
+# Vendored upstream, cloned by setup rather than committed.
+sdk/
+littlefs/
+# Build output.
+loader-spike/build/
+loader-spike/build-*/
