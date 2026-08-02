@@ -19,7 +19,8 @@ shell that reads like RPCortex Vela on the same terminal.
 | **filesystem** | working directory, path resolution, usage | cd pwd ls cat mkdir rm mv cp rename touch tree df du |
 | **text** | file processing, pipeable | echo grep wc head tail find sort uniq hex basename dirname |
 | **system** | overview, memory, clock control | ver sysinfo meminfo uptime date pulse freeup which history sleep reboot sreboot clear |
-| **wireless** | cyw43 + lwIP, saved networks, autoconnect | wifi scan/connect/disconnect/list/forget/auto |
+| **wireless** | cyw43 + lwIP, saved networks, autoconnect | wifi scan/connect/add/autoconnect/list/forget/auto |
+| **network** | DNS, ICMP, SNTP — none of them needs TLS | ping nslookup ntp |
 | **packages** | install / remove / list, boot-load, unload | pkg run apps unload put |
 | **shell** | full line editing, tab completion, pipes, `&&` / `\|\|` / `;`, `>` / `>>`, quoting | help |
 
@@ -52,11 +53,12 @@ make it feel like the same OS. This is the base the Nova D1 gets ported onto.
   First hardware step: BOOTSEL, copy `out/rpcortex-v2-pico2_w.uf2` onto the
   RPI-RP2 drive, walk the first-run prompts, then `put greet.app <len>` +
   `pkg install greet.app`.
-- **Wireless is unproven on hardware.** The board-detection bug is fixed (the
-  driver was linked but the C++ side compiled the "no hardware" stub, because
-  PICO_CYW43_SUPPORTED is a CMake variable and never reaches the preprocessor),
-  so the real code now builds in — the firmware blob alone accounts for 225 KB
-  of the image. But no scan has ever run. DEVICE-UNCONFIRMED.
+- **Wireless works** — confirmed on a Pico 2 W. The board-detection bug is fixed:
+  PICO_CYW43_SUPPORTED is a CMake variable that never reaches the preprocessor,
+  so the C++ side had been compiling the "no hardware" stub while CMake linked
+  the whole driver.
+- **ping / nslookup / ntp are DEVICE-UNCONFIRMED.** They build and the lwIP
+  locking is right by construction, but none has been run against a real network.
 - **`meminfo`'s fragmentation figure is DEVICE-UNCONFIRMED.** `heap_free()`
   reports the arena minus live allocations (`mallinfo().uordblks`), which is
   honest rather than a high-water mark, and `largest_block()` probes with real
@@ -67,8 +69,14 @@ make it feel like the same OS. This is the base the Nova D1 gets ported onto.
 - **No OTA / update command.** Flashing is drag-and-drop `.uf2` for now.
 - **Missing v1 commands** — `watch`, `edit`/`nano`, `script`, `task`/`service`/
   `startup`, `safeboot`, `diag`/`fscheck`/`logdump`, `alias`/`unalias` at
-  runtime, `ping`/`wget`/`curl`. The last group needs more lwIP surface; `edit`
-  is a TUI, not an afternoon.
+  runtime, `wget`/`curl`. `edit` is a TUI, not an afternoon.
+- **The package FETCHER is not built yet.** The repository side is done —
+  `repo-v2/` in RPCortex-repo, with an index generated from each package's own
+  header — but `pkg` cannot download from it. That needs an HTTPS client, since
+  GitHub raw and rpc.novalabs.app are both TLS-only: mbedtls (the SDK vendors
+  it; the submodule is not fetched) plus a decision about how much RAM one TLS
+  session may hold. v1's entire contiguous-memory problem started exactly there,
+  so it is worth doing deliberately rather than quickly.
 - **Nova D1 in C++** — Tier 3, the big one.
 - **A MicroPython port for running .py apps** — wanted, deferred. Worth knowing
   before it starts: embedding MicroPython puts its GC-managed heap alongside
