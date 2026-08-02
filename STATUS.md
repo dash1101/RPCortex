@@ -1,61 +1,62 @@
 # RPCortex v2 — status
 
-Where the C++ rewrite stands. Updated as it progresses; the plan it works
-against is `../tools/PLAN-v2.0-cpp.md`.
+Where the C++ rewrite stands. Plan: `../tools/PLAN-v2.0-cpp.md`.
 
-## Built and verified (host-tested, builds on RP2350 + RP2040)
+## Built and verified (host-tested; builds clean on RP2350 + RP2040)
 
-**The loader** (`loader-spike/`) — runtime ELF app loading. 3.3 KB flash, no
-static RAM. The go/no-go, and it went. 29/29 host checks.
+**The loader** (`loader-spike/`) — runtime ELF app loading, 3.3 KB flash / no
+static RAM. The go/no-go, and it went.
 
-**The OS core** (`os/`):
+**The OS** (`os/`) — boots, logs in, and runs a shell that behaves like RPCortex:
 
-| Piece | What | Test |
+| Area | What | Commands |
 |---|---|---|
-| kernel | boot, logging, honest heap accounting | — |
-| command registry | built-ins and apps register into one table | os 12/12 |
-| loader integration | `run` loads/relocates/executes an app | os 12/12 |
-| **registry** | dot-notation KV on littlefs (regedit) | core 49/49 |
-| **accounts** | salted SHA-256, roles, NOPASS guest (usrmgmt) | core 49/49 |
-| SHA-256 | vendored, FIPS-vector verified | core 49/49 |
-| **login** | first-run setup + login loop (initialization) | — |
-| persistence | registry.cfg / users.cfg load at boot, save on change | — |
-| **filesystem cmds** | cd pwd ls cat mkdir rm mv cp touch tree | path 16/16 |
-| path resolver | pure `.`/`..`/absolute/relative, cannot escape root | path 16/16 |
-| **package table** | resident apps; unload sweeps commands + frees image | apps 12/12 |
+| kernel | boot, logging, honest heap accounting, the always-on clock | — |
+| **accounts** | salted SHA-256, roles, NOPASS guest, first-run setup + login | whoami users logout |
+| **registry** | dot-notation KV, persisted to flash | reg |
+| **filesystem** | working directory, path resolution | cd pwd ls cat mkdir rm mv cp touch tree |
+| **text** | file processing | echo grep wc head tail find |
+| **system** | overview and clock | ver mem uptime date sysinfo reboot clear |
+| **packages** | install / remove / list, boot-load, unload | pkg run apps unload put |
+| shell | command history (up/down), login prompt with cwd | — |
 
-Commands today: help ver mem ls cat cd pwd mkdir rm mv cp touch tree run put
-apps unload whoami users reg logout clear reboot.
+An installed package's commands go live at boot; an app registers commands via
+the ABI (the `greet` app demonstrates it). That is the package system the Nova
+D1 will sit inside.
 
-Footprint: RP2350 ~176 KB flash / ~19 KB static RAM; RP2040 ~95 KB text / ~17 KB
-— comfortably within the 264 KB the RP2040 has, the board v1 had to drop.
+**Tests** — 129 checks across seven host suites, all green:
+core 49 · path 16 · pkgindex 16 · textcore 12 · history 12 · apps 12 · loader 12.
+Every subsystem with real logic (auth, path `..`, index dedup, wc off-by-ones,
+history wraparound, package lifecycle, ELF relocation) is covered.
+
+**Footprint** — RP2350 ~126 KB flash / ~19 KB static RAM; RP2040 similar,
+comfortably inside its 264 KB — the board v1 had to drop.
 
 ## What that means
 
-Tiers 1 and 2 of the plan are essentially done: a shell over serial that behaves
-like RPCortex, with accounts, a filesystem, the commands, and a package system
-that an app plugs into by registering commands (the `greet` app demonstrates it).
-This is the feature-parity core the Nova D1 will sit inside.
+Tiers 1 and 2 of the plan are done: feature-parity shell + accounts + filesystem
++ commands + a working package system. This is the base the Nova D1 gets ported
+onto.
 
 ## Not done
 
-- **Not run on hardware.** Everything is host-tested and both firmwares build,
-  but nothing has been flashed — the only board is running v1.0 + Nova D1, and a
-  flash erases it. First hardware step: flash `os/build/rpcortex_v2.uf2`, watch
-  it boot to a login prompt, create root, run `greet`.
-- **Package manager** (install/remove/list over an index) — the table it needs
-  exists; this is next.
+- **Not run on hardware.** All host-tested, both `.uf2`s build, nothing flashed —
+  the board still carries v1.0 + Nova D1 and a flash erases it. First hardware
+  step: flash `os/build_pico2_w/rpcortex_v2.uf2`, create root at the prompt, then
+  `put greet.app <len>` + `pkg install greet.app` (or `run greet.app`).
+- **Pipes and `&&`/`||`** — the shell runs one command per line; chaining is the
+  next shell feature (needs output capture between stages).
+- **A few more commands** — sort, uniq, which, alias, watch, history-list.
 - **Nova D1 in C++** — Tier 3, the big one.
 - **Networking, OTA, USB HID/BadUSB, BT audio** — Tier 4, beyond parity.
-- A few more system commands (uptime, date, watch) — minor parity gaps.
+- `date` pulls in newlib's `sscanf` (~30 KB); worth hand-parsing later.
 
-## Building it
+## Building
 
 ```
 export PICO_SDK_PATH=$PWD/sdk
-cmake -B os/build -G Ninja -DPICO_BOARD=pico2_w os      # or pico_w for RP2040
-ninja -C os/build
+cmake -B os/build_pico2_w -G Ninja -DPICO_BOARD=pico2_w os   # or pico_w
+ninja -C os/build_pico2_w
 ```
 
-Host tests (no hardware): the `os/host/*_test.cpp` files, compiled with g++ —
-see each file's header for its command line.
+Host tests: `os/host/*_test.cpp`, compiled with g++ (each header notes deps).
