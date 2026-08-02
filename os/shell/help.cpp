@@ -62,6 +62,7 @@ static const char *kSystem[] = {
     "  date [set ...]       Show date/time, or 'date set YYYY-MM-DD HH:MM:SS'",
     "  ver / uname          Show OS version",
     "  reboot / sreboot     Restart the device",
+    "  bootloader           Reboot into USB flashing mode (drag a .uf2 on)",
     "  sleep <secs>         Pause for the given number of seconds",
     "  which <cmd>          Show where a command is defined",
     "  clear / cls          Clear the screen",
@@ -87,7 +88,11 @@ static const char *kPackages[] = {
     "  pkg list             Installed packages",
     "  apps                 Packages resident in RAM right now",
     "  unload <name>        Unload a resident package",
-    "  run <app> [arg]      Load and run an app without installing it",
+    "  run <app.app> [arg]  Load and run an app without installing it",
+    "  exec <app.app>       Same as run  (v1's verb)",
+    "",
+    "  Packages are compiled .app files, not source. Build one on the host",
+    "  with the SDK, then tools/rpc-push.sh copies it over the serial port.",
 };
 
 static const char *kUsers[] = {
@@ -128,7 +133,7 @@ static const Category kCategories[] = {
     CAT(kText, "text", "Text Processing Commands",
         "grep  wc  find  sort  uniq  hex  basename  dirname  echo"),
     CAT(kSystem, "system", "System Commands",
-        "sysinfo  meminfo  uptime  date  ver  reboot  sreboot  sleep  which  clear  pulse  freeup  env  reg"),
+        "sysinfo  meminfo  uptime  date  ver  reboot  sreboot  bootloader  sleep  which  clear  pulse  freeup  env  reg"),
     CAT(kNetwork, "network", "Network Commands",
         "wifi  (scan  connect  disconnect  list  forget  auto)"),
     CAT(kPackages, "packages", "Packages",

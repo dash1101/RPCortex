@@ -26,6 +26,7 @@
 #include "pico/aon_timer.h"
 #include "hardware/clocks.h"
 #include "hardware/watchdog.h"
+#include "pico/bootrom.h"
 
 // The board's image kind, for the "Image" line. One string, one place.
 #if PICO_RP2040
@@ -300,6 +301,24 @@ static int cmd_reboot(int, char **) {
     while (1) {}
 }
 
+// bootloader — reboot into the ROM's USB mass-storage mode, the same state
+// BOOTSEL-at-power-on produces. This is the v2 replacement for v1's `rawrepl`:
+// on MicroPython the way to reflash was to drop out of the OS to the REPL so a
+// host tool could talk to it, and here the equivalent is handing the USB port
+// back to the bootrom so a .uf2 can be dragged on.
+//
+// The device disappears from the serial port the moment this runs, so it says
+// what is about to happen first — a console that goes dead with no explanation
+// reads as a crash.
+static int cmd_bootloader(int, char **) {
+    out_info("Rebooting into the bootloader...");
+    out_multi("  The serial port will drop and an RPI-RP2 drive will appear.");
+    out_multi("  Copy a .uf2 onto it, or power-cycle to come back.");
+    sleep_ms(400);          // let the message reach the terminal before USB goes
+    rom_reset_usb_boot(0, 0);
+    while (1) {}
+}
+
 // A "soft" reboot on bare metal is still a reset — there is no interpreter to
 // drop back into. It is kept as a separate command because muscle memory from v1
 // reaches for it, and doing the sensible thing beats "unknown command".
@@ -326,6 +345,7 @@ void sys_register(void) {
         {"pulse",   "CPU clock management",         cmd_pulse,   nullptr},
         {"reboot",  "restart the device",           cmd_reboot,  nullptr},
         {"sreboot", "restart the device",           cmd_sreboot, nullptr},
+        {"bootloader", "reboot into USB flashing mode", cmd_bootloader, nullptr},
     };
     for (const auto &c : cmds) cmd_register(&c);
 
@@ -335,4 +355,9 @@ void sys_register(void) {
     cmd_alias("free",      "meminfo");
     cmd_alias("gc",        "freeup");
     cmd_alias("softreset", "sreboot");
+    // v1's route out of the OS for reflashing was `rawrepl`; here it is the
+    // bootrom. Same intent, so the same name reaches it.
+    cmd_alias("rawrepl",  "bootloader");
+    cmd_alias("bootsel",  "bootloader");
+    cmd_alias("flash",    "bootloader");
 }

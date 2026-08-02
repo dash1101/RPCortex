@@ -28,6 +28,7 @@ add_executable(rpcortex_v2
     ${OS_ROOT}/kernel/kernel.cpp
     ${OS_ROOT}/core/path.cpp
     ${OS_ROOT}/core/cmdline.cpp
+    ${OS_ROOT}/core/lineedit.cpp
     ${OS_ROOT}/core/pkgindex.cpp
     ${OS_ROOT}/core/textcore.cpp
     ${OS_ROOT}/core/history.cpp
@@ -79,8 +80,14 @@ target_link_libraries(rpcortex_v2 pico_stdlib hardware_flash hardware_sync pico_
 #
 # threadsafe_background, not poll: the shell blocks in getchar, so a poll-mode
 # stack would never get a turn and DHCP would never complete.
+# PICO_CYW43_SUPPORTED is a CMake variable, NOT a preprocessor define — the
+# board header sets it through pico_board_cmake_set, which only CMake parses.
+# Testing it with #if in C++ is therefore always false, which is exactly the bug
+# that made a Pico 2 W report "no wireless hardware" while still linking the
+# whole driver. The define has to be passed explicitly.
 if(PICO_CYW43_SUPPORTED)
     target_link_libraries(rpcortex_v2 pico_cyw43_arch_lwip_threadsafe_background)
+    target_compile_definitions(rpcortex_v2 PRIVATE RPC_HAS_WIFI=1)
 endif()
 pico_enable_stdio_usb(rpcortex_v2 1)
 pico_enable_stdio_uart(rpcortex_v2 0)

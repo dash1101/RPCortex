@@ -20,6 +20,7 @@
 #include "out.h"
 #include "path.h"
 #include "cmdline.h"
+#include "lineedit.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -43,42 +44,93 @@ void net_register(void);
 
 // --- line input -------------------------------------------------------------
 //
-// Reads a line with backspace and up/down history recall. The prompt is passed
-// in so a history recall can redraw the whole line (\r, clear-to-EOL, prompt,
-// recalled text). Cursor-in-the-middle editing is deliberately not here yet;
-// history is the recall people reach for first.
+// The editor itself is core/lineedit.cpp — pure, host-tested. What lives here is
+// the two things it cannot know: how to read a byte from this device, and what
+// the completion candidates are.
 
-static bool read_line(const char *prompt, char *buf, size_t max) {
-    size_t n = 0;
-    int browse = -1;                 // -1 = the live line; 0..count-1 = history depth
-    printf("%s", prompt);
-    while (true) {
-        int c = getchar_timeout_us(0);
-        if (c == PICO_ERROR_TIMEOUT) { sleep_ms(2); continue; }
-        if (c == '\r' || c == '\n') { putchar('\n'); buf[n] = 0; return true; }
-        if ((c == 8 || c == 127) && n) { n--; browse = -1; printf("\b \b"); continue; }
-        if (c == 0x1b) {
-            // An arrow key is ESC '[' 'A'/'B'. The two bytes follow immediately;
-            // a lone ESC (nothing after) is ignored.
-            int a = getchar_timeout_us(3000);
-            int b = getchar_timeout_us(3000);
-            if (a == '[' && (b == 'A' || b == 'B')) {
-                int want = browse + (b == 'A' ? 1 : -1);
-                if (want < -1) want = -1;
-                if (want > hist_count() - 1) want = hist_count() - 1;
-                const char *h = (want < 0) ? "" : hist_get(want);
-                if (h) {
-                    browse = want;
-                    printf("\r\x1b[K%s%s", prompt, h);   // redraw the line
-                    strncpy(buf, h, max - 1); buf[max - 1] = 0; n = strlen(buf);
-                }
-            }
-            continue;
-        }
-        if (c >= 32 && c < 127 && n + 1 < max) { buf[n++] = (char)c; browse = -1; putchar(c); }
+static int shell_getch(void *, uint32_t timeout_us) {
+    int c = getchar_timeout_us(timeout_us);
+    if (c == PICO_ERROR_TIMEOUT) {
+        if (timeout_us == 0) sleep_ms(2);   // idle poll: do not spin the core
+        return LE_NO_KEY;
     }
+    return c;
 }
 
+static void shell_putch(void *, char c) { putchar(c); }
+
+static const char *shell_history(void *, int depth) { return hist_get(depth); }
+
+// Completion. At the start of the line the candidates are commands and aliases;
+// anywhere else they are filenames in the directory being typed, which is what
+// makes `cat /pk<tab>` useful. Sources are walked by index rather than collected
+// into a list, so completing costs no allocation.
+struct CompleteWalk {
+    const char *prefix;
+    uint32_t    want;      // the index the caller asked for
+    uint32_t    seen;      // matches passed so far
+    char       *out;
+    uint32_t    cap;
+    bool        found;
+};
+
+static void complete_offer(CompleteWalk *w, const char *name, bool is_dir) {
+    if (w->found) return;
+    if (strncmp(name, w->prefix, strlen(w->prefix)) != 0) return;
+    if (w->seen++ != w->want) return;
+    snprintf(w->out, w->cap, "%s%s", name, is_dir ? "/" : "");
+    w->found = true;
+}
+
+static void complete_file_cb(void *ctx, const char *name, bool is_dir, uint32_t) {
+    complete_offer((CompleteWalk *)ctx, name, is_dir);
+}
+
+static bool shell_complete(void *, const char *prefix, uint32_t word_start,
+                           uint32_t index, char *out, uint32_t cap) {
+    CompleteWalk w{prefix, index, 0, out, cap, false};
+
+    if (word_start == 0) {
+        for (uint32_t i = 0; i < cmd_count() && !w.found; i++)
+            complete_offer(&w, cmd_at(i)->name, false);
+        for (uint32_t i = 0; i < cmd_alias_count() && !w.found; i++)
+            complete_offer(&w, cmd_alias_at(i)->name, false);
+        return w.found;
+    }
+
+    // An argument: complete against the directory the partial path names. The
+    // prefix is split at its last '/' so `cat /pkg/gr<tab>` searches /pkg for
+    // "gr" rather than searching the cwd for the whole string.
+    char dir[128];
+    const char *slash = strrchr(prefix, '/');
+    if (slash) {
+        uint32_t n = (uint32_t)(slash - prefix);
+        char head[128];
+        if (n == 0) { head[0] = '/'; head[1] = 0; }
+        else {
+            if (n >= sizeof(head)) n = sizeof(head) - 1;
+            memcpy(head, prefix, n); head[n] = 0;
+        }
+        path_resolve(fs_cwd(), head, dir, sizeof(dir));
+        w.prefix = slash + 1;
+    } else {
+        snprintf(dir, sizeof(dir), "%s", fs_cwd());
+    }
+    storage_walk(dir, complete_file_cb, &w);
+    return w.found;
+}
+
+static bool read_line(const char *prompt, char *buf, size_t max) {
+    LineEdit le{};
+    le.io.getch     = shell_getch;
+    le.io.putch     = shell_putch;
+    le.io.ctx       = nullptr;
+    le.complete     = shell_complete;
+    le.history      = shell_history;
+    le.prompt       = prompt;
+    line_edit(&le, buf, (uint32_t)max);
+    return true;
+}
 
 // --- built-in commands ------------------------------------------------------
 
@@ -107,10 +159,33 @@ static int cmd_put(int argc, char **argv) {
     return ok ? 0 : 1;
 }
 
-// run — the load-run-resident flow now lives in apps_launch, shared with
+// run / exec — the load-run-resident flow lives in apps_launch, shared with
 // `pkg install` and boot-time package loading, so there is one code path.
+//
+// v1's `exec test.py` compiled and ran source ON the device. Nothing in v2 can
+// do that: there is no interpreter, and a C++ compiler does not fit on a
+// microcontroller. The verb is kept because the muscle memory is real, but a
+// source file gets an explanation of the model rather than "no such app" —
+// where someone learns how v2 works is the moment their old habit fails.
+static const char *source_suffix(const char *name) {
+    const char *dot = strrchr(name, '.');
+    if (!dot) return nullptr;
+    static const char *src[] = {".py", ".cpp", ".c", ".cc", ".sh", ".mpy"};
+    for (const auto *s : src) if (strcmp(dot, s) == 0) return dot;
+    return nullptr;
+}
+
 static int cmd_run(int argc, char **argv) {
-    if (argc < 2) { out_multi("Usage: run <app> [arg]"); return 1; }
+    if (argc < 2) { out_multi("Usage: run <app.app> [arg]"); return 1; }
+
+    const char *src = source_suffix(argv[1]);
+    if (src) {
+        out_err("v2 runs compiled packages, not %s source.", src);
+        out_multi("  Build it on the host, then copy the .app over:");
+        out_multi("    tools/rpc-push.sh %s /dev/ttyACM0", argv[1]);
+        out_multi("    run myapp.app        (or 'pkg install myapp.app' to keep it)");
+        return 1;
+    }
     int arg = (argc >= 3) ? (int)strtol(argv[2], nullptr, 10) : 0;
     return apps_launch(argv[1], arg, /*quiet*/false) < 0 ? 1 : 0;
 }
@@ -141,11 +216,12 @@ static int cmd_reg(int argc, char **argv) {
 
 void shell_register_builtins(void) {
     static const Command builtins[] = {
-        {"run", "run <app> [arg]",                cmd_run, nullptr},
+        {"run", "run <app.app> [arg]",            cmd_run, nullptr},
         {"put", "put <name> <len>  upload bytes", cmd_put, nullptr},
         {"reg", "reg | reg get K | reg set K V",  cmd_reg, nullptr},
     };
     for (const auto &c : builtins) cmd_register(&c);
+    cmd_alias("exec", "run");     // v1's verb; run explains the difference
     // Order is not significant — cmd_register refuses a duplicate name, so a
     // collision fails loudly at boot rather than silently shadowing.
     help_register();        // help + its category pages

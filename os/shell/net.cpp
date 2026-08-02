@@ -26,7 +26,11 @@
 #include <string.h>
 #include <stdlib.h>
 
-#if defined(PICO_CYW43_SUPPORTED) && PICO_CYW43_SUPPORTED
+// RPC_HAS_WIFI comes from CMakeLists when the board has the CYW43 part.
+// Deliberately NOT PICO_CYW43_SUPPORTED: that one is a CMake variable the board
+// header sets via pico_board_cmake_set, so it never reaches the preprocessor and
+// testing it here silently compiles the "no hardware" stub onto a Pico W.
+#if defined(RPC_HAS_WIFI) && RPC_HAS_WIFI
 
 #include "pico/cyw43_arch.h"
 #include "pico/stdlib.h"
@@ -389,7 +393,7 @@ static int cmd_wifi(int argc, char **argv) {
     return 1;
 }
 
-#else   // no CYW43 on this board
+#else   // no CYW43 part on this board
 
 void net_autoconnect(void) {}
 bool net_available(void) { return false; }
