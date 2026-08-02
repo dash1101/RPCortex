@@ -1,3 +1,18 @@
+// Login and first-run setup — the C++ replacement for initialization.py's
+// setup_seq / login_seq.
+//
+// v1's first run was a guided six-step walk-through rather than a bare password
+// prompt, and that is most of why the OS felt approachable on a first boot. The
+// same shape is kept here: numbered steps, a sentence of context before each
+// question, a sensible default in brackets, and a confirmation that says how to
+// change the answer later. The step count is five rather than six because two of
+// v1's steps (NTP sync, verbose boot) depend on machinery v2 does not have yet —
+// a step that cannot do anything is worse than one fewer step.
+//
+// The login loop keeps v1's behaviour exactly: a NOPASS account signs in with no
+// password prompt at all, a wrong password backs off on an escalating delay, and
+// three misses return to the username prompt rather than locking the device.
+
 #include "session.h"
 #include "users.h"
 #include "registry.h"
@@ -7,15 +22,25 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 #include "pico/stdlib.h"
 
+// wifi's command entry, so setup can offer to connect without duplicating it.
+int  net_setup_scan_and_join(void);
+bool net_available(void);
+
 static char g_user[24] = "root";
+
+// Consecutive failed passwords across the whole session, not just this attempt
+// run — the backoff should keep growing for a scripted attacker who restarts at
+// the username prompt.
+static uint32_t g_login_fails;
 
 const char *session_user(void) { return g_user; }
 void session_logout(void) { g_user[0] = 0; }
 
 // Line input with optional masking. Separate from the shell's reader because a
-// password must not echo its characters — it prints '*' instead, which shows the
+// password must not echo its characters — it prints '•' instead, which shows the
 // user their typing landed without putting the secret on screen.
 static void read_field(const char *prompt, char *buf, size_t max, bool secret) {
     out_prompt(prompt);
@@ -27,7 +52,7 @@ static void read_field(const char *prompt, char *buf, size_t max, bool secret) {
         if ((c == 8 || c == 127) && n) { n--; printf("\b \b"); continue; }
         if (c >= 32 && c < 127 && n + 1 < max) {
             buf[n++] = (char)c;
-            if (secret) printf("\u2022"); else putchar(c);
+            if (secret) printf("•"); else putchar(c);
         }
     }
 }
@@ -44,45 +69,200 @@ bool session_confirm(const char *msg) {
     return strcmp(ans, "yes") == 0;
 }
 
-// First run: no accounts exist yet. Create root (admin) with a chosen password
-// and a NOPASS guest, matching v1's setup. A non-blank root password is required
-// — an admin account with no password is not a setup, it is a hole.
-static void first_run(void) {
-    out_info("Welcome! Let's get your device configured.");
+// A [Y/n] question: blank means yes. v1's default for anything it wanted people
+// to say yes to.
+static bool ask_yes_default(const char *msg) {
+    char a[8];
+    read_field(msg, a, sizeof(a), false);
+    if (a[0] == 0) return true;
+    return a[0] == 'y' || a[0] == 'Y';
+}
+
+// --- first run --------------------------------------------------------------
+
+static void setup_root(void) {
+    out_info("[1/5] Root account");
+    out_multi("  'root' is the system administrator.");
+    out_blank();
+    if (users_exists("root")) {
+        out_info("  Root account already exists - skipping.");
+        return;
+    }
     char pw[40], confirm[40];
     while (true) {
-        read_field("Set a password for 'root'", pw, sizeof(pw), true);
-        if (strlen(pw) == 0) { out_warn("  Password cannot be blank."); continue; }
-        read_field("Confirm password", confirm, sizeof(confirm), true);
+        read_field("  Set a password for 'root'", pw, sizeof(pw), true);
+        if (pw[0] == 0) { out_warn("  Password cannot be blank."); continue; }
+        read_field("  Confirm password", confirm, sizeof(confirm), true);
         if (strcmp(pw, confirm) != 0) { out_err("  Passwords do not match.  Try again."); continue; }
         break;
     }
-    users_add("root", pw, /*admin*/true, /*nopass*/false);
-    users_add("guest", nullptr, /*admin*/false, /*nopass*/true);
+    if (users_add("root", pw, /*admin*/true, /*nopass*/false)) out_ok("  Root account created.");
+    else                                                       out_err("  Could not create root account.");
+}
+
+static void setup_owner(void) {
+    out_info("[2/5] Owner");
+    out_multi("  Optional - who owns this device? (shown in sysinfo)");
+    out_blank();
+    char owner[REG_VAL_MAX];
+    read_field("  Owner name [skip]", owner, sizeof(owner), false);
+    if (owner[0]) {
+        reg_set("System.Owner", owner);
+        out_ok("  Owner set to '%s'.", owner);
+    } else {
+        out_ok("  Skipped.  Set later: reg set System.Owner <name>");
+    }
+}
+
+static void setup_device_name(void) {
+    out_info("[3/5] Device name");
+    out_multi("  Optional - appears in the shell prompt:  user@<name>");
+    out_multi("  Leave blank to keep the default 'vela'.");
+    out_blank();
+    char devid[REG_VAL_MAX];
+    read_field("  Device name [vela]", devid, sizeof(devid), false);
+    if (devid[0]) {
+        reg_set("System.Device_ID", devid);
+        out_ok("  Device name set to '%s'.", devid);
+    } else {
+        out_ok("  Keeping 'vela'.  Change later: reg set System.Device_ID <name>");
+    }
+}
+
+static bool setup_wifi(void) {
+    out_info("[4/5] WiFi");
+    if (!net_available()) {
+        out_ok("  No WiFi hardware detected - skipping.");
+        return false;
+    }
+    out_multi("  Connect now so the device can reach the package repo.");
+    out_blank();
+    if (!ask_yes_default("  Set up WiFi now? [Y/n]")) {
+        out_ok("  Skipped.  Set up later with: wifi scan / wifi connect <ssid>");
+        return false;
+    }
+    if (net_setup_scan_and_join() != 0) {
+        out_warn("  Could not connect.  Set up later with: wifi connect <ssid>");
+        return false;
+    }
+    if (ask_yes_default("  Reconnect automatically on boot? [Y/n]")) {
+        reg_set("WiFi.Auto", "true");
+        out_ok("  Autoconnect enabled.");
+    }
+    return true;
+}
+
+static void setup_time(bool wifi_ok) {
+    out_info("[5/5] Time");
+    out_multi("  Timezone offset from UTC in whole hours (e.g. -5 = US Eastern).");
+    out_blank();
+    char tz[12];
+    read_field("  Timezone offset [0]", tz, sizeof(tz), false);
+    if (tz[0]) {
+        char *end = nullptr;
+        long v = strtol(tz, &end, 10);
+        if (end != tz && *end == 0 && v >= -12 && v <= 14) {
+            char norm[8]; snprintf(norm, sizeof(norm), "%ld", v);
+            reg_set("System.TZ_Offset", norm);
+            out_ok("  Timezone set to UTC%+ld.", v);
+        } else {
+            out_warn("  Not an hour offset - skipping.  Set later: reg set System.TZ_Offset <hours>");
+        }
+    } else {
+        out_ok("  Keeping UTC (0).");
+    }
+    if (!wifi_ok)
+        out_multi("  (No WiFi - set the clock with 'date set YYYY-MM-DD HH:MM:SS'.)");
+    else
+        out_multi("  Set the clock with 'date set YYYY-MM-DD HH:MM:SS'.");
+}
+
+static void first_run(void) {
+    out_blank();
+    out_info("=== RPCortex %s - First Run Setup ===", RPC_OS_VERSION);
+    out_blank();
+    out_info("Welcome! Let's get your device configured.");
+    out_multi("  Five quick steps - everything here can be changed later.");
+    out_blank();
+
+    setup_root();       out_blank();
+    setup_owner();      out_blank();
+    setup_device_name();out_blank();
+    bool wifi_ok = setup_wifi(); out_blank();
+    setup_time(wifi_ok);out_blank();
+
+    // Silent: the guest account, as v1 created it at the end of setup.
+    if (!users_exists("guest")) users_add("guest", nullptr, /*admin*/false, /*nopass*/true);
+
     reg_set("System.Setup", "true");
     persist_save_users();
     persist_save_registry();
-    out_ok("Setup complete.");
+
+    out_blank();
+    out_ok("All set!");
+    out_multi("  Log in with 'root' or 'guest'.");
+    out_blank();
+}
+
+// --- login ------------------------------------------------------------------
+
+static void accept(const char *name) {
+    g_login_fails = 0;
+    snprintf(g_user, sizeof(g_user), "%s", name);
+    reg_set("System.Active_User", g_user);
+    persist_save_dirty();
+    out_ok("Welcome, %s!", g_user);
 }
 
 void session_boot(void) {
-    if (users_count() == 0) first_run();
+    if (users_count() == 0 || strcmp(reg_get("System.Setup", "false"), "true") != 0)
+        first_run();
+
     out_info("=== Login ===");
+    out_multi("  Type 'root' or 'guest' to log in.");
+    out_blank();
 
     char name[24], pw[40];
     while (true) {
         read_field("Username", name, sizeof(name), false);
-        if (name[0] == 0) continue;
-        if (!users_exists(name)) { out_err("User not found."); continue; }
-        // A NOPASS account (guest) still asks, so the flow looks the same, but
-        // any answer is accepted.
-        read_field("Password", pw, sizeof(pw), true);
-        if (users_verify(name, pw)) break;
-        out_err("Incorrect password.");
+        if (name[0] == 0) { out_warn("Please enter a username."); continue; }
+        if (!users_exists(name)) {
+            out_warn("User '%s' not found.", name);
+            out_multi("  Available accounts: root, guest  |  New users: run 'mkacct' after login");
+            continue;
+        }
+        // A NOPASS account signs in with no password prompt at all — asking for
+        // one and then ignoring the answer, which is what a shared prompt would
+        // do, teaches people their password does not matter.
+        if (users_is_nopass(name)) {
+            out_info("No password required for '%s'.", name);
+            accept(name);
+            return;
+        }
+
+        int attempts = 0;
+        while (true) {
+            read_field("Password", pw, sizeof(pw), true);
+            if (pw[0] == 0) { out_warn("Password cannot be blank."); continue; }
+            if (users_verify(name, pw)) { accept(name); return; }
+
+            g_login_fails++;
+            // Escalating backoff: ~0.5 s for the first miss, growing to a 5 s
+            // cap. Slows a scripted brute-force without locking someone out of
+            // their own device over one typo.
+            uint32_t wait = 500 + (g_login_fails - 1) * 750;
+            sleep_ms(wait > 5000 ? 5000 : wait);
+
+            if (++attempts < 3) {
+                out_warn("Incorrect password.  Attempt %d/3.", attempts);
+            } else {
+                out_err("Too many failed attempts.  Returning to username prompt.");
+                if (g_login_fails >= 6) {
+                    out_warn("Repeated failures detected — cooling down.");
+                    sleep_ms(5000);
+                }
+                break;
+            }
+        }
     }
-    strncpy(g_user, name, sizeof(g_user) - 1);
-    g_user[sizeof(g_user) - 1] = 0;
-    reg_set("System.Active_User", g_user);
-    persist_save_dirty();
-    out_ok("Welcome, %s!", g_user);
 }

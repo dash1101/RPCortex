@@ -11,6 +11,8 @@
 #include "pkg.h"
 #include "banner.h"
 
+void net_autoconnect(void);
+
 int main(void) {
     stdio_init_all();
     for (int i = 0; i < 300 && !stdio_usb_connected(); i++) sleep_ms(10);
@@ -25,6 +27,7 @@ int main(void) {
     }
 
     shell_register_builtins();
+    net_autoconnect();       // rejoin a saved network, if one is set to auto
     session_boot();          // first-run setup, then login
     pkg_load_installed();    // installed packages' commands go live
     shell_run();

@@ -20,6 +20,7 @@
 #include "command.h"
 #include "out.h"
 #include "registry.h"
+#include "session.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -295,6 +296,45 @@ void net_autoconnect(void) {
     }
 }
 
+// --- first-run helper -------------------------------------------------------
+
+bool net_available(void) { return true; }
+
+// The guided join used by first-run setup: scan, show a numbered list, let the
+// user pick one (or 0 to type a hidden SSID), ask for the password, connect.
+// This is v1's setup step 4, and it lives here rather than in session.cpp so the
+// scan machinery has exactly one implementation.
+int net_setup_scan_and_join(void) {
+    if (wifi_scan() != 0) return 1;
+    out_blank();
+    for (uint32_t i = 0; i < g_scan.n; i++)
+        out_multi("   %2u. %-24s %4d dBm  %s", (unsigned)(i + 1), g_scan.e[i].ssid,
+                  (int)g_scan.e[i].rssi,
+                  g_scan.e[i].auth == CYW43_AUTH_OPEN ? "open" : "secured");
+    out_multi("    0. Other / hidden network (type the name)");
+    out_blank();
+
+    char pick[8];
+    session_prompt("  Network number", pick, sizeof(pick), false);
+    if (pick[0] == 0) return 1;
+    long n = strtol(pick, nullptr, 10);
+
+    char ssid[33];
+    bool open_net = false;
+    if (n == 0) {
+        session_prompt("  Network name", ssid, sizeof(ssid), false);
+        if (ssid[0] == 0) return 1;
+    } else {
+        if (n < 1 || (uint32_t)n > g_scan.n) { out_warn("  No such entry."); return 1; }
+        snprintf(ssid, sizeof(ssid), "%s", g_scan.e[n - 1].ssid);
+        open_net = g_scan.e[n - 1].auth == CYW43_AUTH_OPEN;
+    }
+
+    char pw[REG_VAL_MAX] = {0};
+    if (!open_net) session_prompt("  Password", pw, sizeof(pw), true);
+    return wifi_connect(ssid, pw[0] ? pw : nullptr);
+}
+
 static int cmd_wifi(int argc, char **argv) {
     if (argc < 2)                       return wifi_status();
     const char *sub = argv[1];
@@ -337,6 +377,8 @@ static int cmd_wifi(int argc, char **argv) {
 #else   // no CYW43 on this board
 
 void net_autoconnect(void) {}
+bool net_available(void) { return false; }
+int  net_setup_scan_and_join(void) { return 1; }
 
 static int cmd_wifi(int, char **) {
     out_err("This board has no wireless hardware.");
