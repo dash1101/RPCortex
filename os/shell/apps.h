@@ -19,6 +19,13 @@ LoadedApp *apps_store(const LoadedApp *app);
 // the slot. Returns false if no such package is loaded.
 bool apps_unload(const char *name);
 
+// Load an app file, run its app_main, and either keep it resident (if it
+// registered commands) or unload it. The one place the load-run-resident flow
+// lives, shared by `run`, `pkg install`, and boot-time package loading. Returns
+// app_main's value, or -1 if the file could not be loaded. `quiet` suppresses
+// the per-run chatter (used for boot loading).
+int apps_launch(const char *file, int arg, bool quiet);
+
 // Register the `apps` (list) and `unload` commands.
 void apps_register(void);
 

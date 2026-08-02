@@ -8,3 +8,4 @@ loader-spike/build-*/
 # OS build output
 os/build/
 os/build-*/
+os/build_*/

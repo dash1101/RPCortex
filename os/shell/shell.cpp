@@ -15,6 +15,7 @@
 #include "users.h"
 #include "persist.h"
 #include "apps.h"
+#include "pkg.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -123,63 +124,12 @@ static int cmd_put(int argc, char **argv) {
     return ok ? 0 : 1;
 }
 
-// run — load an app, let it register/execute, unload. The C++ equivalent of
-// launching a package: everything the app added stays only as long as it does.
+// run — the load-run-resident flow now lives in apps_launch, shared with
+// `pkg install` and boot-time package loading, so there is one code path.
 static int cmd_run(int argc, char **argv) {
     if (argc < 2) { printf("usage: run <app> [arg]\n"); return 1; }
     int arg = (argc >= 3) ? (int)strtol(argv[2], nullptr, 10) : 0;
-
-    AppSource src;
-    void *handle = nullptr;
-    if (!storage_open_source(argv[1], &src, &handle)) {
-        printf("no such app: %s\n", argv[1]);
-        return 1;
-    }
-
-    uint32_t before = heap_free();
-    LoadedApp app;
-    LoadResult rc = app_load(src, &app);
-    storage_close_source(handle);
-    if (rc != LOAD_OK) {
-        printf("load failed: %s%s%s\n", load_result_str(rc),
-               app.detail[0] ? " - " : "", app.detail);
-        return 1;
-    }
-
-    // Tag anything the app registers with the app as owner, and name it for the
-    // fault handler, for the duration of app_main.
-    api_set_current_app(app.image);
-    g_current_app = app.header.name;
-    int ret = app.entry(arg);
-    g_current_app = nullptr;
-    api_set_current_app(nullptr);
-
-    // If the app registered commands, it is a resident package: keep it loaded
-    // and its commands live. Otherwise it was a one-shot: unload it now. Owner
-    // is the image pointer, so "did it register anything" is a registry query.
-    bool resident = false;
-    for (uint32_t i = 0; i < cmd_count(); i++)
-        if (cmd_at(i)->owner == app.image) { resident = true; break; }
-
-    if (resident) {
-        // Hand the record to the resident table so it can be unloaded later.
-        // If the table refuses it (full, or already loaded), the app's commands
-        // would be orphaned, so pull them back and unload rather than leak.
-        if (apps_store(&app)) {
-            printf("'%s' loaded as a package (ret %d)\n", app.header.name, ret);
-        } else {
-            cmd_remove_owner(app.image);
-            app_unload(&app);
-            printf("'%s' could not stay resident (table full or already loaded)\n",
-                   app.header.name);
-        }
-    } else {
-        app_unload(&app);
-        uint32_t after = heap_free();
-        printf("'%s' ran (ret %d), unloaded; heap %s\n", app.header.name, ret,
-               after == before ? "reclaimed" : "LEAKED");
-    }
-    return ret;
+    return apps_launch(argv[1], arg, /*quiet*/false) < 0 ? 1 : 0;
 }
 
 static int cmd_whoami(int, char **) {
@@ -242,6 +192,8 @@ void shell_register_builtins(void) {
     for (const auto &c : builtins) cmd_register(&c);
     fs_register();          // cd/ls/cat/... register alongside
     apps_register();        // apps / unload for resident packages
+    pkg_init();             // ensure /pkg exists
+    pkg_register();         // install / remove / list
 }
 
 void shell_run(void) {

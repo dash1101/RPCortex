@@ -8,6 +8,7 @@
 #include "kernel.h"
 #include "shell.h"
 #include "session.h"
+#include "pkg.h"
 
 int main(void) {
     stdio_init_all();
@@ -22,6 +23,7 @@ int main(void) {
 
     shell_register_builtins();
     session_boot();          // first-run setup, then login
+    pkg_load_installed();    // installed packages' commands go live
     shell_run();
     return 0;
 }

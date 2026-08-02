@@ -23,23 +23,28 @@ extern "C" {
 // MINOR: a symbol added — older-minor apps still run (everything they want is
 //        present); newer-minor apps refused (they may want something absent).
 #define RPC_API_MAJOR 1
-#define RPC_API_MINOR 1
+#define RPC_API_MINOR 2
 
 typedef struct {
     uint32_t magic;          // RPC_APP_MAGIC
     uint16_t api_major;
     uint16_t api_minor;
     char     name[24];
+    char     version[12];    // the package's own version, e.g. "1.0.0"
     uint32_t flags;          // reserved (e.g. "registers commands", "wants core1")
 } RpcAppHeader;
 
 #define RPC_APP_MAGIC 0x52504341u   // 'RPCA'
 
-#define RPC_APP(appname)                                                      \
+// RPC_APP(name) defaults the version to "1.0"; RPC_APP_VER names it explicitly.
+// The version travels IN the app, the way v1's pkg.ver lived in package.cfg, so
+// the package manager reads it from the header rather than being told separately.
+#define RPC_APP_VER(appname, ver)                                             \
     __attribute__((section(".rpc_app_header"), used))                         \
     const RpcAppHeader rpc_app_header = {                                     \
-        RPC_APP_MAGIC, RPC_API_MAJOR, RPC_API_MINOR, appname, 0                \
+        RPC_APP_MAGIC, RPC_API_MAJOR, RPC_API_MINOR, appname, ver, 0           \
     }
+#define RPC_APP(appname) RPC_APP_VER(appname, "1.0")
 
 // --- exported services (API 1.1) -------------------------------------------
 // Every entry is a permanent compatibility commitment. Adding one is a MINOR

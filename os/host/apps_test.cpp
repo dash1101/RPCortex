@@ -16,6 +16,16 @@
 uint32_t api_lookup(const char *) { return 0; }
 uint32_t api_symbol_count(void) { return 0; }
 
+// apps.cpp now also contains apps_launch, which references the kernel/storage/api
+// seams. This test exercises only the resident TABLE (store/unload), never
+// apps_launch, so these stubs exist purely to satisfy the linker.
+uint32_t heap_free(void)  { return 1000; }
+uint32_t heap_total(void) { return 2000; }
+bool storage_open_source(const char *, AppSource *, void **) { return false; }
+void storage_close_source(void *) {}
+extern "C" void api_set_current_app(void *) {}
+extern "C" volatile const char *g_current_app = nullptr;
+
 static int checks = 0, fails = 0;
 static void ck(bool c, const char *m) { checks++; if (!c) { fails++; printf("  FAIL: %s\n", m); } }
 static int noop(int, char **) { return 0; }
