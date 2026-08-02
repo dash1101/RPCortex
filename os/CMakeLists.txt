@@ -34,6 +34,7 @@ add_executable(rpcortex_v2
     ${OS_ROOT}/shell/command.cpp
     ${OS_ROOT}/shell/session.cpp
     ${OS_ROOT}/shell/fs.cpp
+    ${OS_ROOT}/shell/apps.cpp
     ${OS_ROOT}/shell/shell.cpp
     ${SPIKE}/firmware/loader.cpp
     ${SPIKE}/firmware/storage.cpp

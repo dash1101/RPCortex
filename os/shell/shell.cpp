@@ -14,6 +14,7 @@
 #include "registry.h"
 #include "users.h"
 #include "persist.h"
+#include "apps.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -161,11 +162,17 @@ static int cmd_run(int argc, char **argv) {
         if (cmd_at(i)->owner == app.image) { resident = true; break; }
 
     if (resident) {
-        printf("'%s' loaded, registered commands (ret %d)\n",
-               app.header.name, ret);
-        // NOTE: the LoadedApp record must persist for cmd_remove_owner + unload
-        // to work later. That table is the next increment; for now a resident
-        // app stays until reboot, which is correct if not yet reclaimable.
+        // Hand the record to the resident table so it can be unloaded later.
+        // If the table refuses it (full, or already loaded), the app's commands
+        // would be orphaned, so pull them back and unload rather than leak.
+        if (apps_store(&app)) {
+            printf("'%s' loaded as a package (ret %d)\n", app.header.name, ret);
+        } else {
+            cmd_remove_owner(app.image);
+            app_unload(&app);
+            printf("'%s' could not stay resident (table full or already loaded)\n",
+                   app.header.name);
+        }
     } else {
         app_unload(&app);
         uint32_t after = heap_free();
@@ -234,6 +241,7 @@ void shell_register_builtins(void) {
     };
     for (const auto &c : builtins) cmd_register(&c);
     fs_register();          // cd/ls/cat/... register alongside
+    apps_register();        // apps / unload for resident packages
 }
 
 void shell_run(void) {
