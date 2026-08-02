@@ -1,16 +1,66 @@
-# Vendored upstream, cloned by setup rather than committed.
+# Vendored upstream, cloned by setup rather than committed. See the README.
 sdk/
 littlefs/
-# Build output.
-loader-spike/build/
-loader-spike/build-*/
 
-# OS build output
+# Build directories
+build/
+Build/
+build-*/
 os/build/
 os/build-*/
 os/build_*/
+loader-spike/build/
+loader-spike/build-*/
 
 # Built images. build.sh regenerates these, and at ~880 KB each they would add a
 # megabyte to history on every build. Release artifacts belong on a release, not
 # in the tree.
 out/
+
+# CMake generated files
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+install_manifest.txt
+compile_commands.json
+
+# Compiled object files
+#
+# NOTE: no "*.app" rule here, deliberately. A .app is an RPCortex PACKAGE — a
+# relocatable object file the device loads and runs at runtime — not a macOS
+# bundle or a stray executable. Ignoring it would silently drop the one artifact
+# this project exists to produce.
+*.d
+*.o
+*.obj
+*.slo
+*.lo
+*.gch
+*.pch
+*.ilk
+*.pdb
+*.dwo
+
+# Compiled libraries
+*.so
+*.so.*
+*.dylib
+*.dll
+*.a
+*.la
+*.lai
+*.lib
+
+# Executables
+*.exe
+
+# Temporary files
+*.tmp
+*.log
+*.bak
+*.swp
+
+# Test output and cache
+Testing/
+.cache/
