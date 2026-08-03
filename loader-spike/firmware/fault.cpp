@@ -11,6 +11,7 @@
 
 #include <stdio.h>
 #include "blackbox.h"
+#include "logring.h"
 #include "pico/stdlib.h"
 #include "hardware/watchdog.h"
 
@@ -65,6 +66,43 @@ void fault_report(FaultFrame *f, const char *kind) {
     if (!started && n < 39) note[n++] = '0';
     note[n] = 0;
     bb_note_phase(note);
+
+    // The fault STATUS registers, which say exactly what kind of fault this was
+    // rather than leaving it to be inferred from a program counter. This should
+    // have been the first thing recorded:
+    //
+    //   INVSTATE  a call landed in ARM state — a function pointer without its
+    //             Thumb bit, which is the classic loader bug
+    //   IACCVIOL  instruction fetch refused — the memory is not executable
+    //   PRECISERR a bad data address, with BFAR holding it
+    //   IMPRECIS  a deferred write fault; the PC is PAST the real instruction
+    //   STKERR    the exception frame itself could not be pushed: a bad SP
+    //
+    // Recorded as a second line so the first still names the package and offset.
+    {
+        uint32_t cfsr = *(volatile uint32_t *)0xE000ED28;
+        uint32_t hfsr = *(volatile uint32_t *)0xE000ED2C;
+        const char *what = "?";
+        if      (cfsr & (1u << 1))  what = "STKERR bad SP";
+        else if (cfsr & (1u << 3))  what = "UNSTKERR";
+        else if (cfsr & (1u << 0))  what = "IACCVIOL not executable";
+        else if (cfsr & (1u << 7))  what = "MMARVALID";
+        else if (cfsr & (1u << 9))  what = "PRECISERR bad addr";
+        else if (cfsr & (1u << 10)) what = "IMPRECISERR";
+        else if (cfsr & (1u << 12)) what = "STKERR bus";
+        else if (cfsr & (1u << 17)) what = "INVSTATE no Thumb bit";
+        else if (cfsr & (1u << 16)) what = "UNDEFINSTR";
+        else if (cfsr & (1u << 18)) what = "INVPC";
+        else if (cfsr & (1u << 24)) what = "UNALIGNED";
+        else if (hfsr & (1u << 30)) what = "FORCED escalated";
+
+        printf("    cfsr=0x%08lx hfsr=0x%08lx sp=%p  %s\n",
+               (unsigned long)cfsr, (unsigned long)hfsr, (void *)f, what);
+        // And into the log ring, which survives to be read by logdump.
+        log_addf(LOG_K_ERR, "fault %s cfsr=%08lx sp=%08lx lr=%08lx",
+                 what, (unsigned long)cfsr, (unsigned long)(uintptr_t)f,
+                 (unsigned long)f->lr);
+    }
 
     printf("\n");
     printf("*** %s ***\n", kind);
