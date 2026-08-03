@@ -123,7 +123,7 @@ static int cmd_compat(int argc, char **argv) {
 
     probe("tls", net_available() ? (http_tls_available() ? V_OK : V_WARN) : V_NA,
           net_available() ? (http_tls_available() ? "trusted roots loaded"
-                                                  : "no /os/ca.pem - pkg install will refuse")
+                                                  : "no roots parsed - pkg install will refuse")
                           : "needs wireless");
 
     // The log ring and black box survive a reset; if they do not, a crash
@@ -335,10 +335,10 @@ static int cmd_pkgenable(int argc, char **argv) {
 
 // --- factoryreset -----------------------------------------------------------
 //
-// Everything a person put on the device goes; the OS itself stays. That split
-// matters for /os/ca.pem in particular — it is part of the image rather than
-// user data, and taking it out would leave a reset device unable to verify a
-// single HTTPS connection, which is to say unable to install anything.
+// Everything a person put on the device goes; the OS itself stays. /os is left
+// alone apart from the two files below, so /os/ca.pem survives — though since
+// the trusted roots are compiled into the image, losing it would now cost a
+// custom root rather than the ability to verify anything at all.
 //
 // Reboots rather than returning. The accounts it just deleted include the one
 // running this command, so there is no session left to hand back to.

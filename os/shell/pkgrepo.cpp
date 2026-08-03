@@ -507,8 +507,9 @@ static int do_certs(int argc, char **argv) {
     bool is_dir = false; uint32_t size = 0;
     bool present = storage_stat("/os/ca.pem", &is_dir, &size);
     out_info("Trusted roots");
-    out_multi("  File     /os/ca.pem  %s", present ? "present" : "MISSING");
-    if (present) out_multi("  Size     %lu bytes", (unsigned long)size);
+    out_multi("  Built in   always available; the image carries its own copy");
+    out_multi("  Override   /os/ca.pem  %s", present ? "present" : "not set");
+    if (present) out_multi("  Size       %lu bytes", (unsigned long)size);
 
     if (http_tls_available()) {
         out_ok("HTTPS can be verified.");

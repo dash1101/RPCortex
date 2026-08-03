@@ -208,45 +208,62 @@ static char g_tls_why[80];
 // none of what it promises — anything on the path could serve a package and the
 // device would install it. A package manager is precisely the wrong place to be
 // relaxed about who is on the other end, so this fails closed and says why.
+// The roots are BUILT INTO the image, and /os/ca.pem is an override rather than
+// the source of truth.
+//
+// It used to be the other way round, and that made a working HTTPS stack depend
+// on a file surviving on littlefs. Delete it, corrupt it, run out of space
+// during the first-boot write, and the device silently loses the ability to
+// verify anything — which is to say it loses the ability to install a package or
+// take an update, the two things that would let you fix it. factoryreset had to
+// grow a special case just to avoid erasing it.
+//
+// So the file is tried first, because someone adding a private root should be
+// able to, and the compiled-in bundle catches every case where it is missing or
+// unusable. The failure mode goes from "HTTPS is broken and the fix needs a
+// reflash" to "your custom roots did not load, the built-in ones did".
+extern "C" const unsigned char stock_cacerts_data[];
+extern "C" const unsigned int  stock_cacerts_len;
+
 static struct altcp_tls_config *tls_config(void) {
     if (g_tls_tried) return g_tls_cfg;
     g_tls_tried = true;
 
+    uint8_t *pem = nullptr;
+    uint32_t n   = 0;
+
     bool is_dir = false; uint32_t fsize = 0;
-    if (!storage_stat(CA_PATH, &is_dir, &fsize)) {
-        snprintf(g_tls_why, sizeof(g_tls_why), "%s does not exist", CA_PATH);
-        return nullptr;
-    }
-    if (fsize == 0) {
-        snprintf(g_tls_why, sizeof(g_tls_why), "%s is empty", CA_PATH);
-        return nullptr;
-    }
-    if (fsize >= CA_MAX) {
-        snprintf(g_tls_why, sizeof(g_tls_why), "%s is %lu bytes, over the %d limit",
-                 CA_PATH, (unsigned long)fsize, CA_MAX);
-        return nullptr;
+    if (storage_stat(CA_PATH, &is_dir, &fsize) && !is_dir && fsize > 0 && fsize < CA_MAX) {
+        pem = (uint8_t *)malloc(CA_MAX);
+        if (pem) {
+            n = storage_read_file(CA_PATH, pem, CA_MAX - 1);
+            if (n == 0) { free(pem); pem = nullptr; }
+            else        { pem[n] = 0; }     // mbedtls counts the terminator for PEM
+        }
     }
 
-    uint8_t *pem = (uint8_t *)malloc(CA_MAX);
     if (!pem) {
-        snprintf(g_tls_why, sizeof(g_tls_why), "no room to load %lu bytes",
-                 (unsigned long)fsize);
-        return nullptr;
+        // The built-in bundle. Already NUL-terminated by the generator, and in
+        // flash, so it is used in place rather than copied to the heap — which
+        // also means this path works when there is no room for a copy.
+        g_tls_cfg = altcp_tls_create_config_client(stock_cacerts_data, stock_cacerts_len);
+        if (!g_tls_cfg)
+            snprintf(g_tls_why, sizeof(g_tls_why),
+                     "the built-in certificates would not parse");
+        return g_tls_cfg;
     }
-
-    uint32_t n = storage_read_file(CA_PATH, pem, CA_MAX - 1);
-    if (n == 0) {
-        snprintf(g_tls_why, sizeof(g_tls_why), "%s would not read back", CA_PATH);
-        free(pem);
-        return nullptr;
-    }
-    pem[n] = 0;                       // mbedtls counts the terminator for PEM
 
     g_tls_cfg = altcp_tls_create_config_client(pem, n + 1);
-    if (!g_tls_cfg)
-        snprintf(g_tls_why, sizeof(g_tls_why),
-                 "%lu bytes read, but no certificate parsed", (unsigned long)n);
     free(pem);
+    if (g_tls_cfg) return g_tls_cfg;
+
+    // The file was there and unusable. Say so — a private root that silently
+    // did nothing is worth knowing about — but carry on with the built-ins
+    // rather than leaving the device unable to verify anything.
+    out_warnp("certs", "%s did not parse; using the built-in certificates.", CA_PATH);
+    g_tls_cfg = altcp_tls_create_config_client(stock_cacerts_data, stock_cacerts_len);
+    if (!g_tls_cfg)
+        snprintf(g_tls_why, sizeof(g_tls_why), "no certificates could be parsed at all");
     return g_tls_cfg;
 }
 
@@ -558,9 +575,12 @@ static int cmd_wget(int argc, char **argv) {
     // connect" would send someone looking at their WiFi for a problem that is
     // a missing file.
     if (!strncmp(argv[1], "https://", 8) && !http_tls_available()) {
-        out_err("No trusted certificates, so HTTPS cannot be verified.");
-        out_multi("  Install them at /os/ca.pem. Unverified HTTPS is not offered:");
-        out_multi("  anything on the path could serve a package and it would install.");
+        // The image carries its own roots, so reaching here means something is
+        // wrong with the build rather than with this device's files.
+        out_err("No trusted certificates could be parsed, so HTTPS cannot be verified.");
+        out_multi("  The built-in roots should always load; 'diag' has the detail.");
+        out_multi("  Unverified HTTPS is not offered: anything on the path could");
+        out_multi("  serve a package and it would install.");
         return 1;
     }
 
