@@ -22,6 +22,10 @@ void crit_enter(void) { task_crit_enter(); }
 void crit_leave(void) { task_crit_leave(); }
 bool crit_active(void) { return task_crit_active(); }
 
+bool lock_held_once(const RpcLock *l) {
+    return l && l->owner == me() && l->depth == 1;
+}
+
 bool lock_held_by_me(const RpcLock *l) {
     return l && l->owner == me();
 }

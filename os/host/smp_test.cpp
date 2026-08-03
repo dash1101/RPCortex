@@ -270,6 +270,46 @@ int main(void) {
     }
     ck(busy >= 6, "every task was scheduled many times over");
 
+    // --- phase 3: affinity actually gates who may pick a task ---------------
+    //
+    // What the network lock depends on. NOT task_migrate_to itself: this
+    // harness models a core as a thread, so a task cannot move between them
+    // and migrate_to would either return instantly or spin — either way
+    // proving nothing. That half is device-verified only, and the comment says
+    // so rather than a green check implying otherwise.
+    //
+    // What IS testable is the mechanism underneath it: once a task's affinity
+    // says core 0, the other core must stop picking it up. Without that,
+    // migrating is pointless because core 1 would take the task straight back.
+    g_stop.store(false);
+    int pinned = task_spawn("pinned", "(test)", spin, nullptr,
+                            TASK_STACK_MIN, AFFINITY_ANY);
+    ck(pinned > 0, "spawned a task to pin");
+    ck(task_affinity(pinned) == AFFINITY_ANY, "it starts unpinned");
+
+    ck(task_set_affinity(pinned, AFFINITY_CORE0), "its affinity can be changed");
+    ck(task_affinity(pinned) == AFFINITY_CORE0, "and the change sticks");
+
+    // Core 1 must now refuse it however long it looks. Driven from a real
+    // second thread, because that is the core that must do the refusing.
+    static std::atomic<int> stolen;
+    stolen.store(0);
+    static int pinned_pid;
+    pinned_pid = pinned;
+    pthread_t c1c;
+    pthread_create(&c1c, nullptr, [](void *) -> void * {
+        t_core = 1;
+        for (int i = 0; i < 20000; i++) {
+            task_yield();
+            if (task_self() == pinned_pid) stolen++;
+        }
+        return nullptr;
+    }, nullptr);
+    pthread_join(c1c, nullptr);
+    ck(stolen.load() == 0, "core 1 never picks up a task pinned to core 0");
+
+    ck(task_set_affinity(pinned, AFFINITY_ANY), "and it can be unpinned again");
+
     printf("\n  %d checks, %d failed\n", g_checks, g_fails);
     return g_fails ? 1 : 0;
 }

@@ -84,8 +84,57 @@ static RpcLock g_net_op;
 // Exposed so the HTTP transport can hold ownership for the length of a
 // connection. It lives here rather than there because this is where the rule
 // is stated, and a second lock would defeat the point of having one.
-void net_op_acquire(void) { lock_acquire(&g_net_op); }
-void net_op_release(void) { lock_release(&g_net_op); }
+// Taking the network lock also puts the caller on the radio's core, and gives
+// it back on release.
+//
+// The one-owner rule was about TASKS, and that turned out to be half the rule.
+// A package task is spawned with no affinity and, measured on a real device,
+// runs on core 1 essentially always — so "one task at a time" was satisfied
+// while every call was still arriving on the wrong core. Refusing was the
+// honest thing to do while there was no way to move a task; now there is.
+//
+// The old affinity is remembered per task so a package that was free to run
+// anywhere goes back to being free afterwards, rather than being quietly
+// pinned to core 0 for the rest of its life by having once used the network.
+// Declared below, with the radio lifecycle they belong to.
+static bool g_radio_up;
+static uint32_t g_radio_core;
+
+#define NET_OWNERS 8
+static struct { int pid; TaskAffinity was; } g_net_prev[NET_OWNERS];
+
+void net_op_acquire(void) {
+    lock_acquire(&g_net_op);
+
+    uint32_t target = g_radio_up ? g_radio_core : 0;
+    if (task_this_core() == target) return;
+
+    int me = task_self();
+    for (int i = 0; i < NET_OWNERS; i++) {
+        if (g_net_prev[i].pid) continue;
+        g_net_prev[i].pid = me;
+        g_net_prev[i].was = task_affinity(me);
+        break;
+    }
+    // A failure here is not fatal: net_core_ok still refuses the call, so the
+    // outcome is a clear message rather than corruption.
+    task_migrate_to(target);
+}
+
+void net_op_release(void) {
+    int me = task_self();
+    for (int i = 0; i < NET_OWNERS; i++) {
+        if (g_net_prev[i].pid != me) continue;
+        // Only on the OUTERMOST release. The lock is recursive, and restoring
+        // on an inner one would drop this task back to core 1 halfway through
+        // somebody else's connection.
+        if (!lock_held_once(&g_net_op)) break;
+        task_set_affinity(me, g_net_prev[i].was);
+        g_net_prev[i].pid = 0;
+        break;
+    }
+    lock_release(&g_net_op);
+}
 
 // What the last operation saw, in plain memory.
 //
@@ -106,12 +155,10 @@ static NetStatus g_status;
 
 // Whether the radio has been powered up. Declared here because the status
 // refresh below needs it.
-static bool g_radio_up = false;
 // Which core brought the chip up. cyw43's threadsafe_background async_context
 // records the core it was initialised on and drives lwIP from an IRQ there;
 // calling in from the other core is undefined, and the SDK's own asserts for it
 // compile out in a release build, so it fails silently rather than loudly.
-static uint32_t g_radio_core = 0;
 
 // Refresh the cache from lwIP. Only ever called by whoever holds g_net_op.
 static void status_refresh(void) {

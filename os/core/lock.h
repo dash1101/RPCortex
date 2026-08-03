@@ -39,6 +39,11 @@ void lock_release(RpcLock *l);
 // has something better to do, or must not block.
 bool lock_try(RpcLock *l);
 
+// True when this task holds the lock and is about to give it up entirely — the
+// outermost of however many nested acquires. For a caller that has to undo
+// something once, not once per level.
+bool lock_held_once(const RpcLock *l);
+
 bool lock_held_by_me(const RpcLock *l);
 
 // --- critical sections ------------------------------------------------------

@@ -154,6 +154,15 @@ int  task_self(void);
 // Whether the running task is holding a lock, and so must not be force-exited
 // part-way through. Counted per task because a task may migrate cores while
 // holding one; see lock.cpp.
+// Change where a task is allowed to run. Changing it does NOT move a task that
+// is already running — see task_migrate_to.
+bool         task_set_affinity(int pid, TaskAffinity aff);
+TaskAffinity task_affinity(int pid);
+
+// Move the CURRENT task onto `core` and return once it is there. False if it
+// could not be moved, which a caller must handle rather than assume.
+bool task_migrate_to(uint32_t core);
+
 void task_crit_enter(void);
 void task_crit_leave(void);
 bool task_crit_active(void);

@@ -457,6 +457,49 @@ static void reschedule(TaskState park_as) {
 
 void task_yield(void) { reschedule(TASK_READY); }
 
+// Move a task to a different core.
+//
+// Setting the affinity is only half of it: a task already RUNNING somewhere is
+// not moved by changing what it is allowed to do. The caller has to yield, and
+// keep yielding, until the scheduler happens to place it where it asked — which
+// works because a parked task is picked by whichever core finds it runnable,
+// and the new affinity now excludes the wrong one.
+//
+// Safe only because `live` exists. Parking a task so another core can take it
+// is precisely the operation that used to run one stack on two cores.
+bool task_set_affinity(int pid, TaskAffinity aff) {
+    lock_hw_enter();
+    Task *t = slot_of(pid);
+    if (t) t->info.affinity = aff;
+    lock_hw_exit();
+    return t != nullptr;
+}
+
+TaskAffinity task_affinity(int pid) {
+    lock_hw_enter();
+    Task *t = slot_of(pid);
+    TaskAffinity a = t ? t->info.affinity : AFFINITY_ANY;
+    lock_hw_exit();
+    return a;
+}
+
+// Put THIS task on `core` and do not return until it is there.
+//
+// Bounded, because a caller that cannot be moved must not hang: on a
+// single-core build, or if the target core is somehow never scheduling, this
+// gives up and reports it rather than yielding for ever.
+bool task_migrate_to(uint32_t core) {
+    if (task_this_core() == core) return true;
+    if (g_cores <= 1) return core == 0;      // nowhere else to go
+
+    Task *me = cur();
+    if (!me) return false;
+    task_set_affinity(me->info.pid, core == 0 ? AFFINITY_CORE0 : AFFINITY_CORE1);
+
+    for (int i = 0; i < 200 && task_this_core() != core; i++) task_yield();
+    return task_this_core() == core;
+}
+
 // --- "busy, do not interrupt" ------------------------------------------------
 //
 // Held against the TASK. Before the scheduler exists there is no task to hold
