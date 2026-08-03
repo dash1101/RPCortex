@@ -40,6 +40,7 @@ bool net_is_connected(void);
 // join can never be part-way through each other.
 void net_op_acquire(void);
 void net_op_release(void);
+bool net_core_ok(void);
 const char *fs_cwd(void);
 void http_last_detail(char *out, unsigned cap);
 bool http_tls_available(void);       // the shell's working directory (fs.cpp)
@@ -267,6 +268,15 @@ static int lw_open(void *ctx, const char *host, uint16_t port, bool tls) {
     // Taken here and released in lw_close, which the fetch driver always calls
     // — including on every failure path and between redirect hops.
     net_op_acquire();
+
+    // The wireless driver only works on the core that initialised it. Nothing
+    // reaches this from the wrong core today; saying so plainly beats finding
+    // out through corruption if something ever does.
+    if (!net_core_ok()) {
+        out_err("Networking is not available from this core.");
+        net_op_release();
+        return -1;
+    }
 
     struct altcp_tls_config *cfg = nullptr;
     if (tls) {

@@ -107,6 +107,11 @@ static NetStatus g_status;
 // Whether the radio has been powered up. Declared here because the status
 // refresh below needs it.
 static bool g_radio_up = false;
+// Which core brought the chip up. cyw43's threadsafe_background async_context
+// records the core it was initialised on and drives lwIP from an IRQ there;
+// calling in from the other core is undefined, and the SDK's own asserts for it
+// compile out in a release build, so it fails silently rather than loudly.
+static uint32_t g_radio_core = 0;
 
 // Refresh the cache from lwIP. Only ever called by whoever holds g_net_op.
 static void status_refresh(void) {
@@ -141,8 +146,26 @@ static bool radio_up(void) {
         return false;
     }
     cyw43_arch_enable_sta_mode();
+    g_radio_core = task_this_core();
     g_radio_up = true;
     return true;
+}
+
+// The one-owner rule is about TASKS. This is the other half of it: the core.
+//
+// g_net_op guarantees one task at a time inside the driver, which is not the
+// same as one CORE — a task with AFFINITY_ANY can be scheduled onto either, and
+// the driver only works on the one that initialised it. Everything that touches
+// the network today is pinned to core 0 (the shell, and wifi-join since it
+// started binding the chip), so this never fires; it exists because the day a
+// package does its own networking from an unpinned task, the failure would
+// otherwise be memory corruption with no message attached.
+//
+// Refusing is the right answer rather than migrating. Moving a running task to
+// another core needs scheduler support that does not exist yet, and inventing
+// it inside a lock is how the last round of faults happened.
+bool net_core_ok(void) {
+    return !g_radio_up || task_this_core() == g_radio_core;
 }
 
 static void radio_down(void) {
@@ -1011,6 +1034,8 @@ static int cmd_wifi(int argc, char **argv) {
 
 void net_op_acquire(void) {}
 void net_op_release(void) {}
+// No radio, so no core to be wrong about. The transport still calls it.
+bool net_core_ok(void) { return true; }
 void net_autoconnect(void) {}
 void net_autoconnect_now(void) {}
 void net_autoconnect_report(void) {}
