@@ -313,7 +313,7 @@ static int wifi_connect(const char *ssid, const char *pw, bool quiet) {
             if (st < 0) break;                       // failed or auth rejected
             if (absolute_time_diff_us(get_absolute_time(), deadline) < 0) break;
             if (intr_check()) break;                 // Ctrl+C during a long join
-            task_sleep_ms(50);
+            task_sleep_ms(50);   // a join takes seconds; polling faster buys nothing
         }
     }
     if (rc != 0) {
@@ -410,8 +410,20 @@ void net_autoconnect(void) {
 
     // Spawned, not called. The login prompt appears immediately and the join
     // finishes underneath it — which is the whole point of having a scheduler.
+    // TASK_STACK_NET, not TASK_STACK_DEF. This task runs the cyw43 driver,
+    // lwIP's DHCP client and printf — the same paths the shell needs 8 KB for.
+    //
+    // Given 3 KB it overflowed, and a stack overflow does not announce itself:
+    // it writes over whatever is below, which then reads as a corrupted
+    // function pointer (a hard fault at an address that is not code), files
+    // appearing at the root with names taken from string literals, and a shell
+    // that behaves erratically in between. One cause, three symptoms that look
+    // unrelated.
+    //
+    // The guard only catches an overflow at a YIELD, and the driver can run a
+    // long way without one, so the size has to be right rather than watched.
     if (task_spawn("wifi-join", "(kernel)", autoconnect_task, nullptr,
-                   TASK_STACK_DEF, AFFINITY_ANY) >= 0) {
+                   TASK_STACK_NET, AFFINITY_ANY) >= 0) {
         out_infop("wifi", "Connecting to '%s' in the background...",
                   reg_get("WiFi.Active", "a saved network"));
         return;

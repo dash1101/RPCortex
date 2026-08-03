@@ -301,6 +301,14 @@ int main(void) {
     ck(!task_kill(task_self()), "and cannot be asked to stop");
     ck(!task_should_stop(), "so its flag is never set");
 
+    // Asserted rather than assumed. The boot WiFi join was given
+    // TASK_STACK_DEF, overflowed inside the cyw43 driver, and corrupted memory
+    // until it hard faulted somewhere unrelated — an overflow does not report
+    // itself, and the guard only checks at a yield, which a driver call never
+    // reaches.
+    ck(TASK_STACK_NET >= TASK_STACK_SHELL, "a network task gets at least what the shell gets");
+    ck(TASK_STACK_DEF < TASK_STACK_NET, "and more than the default, which the driver overruns");
+
     printf("  task: %d checks, %d failed\n", checks, fails);
     return fails ? 1 : 0;
 }

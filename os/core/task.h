@@ -54,6 +54,13 @@
 // every command runs inside, and because the alternative was found the hard way.
 #define TASK_STACK_SHELL 8192
 
+// What a task needs if it will touch the wireless driver or lwIP. Those call
+// deep and do not yield on the way, so the guard cannot catch an overflow part
+// way — the size has to be right up front. The boot WiFi join learnt this by
+// being given 3 KB and corrupting memory until it hard faulted somewhere else
+// entirely.
+#define TASK_STACK_NET   8192
+
 // Bytes at the low end of every stack kept as a tripwire. Checked at every
 // yield: if they have changed, the task has run off the end and the OS says so
 // by name instead of corrupting something and carrying on.

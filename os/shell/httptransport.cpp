@@ -61,7 +61,11 @@ static bool wait_flag(volatile bool &flag, uint32_t ms, volatile bool *fail = nu
         if (fail && *fail) return false;
         if (absolute_time_diff_us(get_absolute_time(), deadline) < 0) return false;
         if (intr_check()) return false;          // Ctrl+C gets out of every wait
-        task_sleep_ms(2);
+        // 10 ms, not 2. This waits on operations measured in SECONDS, and a
+        // background task waking five hundred times a second costs the shell a
+        // context switch each time — which reads as the shell being choppy for
+        // no visible reason.
+        task_sleep_ms(10);
     }
     return true;
 }
