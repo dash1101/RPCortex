@@ -10,6 +10,8 @@
 #include "session.h"
 #include "pkg.h"
 void stock_install_once(void);
+void jobs_run_startup(void);
+void jobs_start_services(void);
 #include "banner.h"
 #include "out.h"
 #include "task.h"
@@ -50,6 +52,11 @@ int main(void) {
     session_boot();          // first-run setup, then login
     stock_install_once();    // first boot: write the built-in packages into /pkg
     pkg_load_installed();    // installed packages' commands go live
+    // After login, so a startup command runs as the logged-in user and its
+    // output is not competing with the password prompt.
+    jobs_start_services();
+    jobs_run_startup();
+
     shell_run();
     return 0;
 }

@@ -35,6 +35,7 @@ add_executable(rpcortex_v2
     ${OS_ROOT}/core/task.cpp
     ${OS_ROOT}/core/lock.cpp
     ${OS_ROOT}/core/logring.cpp
+    ${OS_ROOT}/core/joblist.cpp
     ${OS_ROOT}/core/lineedit.cpp
     ${OS_ROOT}/core/fmt.cpp
     ${OS_ROOT}/core/pkgindex.cpp
@@ -61,6 +62,7 @@ add_executable(rpcortex_v2
     ${OS_ROOT}/shell/ps.cpp
     ${OS_ROOT}/shell/logcmd.cpp
     ${OS_ROOT}/shell/stock.cpp
+    ${OS_ROOT}/shell/jobs.cpp
     ${OS_ROOT}/shell/shell.cpp
     ${SPIKE}/firmware/loader.cpp
     ${SPIKE}/firmware/storage.cpp

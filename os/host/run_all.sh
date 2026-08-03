@@ -29,6 +29,7 @@ declare -A SRC=(
     [lock_test]="$CORE/lock.cpp $CORE/task.cpp"
     [interrupt_test]="$CORE/interrupt.cpp $CORE/task.cpp host_task_stub.cpp"
     [pkgindex_test]="$CORE/pkgindex.cpp"
+    [joblist_test]="$CORE/joblist.cpp"
     [textcore_test]="$CORE/textcore.cpp $CORE/interrupt.cpp $CORE/task.cpp host_task_stub.cpp"
     [history_test]="$CORE/history.cpp"
     [core_test]="$CORE/sha256.cpp $CORE/registry.cpp $CORE/users.cpp $CORE/lock.cpp $CORE/task.cpp host_task_stub.cpp"

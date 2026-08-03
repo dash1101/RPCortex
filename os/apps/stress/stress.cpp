@@ -209,20 +209,87 @@ static void test_memory(void) {
     if (huge) fw_free(huge);
 }
 
+// --- environment ------------------------------------------------------------
+//
+// Printed first so a pasted report carries its own context. Every question I
+// would otherwise have to ask — which board, how much memory, how many cores,
+// how fragmented — is answered before the first check runs.
+static void report_header(void) {
+    fw_printf("\n\033[96m=== RPCortex self test ===\033[0m\n");
+    fw_printf("\033[90mPaste the whole output when reporting. Ctrl+C stops it.\033[0m\n\n");
+    fw_printf("  cores      : %u\n", (unsigned)fw_cores());
+    fw_printf("  heap       : %u / %u KB free\n",
+              (unsigned)(fw_heap_free() / 1024), (unsigned)(fw_heap_total() / 1024));
+    fw_printf("  largest    : %u KB contiguous\n", (unsigned)(fw_heap_largest() / 1024));
+    fw_printf("  uptime     : %u ms\n", (unsigned)fw_millis());
+    fw_printf("  this task  : pid %d\n", fw_task_self());
+}
+
+// --- scheduled work ---------------------------------------------------------
+//
+// The scheduler is the newest and least proven part of the OS, so it gets a
+// check of its own rather than being assumed to work because tasks do. A task
+// that sleeps must come back LATE, not early and not never — sleeping is where
+// a scheduler most often gets the arithmetic wrong.
+static volatile int g_slept;
+
+static int sleeper(void *arg) {
+    uint32_t ms = (uint32_t)(long)arg;
+    uint32_t t0 = fw_millis();
+    fw_task_sleep_ms(ms);
+    uint32_t took = fw_millis() - t0;
+    // Encoded rather than returned, so the checking happens on the main task
+    // where the output is already ordered.
+    g_slept = (int)took;
+    return 0;
+}
+
+static void test_scheduling(void) {
+    section("Scheduling");
+
+    g_slept = -1;
+    int p = fw_task_spawn("stress_sleep", sleeper, (void *)200, 1024);
+    check(p > 0, "a sleeping task started", 0);
+
+    uint32_t t0 = fw_millis();
+    int spins = 0;
+    while (g_slept < 0 && fw_millis() - t0 < 3000) { spins++; fw_task_yield(); }
+
+    check(g_slept >= 0, "the sleeping task woke up at all", "it never came back");
+    if (g_slept >= 0) {
+        fw_printf("      asked for 200 ms, slept %d ms\n", g_slept);
+        check(g_slept >= 200, "it slept at least as long as asked",
+              "woke EARLY - the deadline arithmetic is wrong");
+        check(g_slept < 1500, "and not far longer than asked",
+              "woke very late - the scheduler is starving sleepers");
+    }
+    // The main task kept running while the other slept. If it had not, the loop
+    // above would have spun a handful of times rather than continuously.
+    fw_printf("      main task ran %d times during the sleep\n", spins);
+    check(spins > 10, "the shell kept running while another task slept",
+          "the whole OS blocked on one task's sleep");
+}
+
 // --- the command ------------------------------------------------------------
 
 static int cmd_stress(int argc, char **argv) {
     (void)argc; (void)argv;
     g_pass = g_fail = 0;
 
-    fw_printf("\n\033[96m=== RPCortex self test ===\033[0m\n");
-    fw_printf("\033[90mCtrl+C stops it at any point.\033[0m\n");
+    report_header();
 
     uint32_t t0 = fw_millis();
     test_tasks();
+    if (!fw_task_should_stop()) test_scheduling();
     if (!fw_task_should_stop()) test_files();
     if (!fw_task_should_stop()) test_memory();
     uint32_t ms = fw_millis() - t0;
+
+    // Repeat the memory figures at the end. A difference between these and the
+    // header is a leak, and it is the single most useful number in the report.
+    fw_printf("\n  heap after : %u / %u KB free   (largest %u KB)\n",
+              (unsigned)(fw_heap_free() / 1024), (unsigned)(fw_heap_total() / 1024),
+              (unsigned)(fw_heap_largest() / 1024));
 
     fw_printf("\n");
     if (g_fail == 0)

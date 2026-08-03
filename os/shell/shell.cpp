@@ -49,6 +49,9 @@ void ps_register(void);
 void log_register(void);
 void stock_register(void);
 void stock_install_once(void);
+void jobs_register(void);
+void jobs_run_startup(void);
+void jobs_start_services(void);
 
 // --- line input -------------------------------------------------------------
 //
@@ -309,6 +312,7 @@ void shell_register_builtins(void) {
     fetch_register();       // fetch / neofetch
     ps_register();          // ps / kill — the task manager
     log_register();         // logdump
+    jobs_register();        // startup / task / service / watch
     apps_register();        // apps / unload for resident packages
     pkg_init();             // ensure /pkg exists
     pkg_register();         // install / remove / list
@@ -504,6 +508,17 @@ static int run_segment(char *seg) {
     free(buf_a);
     free(buf_b);
     return status;
+}
+
+// Run one line through the full parser. Exposed so startup, the scheduler and
+// watch get pipes, chaining and redirection for free instead of each growing
+// its own half-parser.
+int shell_run_line_now(char *line) {
+    out_clear_error();
+    int rc = run_segment(line);
+    if (rc == 0 && out_had_error()) rc = 1;
+    persist_save_dirty();
+    return rc;
 }
 
 // Execute a whole input line: ; sequencing, && / || conditionals, | pipes.
