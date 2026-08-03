@@ -21,6 +21,7 @@ trap 'rm -rf "$OUT"' EXIT
 # test name -> extra sources
 declare -A SRC=(
     [path_test]="$CORE/path.cpp"
+    [httpparse_test]="$CORE/httpparse.cpp"
     [cmdline_test]="$CORE/cmdline.cpp"
     [lineedit_test]="$CORE/lineedit.cpp $CORE/interrupt.cpp $CORE/task.cpp $CORE/blackbox.cpp host_task_stub.cpp"
     [fmt_test]="$CORE/fmt.cpp"

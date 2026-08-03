@@ -115,15 +115,76 @@ Not everything worth copying is worth copying at this size.
 - *Priority scheduling.* Round-robin is right until there is a task that
   genuinely must pre-empt another, and there is not one yet.
 
+## The package fetcher
+
+The largest remaining gap, and the one that decides whether v2 has a package
+*system* or merely runs packages. `pkg install` currently takes a local file
+only; there is no repo fetch, and the network layer is UDP alone — `ping`,
+`nslookup` and `ntp`, with no TCP anywhere. v1 could install from the repo, so
+this is not parity work with room to spare, it is the missing half.
+
+It also unblocks more than itself: `wget`, `curl`, `runurl` and OTA `update` all
+want the same HTTP client, so one piece of infrastructure closes five rows of the
+"Still missing" table.
+
+The concurrency rule above does not block it. A fetch runs in the foreground, in
+one task, and adds no concurrent code — the same shape as `ping` today.
+
+**In four stages, each testable before the next begins.** Built as one push, a
+failure in the TLS layer and a failure in the socket layer look identical from
+the shell, which is how a multi-pass hunt starts.
+
+1. **Protocol parsing, no sockets** — URL splitting and an incremental response
+   parser: status line, headers, `Content-Length`, chunked, redirects. Pure, so
+   the boundary cases that matter (a header split mid-name, a chunk size
+   arriving one digit at a time) are provoked directly instead of hoped for.
+   *Landed: `core/httpparse.{h,cpp}`, 69 checks, every fixture fed at every
+   possible split.*
+2. **TCP transport over plain `http://`** — `http_get(url, sink, ctx)` streaming
+   into a callback, proven against a local server before TLS is involved.
+3. **TLS** — `altcp_tls` and mbedtls. `pico_mbedtls` is in the SDK, and flash is
+   not the constraint: the image is 506 KB against a 1 MB reserve.
+4. **Wire up** `pkg install <name>`, `search`, `info`, `upgrade`.
+
+Three decisions that belong at the start rather than the middle:
+
+- **Stream, never buffer.** A `.pkg` is 5 KB for the small ones and much larger
+  for a suite like Nova D1. Bytes go to a temp file as they arrive, get verified,
+  and are installed only then. This constrains the client's API shape, which is
+  why it is settled at stage 2 and not discovered at stage 4.
+- **TLS buffers are statically reserved.** ~32 KB of the ~426 KB free, claimed at
+  boot. There is no collector here so v1's fragmentation failure cannot recur in
+  the same form, but a 32 KB allocation at hour two of an uptime is still the one
+  most likely to fail, and a package manager that works only on a fresh boot is
+  worse than one that costs 32 KB.
+- **Certificates get verified.** Shipping "verification disabled" is not a
+  stage-3 shortcut to be tidied later; it is the decision most likely to become
+  permanent by accident. If it is ever temporarily off it warns at runtime and
+  says so in VS-V1.md.
+
+On the boards with no wireless (`pico`, `pico2`), `pkg install <name>` follows
+the `#else` stub pattern `net.cpp` already uses: a clear "no wireless on this
+board — use `pkg install <file>`", never a link error or a hang.
+
+The socket layer stays behind the seam `core/` already uses. The ESP32-S3 port
+does not have to happen now; it does have to not get harder.
+
 ## The order
 
 1. Finish the current reliability pass — confirm `stress` runs clean twice
 2. Automatic crash-log-to-flash *(small, independent, do it any time)*
-3. Preemption *(the large one; everything else waits on it)*
-4. MPU isolation for packages
-5. Service supervision — restart a failed service instead of leaving it dead
+3. **The package fetcher, stages 1–4** *(the stated priority)*
+4. Preemption *(the large one; the MPU work waits on it)*
+5. MPU isolation for packages
+6. Service supervision — restart a failed service instead of leaving it dead
 
-Feature work — the package fetcher, the editor, `.rps` — sits alongside these
-rather than behind them, but nothing that increases the amount of code running
-concurrently should land before preemption. That is the mistake this document
-exists to avoid repeating.
+Preemption sits directly behind the fetcher rather than after it in spirit only:
+a runaway package is a reboot today, and that stops being a rare annoyance the
+moment installing someone else's package is one command. Ship the fetcher, then
+preemption, before third-party package authoring is encouraged.
+
+The rest of the feature work — the editor and `settings` (one TUI layer, two
+features), `.rps`, the six commands that need nothing but writing — sits
+alongside these rather than behind them. Nothing that increases the amount of
+code running *concurrently* should land before preemption. That is the mistake
+this document exists to avoid repeating.

@@ -30,6 +30,7 @@ add_executable(rpcortex_v2
     ${OS_ROOT}/task_switch.S
     ${OS_ROOT}/kernel/kernel.cpp
     ${OS_ROOT}/core/path.cpp
+    ${OS_ROOT}/core/httpparse.cpp
     ${OS_ROOT}/core/cmdline.cpp
     ${OS_ROOT}/core/interrupt.cpp
     ${OS_ROOT}/core/task.cpp
