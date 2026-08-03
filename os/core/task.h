@@ -150,6 +150,13 @@ int  task_shell_pid(void);
 void task_exit(int code);
 
 int  task_self(void);
+
+// Whether the running task is holding a lock, and so must not be force-exited
+// part-way through. Counted per task because a task may migrate cores while
+// holding one; see lock.cpp.
+void task_crit_enter(void);
+void task_crit_leave(void);
+bool task_crit_active(void);
 const TaskInfo *task_current(void);
 
 // --- introspection, for the task manager ------------------------------------
@@ -177,7 +184,16 @@ extern "C" {
 void *task_ctx_init(void *stack_top, TaskEntry entry);
 
 // Save the current context into *save_sp and resume `to_sp`.
-void  task_ctx_switch(void **save_sp, void *to_sp);
+// Park the current context and resume another.
+//
+// `live_out`, when given, is cleared the instant after the outgoing stack
+// pointer has been stored — with a barrier between the two, because the other
+// core observing the clear before the new sp would defeat the point entirely.
+// It has to happen in here: from a task's own side this call does not return
+// until it is resumed, so there is no moment in C between "sp is safely away"
+// and "another core may take me". Null for the scheduler's own context, which
+// no task can be scheduled onto.
+void  task_ctx_switch(void **save_sp, void *to_sp, volatile bool *live_out);
 
 // Milliseconds since boot, for sleep deadlines and CPU accounting.
 uint32_t task_now_ms(void);

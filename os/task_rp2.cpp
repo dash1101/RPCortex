@@ -248,6 +248,11 @@ uint32_t task_main_stack_headroom(void) {
 void task_stack_overflow(const char *name, uint32_t size) {
     // Interrupts stay on: this needs USB to deliver the message, and the damage
     // is already done so there is nothing left to protect.
+    //
+    // Unsynchronised from here, because this is reached from inside reschedule
+    // and the other core may be holding the output lock — or may be the reason
+    // this task's stack is gone. Interleaved text beats a silent hang.
+    out_panic_mode();
     printf("\n");
     out_fatal("STACK OVERFLOW in task '%s'", name ? name : "?");
     out_multi("   It used more than its %u byte stack and has written past the end.",
@@ -279,18 +284,31 @@ uint32_t task_core_count(void) {
 // thing that stalls anything. Interrupts are masked while it is held, because
 // an interrupt handler that touched the same spinlock on the same core would
 // deadlock against itself.
-static uint32_t g_hw_save;
+// Per core. spin_lock_blocking returns the interrupt state to restore, and the
+// lock serialises the holders so one shared word happened to work — but a saved
+// interrupt state belongs to the core that saved it, and relying on the lock to
+// keep that straight is a trap for the next person to nest one of these.
+static uint32_t g_hw_save[2];
 static spin_lock_t *g_hw;
 
 extern "C" unsigned lock_hw_core(void) { return get_core_num(); }
 
-extern "C" void lock_hw_enter(void) {
+// Claimed once, before core 1 exists. Claiming it lazily on first use meant two
+// cores could reach the check together and claim two DIFFERENT locks, each
+// happily excluding nobody. In practice core 0 is long past first use before
+// core 1 starts, so it never fired — but "never fired" and "cannot fire" are
+// different things, and this is the lock everything else is built on.
+extern "C" void lock_hw_init(void) {
     if (!g_hw) g_hw = spin_lock_instance(spin_lock_claim_unused(true));
-    g_hw_save = spin_lock_blocking(g_hw);
+}
+
+extern "C" void lock_hw_enter(void) {
+    if (!g_hw) lock_hw_init();          // fallback: a lock taken before init
+    g_hw_save[get_core_num() & 1] = spin_lock_blocking(g_hw);
 }
 
 extern "C" void lock_hw_exit(void) {
-    if (g_hw) spin_unlock(g_hw, g_hw_save);
+    if (g_hw) spin_unlock(g_hw, g_hw_save[get_core_num() & 1]);
 }
 
 // --- core 1 -----------------------------------------------------------------

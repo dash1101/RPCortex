@@ -12,14 +12,15 @@ static int me(void) {
     return pid > 0 ? pid : PRE_INIT_OWNER;
 }
 
-// Per core. Two cores are in different places at any given moment, and a
-// count shared between them would report one core's flash write as a reason not
-// to preempt a runaway task on the other.
-static volatile uint32_t g_crit[2];
-
-void crit_enter(void) { g_crit[lock_hw_core() & 1]++; }
-void crit_leave(void) { unsigned c = lock_hw_core() & 1; if (g_crit[c]) g_crit[c]--; }
-bool crit_active(void) { return g_crit[lock_hw_core() & 1] != 0; }
+// Held against the task, not the core it is currently on. This used to be a
+// two-element array indexed by core, on the reasoning that two cores are in
+// different places — true, but a LOCK is held by a task, and tasks migrate. One
+// taken on core 0 and released on core 1 decremented a counter that was never
+// incremented, leaving core 0 permanently "in a critical section" and its
+// preemption permanently deferred.
+void crit_enter(void) { task_crit_enter(); }
+void crit_leave(void) { task_crit_leave(); }
+bool crit_active(void) { return task_crit_active(); }
 
 bool lock_held_by_me(const RpcLock *l) {
     return l && l->owner == me();

@@ -44,12 +44,28 @@ void *task_ctx_init(void *stack_top, TaskEntry entry) {
     makecontext(&g_ctx[i], (void (*)())ctx_tramp, 1, i);
     return &g_ctx[i];
 }
-void task_ctx_switch(void **save_sp, void *to_sp) {
+// The `live_out` clear has to land AFTER this context is saved and BEFORE the
+// stacks swap — the same instant the device's assembly uses. swapcontext does
+// save-and-switch as one step and offers no seam in between, so the two halves
+// are split into getcontext/setcontext to make that instant reachable.
+//
+// `resumed` lives on this stack, so it survives being switched away from and
+// reads back true when the context is restored. volatile because the whole
+// idiom depends on it being re-read from memory rather than kept in a register
+// that setcontext will overwrite.
+void task_ctx_switch(void **save_sp, void *to_sp, volatile bool *live_out) {
     static ucontext_t root;
     ucontext_t *from = *save_sp ? (ucontext_t *)*save_sp : &root;
     *save_sp = from;
-    swapcontext(from, (ucontext_t *)to_sp);
+
+    volatile bool resumed = false;
+    getcontext(from);                       // the save
+    if (resumed) return;                    // ...and where it comes back to
+    resumed = true;
+    if (live_out) *live_out = false;        // safely parked: claimable from here
+    setcontext((ucontext_t *)to_sp);
 }
+void lock_hw_init(void) {}
 void lock_hw_enter(void) {}
 // One "core" here: these tests exercise the lock's logic, not the silicon.
 unsigned lock_hw_core(void) { return 0; }

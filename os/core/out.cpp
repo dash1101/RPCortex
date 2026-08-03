@@ -14,17 +14,62 @@
 // the shell was echoing a password. Any background task can print, so the
 // answer belongs here rather than in a rule about who is allowed to.
 //
-// An RpcLock, so a task waiting to print YIELDS instead of blocking the core,
-// and recursive because the tagged helpers below are built from each other.
+// Output is serialised, but NOT with the yielding lock the rest of the OS uses.
+// Recursive, because the tagged helpers below are built from each other.
 //
-// NOT used by the fault handler, which writes bytes directly for exactly this
-// reason: taking a lock while diagnosing a crash is a good way to hang instead
-// of reporting it.
-static RpcLock g_out_lock;
+// lock_acquire yields when contended, which would make every print a scheduling
+// point. That is wrong here for two reasons, both of which have bitten:
+//
+//   * The watchdog reports a stalled task from INSIDE reschedule. A print that
+//     yields there re-enters the scheduler from the middle of itself.
+//   * The stack-overflow reporter runs on a task already known to be corrupt.
+//     Yielding back into the scheduler is the last thing it should do.
+//
+// Spinning is safe here in a way it is not for the filesystem lock, because
+// nothing inside a single out_* call ever yields. On one core the holder
+// therefore runs to completion before anything else can ask for it, so the only
+// possible contention is the other core, and only for the length of one write.
+//
+// Keyed on CORE rather than task for the same reason: two tasks on one core
+// cannot both be inside out_*. Preemption does not break that — it redirects a
+// task to task_forced_exit rather than suspending it, and crit_enter below is
+// what makes it defer rather than strand the lock held.
+static volatile uint32_t g_out_owner;    // core + 1; 0 means free
+static volatile uint32_t g_out_depth;    // nested out_* calls on that core
+
+// Once the system is on its way down, stop synchronising altogether. A fault
+// reporter that spins on a lock held by a core that has already died would hang
+// instead of saying what happened, and interleaved output beats none.
+static volatile bool g_out_panic;
+void out_panic_mode(void) { g_out_panic = true; }
 
 struct OutGuard {
-    OutGuard()  { lock_acquire(&g_out_lock); }
-    ~OutGuard() { lock_release(&g_out_lock); }
+    bool held;
+    OutGuard() {
+        held = false;
+        if (g_out_panic) return;
+        uint32_t me = lock_hw_core() + 1;
+        while (true) {
+            lock_hw_enter();
+            if (g_out_owner == 0 || g_out_owner == me) {
+                g_out_owner = me;
+                g_out_depth++;
+                lock_hw_exit();
+                break;
+            }
+            lock_hw_exit();
+            if (g_out_panic) return;      // the holder died mid-write
+        }
+        held = true;
+        crit_enter();    // a forced exit in here would never release it
+    }
+    ~OutGuard() {
+        if (!held) return;
+        crit_leave();
+        lock_hw_enter();
+        if (g_out_depth && --g_out_depth == 0) g_out_owner = 0;
+        lock_hw_exit();
+    }
 };
 
 #include <stdio.h>

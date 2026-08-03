@@ -363,3 +363,256 @@ features), `.rps`, the six commands that need nothing but writing — sits
 alongside these rather than behind them. Nothing that increases the amount of
 code running *concurrently* should land before preemption. That is the mistake
 this document exists to avoid repeating.
+
+---
+
+## The concurrency faults: one bug class, two windows
+
+A run of hard faults has followed every pass that added background work. The
+signatures looked unrelated — `PRECISERR` at assorted addresses, `INVSTATE`
+with `pc=0`, a PC holding ASCII (`696672fe`), and most recently
+`pc=0x00000001 lr=0x00020000 sp=20029B20`. They were treated as four bugs and
+patched one at a time. They are one bug, and the patches were all downstream of
+it.
+
+`pc=0x00000001` is the clearest of them. Address 0 is the bootrom on both RP2040
+and RP2350, so a branch to 1 lands in ROM and executes it with garbage
+registers until a load faults — which is why the fault is reported as a data
+abort at an address that has nothing to do with anything. The interesting event
+is not the fault. It is the branch to 1: a `pop {pc}` that came back with a
+value no compiler ever wrote there.
+
+### The invariant that is broken
+
+**A task is advertised as schedulable before its context is safely parked.**
+
+`pick()` is careful about the task it selects — it claims `next` by setting
+`TASK_RUNNING` inside the hardware spinlock, and the comment says so: *"claims
+it; no other core will pick it."* That reasoning covers `next`. Nobody applied
+it to `me`.
+
+**Window A — the switch tail.** In `reschedule()`, `me` is parked inside the
+lock but its stack pointer is not written until after the lock is released:
+
+```
+if (me->info.state == TASK_RUNNING) me->info.state = park_as;   // inside the lock
+...
+lock_hw_exit();                                 // me is now advertised READY
+if (me) task_ctx_switch(&me->sp, next->sp);     // me->sp written HERE
+```
+
+Between those two lines the other core can `pick()` `me`, find it `TASK_READY`
+with `AFFINITY_ANY`, mark it `TASK_RUNNING` and context-switch into `me->sp` —
+which still holds the **stale** value from its previous park. That stack region
+has been overwritten many times since. Restoring from it pops garbage into
+`pc`, `lr` and the callee-saved registers, which is every signature above.
+
+This needs no sleep and no unusual timing. A plain yield with something else
+runnable is enough.
+
+**Window B — the sleep spin.** When a task sleeps and nothing else is runnable
+on its core, it waits out the deadline in a spin with the lock released:
+
+```
+if (me && me->info.state == TASK_SLEEPING) {
+    uint32_t wake = me->wake_at_ms;
+    lock_hw_exit();                                       // SLEEPING, and live
+    while ((int32_t)(task_now_ms() - wake) < 0) { ... }
+    lock_hw_enter();
+    me->info.state = TASK_RUNNING;
+```
+
+`runnable_on()` treats a `TASK_SLEEPING` task whose deadline has passed as
+runnable. From the moment the deadline expires until the lock is retaken, the
+task is both advertised as runnable and physically executing on this core. The
+other core can pick it up and run the same stack.
+
+### Why it presents as "crashes when something runs in the background"
+
+Both windows need a second core sampling them, and an `AFFINITY_ANY` task to
+steal. Both are always present:
+
+- `core1_main` calls `task_yield()` every 200 µs — roughly 5,000 trips through
+  `pick()` per second, continuously, for the whole uptime.
+- The network path sleeps constantly: `task_sleep_ms(2)` in the transport retry
+  loops, `(10)` on the connect wait, `(20)` and `(50)` while polling a join. A
+  download or a background join opens Window B hundreds of times a second.
+- `wifi-join`, package tasks and job tasks are all `AFFINITY_ANY`. The shell is
+  `AFFINITY_CORE0`, so it cannot itself be stolen — which matches the symptom
+  exactly: the shell is fine until something else is running.
+
+The collision is not a narrow race. Over a few seconds of background work it is
+close to certain.
+
+### Why the test suite is green
+
+`host/task_test.cpp` hardcodes `task_core_count()` to 1, with the note *"single-
+threaded host: the cross-core guard has nothing to guard."* Every host suite is
+single-core by construction, so the entire class is invisible to all of them.
+Twenty-eight passing suites and this bug are not in contradiction; the suites
+never looked.
+
+### The fix
+
+One mechanism closes both windows: a per-task `volatile bool live`, true while a
+task's context is on a core, with `runnable_on()` refusing any task whose flag
+is set. Fixing Window B alone leaves the common path open, and the next reflash
+finds the same family of faults with a different address in it.
+
+**Where it is cleared is the whole design.** "After the context is saved" is not
+a point that exists in C: from the outgoing task's side, `task_ctx_switch` does
+not return until that task is resumed, and by then the flag must be set again,
+not cleared. There is no instant in its own control flow between *sp is stored*
+and *the other core may pick me up*. The clear has to happen inside the switch:
+
+```
+void task_ctx_switch(void **save_sp, void *to_sp, volatile bool *live_out);
+```
+
+In `task_switch.S`, immediately after the `str` that records the stack pointer
+and before the stacks are swapped — one site, in both the ARMv6-M and ARMv7-M
+branches. Because the third argument arrives in `r2`, the scratch register
+currently used to stage `sp` moves to `r3`:
+
+```
+    mov     r3, sp
+    str     r3, [r0]        // *save_sp = sp
+    dmb                     // sp must be visible before live is cleared
+    movs    r3, #0
+    strb    r3, [r2]        // *live_out = false
+    mov     sp, r1          // switch stacks
+```
+
+**The `dmb` is not optional and the host harness cannot prove it.** The two
+stores are in program order on one core, but ARM permits the other core to
+observe them out of order — seeing `live == false` before the new `sp`, which
+resurrects Window A exactly. A pthread harness on x86 has a far stronger memory
+model than Cortex-M33 and will pass either way, so the barrier goes in from the
+start rather than on the strength of a green test.
+
+Doing it on the outgoing side also covers the `TASK_DONE` path's
+`task_ctx_switch(&me->sp, back)` and the trampoline for free. The alternative —
+having the incoming task clear its predecessor, as Linux does in
+`finish_task_switch` — needs the clear at every resume point instead, and a
+missed one leaves that task's flag set forever so `runnable_on` never picks it
+again. That is a silent hang rather than a fault, and it looks exactly like the
+fix having made things worse.
+
+For completeness, the `!next` block has a fourth exit — the trailing `else` that
+covers any other parked state. `reschedule` is only ever called with
+`TASK_READY`, `TASK_SLEEPING` or `TASK_DONE`, all handled above, and
+`runnable_on` accepts nothing else, so that path is unreachable and safe either
+way.
+
+**Deliberately not bundled:** the sleep spin should eventually stop being a spin
+— a task that waits out its own deadline while holding a core is why Window B
+exists at all, and a sleeper belongs parked with its deadline in the table. With
+the flag in place the spin is *correct*, so that is a separate change for a
+separate reflash. Two structural changes at once means a fault that persists
+says nothing about which one was wrong, and that is precisely the loop this
+section exists to end.
+
+### Confirm before fixing
+
+`bb_note_task` already records the running task, and `bb_previous()` is already
+read at boot. The task name from the last crash decides this: `wifi-join`, a
+package or a job task corroborates it. The shell alone would not — it is
+`AFFINITY_CORE0` and cannot be stolen — and would mean something else is also
+in play.
+
+### Three findings that are separate, and not consequences of the above
+
+**cyw43 is bound to one core, and the net task is not.** The build links
+`pico_cyw43_arch_lwip_threadsafe_background`. Its async_context records
+`core_num` at init and asserts on it in `process_under_lock`,
+`low_priority_irq_handler` and `async_context_threadsafe_background_deinit`;
+`async_context_threadsafe_background_execute_sync` has an explicit cross-core
+branch guarded by `hard_assert`. Those asserts compile out in a release build,
+so the wrong core does not fail loudly — it proceeds. `g_net_op` serialises
+*tasks*, not cores, so the net task can begin a call on core 0 and finish it on
+core 1. `wifi-join` should be `AFFINITY_CORE0`, which is one line and also takes
+the net task out of the race above.
+
+**Output is now a scheduling point.** `lock_acquire` yields when contended, so
+every `out_*` call can switch tasks — a change introduced when output was
+serialised, and one that has not been audited against its callers. The lwIP
+receive callback is clean (it prints nothing). The fault path is not:
+`task_stack_overflow` reports through `out_fatal`/`out_multi`, so a corrupt task
+detected inside `reschedule` can yield back into the scheduler that just
+detected it. The report of the damage must not re-enter the thing reporting it —
+that path needs a non-yielding write.
+
+**Two smaller things, worth a line each.** `crit_enter`/`crit_leave` index
+`g_crit` by current core while locks are owned by tasks, and tasks migrate; a
+task that takes a lock on one core and releases it on the other leaves the first
+core's counter stuck. It is read only for `ps` output today, so it misreports
+rather than breaks. And the lazy `if (!g_hw) g_hw = spin_lock_instance(...)` in
+`lock_hw_enter` is itself racy on first concurrent use — two cores could claim
+different locks. Almost certainly never fires, since core 0 is long past first
+use before core 1 starts, but it is a free fix.
+
+### The harness this needs
+
+None of this is provable by the current suite, and everything here is meant to
+be provable on the host. A two-core harness — two threads driving `reschedule()`
+against a shared task table, with a spawned task that yields and sleeps in a
+loop — reproduces both windows within seconds and fails before the fix. Adding
+it matters more than the fix: it is what stops the next concurrency change from
+shipping the same way.
+
+### What landed
+
+All of the above except the sleep re-architecture, which is deliberately held
+back for its own reflash.
+
+`host/smp_test.cpp` is the harness: two POSIX threads, a real mutex behind
+`lock_hw_enter`, six `AFFINITY_ANY` tasks, three seconds of yielding and
+sleeping. It counts how many cores believe they are running each task and fails
+if that is ever more than one. Measured, with the `live` check commented out of
+`runnable_on` and nothing else changed:
+
+```
+without the fix    10,787 tasks scheduled onto two cores at once
+with the fix                0
+```
+
+Roughly 3,600 collisions a second, which is why this presented as "crashes a
+little while after something starts in the background" rather than as a rare
+race.
+
+Two things the harness cannot prove, recorded so they are not mistaken for
+tested. The `dmb` in `task_switch.S` is there on the strength of the
+architecture — x86 will not reorder those two stores where Cortex-M33 will — and
+the assembly itself was checked by disassembling both built images rather than
+by running it:
+
+```
+str  r3, [r0]        // sp
+dmb  sy
+strb r3, [r2]        // live = false
+mov  sp, r1          // stacks swap
+```
+
+Both branches, ARMv6-M and ARMv7-M, in that order.
+
+Two changes came out of the same audit and are worth naming separately, because
+neither is a consequence of the scheduler bug:
+
+**Output stopped being a scheduling point.** The output lock was an `RpcLock`,
+which yields when contended, so every print could switch tasks — including the
+watchdog's report of a stalled task, which is emitted from inside `reschedule`
+itself. It is now a non-yielding recursive lock keyed on core. Spinning is safe
+here in a way it is not for the filesystem lock: nothing inside a single `out_*`
+call yields, so on one core the holder always runs to completion and only the
+other core can contend, for the length of one write. `out_panic_mode()` drops
+the lock entirely once the system is on its way down, so a fault report cannot
+hang waiting on a core that has already stopped.
+
+**`crit_active` was disabling preemption, not just misreporting it.** The
+counter was indexed by core while locks are held by tasks, and tasks migrate: one
+taken on core 0 and released on core 1 decremented a counter that was never
+incremented, leaving core 0 permanently "in a critical section". `preempt_decide`
+reads that and returns `PREEMPT_DEFER`, so preemption on that core was off for
+the rest of the boot. It is now counted per task. `cur()` gained a per-core memo
+in the same change, since the critical check runs on every lock acquire and a
+full-screen redraw takes the output lock hundreds of times.

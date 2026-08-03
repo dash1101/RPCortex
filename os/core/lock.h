@@ -80,6 +80,11 @@ struct LockGuard {
 // device this is a hardware spinlock; on the host, nothing. It is held for a
 // few instructions only — never across a yield.
 extern "C" {
+// Claim the lock up front, before a second core exists. Claiming it lazily on
+// first use let two cores reach the check together and take two different
+// locks, each excluding nobody. Safe to call more than once; a no-op on the
+// host, which has no second core to exclude.
+void lock_hw_init(void);
 void lock_hw_enter(void);
 // Which core is asking. Same per-platform split as the two above: the hardware
 // answer on a device, always 0 on the host.

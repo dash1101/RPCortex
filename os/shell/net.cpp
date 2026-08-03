@@ -584,8 +584,19 @@ void net_autoconnect(void) {
 
     g_join_done = false;
     g_join_ok = false;
+    // CORE0, not ANY. pico_cyw43_arch_lwip_threadsafe_background records the
+    // core it was initialised on and asserts on it in process_under_lock, the
+    // low-priority IRQ handler and deinit — asserts that compile out in a
+    // release build, so the wrong core does not fail loudly, it just proceeds.
+    // g_net_op serialises TASKS, not cores, so an unpinned join could begin a
+    // cyw43 call on one core and finish it on the other.
+    //
+    // radio_up() is lazy, so whichever task first needs the chip is the one
+    // that binds the context. Pinning the joiner is what makes that core 0
+    // deterministically, matching the shell where every other network command
+    // runs.
     if (task_spawn("wifi-join", "(kernel)", autoconnect_task, nullptr,
-                   TASK_STACK_NET, AFFINITY_ANY) >= 0) {
+                   TASK_STACK_NET, AFFINITY_CORE0) >= 0) {
         out_infop("wifi", "Looking for a saved network in the background...");
         return;
     }

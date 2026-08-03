@@ -126,3 +126,9 @@ void out_progress_done(void);
 
 // Push whatever is buffered to the terminal now.
 void out_flush(void);
+
+// Stop synchronising output, permanently. For the crash and stack-overflow
+// paths only: past this point a report matters more than clean interleaving,
+// and waiting on a lock held by a core that has already stopped would hang
+// instead of saying what went wrong.
+void out_panic_mode(void);

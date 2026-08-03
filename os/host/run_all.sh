@@ -36,6 +36,7 @@ declare -A SRC=(
     [blackbox_test]="$CORE/blackbox.cpp"
     [logring_test]="$CORE/logring.cpp $CORE/task.cpp $CORE/blackbox.cpp host_task_stub.cpp"
     [task_test]="$CORE/task.cpp $CORE/blackbox.cpp"
+    [smp_test]="$CORE/task.cpp $CORE/blackbox.cpp"
     [lock_test]="$CORE/lock.cpp $CORE/task.cpp $CORE/blackbox.cpp"
     [interrupt_test]="$CORE/interrupt.cpp $CORE/task.cpp $CORE/blackbox.cpp host_task_stub.cpp"
     [pkgindex_test]="$CORE/pkgindex.cpp"
@@ -49,11 +50,14 @@ declare -A SRC=(
     [apps_test]="$SHELL_DIR/command.cpp $SHELL_DIR/apps.cpp $CORE/out.cpp $CORE/lock.cpp $CORE/task.cpp $CORE/blackbox.cpp $CORE/logring.cpp host_task_stub.cpp $SPIKE/loader.cpp"
 )
 
+# Extra flags for tests that need them. smp_test runs two real threads.
+declare -A FLAGS=( [smp_test]="-pthread" )
+
 pass=0; fail=0
 for t in "${!SRC[@]}"; do
     [ -f "$t.cpp" ] || continue
     printf '  %-16s ' "$t"
-    if ! $CXX $INC "$t.cpp" ${SRC[$t]} -o "$OUT/$t" 2>"$OUT/$t.err"; then
+    if ! $CXX $INC ${FLAGS[$t]:-} "$t.cpp" ${SRC[$t]} -o "$OUT/$t" 2>"$OUT/$t.err"; then
         echo "BUILD FAILED"; sed 's/^/      /' "$OUT/$t.err" | head -15
         fail=$((fail+1)); continue
     fi

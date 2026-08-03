@@ -23,6 +23,7 @@
 #include "logring.h"
 #include "blackbox.h"
 #include "out.h"
+#include "lock.h"
 
 void net_autoconnect(void);
 void task_start_core1(void);
@@ -67,6 +68,7 @@ int main(void) {
     task_watchdog_start();
     task_preempt_start();   // force-terminate a task that stops yielding entirely
 
+    lock_hw_init();          // before core 1 exists, so the claim cannot race
     task_init("init");
     bool prior = log_init();
 
