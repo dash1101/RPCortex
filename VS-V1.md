@@ -73,8 +73,7 @@ original escape sequences.
 
 | What | Needs |
 |---|---|
-| `pkg install <name>` from a repo, `search`, `info`, `upgrade` | TLS on top of the HTTP client below |
-| `curl` `runurl` | the same |
+| `curl` `runurl` | nothing; the HTTP client is there |
 | `edit` / `nano` / `vi` | a TUI layer |
 | `settings` panel | the same TUI layer |
 | `update` / `safeboot` (OTA) | A/B flash slots |
@@ -103,6 +102,10 @@ could reflash. The equivalent here is handing USB back to the boot ROM.
 
 - **`wifi`, `ping`, `ntp` are unproven on hardware.** They build and the lwIP
   locking is right by construction, but none has been run against a real network.
+- **The package manager is complete but DEVICE-UNCONFIRMED.** `pkg update /
+  search / info / install <name> / upgrade` are written, and the index parser is
+  host-tested against the real `index.json` from both repos. No board has run a
+  real install.
 - **`wget` is new and DEVICE-UNCONFIRMED.** The half that decides what happens —
   redirects, size caps, truncation, a full filesystem — is host-tested against
   both a fake transport and a real `python3 -m http.server`. The lwIP socket

@@ -32,6 +32,7 @@ add_executable(rpcortex_v2
     ${OS_ROOT}/core/path.cpp
     ${OS_ROOT}/core/httpparse.cpp
     ${OS_ROOT}/core/httpfetch.cpp
+    ${OS_ROOT}/core/repoindex.cpp
     ${OS_ROOT}/core/cmdline.cpp
     ${OS_ROOT}/core/interrupt.cpp
     ${OS_ROOT}/core/task.cpp
@@ -56,6 +57,7 @@ add_executable(rpcortex_v2
     ${OS_ROOT}/shell/fs.cpp
     ${OS_ROOT}/shell/apps.cpp
     ${OS_ROOT}/shell/pkg.cpp
+    ${OS_ROOT}/shell/pkgrepo.cpp
     ${OS_ROOT}/shell/text.cpp
     ${OS_ROOT}/shell/sys.cpp
     ${OS_ROOT}/shell/user.cpp
@@ -151,6 +153,19 @@ if(PICO_CYW43_SUPPORTED)
         RPC_HAS_TLS=1
         MBEDTLS_CONFIG_FILE="${OS_ROOT}/mbedtls_config.h")
 endif()
+# The trusted roots ride in flash and get written to /os/ca.pem on a first boot,
+# the same way the built-in packages do. A file rather than a compiled-in blob,
+# so a rotated authority is a download instead of a reflash.
+add_custom_command(
+    OUTPUT ${CMAKE_BINARY_DIR}/stock_cacerts.cpp
+    COMMAND ${CMAKE_COMMAND} -E env python3 ${OS_ROOT}/tools_bin2c.py
+            ${OS_ROOT}/ca_certs.pem ${CMAKE_BINARY_DIR}/stock_cacerts.cpp stock_cacerts
+    DEPENDS ${OS_ROOT}/ca_certs.pem ${OS_ROOT}/tools_bin2c.py
+)
+add_custom_target(stock_cacerts_src DEPENDS ${CMAKE_BINARY_DIR}/stock_cacerts.cpp)
+target_sources(rpcortex_v2 PRIVATE ${CMAKE_BINARY_DIR}/stock_cacerts.cpp)
+add_dependencies(rpcortex_v2 stock_cacerts_src)
+
 pico_enable_stdio_usb(rpcortex_v2 1)
 pico_enable_stdio_uart(rpcortex_v2 0)
 pico_add_extra_outputs(rpcortex_v2)

@@ -115,13 +115,57 @@ static void load_cb(void *, const char *name, const char *) {
 
 void pkg_load_installed(void) { index_walk(load_cb, nullptr); }
 
+struct VerLookup { const char *want; char *out; unsigned cap; bool hit; };
+
+static void ver_cb(void *ctx, const char *name, const char *version) {
+    VerLookup *v = (VerLookup *)ctx;
+    if (v->hit) return;
+    // Case-insensitive: the index says "RPCMark" and people type "rpcmark".
+    const char *a = name, *b = v->want;
+    while (*a && *b) {
+        char la = (*a >= 'A' && *a <= 'Z') ? (char)(*a + 32) : *a;
+        char lb = (*b >= 'A' && *b <= 'Z') ? (char)(*b + 32) : *b;
+        if (la != lb) return;
+        a++; b++;
+    }
+    if (*a || *b) return;
+    snprintf(v->out, v->cap, "%s", version);
+    v->hit = true;
+}
+
+bool pkg_installed_version(const char *name, char *out, unsigned cap) {
+    char *buf = (char *)malloc(IDX_BUF);
+    if (!buf) return false;
+    uint32_t n = storage_read_file(PKG_INDEX, (uint8_t *)buf, IDX_BUF - 1);
+    buf[n] = 0;
+    VerLookup v{name, out, cap, false};
+    pkgindex_walk(buf, n, ver_cb, &v);
+    free(buf);
+    return v.hit;
+}
+
 void pkg_init(void) { storage_mkdir(PKG_DIR); }   // no-op if it already exists
 
+int pkg_repo_command(int argc, char **argv);   // pkgrepo.cpp
+
 static int cmd_pkg(int argc, char **argv) {
-    if (argc >= 3 && !strcmp(argv[1], "install")) return pkg_install_file(argv[2], false) ? 0 : 1;
-    if (argc >= 3 && !strcmp(argv[1], "remove"))  return pkg_remove(argv[2]) ? 0 : 1;
-    if (argc >= 2 && !strcmp(argv[1], "list"))    { pkg_list(); return 0; }
-    out_multi("Usage: pkg install <file> | pkg remove <name> | pkg list");
+    if (argc >= 2) {
+        // The repo half first: it owns install (by name), update, search, info
+        // and upgrade, and returns -1 for anything it does not handle.
+        int rc = pkg_repo_command(argc, argv);
+        if (rc >= 0) return rc;
+    }
+    if (argc >= 3 && !strcmp(argv[1], "remove")) return pkg_remove(argv[2]) ? 0 : 1;
+    if (argc >= 2 && !strcmp(argv[1], "list"))   { pkg_list(); return 0; }
+    out_multi("Usage:");
+    out_multi("  pkg update              refresh the package list");
+    out_multi("  pkg search [text]       list or search available packages");
+    out_multi("  pkg info <name>         details, including whether it verifies");
+    out_multi("  pkg install <name>      install from the repo");
+    out_multi("  pkg install <path>      install a file already on the device");
+    out_multi("  pkg upgrade             update everything with a newer version");
+    out_multi("  pkg remove <name>       uninstall");
+    out_multi("  pkg list                what is installed");
     return 1;
 }
 

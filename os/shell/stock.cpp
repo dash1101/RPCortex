@@ -79,7 +79,23 @@ static void stock_record(const StockPkg &p) {
     reg_set(key, val);
 }
 
+// The trusted roots. Not a package — a file the TLS layer reads — but it ships
+// the same way and for the same reason: it must exist on a first boot without
+// anyone having to fetch it, and yet remain replaceable afterwards.
+//
+// Written only when absent, so a hand-updated bundle survives a firmware update
+// that would otherwise put the shipped one back.
+extern "C" const unsigned char stock_cacerts_data[];
+extern "C" const unsigned int  stock_cacerts_len;
+
+static void install_cacerts(void) {
+    bool is_dir; uint32_t size;
+    if (storage_stat("/os/ca.pem", &is_dir, &size) && size > 0) return;
+    storage_write_file("/os/ca.pem", stock_cacerts_data, stock_cacerts_len);
+}
+
 void stock_install_once(void) {
+    install_cacerts();
     for (unsigned i = 0; i < N_STOCK; i++) {
         bool is_update = false;
         if (!stock_should_place(kStock[i], &is_update)) continue;

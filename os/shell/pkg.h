@@ -14,6 +14,10 @@ void pkg_load_installed(void);    // load every installed package (boot)
 // path that installs the built-in packages before anyone is watching.
 bool pkg_install_file(const char *file, bool quiet);
 
+// The installed version of `name`, or false when it is not installed. Used by
+// `pkg info` and `pkg upgrade` to compare against what the repo offers.
+bool pkg_installed_version(const char *name, char *out, unsigned cap);
+
 void pkg_register(void);          // register the `pkg` command
 
 #endif  // RPC_PKG_H

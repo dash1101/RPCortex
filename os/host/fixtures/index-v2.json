@@ -1,0 +1,18 @@
+{
+  "name": "RPCortex Package Repository",
+  "format": 2,
+  "maintainer": "dash1101",
+  "packages": [
+    {
+      "name": "greet",
+      "ver": "1.0",
+      "desc": "Worked example package - registers a 'greet' shell command",
+      "author": "dash1101",
+      "abi": "1.2",
+      "arch": "armv6m",
+      "size": 1732,
+      "sha256": "44959f9fa4d7293c9f3a0ee8e4328c4923038c01e4c14a3d4353d8b3c7dcbc04",
+      "url": "https://raw.githubusercontent.com/dash1101/RPCortex-repo/main/repo-v2/packages/greet.app"
+    }
+  ]
+}
