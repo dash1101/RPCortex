@@ -157,10 +157,14 @@ static int cmd_diag(int, char **) {
     out_multi("  %sClock%s     %u MHz", C_CYAN, C_RESET,
               (unsigned)(clock_get_hz(clk_sys) / 1000000u));
     out_multi("  %sTasks%s     %lu", C_CYAN, C_RESET, (unsigned long)task_count());
-    out_multi("  %sFlash%s     %lu KB firmware, %lu KB reserved",
+    out_multi("  %sFlash%s     %lu KB firmware of a %lu KB slot",
               C_CYAN, C_RESET,
               (unsigned long)(storage_firmware_bytes() / 1024),
-              (unsigned long)(storage_reserve_bytes() / 1024));
+              (unsigned long)(storage_fw_slot_bytes() / 1024));
+    out_multi("  %sStaging%s   %lu KB at offset %lu KB, for updates",
+              C_CYAN, C_RESET,
+              (unsigned long)(storage_fw_slot_bytes() / 1024),
+              (unsigned long)(storage_stage_offset() / 1024));
     out_multi("  %sStorage%s   %lu KB free of %lu KB", C_CYAN, C_RESET,
               (unsigned long)(storage_free_bytes() / 1024),
               (unsigned long)(storage_total_bytes() / 1024));

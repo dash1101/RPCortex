@@ -53,6 +53,19 @@ uint32_t storage_total_bytes(void);   // the whole filesystem partition, for df
 uint32_t storage_firmware_bytes(void);
 uint32_t storage_reserve_bytes(void);
 
+// The firmware slot, and where an update is staged before it is applied.
+//
+// They exist because source and destination are one flash chip: an update reads
+// the new image while erasing the old, and erasing the firmware takes littlefs
+// with it. Staging puts the image at a fixed offset the final copy can read
+// with no filesystem involved.
+uint32_t storage_fw_slot_bytes(void);      // the most a firmware image may be
+uint32_t storage_stage_offset(void);       // flash offset of the staging slot
+
+// Copy a file into the staging slot, 4 KB at a time. Safe and interruptible:
+// nothing that runs the device is touched. Returns the bytes staged, or 0.
+uint32_t storage_stage_file(const char *path);
+
 // Last modification time as a Unix epoch, or 0 when it was never recorded (the
 // clock had not been set when the file was written). Held as a littlefs custom
 // attribute, since littlefs itself stores no timestamps.

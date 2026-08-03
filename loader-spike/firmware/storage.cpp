@@ -53,9 +53,26 @@ RpcLock g_fs_lock;
 // filesystem starts, so the first boot after this change finds none and builds
 // a fresh one: accounts, settings and installed packages go once. Paid
 // deliberately now rather than after anyone is relying on the contents.
+// 2 MB, split in half: the firmware runs from the first megabyte, and the
+// second is a STAGING slot an update is assembled in.
+//
+// The staging slot exists because source and destination are the same physical
+// flash chip. An update has to read the new image while erasing the old one,
+// and the moment the firmware region is erased, littlefs — which lives in it —
+// is gone with it. So the image is first copied somewhere the erase does not
+// touch, and the final copy reads from a fixed offset with no filesystem
+// involved at all.
+//
+// Halves rather than a tight fit: an image that outgrew its slot would be
+// discovered by overwriting something, and 694 KB in a 1 MB slot leaves real
+// room to grow.
 #ifndef RPC_FW_RESERVE
-#define RPC_FW_RESERVE (1536 * 1024)
+#define RPC_FW_RESERVE (2048 * 1024)
 #endif
+
+// Where the firmware runs, and where an update is assembled.
+#define RPC_FW_SLOT    (RPC_FW_RESERVE / 2)
+#define RPC_STAGE_OFF  (RPC_FW_SLOT)
 
 #define FS_OFFSET      RPC_FW_RESERVE
 #define FS_SIZE        (PICO_FLASH_SIZE_BYTES - FS_OFFSET)
@@ -415,6 +432,53 @@ extern "C" char __flash_binary_end;
 uint32_t storage_firmware_bytes(void) {
     return (uint32_t)((uintptr_t)&__flash_binary_end - XIP_BASE);
 }
+uint32_t storage_fw_slot_bytes(void) { return RPC_FW_SLOT; }
+uint32_t storage_stage_offset(void)   { return RPC_STAGE_OFF; }
+
+// Copy a file into the staging slot.
+//
+// Done here rather than in the update command because it needs the filesystem
+// and the flash geometry in the same place. It is entirely safe: the staging
+// slot holds nothing the device needs, so a failure or an interruption costs
+// the copy and nothing else.
+uint32_t storage_stage_file(const char *path) {
+    LockGuard _fs(&g_fs_lock);
+    if (!g_mounted) return 0;
+
+    struct lfs_info info;
+    if (lfs_stat(&g_lfs, path, &info) < 0 || info.type != LFS_TYPE_REG) return 0;
+    uint32_t size = info.size;
+    if (size == 0 || size > RPC_FW_SLOT) return 0;
+
+    lfs_file_t f;
+    if (lfs_file_open(&g_lfs, &f, path, LFS_O_RDONLY) < 0) return 0;
+
+    // One sector at a time: read it with XIP working, then erase and program
+    // that sector. The buffer is the only RAM this needs, which is what makes a
+    // 694 KB image possible on a device with 370 KB of heap.
+    uint8_t *buf = (uint8_t *)malloc(FLASH_SECTOR_SIZE);
+    if (!buf) { lfs_file_close(&g_lfs, &f); return 0; }
+
+    uint32_t done = 0;
+    bool ok = true;
+    while (done < size && ok) {
+        uint32_t want = size - done;
+        if (want > FLASH_SECTOR_SIZE) want = FLASH_SECTOR_SIZE;
+        memset(buf, 0xff, FLASH_SECTOR_SIZE);          // erased state for the tail
+        if (lfs_file_read(&g_lfs, &f, buf, want) != (lfs_ssize_t)want) { ok = false; break; }
+
+        EraseArgs ea{RPC_STAGE_OFF + done, FLASH_SECTOR_SIZE};
+        if (guarded(do_erase, &ea) != 0) { ok = false; break; }
+        ProgArgs pa{RPC_STAGE_OFF + done, buf, FLASH_SECTOR_SIZE};
+        if (guarded(do_prog, &pa) != 0) { ok = false; break; }
+        done += want;
+    }
+
+    free(buf);
+    lfs_file_close(&g_lfs, &f);
+    return ok ? done : 0;
+}
+
 uint32_t storage_reserve_bytes(void) { return RPC_FW_RESERVE; }
 
 uint32_t storage_free_bytes(void) {

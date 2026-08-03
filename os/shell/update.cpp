@@ -42,6 +42,7 @@
 #include "hardware/flash.h"
 #include "hardware/sync.h"
 #include "hardware/watchdog.h"
+#include "hardware/regs/addressmap.h"
 
 bool update_apply_file(const char *path);   // defined below
 
@@ -163,24 +164,44 @@ static bool fetch_manifest(RepoEntry *out) {
 
 // --- writing the firmware ---------------------------------------------------
 
-// Runs from RAM, with interrupts off and the other core parked.
+// Copy the staged image over the firmware, one sector at a time.
 //
-// __not_in_flash_func is not decoration: XIP is UNAVAILABLE while flash is being
-// erased or programmed, so any instruction still being fetched from flash would
-// fault. Everything this touches has to be in RAM already, which is why it is a
-// straight copy with no calls out of it.
+// __not_in_flash_func is not decoration. XIP is UNAVAILABLE while flash is
+// being erased or programmed, so every instruction this executes has to already
+// be in RAM — and so does everything it calls. It calls nothing.
 //
-// The window between the first erase and the last write is the only time this
-// device cannot boot. It is kept as short as the operation allows, and nothing
-// that could fail is done inside it.
-static void __not_in_flash_func(apply_image)(const uint8_t *src, uint32_t len) {
-    uint32_t sectors = (len + FLASH_SECTOR_SIZE - 1) / FLASH_SECTOR_SIZE;
-    uint32_t total = sectors * FLASH_SECTOR_SIZE;
+// It reads from a FIXED FLASH OFFSET rather than from a file, and that is the
+// whole reason the staging slot exists. Source and destination are the same
+// chip: the moment the firmware region is erased, littlefs is erased with it,
+// so reading the image through the filesystem stops being possible exactly when
+// it would be needed. A raw offset needs nothing but the address.
+//
+// Sector at a time, through a 4 KB buffer, because loading a 694 KB image into
+// a 370 KB heap is not possible and never was. That was the previous version's
+// mistake.
+//
+// The window in which this device cannot boot runs from the first erase to the
+// last program. Nothing that can fail happens inside it: no allocation, no
+// filesystem, no formatting, no decisions.
+static void __not_in_flash_func(apply_staged)(uint32_t stage_off, uint32_t len,
+                                              uint8_t *buf) {
+    uint32_t done = 0;
+    while (done < len) {
+        uint32_t chunk = len - done;
+        if (chunk > FLASH_SECTOR_SIZE) chunk = FLASH_SECTOR_SIZE;
 
-    uint32_t ints = save_and_disable_interrupts();
-    flash_range_erase(0, total);
-    flash_range_program(0, src, (len + FLASH_PAGE_SIZE - 1) & ~(FLASH_PAGE_SIZE - 1));
-    restore_interrupts(ints);
+        // Read with XIP still working — no erase is in progress at this point.
+        const uint8_t *src = (const uint8_t *)(XIP_BASE + stage_off + done);
+        for (uint32_t i = 0; i < FLASH_SECTOR_SIZE; i++)
+            buf[i] = (i < chunk) ? src[i] : 0xff;
+
+        uint32_t ints = save_and_disable_interrupts();
+        flash_range_erase(done, FLASH_SECTOR_SIZE);
+        flash_range_program(done, buf, FLASH_SECTOR_SIZE);
+        restore_interrupts(ints);
+
+        done += chunk;
+    }
 }
 
 // --- the command ------------------------------------------------------------
@@ -221,10 +242,10 @@ static int do_install(bool force) {
         out_err("The manifest publishes no checksum. Refusing to flash unverified.");
         return 1;
     }
-    if (e.size && e.size > storage_reserve_bytes()) {
-        out_err("The image is %lu KB; the firmware region is %lu KB.",
+    if (e.size && e.size > storage_fw_slot_bytes()) {
+        out_err("The image is %lu KB; the firmware slot is %lu KB.",
                 (unsigned long)(e.size / 1024),
-                (unsigned long)(storage_reserve_bytes() / 1024));
+                (unsigned long)(storage_fw_slot_bytes() / 1024));
         return 1;
     }
 
@@ -241,7 +262,7 @@ static int do_install(bool force) {
     }
     out_ok("Checksum verified.");
 
-    if (got == 0 || got > storage_reserve_bytes()) {
+    if (got == 0 || got > storage_fw_slot_bytes()) {
         storage_remove(IMAGE_PATH);
         out_err("The download is %lu bytes, which cannot be a firmware image.",
                 (unsigned long)got);
@@ -256,36 +277,74 @@ static int do_install(bool force) {
     return update_apply_file(IMAGE_PATH) ? 0 : 1;
 }
 
-// Load the image into RAM, then write it. Loading first is what keeps the
-// dangerous window short: reading a file involves the filesystem, which
-// involves flash, which cannot be touched once the erase has started.
+// Stage the image, then copy it over the firmware.
+//
+// Two steps because source and destination share a flash chip. Staging is safe
+// and interruptible — it touches nothing the device needs — and it puts the
+// image at a fixed offset the final copy can read without a filesystem.
 bool update_apply_file(const char *path) {
     bool is_dir = false; uint32_t size = 0;
     if (!storage_stat(path, &is_dir, &size) || size == 0) {
         out_err("No image at %s.", path);
         return false;
     }
-    if (size > storage_reserve_bytes()) {
-        out_err("Image is larger than the firmware region.");
+    if (size > storage_fw_slot_bytes()) {
+        out_err("Image is %lu KB; the firmware slot is %lu KB.",
+                (unsigned long)(size / 1024),
+                (unsigned long)(storage_fw_slot_bytes() / 1024));
         return false;
     }
 
-    uint8_t *img = (uint8_t *)malloc(size);
-    if (!img) {
-        out_err("Not enough memory to stage a %lu KB image.", (unsigned long)(size / 1024));
-        out_multi("  Reboot and try again before opening anything else.");
+    out_info("Staging %lu KB...", (unsigned long)(size / 1024));
+    uint32_t staged = storage_stage_file(path);
+    if (staged != size) {
+        out_err("Could not stage the image (%lu of %lu bytes).",
+                (unsigned long)staged, (unsigned long)size);
         return false;
     }
-    uint32_t n = storage_read_file(path, img, size);
-    if (n != size) { free(img); out_err("Could not read the image back."); return false; }
+
+    // Verify what actually landed in the staging slot, by reading it back the
+    // same way the copier will. Everything up to here could still be undone;
+    // after this nothing can, so this is the last chance to find a problem.
+    Sha256Ctx c; sha256_init(&c);
+    sha256_update(&c, (const uint8_t *)(XIP_BASE + storage_stage_offset()), staged);
+    uint8_t d1[32]; sha256_final(&c, d1);
+
+    // Stream the source file through the loader's positional reader rather
+    // than adding another way to read a file.
+    uint8_t *fbuf = (uint8_t *)malloc(4096);
+    if (!fbuf) { out_err("Not enough memory to verify the staged image."); return false; }
+    AppSource src{}; void *h = nullptr;
+    if (!storage_open_source(path, &src, &h)) {
+        free(fbuf);
+        out_err("Could not reopen the image to verify it.");
+        return false;
+    }
+    Sha256Ctx c2; sha256_init(&c2);
+    uint32_t left = size, at = 0;
+    bool readok = true;
+    while (left && readok) {
+        uint32_t n = left > 4096 ? 4096 : left;
+        readok = src.read(src.ctx, at, fbuf, n) >= 0;
+        if (readok) { sha256_update(&c2, fbuf, n); at += n; left -= n; }
+    }
+    storage_close_source(h);
+    if (!readok) { free(fbuf); out_err("Could not read the image back."); return false; }
+    uint8_t d2[32]; sha256_final(&c2, d2);
+    if (memcmp(d1, d2, 32) != 0) {
+        free(fbuf);
+        out_err("The staged copy does not match the download. Nothing written.");
+        return false;
+    }
+    out_ok("Staged and verified.");
 
     log_addf(LOG_K_WARN, "update: writing %lu bytes of firmware", (unsigned long)size);
-    out_info("Writing firmware...");
-    // Everything below is unrecoverable if interrupted, so nothing below can
-    // fail: no allocation, no filesystem, no formatting.
-    sleep_ms(50);                      // let the serial buffer drain first
+    out_info("Writing firmware. Do not remove power.");
+    sleep_ms(100);                     // let the serial buffer drain
 
-    apply_image(img, size);
+    // fbuf becomes the copier's sector buffer: allocated HERE, because nothing
+    // may allocate once the erase has begun.
+    apply_staged(storage_stage_offset(), size, fbuf);
 
     watchdog_reboot(0, 0, 0);
     while (true) tight_loop_contents();
