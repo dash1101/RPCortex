@@ -273,7 +273,28 @@ bool storage_open_source(const char *name, AppSource *src, void **handle) {
 
 // The name is kept so the mtime can be stamped at close, the same as the
 // whole-file writers do.
-struct SinkHandle { lfs_file_t f; char name[64]; bool ok; };
+// Buffered, because the writers upstream hand over whatever a network read
+// produced — often 512 bytes — and every one of those became a separate trip
+// through littlefs and a flash program. Gathering a full sector first turns
+// eight operations into one, which is most of why a download felt slow.
+#define SINK_BUF 4096
+struct SinkHandle {
+    lfs_file_t f;
+    char       name[64];
+    bool       ok;
+    uint8_t    buf[SINK_BUF];
+    uint32_t   held;
+};
+
+// Push what is buffered. Returns false once anything has failed, so a caller
+// that ignores an intermediate error still finds out at close.
+static bool sink_flush(SinkHandle *h) {
+    if (!h->held) return h->ok;
+    lfs_ssize_t n = lfs_file_write(&g_lfs, &h->f, h->buf, h->held);
+    if (n != (lfs_ssize_t)h->held) h->ok = false;
+    h->held = 0;
+    return h->ok;
+}
 
 void *storage_open_sink(const char *name) {
     LockGuard _fs(&g_fs_lock);
@@ -282,6 +303,7 @@ void *storage_open_sink(const char *name) {
     if (!h) return nullptr;
     snprintf(h->name, sizeof(h->name), "%s", name);
     h->ok = true;
+    h->held = 0;
     if (lfs_file_open(&g_lfs, &h->f, name, LFS_O_WRONLY | LFS_O_CREAT | LFS_O_TRUNC) < 0) {
         free(h);
         return nullptr;
@@ -294,9 +316,17 @@ bool storage_sink_write(void *handle, const uint8_t *data, uint32_t len) {
     SinkHandle *h = (SinkHandle *)handle;
     LockGuard _fs(&g_fs_lock);
     if (!g_mounted) { h->ok = false; return false; }
-    lfs_ssize_t n = lfs_file_write(&g_lfs, &h->f, data, len);
-    if (n != (lfs_ssize_t)len) { h->ok = false; return false; }
-    return true;
+
+    while (len && h->ok) {
+        uint32_t room = SINK_BUF - h->held;
+        uint32_t n = len < room ? len : room;
+        memcpy(h->buf + h->held, data, n);
+        h->held += n;
+        data += n;
+        len -= n;
+        if (h->held == SINK_BUF && !sink_flush(h)) return false;
+    }
+    return h->ok;
 }
 
 bool storage_close_sink(void *handle) {
@@ -305,6 +335,9 @@ bool storage_close_sink(void *handle) {
     bool ok;
     {
         LockGuard _fs(&g_fs_lock);
+        // Whatever is still buffered has to go out before the close, or the
+        // tail of every file would be silently missing.
+        if (g_mounted) sink_flush(h);
         // The close is where littlefs actually commits, so its result matters
         // as much as any write's — a download that filled the disk fails here.
         ok = g_mounted && lfs_file_close(&g_lfs, &h->f) >= 0 && h->ok;

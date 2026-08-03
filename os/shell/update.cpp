@@ -43,6 +43,7 @@
 #include "hardware/sync.h"
 #include "hardware/watchdog.h"
 #include "hardware/regs/addressmap.h"
+#include "pico/multicore.h"
 
 bool update_apply_file(const char *path);   // defined below
 
@@ -185,22 +186,28 @@ static bool fetch_manifest(RepoEntry *out) {
 // filesystem, no formatting, no decisions.
 static void __not_in_flash_func(apply_staged)(uint32_t stage_off, uint32_t len,
                                               uint8_t *buf) {
-    uint32_t done = 0;
-    while (done < len) {
-        uint32_t chunk = len - done;
-        if (chunk > FLASH_SECTOR_SIZE) chunk = FLASH_SECTOR_SIZE;
+    uint32_t total = (len + FLASH_SECTOR_SIZE - 1) & ~(FLASH_SECTOR_SIZE - 1);
 
-        // Read with XIP still working — no erase is in progress at this point.
+    // Erase the whole target first, then program it. One erase rather than 174
+    // saves the per-call overhead, and the device is equally unbootable either
+    // way — the window is the same, it is just shorter.
+    uint32_t ints = save_and_disable_interrupts();
+    flash_range_erase(0, total);
+    restore_interrupts(ints);
+
+    uint32_t done = 0;
+    while (done < total) {
+        // Read with XIP working. The staging slot is not being erased, so this
+        // is a plain read of flash that is still intact.
         const uint8_t *src = (const uint8_t *)(XIP_BASE + stage_off + done);
         for (uint32_t i = 0; i < FLASH_SECTOR_SIZE; i++)
-            buf[i] = (i < chunk) ? src[i] : 0xff;
+            buf[i] = (done + i < len) ? src[i] : 0xff;
 
-        uint32_t ints = save_and_disable_interrupts();
-        flash_range_erase(done, FLASH_SECTOR_SIZE);
+        ints = save_and_disable_interrupts();
         flash_range_program(done, buf, FLASH_SECTOR_SIZE);
         restore_interrupts(ints);
 
-        done += chunk;
+        done += FLASH_SECTOR_SIZE;
     }
 }
 
@@ -341,6 +348,23 @@ bool update_apply_file(const char *path) {
     log_addf(LOG_K_WARN, "update: writing %lu bytes of firmware", (unsigned long)size);
     out_info("Writing firmware. Do not remove power.");
     sleep_ms(100);                     // let the serial buffer drain
+
+    // Stop core 1 before touching flash.
+    //
+    // It is executing from flash, and XIP is unavailable while flash is being
+    // erased — so it would fetch garbage the instant the erase began. That is
+    // the same fault that corrupted the filesystem earlier in this project,
+    // and here it corrupts the firmware instead: the write is left incomplete,
+    // the image is invalid, and the boot ROM drops to USB.
+    //
+    // Reset rather than parked, since this function does not return.
+    multicore_reset_core1();
+
+    // And stop the watchdog. 695 KB is 174 sectors of erase and program, which
+    // takes several seconds, and nothing feeds the watchdog while interrupts
+    // are off. An 8 second timeout against a 5-9 second write is a reboot in
+    // the middle of it.
+    watchdog_disable();
 
     // fbuf becomes the copier's sector buffer: allocated HERE, because nothing
     // may allocate once the erase has begun.
