@@ -23,7 +23,7 @@ extern "C" {
 // MINOR: a symbol added — older-minor apps still run (everything they want is
 //        present); newer-minor apps refused (they may want something absent).
 #define RPC_API_MAJOR 1
-#define RPC_API_MINOR 7
+#define RPC_API_MINOR 8
 
 typedef struct {
     uint32_t magic;          // RPC_APP_MAGIC
@@ -200,8 +200,31 @@ int      fw_i2c_deinit(unsigned bus);
 // waiting on the world and wrong for a protocol that is timed in microseconds —
 // a DHT's whole conversation is over in 5 ms and a yield in the middle of it
 // loses the reading.
+// The system clock, in Hz. Anything that derives a rate from it has to ask:
+// the default differs between the two chips and the clock is adjustable at
+// runtime, so a divider worked out against an assumed frequency is right on
+// exactly one board.
+uint32_t fw_clock_hz(void);
+
 uint32_t fw_micros(void);
 void     fw_busy_wait_us(uint32_t us);
+
+// --- SPI --------------------------------------------------------------------
+//
+// Added at 1.8 because every radio and storage part worth supporting is on it:
+// CC1101, SX1276, an SD card, the ESP32-C5 link. The ABI had GPIO, ADC, I2C and
+// PIO and not the bus most of the hardware actually uses.
+//
+// Chip select is deliberately NOT handled here. Parts disagree about when it
+// may be released, several need it held across a run of transfers, and some
+// want a delay either side — so it stays an ordinary GPIO the package drives,
+// which is both simpler and more capable than any wrapper would be.
+int fw_spi_init(unsigned bus, unsigned sck, unsigned mosi, unsigned miso, unsigned baud);
+int fw_spi_set_baud(unsigned bus, unsigned baud);      // returns the rate actually set
+int fw_spi_write(unsigned bus, const void *data, unsigned len);
+int fw_spi_read(unsigned bus, void *buf, unsigned len, unsigned char tx_fill);
+int fw_spi_transfer(unsigned bus, const void *tx, void *rx, unsigned len);
+int fw_spi_deinit(unsigned bus);
 
 // --- PIO --------------------------------------------------------------------
 //

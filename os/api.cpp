@@ -23,6 +23,7 @@
 #include "hardware/i2c.h"
 #include "hardware/gpio.h"
 #include "hardware/pio.h"
+#include "hardware/spi.h"
 #include "hardware/clocks.h"
 
 // The app currently being run, so a command it registers can be tagged with an
@@ -220,6 +221,8 @@ extern "C" int fw_i2c_deinit(unsigned bus) {
     return 0;
 }
 
+extern "C" uint32_t fw_clock_hz(void) { return clock_get_hz(clk_sys); }
+
 extern "C" uint32_t fw_micros(void) { return time_us_32(); }
 
 // Busy, not yielding, and that is the point. A protocol timed in microseconds
@@ -231,6 +234,69 @@ extern "C" void fw_busy_wait_us(uint32_t us) {
     if (us > 20000) us = 20000;
     busy_wait_us(us);
     task_alive();
+}
+
+// --- SPI --------------------------------------------------------------------
+
+static spi_inst_t *spi_of(unsigned bus) {
+    if (bus == 0) return spi0;
+    if (bus == 1) return spi1;
+    return nullptr;
+}
+static bool g_spi_ready[2];
+
+extern "C" int fw_spi_init(unsigned bus, unsigned sck, unsigned mosi,
+                           unsigned miso, unsigned baud) {
+    spi_inst_t *s = spi_of(bus);
+    if (!s) return -1;
+    if (!fw_gpio_usable(sck) || !fw_gpio_usable(mosi)) return -1;
+    // miso is optional: a write-only device (a display, a shift register) has
+    // nothing to send back, and demanding a pin for it would waste one.
+    if (miso != 0xffffffffu && !fw_gpio_usable(miso)) return -1;
+    if (baud == 0) baud = 1000000;
+
+    task_alive();
+    int actual = (int)spi_init(s, baud);
+    gpio_set_function(sck,  GPIO_FUNC_SPI);
+    gpio_set_function(mosi, GPIO_FUNC_SPI);
+    if (miso != 0xffffffffu) gpio_set_function(miso, GPIO_FUNC_SPI);
+    g_spi_ready[bus] = true;
+    return actual;
+}
+
+extern "C" int fw_spi_set_baud(unsigned bus, unsigned baud) {
+    spi_inst_t *s = spi_of(bus);
+    if (!s || !g_spi_ready[bus] || baud == 0) return -1;
+    return (int)spi_set_baudrate(s, baud);
+}
+
+extern "C" int fw_spi_write(unsigned bus, const void *data, unsigned len) {
+    spi_inst_t *s = spi_of(bus);
+    if (!s || !g_spi_ready[bus] || !data) return -1;
+    task_alive();
+    return spi_write_blocking(s, (const uint8_t *)data, len);
+}
+
+extern "C" int fw_spi_read(unsigned bus, void *buf, unsigned len, unsigned char tx_fill) {
+    spi_inst_t *s = spi_of(bus);
+    if (!s || !g_spi_ready[bus] || !buf) return -1;
+    task_alive();
+    return spi_read_blocking(s, tx_fill, (uint8_t *)buf, len);
+}
+
+extern "C" int fw_spi_transfer(unsigned bus, const void *tx, void *rx, unsigned len) {
+    spi_inst_t *s = spi_of(bus);
+    if (!s || !g_spi_ready[bus] || !tx || !rx) return -1;
+    task_alive();
+    return spi_write_read_blocking(s, (const uint8_t *)tx, (uint8_t *)rx, len);
+}
+
+extern "C" int fw_spi_deinit(unsigned bus) {
+    spi_inst_t *s = spi_of(bus);
+    if (!s || !g_spi_ready[bus]) return -1;
+    spi_deinit(s);
+    g_spi_ready[bus] = false;
+    return 0;
 }
 
 // --- PIO --------------------------------------------------------------------
@@ -547,6 +613,12 @@ static const ApiSymbol kSymbols[] = {
     SYM(fw_file_remove),
     SYM(fw_file_exists),
     SYM(fw_core_id),
+    SYM(fw_spi_init),
+    SYM(fw_spi_set_baud),
+    SYM(fw_spi_write),
+    SYM(fw_spi_read),
+    SYM(fw_spi_transfer),
+    SYM(fw_spi_deinit),
     SYM(fw_pio_claim),
     SYM(fw_pio_release),
     SYM(fw_pio_load),
@@ -572,6 +644,7 @@ static const ApiSymbol kSymbols[] = {
     SYM(fw_i2c_write),
     SYM(fw_i2c_read),
     SYM(fw_i2c_deinit),
+    SYM(fw_clock_hz),
     SYM(fw_micros),
     SYM(fw_busy_wait_us),
     SYM(fw_heap_free),
