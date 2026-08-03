@@ -209,11 +209,16 @@ static void reschedule(TaskState park_as) {
     // something runnable" spin below and hang the device with no clue why.
     if (!g_up) return;
 
-    // Progress is being made, so the watchdog is satisfied. This is the one
-    // place every kind of yield passes through.
-    task_watchdog_feed();
-
     uint32_t core = task_this_core() % MAX_CORES;
+
+    // Only CORE 0 feeds the watchdog.
+    //
+    // Core 1's idle loop yields continuously, so letting it feed meant a
+    // deadlocked core 0 was masked by a perfectly healthy core 1 — the device
+    // hung with the watchdog happily being petted, which is why the lockup never
+    // self-recovered. A watchdog that any running thing can satisfy is not
+    // watching the thing that matters.
+    if (core == 0) task_watchdog_feed();
 
     lock_hw_enter();
     Task *me = cur();
@@ -246,13 +251,47 @@ static void reschedule(TaskState park_as) {
             lock_hw_exit();
             return;
         }
-        // Genuinely nothing for this core: every task is running elsewhere, or
-        // asleep and not yet due. Release the guard and let the caller come back
-        // — holding it while waiting would block the other core from ever
-        // finishing the work we are waiting for.
-        lock_hw_exit();
-        return;
+        // A FINISHED task must never return from here.
+        //
+        // task_exit calls reschedule and relies on never coming back. Returning
+        // unwinds into task_trampoline, which was entered by popping a synthetic
+        // frame and therefore has no return address — it branches to zero and the
+        // device locks up hard. That is the crash: a task finishing at a moment
+        // when nothing else happened to be runnable, which is exactly what a test
+        // spawning short-lived tasks does over and over.
+        //
+        // So a finished task either goes back to the core's own scheduler
+        // context, or waits here until something becomes runnable. Either way it
+        // does not return.
+        if (me && me->info.state == TASK_DONE) {
+            if (g_sched_sp[core]) {
+                void *back = g_sched_sp[core];
+                g_sched_sp[core] = nullptr;
+                g_current[core]  = -1;
+                lock_hw_exit();
+                task_ctx_switch(&me->sp, back);
+                return;                      // not reached: this stack is finished
+            }
+            // No scheduler context on this core (core 0 never parks one). Wait
+            // for a sleeper to come due or the other core to release something.
+            // The guard is released between attempts so the other core can make
+            // the progress being waited for.
+            while (true) {
+                lock_hw_exit();
+                task_watchdog_feed();
+                lock_hw_enter();
+                next = pick(core, 0);
+                if (next) break;
+            }
+            // Fall through with `next` chosen.
+        } else {
+            // Still runnable, just not now: release and let the caller come back.
+            lock_hw_exit();
+            return;
+        }
     }
+
+    if (!next) { lock_hw_exit(); return; }
 
     if (me && next == me) {
         me->info.state = TASK_RUNNING;

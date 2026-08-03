@@ -32,7 +32,12 @@ static void eq(const char *got, const char *want, const char *what) {
 
 // --- the platform seam, on ucontext -----------------------------------------
 
-#define CTX_MAX 16
+// One ucontext per spawn, never reused — the real device allocates a fresh
+// stack each time too. It has to be big enough for every task the test starts
+// across the whole run, and overrunning it is a global-buffer-overflow rather
+// than anything to do with the scheduler. ASan found exactly that when the
+// burst loop was added.
+#define CTX_MAX 64
 static ucontext_t g_ctx[CTX_MAX];
 static int        g_ctx_n;
 static TaskEntry  g_entry[CTX_MAX];
@@ -40,6 +45,10 @@ static TaskEntry  g_entry[CTX_MAX];
 static void ctx_trampoline(int idx) { g_entry[idx](); }
 
 void *task_ctx_init(void *stack_top, TaskEntry entry) {
+    if (g_ctx_n >= CTX_MAX) {
+        fprintf(stderr, "  test seam exhausted: raise CTX_MAX\n");
+        abort();
+    }
     int idx = g_ctx_n++;
     g_entry[idx] = entry;
     getcontext(&g_ctx[idx]);
@@ -194,6 +203,42 @@ int main(void) {
     ck(task_find(f)->exit_code == 42, "and exits with its own status");
     ck(g_log[strlen(g_log) - 1] == 'k', "it ran its own cleanup on the way out");
     task_reap(f);
+
+    // --- a task finishing when nothing else can run --------------------------
+    //
+    // THE crash. task_exit calls reschedule and never expects to come back; if
+    // it does, it unwinds into task_trampoline, which was entered by popping a
+    // synthetic stack frame and has no return address. On the device that
+    // branches to zero and locks up hard.
+    //
+    // The setup matters: pid 1 must be the ONLY other task and must be parked as
+    // not-runnable at the moment the spawned task finishes, so pick() finds
+    // nothing. Sleeping pid 1 past the finisher's exit does exactly that.
+    g_log[0] = 0;
+    g_now = 5000;
+    int lone = task_spawn("lone", nullptr, task_quick, nullptr, ST, AFFINITY_ANY);
+    ck(lone > 0, "spawned a task that will finish with nothing to follow it");
+
+    // Hand over and come back only once it is done. Before the fix, control
+    // never returned here at all.
+    for (int i = 0; i < 6 && task_find(lone) && task_find(lone)->state != TASK_DONE; i++)
+        task_yield();
+
+    eq(g_log, "q", "the lone task ran");
+    ck(task_find(lone) && task_find(lone)->state == TASK_DONE,
+       "and finished cleanly instead of running off the end of its stack");
+    ck(task_self() == 1, "control came back to the shell");
+    task_reap(lone);
+
+    // Several in a row, which is what the stress test actually does.
+    g_log[0] = 0;
+    for (int round = 0; round < 5; round++) {
+        int p = task_spawn("burst", nullptr, task_quick, nullptr, ST, AFFINITY_ANY);
+        for (int i = 0; i < 4; i++) task_yield();
+        task_reap(p);
+    }
+    eq(g_log, "qqqqq", "five short-lived tasks in a row all finish");
+    ck(task_count() == 1, "and none of them leaked a slot");
 
     // --- guards -------------------------------------------------------------
     ck(!task_kill(1), "pid 1 cannot be killed");
