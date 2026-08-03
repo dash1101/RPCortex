@@ -52,17 +52,29 @@ static void *alloc32(size_t n) {
 static void free32(void *) { }      // one-shot; the arena goes away with us
 
 static FILE *g_f;
+static int g_loaded;   // how many apps actually got checked
 static int file_read(void *, uint32_t off, void *dst, uint32_t len) {
     if (fseek(g_f, off, SEEK_SET) != 0) return -1;
     return (int)fread(dst, 1, len, g_f);
 }
 // A fake firmware symbol table: every fw_* resolves to a plausible address.
+//
+// The Thumb bit is SET, because that is what the device reports. api.cpp builds
+// its table with SYM(fn) = (uint32_t)&fn, and the address of a Thumb function
+// carries bit 0. An earlier version of this fake handed back even addresses,
+// which is not a configuration any board is ever in — and it bypassed the exact
+// arithmetic these relocations exist to get right, so a whole class of bug could
+// not have shown up here.
+//
+// Addresses sit ~256 MB from the loaded image on purpose: that is the real
+// distance from XIP flash to SRAM, so every firmware call is out of BL range and
+// has to go through a veneer, exercising that path rather than the easy one.
 uint32_t api_lookup(const char *n) {
     static uint32_t next = 0x10001000;
     static char seen[64][40]; static uint32_t addr[64]; static int ns;
     for (int i = 0; i < ns; i++) if (!strcmp(seen[i], n)) return addr[i];
-    if (ns < 64) { snprintf(seen[ns], 40, "%s", n); addr[ns] = next; next += 4; ns++; return addr[ns-1]; }
-    return next;
+    if (ns < 64) { snprintf(seen[ns], 40, "%s", n); addr[ns] = next | 1u; next += 4; ns++; return addr[ns-1]; }
+    return next | 1u;
 }
 uint32_t api_symbol_count(void) { return 64; }
 
@@ -108,6 +120,7 @@ static int load_one(const char *path) {
         fclose(g_f);
         return 1;
     }
+    g_loaded++;
     printf("  ok   %-12s image %5u B   veneers %4u/%-4u   entry +0x%lx\n",
            name, app.image_size, app.veneers_used, app.veneer_size,
            (unsigned long)((uintptr_t)app.entry - (uintptr_t)app.image));
@@ -160,6 +173,27 @@ static int load_one(const char *path) {
     if (checked) printf("       %d code pointer(s), %d missing the Thumb bit\n",
                         checked, even_ptrs);
     if (even_ptrs) bad = 1;
+
+    // And every veneer's target word, which the scan above structurally cannot
+    // see: veneers live outside the image, and they are how EVERY firmware call
+    // is made. A veneer loads its target into pc, so an even target faults the
+    // same way a bad function pointer does — just one level further out, in the
+    // path taken by fw_print rather than by a registered command.
+    uint32_t *vw = (uint32_t *)app.veneers;
+    int vtargets = 0, veven = 0;
+    for (uint32_t w = 0; w < app.veneers_used / 4; w++) {
+        // Firmware lives in XIP flash. A word in that range inside a veneer is a
+        // target address, not an instruction encoding.
+        if (vw[w] < 0x10000000u || vw[w] >= 0x20000000u) continue;
+        vtargets++;
+        if (!(vw[w] & 1u)) {
+            printf("       FAIL veneer target %08x has NO Thumb bit\n", vw[w]);
+            veven++;
+        }
+    }
+    if (vtargets) printf("       %d veneer target(s), %d missing the Thumb bit\n",
+                         vtargets, veven);
+    if (veven) bad = 1;
     fclose(g_f);
     return bad;
 }
@@ -176,6 +210,16 @@ int main(int argc, char **argv) {
     } else {
         for (const char *a : kApps) fails += load_one(a);
     }
-    printf("  realapp: %d failed\n", fails);
+    // Loading nothing is a failure, not a pass. These paths are relative to this
+    // directory, so running from anywhere else — or a change to where the build
+    // puts its apps — would skip every check and still report success. That is
+    // the precise shape of the bug this file exists to catch, and it would be
+    // absurd for the test to have it too.
+    if (g_loaded == 0) {
+        printf("  FAIL loaded no apps at all — build them first, and run this "
+               "from os/host\n");
+        fails++;
+    }
+    printf("  realapp: %d loaded, %d failed\n", g_loaded, fails);
     return fails ? 1 : 0;
 }

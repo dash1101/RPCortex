@@ -123,9 +123,16 @@ never did.
 The device named it in the end: `fault INVSTATE no Thumb bit cfsr=00020000`, and
 the crash mapper put the PC at `bench+0x262` and `stress+0xafa` across six runs.
 `os/host/realapp_test.cpp` now loads the real built `.app` files through the real
-loader and checks every code pointer in the image for its Thumb bit. Reverting
-the fix makes it report those same two offsets on the host, so the fault is
-reproducible off-device and cannot come back unnoticed.
+loader and checks every code pointer in the image for its Thumb bit, and every
+veneer target too — veneers sit outside the image, so the first scan cannot see
+them, and they are how every firmware call is made. Reverting the fix makes it
+report those same two offsets on the host, so the fault is reproducible
+off-device and cannot come back unnoticed.
+
+Its fake firmware symbol table hands back ODD addresses, because that is what a
+board does: `api.cpp` builds its table from `&fn`, and the address of a Thumb
+function carries bit 0. The fake previously returned even addresses — a state no
+device is ever in, and one that bypassed the arithmetic under test.
 
 ## Reliability work that has landed
 
@@ -144,7 +151,16 @@ the next port will hit the same ground.
 - The shell running on the 2 KB boot stack instead of its own.
 - Built-in packages installing once and never updating with the firmware, so
   several passes of debugging checkpoints never actually ran.
+
+Two more are fixed and reproduced on the host, but **DEVICE-UNCONFIRMED** — no
+board has run them, because the fault below stopped every package command before
+either could be reached:
+
+- The loader adding a Thumb bit the symbol already carried. Reverting the fix
+  reproduces the exact offsets the board reported, so the diagnosis is solid;
+  what is unproven is only that nothing *else* waits behind it.
 - Long package commands killed for working: neither `bench` nor `stress` yields,
   so nothing fed the watchdog once the command started. Liveness now comes from
-  the ABI entry points, which a working package calls constantly.
-- The loader adding a Thumb bit the symbol already carried — see above.
+  the ABI entry points, which a working package calls constantly. This one has
+  never been observed working, only reasoned about — the first clean `bench` run
+  is what confirms it.
