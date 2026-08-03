@@ -21,6 +21,8 @@
 #include "hardware/watchdog.h"
 #include "pico/bootrom.h"
 #include "out.h"
+#include "task.h"
+#include "pico/multicore.h"
 
 #include <stdio.h>
 #include <stdarg.h>
@@ -32,6 +34,11 @@ extern "C" void __attribute__((noreturn)) rpc_panic_handler(const char *fmt, ...
     // Interrupts are already off by the time a panic reaches here. printf still
     // works because stdio_usb's write path is polled, but only while something
     // keeps draining it — hence the sleep below rather than an immediate reset.
+    // Core 1 is still running whatever it was doing. Stop it before printing,
+    // so it cannot take a lock, touch flash, or interleave its own output into
+    // the middle of the report.
+    multicore_reset_core1();
+
     printf("\n");
     out_fatal("PANIC");
 
@@ -63,6 +70,10 @@ extern "C" void __attribute__((noreturn)) rpc_panic_handler(const char *fmt, ...
     const int WAIT_S = 60;
     for (int left = WAIT_S; left > 0; left--) {
         for (int t = 0; t < 100; t++) {
+            // Deliberately kept alive: this wait is the whole point of the
+            // screen, and letting the watchdog cut it short would throw away the
+            // message it exists to show.
+            task_watchdog_feed();
             int c = getchar_timeout_us(10000);
             if (c != PICO_ERROR_TIMEOUT) {
                 if (c == 'b' || c == 'B') {

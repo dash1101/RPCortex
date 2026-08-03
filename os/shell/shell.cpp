@@ -181,7 +181,19 @@ static int cmd_put(int argc, char **argv) {
     out_info("Send %u raw bytes now...", (unsigned)len);
     for (uint32_t i = 0; i < len; i++) {
         int c;
-        do { c = getchar_timeout_us(5000000); } while (c == PICO_ERROR_TIMEOUT);
+        // Short waits with a yield between them, rather than one long block:
+        // a five-second wait feeds nothing and a slow transfer would trip the
+        // watchdog part-way through writing a file.
+        uint32_t waited = 0;
+        do {
+            c = getchar_timeout_us(1000);
+            if (c == PICO_ERROR_TIMEOUT) { task_yield(); waited++; }
+        } while (c == PICO_ERROR_TIMEOUT && waited < 20000);
+        if (c == PICO_ERROR_TIMEOUT) {
+            free(buf);
+            out_err("Timed out after %u of %u bytes.", (unsigned)i, (unsigned)len);
+            return 1;
+        }
         buf[i] = (uint8_t)c;
     }
     bool ok = storage_write_file(argv[1], buf, len);

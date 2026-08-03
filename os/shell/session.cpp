@@ -19,6 +19,7 @@
 #include "persist.h"
 #include "kernel.h"
 #include "out.h"
+#include "task.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -47,7 +48,17 @@ static void read_field(const char *prompt, char *buf, size_t max, bool secret) {
     size_t n = 0;
     while (true) {
         int c = getchar_timeout_us(0);
-        if (c == PICO_ERROR_TIMEOUT) { sleep_ms(2); continue; }
+        if (c == PICO_ERROR_TIMEOUT) {
+            // YIELD, not sleep. This loop waits on a human typing a password,
+            // which can take a minute, and the watchdog is only fed by the
+            // scheduler — a sleep here fed nothing and the device rebooted every
+            // eight seconds in the middle of first-run setup.
+            //
+            // It also lets background tasks run while someone is at the login
+            // prompt, which sleeping did not.
+            task_yield();
+            continue;
+        }
         if (c == '\r' || c == '\n') { putchar('\n'); buf[n] = 0; return; }
         if ((c == 8 || c == 127) && n) { n--; printf("\b \b"); continue; }
         if (c >= 32 && c < 127 && n + 1 < max) {
@@ -250,8 +261,12 @@ void session_boot(void) {
             // Escalating backoff: ~0.5 s for the first miss, growing to a 5 s
             // cap. Slows a scripted brute-force without locking someone out of
             // their own device over one typo.
+            // task_sleep_ms, not sleep_ms: a raw sleep parks the core without
+            // reaching the scheduler, so nothing feeds the watchdog and a five
+            // second backoff comes within one of tripping it. Sleeping through
+            // the scheduler also lets background work continue during the pause.
             uint32_t wait = 500 + (g_login_fails - 1) * 750;
-            sleep_ms(wait > 5000 ? 5000 : wait);
+            task_sleep_ms(wait > 5000 ? 5000 : wait);
 
             if (++attempts < 3) {
                 out_warn("Incorrect password.  Attempt %d/3.", attempts);
@@ -259,7 +274,7 @@ void session_boot(void) {
                 out_err("Too many failed attempts.  Returning to username prompt.");
                 if (g_login_fails >= 6) {
                     out_warn("Repeated failures detected — cooling down.");
-                    sleep_ms(5000);
+                    task_sleep_ms(5000);
                 }
                 break;
             }

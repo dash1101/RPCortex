@@ -28,6 +28,7 @@
 #include "hardware/clocks.h"
 #include "hardware/watchdog.h"
 #include "pico/bootrom.h"
+#include "pico/multicore.h"
 
 // The board's image kind, for the "Image" line. One string, one place.
 #if PICO_RP2040
@@ -320,6 +321,7 @@ static int cmd_pulse(int argc, char **argv) {
 static int cmd_reboot(int, char **) {
     out_info("Rebooting system...");
     sleep_ms(120);
+    multicore_reset_core1();     // as above: do not reset around a live core 1
     watchdog_reboot(0, 0, 0);
     while (1) {}
 }
@@ -338,6 +340,12 @@ static int cmd_bootloader(int, char **) {
     out_multi("  The serial port will drop and an RPI-RP2 drive will appear.");
     out_multi("  Copy a .uf2 onto it, or power-cycle to come back.");
     sleep_ms(400);          // let the message reach the terminal before USB goes
+
+    // Stop core 1 first. The bootrom takes over the whole chip, and leaving a
+    // second core executing from flash while it does means the reset does not
+    // complete — the device sat there frozen instead of coming back as a drive.
+    // The same applies to a plain reboot.
+    multicore_reset_core1();
     rom_reset_usb_boot(0, 0);
     while (1) {}
 }
@@ -348,6 +356,7 @@ static int cmd_bootloader(int, char **) {
 static int cmd_sreboot(int, char **) {
     out_info("Performing soft reboot...");
     sleep_ms(120);
+    multicore_reset_core1();
     watchdog_reboot(0, 0, 0);
     while (1) {}
 }
