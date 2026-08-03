@@ -125,6 +125,18 @@ static const char *kMisc[] = {
     "  unalias <name>       Remove one",
 };
 
+static const char *kTasks[] = {
+    "  ps                   Running tasks: pid, state, stack, CPU",
+    "  ps -l                ...with the path each was started from",
+    "  kill <pid>           Ask a task to stop  (also clears a finished one)",
+    "  bg <command>         Run a command as a background task",
+    "",
+    "  Tasks are cooperative: a kill takes effect at the task's next yield",
+    "  point, where it is not holding a lock or part-way through a write.",
+    "  A task that never yields cannot be killed — which is better than one",
+    "  that can be torn down mid-write.",
+};
+
 static const char *kShell[] = {
     "  a ; b                Run b regardless of how a finished",
     "  a && b               Run b only if a succeeded",
@@ -156,6 +168,8 @@ static const Category kCategories[] = {
         "whoami  users  mkacct  passwd  usermod  rmuser  logout"),
     CAT(kMisc, "misc", "Misc",
         "help  history  fetch  alias  unalias"),
+    CAT(kTasks, "tasks", "Tasks",
+        "ps  kill  bg"),
     CAT(kShell, "shell", "Shell Syntax",
         "pipes |   chaining && ||   sequencing ;   redirect > >>"),
 };
@@ -196,7 +210,7 @@ static int cmd_help(int argc, char **argv) {
         for (unsigned i = 0; i < N_CATEGORIES; i++) print_index_line(&kCategories[i]);
         out_blank();
         out_multi("  Type 'help <category>' for details, or 'help all' for every command.");
-        out_multi("  Categories: filesystem  text  system  network  packages  users  misc  shell");
+        out_multi("  Categories: filesystem  text  system  network  packages  users  tasks  misc  shell");
         return 0;
     }
 

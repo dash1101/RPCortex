@@ -10,6 +10,7 @@
 #include "session.h"
 #include "pkg.h"
 #include "banner.h"
+#include "task.h"
 
 void net_autoconnect(void);
 
@@ -17,6 +18,11 @@ int main(void) {
     stdio_init_all();
     for (int i = 0; i < 300 && !stdio_usb_connected(); i++) sleep_ms(10);
     sleep_ms(150);
+
+    // Become pid 1 before anything else can want to spawn. From here the shell
+    // is a task like any other, which is what lets it be listed, and what lets
+    // other things run while it waits at the prompt.
+    task_init("shell");
 
     banner_print();
 

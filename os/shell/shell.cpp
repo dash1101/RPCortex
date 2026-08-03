@@ -22,6 +22,7 @@
 #include "cmdline.h"
 #include "lineedit.h"
 #include "interrupt.h"
+#include "task.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -44,6 +45,7 @@ void help_register(void);
 void net_register(void);
 void netapps_register(void);
 void fetch_register(void);
+void ps_register(void);
 
 // --- line input -------------------------------------------------------------
 //
@@ -60,7 +62,12 @@ static int shell_getch(void *, uint32_t timeout_us) {
 
     int c = getchar_timeout_us(timeout_us);
     if (c == PICO_ERROR_TIMEOUT) {
-        if (timeout_us == 0) sleep_ms(2);   // idle poll: do not spin the core
+        // THE yield point that matters. A prompt waiting for a keystroke is
+        // almost all of a device's uptime, and handing the core over here is
+        // what turns "one thing at a time" into real concurrency — a service
+        // gets to run in the gaps between someone's keystrokes without the
+        // shell being written any differently.
+        if (timeout_us == 0) task_yield();
         return LE_NO_KEY;
     }
     return c;
@@ -208,6 +215,44 @@ static int cmd_run(int argc, char **argv) {
 
 
 
+// bg — run a command as a background task.
+//
+// The line is copied onto the heap because the caller's buffer is a stack local
+// that will be gone before the task first runs. The task frees it on the way
+// out, which is the only place that can know it is finished with it.
+struct BgJob { char line[128]; };
+
+static int run_segment(char *seg);      // defined with the pipeline machinery
+
+static int bg_entry(void *arg) {
+    BgJob *job = (BgJob *)arg;
+    int rc = run_segment(job->line);
+    free(job);
+    return rc;
+}
+
+static int cmd_bg(int argc, char **argv) {
+    if (argc < 2) { out_multi("Usage: bg <command> [args...]"); return 1; }
+
+    BgJob *job = (BgJob *)malloc(sizeof(BgJob));
+    if (!job) { out_err("Not enough memory to start a task."); return 1; }
+    job->line[0] = 0;
+    for (int i = 1; i < argc; i++) {
+        if (i > 1) strncat(job->line, " ", sizeof(job->line) - strlen(job->line) - 1);
+        strncat(job->line, argv[i], sizeof(job->line) - strlen(job->line) - 1);
+    }
+
+    int pid = task_spawn(argv[1], job->line, bg_entry, job,
+                         TASK_STACK_DEF, AFFINITY_ANY);
+    if (pid < 0) {
+        free(job);
+        out_err("Could not start a task — the table is full or memory is short.");
+        return 1;
+    }
+    out_ok("[%d] %s", pid, job->line);
+    return 0;
+}
+
 static int cmd_reg(int argc, char **argv) {
     if (argc == 1) {
         for (uint32_t i = 0; i < reg_count(); i++) {
@@ -245,6 +290,7 @@ void shell_register_builtins(void) {
         {"reg", "reg | reg get K | reg set K V",  cmd_reg, nullptr},
         {"alias",   "alias name=command",         cmd_alias,   nullptr},
         {"unalias", "unalias <name>",             cmd_unalias, nullptr},
+        {"bg",      "bg <command>  run in background", cmd_bg,  nullptr},
     };
     for (const auto &c : builtins) cmd_register(&c);
     cmd_alias("exec", "run");     // v1's verb; run explains the difference
@@ -258,6 +304,7 @@ void shell_register_builtins(void) {
     net_register();         // wifi
     netapps_register();     // ping / nslookup / ntp
     fetch_register();       // fetch / neofetch
+    ps_register();          // ps / kill — the task manager
     apps_register();        // apps / unload for resident packages
     pkg_init();             // ensure /pkg exists
     pkg_register();         // install / remove / list

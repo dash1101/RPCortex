@@ -26,10 +26,13 @@ add_executable(rpcortex_v2
     ${OS_ROOT}/api.cpp
     ${OS_ROOT}/platform_rp2.cpp
     ${OS_ROOT}/panic.cpp
+    ${OS_ROOT}/task_rp2.cpp
+    ${OS_ROOT}/task_switch.S
     ${OS_ROOT}/kernel/kernel.cpp
     ${OS_ROOT}/core/path.cpp
     ${OS_ROOT}/core/cmdline.cpp
     ${OS_ROOT}/core/interrupt.cpp
+    ${OS_ROOT}/core/task.cpp
     ${OS_ROOT}/core/lineedit.cpp
     ${OS_ROOT}/core/fmt.cpp
     ${OS_ROOT}/core/pkgindex.cpp
@@ -53,6 +56,7 @@ add_executable(rpcortex_v2
     ${OS_ROOT}/shell/net.cpp
     ${OS_ROOT}/shell/netapps.cpp
     ${OS_ROOT}/shell/fetch.cpp
+    ${OS_ROOT}/shell/ps.cpp
     ${OS_ROOT}/shell/shell.cpp
     ${SPIKE}/firmware/loader.cpp
     ${SPIKE}/firmware/storage.cpp

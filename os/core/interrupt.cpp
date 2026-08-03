@@ -1,4 +1,5 @@
 #include "interrupt.h"
+#include "task.h"
 
 static volatile bool g_pending;
 static IntrPollFn    g_poll;
@@ -41,6 +42,16 @@ bool intr_pending(void){ return g_pending; }
 void intr_clear(void)  { g_pending = false; }
 
 bool intr_check(void) {
+    // Every place that polls for Ctrl+C is also a place where it is safe to give
+    // up the core — that is exactly what "safe to be interrupted here" means. So
+    // the two are the same call, and adding interrupt handling earlier turned
+    // out to have scattered the yield points for free.
+    task_yield();
+
+    // A task asked to stop reports the same way a Ctrl+C does, so a command
+    // written to handle one handles the other with no extra code.
+    if (task_should_stop()) return true;
+
     if (g_pending) return true;
     if (!g_poll) return false;
     // Bounded: a command polling in a loop must not be able to spin in here on
