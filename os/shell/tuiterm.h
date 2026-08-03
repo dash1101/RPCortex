@@ -20,6 +20,9 @@ void tuiterm_cursor(int x, int y, bool visible);
 // controls its own frame rate and stays responsive to Ctrl+C.
 bool tuiterm_poll(TuiEvent *out);
 
+// The terminal's real size, asked for at begin. 80x24 when it does not answer.
+void tuiterm_size(uint16_t *w, uint16_t *h);
+
 bool tuiterm_active(void);
 
 #endif  // RPC_TUITERM_H

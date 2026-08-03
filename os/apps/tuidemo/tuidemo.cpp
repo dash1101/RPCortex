@@ -14,7 +14,6 @@
 
 RPC_APP_VER("tuidemo", "1.0");
 
-#define ROWS  14          // visible list rows
 #define ITEMS 40
 
 // --- a scrolling list, kept deliberately small ------------------------------
@@ -73,20 +72,32 @@ static const char *KIND[] = {"press", "release", "drag", "wheel up", "wheel down
 
 static int cmd_tuidemo(int, char **) {
     int w = 80, h = 24;
-    List list;
-    list.count = ITEMS;
-    list.sel = 0;
-    list.top = 0;
-    list.rows = ROWS;
-
     char last_event[64];
     str_copy(last_event, "nothing yet - press a key or click");
 
     fw_tui_begin();
     fw_tui_size(&w, &h);
+    if (w < 20) { w = 80; h = 24; }        // begin failed; draw something sane
+
+    List list;
+    list.count = ITEMS;
+    list.sel = 0;
+    list.top = 0;
+    // Fill the window it was actually given: everything between the header and
+    // the status bar. A fixed row count either wastes a maximised terminal or
+    // draws past the bottom of a small one.
+    list.rows = h - 6;
+    if (list.rows < 1) list.rows = 1;
 
     int running = 1;
+    int dirty = 1;                 // draw the first frame, then only on change
     while (running) {
+        // Redraw only when something moved. An unchanged frame still costs a
+        // full comparison of every cell, and at this loop rate that is the
+        // difference between responsive and not.
+        if (dirty) {
+        dirty = 0;
+
         // --- draw -----------------------------------------------------------
         fw_tui_clear();
         fw_tui_box(0, 0, w, h - 1, "tuidemo - the TUI, exercised", FW_ATTR_NORMAL, 6);
@@ -130,10 +141,14 @@ static int cmd_tuidemo(int, char **) {
         fw_tui_text(w - 12, h - 1, "q to quit", FW_ATTR_REVERSE, 0);
 
         fw_tui_present();
+        }   // if (dirty)
 
         // --- input ----------------------------------------------------------
         FwTuiEvent e;
+        int busy = 0;
         while (fw_tui_poll(&e)) {
+            busy = 1;
+            dirty = 1;
             if (e.kind == 1) {                      // key
                 char n[12];
                 switch (e.key) {
@@ -190,7 +205,10 @@ static int cmd_tuidemo(int, char **) {
         // Yield rather than spin. This is a foreground app on a cooperative
         // scheduler: without it nothing else on the device gets a turn, and the
         // watchdog would eventually have opinions.
-        fw_task_sleep_ms(10);
+        //
+        // Short while keys are arriving so a held arrow moves smoothly, longer
+        // when idle so the rest of the device gets the core back.
+        fw_task_sleep_ms(busy ? 1 : 5);
     }
 
     // ALWAYS. A terminal left in mouse-reporting mode sends escape sequences to

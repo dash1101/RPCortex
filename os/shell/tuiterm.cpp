@@ -31,16 +31,54 @@
 // running, which is also the only time anything can afford them.
 static TuiScreen *g_shown;
 static bool      g_active;
+static uint16_t  g_term_w = 80, g_term_h = 24;
 static TuiKeyParser g_keys;
+
+// --- batched output ---------------------------------------------------------
+//
+// Everything a frame sends is gathered here and written once.
+//
+// This is not a micro-optimisation. out_write is an fwrite, and the diff below
+// naturally produces ONE CHARACTER AT A TIME — a full first frame is around two
+// thousand separate one-byte writes plus escape sequences, and the per-call
+// cost dwarfs the bytes. It made the first paint take long enough that keys
+// pressed during it were not read until it finished, which felt like an
+// unresponsive terminal rather than a slow one.
+//
+// A frame that changes a few cells now costs a single write of a few dozen
+// bytes, which is what makes the thing feel immediate.
+#define TXBUF 1024
+static char     g_tx[TXBUF];
+static uint32_t g_tx_len;
+
+static void tx_flush(void) {
+    if (!g_tx_len) return;
+    out_write(g_tx, g_tx_len);
+    g_tx_len = 0;
+}
+
+static void tx(const char *data, uint32_t len) {
+    if (len >= TXBUF) { tx_flush(); out_write(data, len); return; }
+    if (g_tx_len + len > TXBUF) tx_flush();
+    memcpy(g_tx + g_tx_len, data, len);
+    g_tx_len += len;
+}
+
+static void tx_ch(char c) {
+    if (g_tx_len + 1 > TXBUF) tx_flush();
+    g_tx[g_tx_len++] = c;
+}
 
 // --- escape sequences -------------------------------------------------------
 
-static void esc(const char *s) { out_write(s, (uint32_t)strlen(s)); }
+// Unbatched: used at begin and end, where the terminal must see the change
+// before anything else happens.
+static void esc(const char *s) { tx(s, (uint32_t)strlen(s)); tx_flush(); }
 
 static void move_to(int x, int y) {
     char b[24];
     int n = snprintf(b, sizeof(b), "\033[%d;%dH", y + 1, x + 1);   // 1-based
-    out_write(b, (uint32_t)n);
+    tx(b, (uint32_t)n);
 }
 
 // Emit the SGR for an attribute set, but only when it differs from what the
@@ -56,9 +94,56 @@ static void apply_attr(uint8_t attr, uint8_t fg, uint8_t *cur_attr, uint8_t *cur
     if (attr & TUI_REVERSE) n += snprintf(b + n, sizeof(b) - n, ";7");
     if (fg != TUI_DEFAULT)  n += snprintf(b + n, sizeof(b) - n, ";%d", 30 + (fg - 1));
     n += snprintf(b + n, sizeof(b) - n, "m");
-    out_write(b, (uint32_t)n);
+    tx(b, (uint32_t)n);
     *cur_attr = attr;
     *cur_fg = fg;
+}
+
+// Ask the terminal how big it is.
+//
+// There is no other way to know: a serial line carries no window size, and
+// assuming 80x24 wastes most of a maximised window and overdraws a small one.
+// The trick is universal — park the cursor far beyond any real screen, ask
+// where it ended up, and the answer is the bottom-right corner.
+//
+// Falls back to 80x24 on any terminal that does not answer, which costs one
+// short wait at startup and never breaks anything.
+static void query_size(uint16_t *w, uint16_t *h) {
+    *w = 80; *h = 24;
+
+    esc("\033[s\033[999;999H\033[6n");     // save, go far, report position
+
+    // "\033[<rows>;<cols>R". Bounded by a deadline rather than a byte count,
+    // since a terminal that does not implement this sends nothing at all.
+    char buf[24];
+    uint32_t n = 0;
+    absolute_time_t deadline = make_timeout_time_ms(150);
+    while (absolute_time_diff_us(get_absolute_time(), deadline) > 0) {
+        int c = getchar_timeout_us(1000);
+        if (c == PICO_ERROR_TIMEOUT) continue;
+        if (n + 1 < sizeof(buf)) buf[n++] = (char)c;
+        if (c == 'R') break;
+    }
+    esc("\033[u");                           // put the cursor back
+    buf[n] = 0;
+
+    const char *p = strchr(buf, '[');
+    if (!p) return;
+    int rows = atoi(p + 1);
+    const char *semi = strchr(p, ';');
+    int cols = semi ? atoi(semi + 1) : 0;
+
+    // Believe it only if it is plausible. A garbled reply that parsed as 3x2
+    // would be worse than the default.
+    if (rows >= 5 && cols >= 20 && rows <= TUI_MAX_H && cols <= TUI_MAX_W) {
+        *w = (uint16_t)cols;
+        *h = (uint16_t)rows;
+    }
+}
+
+void tuiterm_size(uint16_t *w, uint16_t *h) {
+    if (w) *w = g_term_w;
+    if (h) *h = g_term_h;
 }
 
 void tuiterm_begin(void) {
@@ -79,6 +164,10 @@ void tuiterm_begin(void) {
     esc("\033[?25l");       // hide the cursor; an app that wants one places it
     esc(TUI_MOUSE_ON);
     esc("\033[2J");
+
+    // After the alternate screen is up, so the answer describes the screen the
+    // app will actually draw on.
+    query_size(&g_term_w, &g_term_h);
 
     // Force the first frame to send everything, by making the remembered screen
     // impossible to match.
@@ -105,7 +194,7 @@ void tuiterm_present(const TuiScreen *s) {
 
     bool full = (g_shown->w != s->w || g_shown->h != s->h);
     if (full) {
-        esc("\033[2J");
+        tx("\033[2J", 4);
         g_shown->w = s->w;
         g_shown->h = s->h;
         for (uint32_t i = 0; i < (uint32_t)s->w * s->h; i++) {
@@ -127,13 +216,14 @@ void tuiterm_present(const TuiScreen *s) {
             // consecutive changed cells cost one byte each rather than eight.
             if (!(last_y == y && last_x == x)) { move_to(x, y); last_x = x; last_y = y; }
             apply_attr(now.attr, now.fg, &cur_attr, &cur_fg);
-            char c = now.ch >= 32 && now.ch < 127 ? now.ch : ' ';
-            out_write(&c, 1);
+            tx_ch(now.ch >= 32 && now.ch < 127 ? now.ch : ' ');
             last_x++;
             was = now;
         }
     }
-    esc("\033[0m");
+    // One write for the whole frame. Nothing above reached the wire until here.
+    tx("\033[0m", 4);
+    tx_flush();
 }
 
 void tuiterm_cursor(int x, int y, bool visible) {

@@ -234,8 +234,13 @@ extern "C" void fw_tui_begin(void) {
     task_alive();
     if (!g_app_screen) g_app_screen = (TuiScreen *)malloc(sizeof(TuiScreen));
     if (!g_app_screen) { fw_log(2, "not enough memory for a full-screen app"); return; }
-    tui_resize(g_app_screen, 80, 24);
+
+    // begin FIRST: it is what asks the terminal how big it is, so reading the
+    // size before it runs would only ever return the default.
     tuiterm_begin();
+    uint16_t tw = 80, th = 24;
+    tuiterm_size(&tw, &th);
+    tui_resize(g_app_screen, tw, th);
 }
 
 extern "C" void fw_tui_end(void) {
