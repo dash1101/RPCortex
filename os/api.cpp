@@ -225,44 +225,51 @@ uint32_t api_symbol_count(void) { return kSymbolCount; }
 #include "tui.h"
 #include "tuiterm.h"
 
-static TuiScreen g_app_screen;
+// Allocated while a full-screen app runs, not for the whole uptime. ~12 KB is
+// worth having back on a device with 374 KB of usable heap, and a session that
+// never opens a TUI should not pay for one.
+static TuiScreen *g_app_screen;
 
 extern "C" void fw_tui_begin(void) {
     task_alive();
-    tui_resize(&g_app_screen, 80, 24);
+    if (!g_app_screen) g_app_screen = (TuiScreen *)malloc(sizeof(TuiScreen));
+    if (!g_app_screen) { fw_log(2, "not enough memory for a full-screen app"); return; }
+    tui_resize(g_app_screen, 80, 24);
     tuiterm_begin();
 }
 
 extern "C" void fw_tui_end(void) {
     task_alive();
     tuiterm_end();
+    free(g_app_screen);
+    g_app_screen = nullptr;
 }
 
 extern "C" void fw_tui_size(int *w, int *h) {
-    if (w) *w = g_app_screen.w;
-    if (h) *h = g_app_screen.h;
+    if (w) *w = g_app_screen ? g_app_screen->w : 0;
+    if (h) *h = g_app_screen ? g_app_screen->h : 0;
 }
 
-extern "C" void fw_tui_clear(void) { task_alive(); tui_clear(&g_app_screen); }
+extern "C" void fw_tui_clear(void) { task_alive(); if (g_app_screen) tui_clear(g_app_screen); }
 
 extern "C" void fw_tui_text(int x, int y, const char *s, unsigned char attr, unsigned char fg) {
     task_alive();
-    tui_text(&g_app_screen, x, y, s, attr, fg);
+    if (g_app_screen) tui_text(g_app_screen, x, y, s, attr, fg);
 }
 
 extern "C" void fw_tui_box(int x, int y, int w, int h, const char *title,
                            unsigned char attr, unsigned char fg) {
     task_alive();
-    tui_box(&g_app_screen, x, y, w, h, title, attr, fg);
+    if (g_app_screen) tui_box(g_app_screen, x, y, w, h, title, attr, fg);
 }
 
 extern "C" void fw_tui_fill(int x, int y, int w, int h, char ch,
                             unsigned char attr, unsigned char fg) {
     task_alive();
-    tui_fill(&g_app_screen, x, y, w, h, ch, attr, fg);
+    if (g_app_screen) tui_fill(g_app_screen, x, y, w, h, ch, attr, fg);
 }
 
-extern "C" void fw_tui_present(void) { task_alive(); tuiterm_present(&g_app_screen); }
+extern "C" void fw_tui_present(void) { task_alive(); if (g_app_screen) tuiterm_present(g_app_screen); }
 
 extern "C" int fw_tui_poll(FwTuiEvent *out) {
     task_alive();

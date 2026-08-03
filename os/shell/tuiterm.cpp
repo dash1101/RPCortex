@@ -18,13 +18,18 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 
 #include "pico/stdlib.h"
 
-// The grid showing on the terminal right now. Kept so the next frame can be
-// sent as a difference. One screen of TuiCell is ~12 KB, which is the price of
-// not repainting — worth it against 520 KB of RAM.
-static TuiScreen g_shown;
+// The grid showing on the terminal right now, kept so the next frame can be
+// sent as a difference.
+//
+// ALLOCATED, not static. A TuiScreen is ~12 KB and there are two of them — this
+// one and the one apps draw into — which is 23 KB permanently unavailable for a
+// feature most sessions never use. They live only while a full-screen app is
+// running, which is also the only time anything can afford them.
+static TuiScreen *g_shown;
 static bool      g_active;
 static TuiKeyParser g_keys;
 
@@ -58,6 +63,15 @@ static void apply_attr(uint8_t attr, uint8_t fg, uint8_t *cur_attr, uint8_t *cur
 
 void tuiterm_begin(void) {
     if (g_active) return;
+    g_shown = (TuiScreen *)malloc(sizeof(TuiScreen));
+    if (!g_shown) {
+        // Refuse rather than half-start. A TUI with no previous frame to diff
+        // against would repaint everything every time, which at 115200 baud is
+        // slower than useless.
+        out_err("Not enough memory for a full-screen app (%u KB needed).",
+                (unsigned)(sizeof(TuiScreen) / 1024));
+        return;
+    }
     g_active = true;
     tuikey_init(&g_keys);
 
@@ -68,13 +82,15 @@ void tuiterm_begin(void) {
 
     // Force the first frame to send everything, by making the remembered screen
     // impossible to match.
-    memset(&g_shown, 0, sizeof(g_shown));
-    g_shown.w = 0; g_shown.h = 0;
+    memset(g_shown, 0, sizeof(*g_shown));
+    g_shown->w = 0; g_shown->h = 0;
 }
 
 void tuiterm_end(void) {
     if (!g_active) return;
     g_active = false;
+    free(g_shown);
+    g_shown = nullptr;
     // Order matters on the way out. Leaving mouse reporting on means the
     // terminal sends escape sequences to the SHELL for every click afterwards,
     // which looks like the device has started typing by itself.
@@ -87,13 +103,13 @@ void tuiterm_end(void) {
 void tuiterm_present(const TuiScreen *s) {
     if (!g_active) return;
 
-    bool full = (g_shown.w != s->w || g_shown.h != s->h);
+    bool full = (g_shown->w != s->w || g_shown->h != s->h);
     if (full) {
         esc("\033[2J");
-        g_shown.w = s->w;
-        g_shown.h = s->h;
+        g_shown->w = s->w;
+        g_shown->h = s->h;
         for (uint32_t i = 0; i < (uint32_t)s->w * s->h; i++) {
-            g_shown.cells[i].ch = 0;      // nothing can match, so everything sends
+            g_shown->cells[i].ch = 0;      // nothing can match, so everything sends
         }
     }
 
@@ -104,7 +120,7 @@ void tuiterm_present(const TuiScreen *s) {
         for (int x = 0; x < (int)s->w; x++) {
             uint32_t i = (uint32_t)y * s->w + x;
             const TuiCell &now = s->cells[i];
-            TuiCell &was = g_shown.cells[i];
+            TuiCell &was = g_shown->cells[i];
             if (now.ch == was.ch && now.attr == was.attr && now.fg == was.fg) continue;
 
             // Only move when the cursor is not already where it needs to be:
