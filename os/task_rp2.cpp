@@ -12,6 +12,9 @@
 #include "hardware/sync.h"
 #include "lock.h"
 #include "logring.h"
+#include "hardware/watchdog.h"
+#include "out.h"
+#include <stdio.h>
 
 // The frame task_ctx_switch pops: nine words, of which only the last matters.
 //
@@ -37,6 +40,49 @@ void *task_ctx_init(void *stack_top, TaskEntry entry) {
 
 uint32_t task_now_ms(void) {
     return (uint32_t)(time_us_64() / 1000ull);
+}
+
+// --- the watchdog -----------------------------------------------------------
+//
+// Fed from the scheduler, which runs constantly: every yield, every sleep, every
+// interrupt check. If nothing yields for WATCHDOG_MS the device has stopped
+// making progress — a deadlock, a runaway loop, a task that will never come back
+// — and rebooting is strictly better than sitting there dark until someone
+// unplugs it.
+//
+// Generous on purpose. The longest legitimate gap between yields is a flash
+// erase-and-write, which is under 200 ms; 8 seconds cannot be hit by anything
+// that is actually working.
+#define WATCHDOG_MS 8000
+
+static bool g_wd_on;
+
+void task_watchdog_start(void) {
+    watchdog_enable(WATCHDOG_MS, /*pause_on_debug*/true);
+    g_wd_on = true;
+}
+
+void task_watchdog_feed(void) {
+    if (g_wd_on) watchdog_update();
+}
+
+// --- stack overflow ---------------------------------------------------------
+
+void task_stack_overflow(const char *name, uint32_t size) {
+    // Interrupts stay on: this needs USB to deliver the message, and the damage
+    // is already done so there is nothing left to protect.
+    printf("\n");
+    out_fatal("STACK OVERFLOW in task '%s'", name ? name : "?");
+    out_multi("   It used more than its %u byte stack and has written past the end.",
+              (unsigned)size);
+    out_multi("   Memory below it is corrupt, so continuing would put the damage");
+    out_multi("   somewhere it would be blamed on something else.");
+    out_multi("   Rebooting.");
+    log_addf(LOG_K_ERR, "stack overflow in '%s' (%u bytes)", name ? name : "?",
+             (unsigned)size);
+    for (int i = 0; i < 60; i++) { sleep_ms(10); fflush(stdout); }
+    watchdog_reboot(0, 0, 0);
+    while (true) { tight_loop_contents(); }
 }
 
 uint32_t task_this_core(void) {

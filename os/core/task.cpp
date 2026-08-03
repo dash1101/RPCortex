@@ -33,6 +33,9 @@ static uint32_t g_cores = 1;
 // by counting how much of it is still untouched. That is the only way to report
 // stack usage honestly without instrumenting every call.
 #define STACK_PAINT 0xA5A5A5A5u
+// A distinct value at the very bottom, so an overflow is detectable even after
+// the paint above it has legitimately been used.
+#define STACK_GUARD 0xDEADBE57u
 
 static Task *slot_of(int pid) {
     for (uint32_t i = 0; i < TASK_MAX; i++)
@@ -51,15 +54,33 @@ static Task *cur(void) {
 static void paint(void *base, uint32_t bytes) {
     uint32_t *p = (uint32_t *)base;
     for (uint32_t i = 0; i < bytes / 4; i++) p[i] = STACK_PAINT;
+    for (uint32_t i = 0; i < TASK_GUARD_BYTES / 4; i++) p[i] = STACK_GUARD;
+}
+
+// True when the tripwire is intact. The stack grows DOWN, so the guard sits at
+// the lowest addresses and is the first thing an overflow reaches.
+static bool guard_ok(const Task *t) {
+    if (!t->stack) return true;                  // the adopted boot stack
+    const uint32_t *p = (const uint32_t *)t->stack;
+    for (uint32_t i = 0; i < TASK_GUARD_BYTES / 4; i++)
+        if (p[i] != STACK_GUARD) return false;
+    return true;
 }
 
 static uint32_t high_water(const Task *t) {
     if (!t->stack) return 0;                     // adopted main stack: unknown
     const uint32_t *p = (const uint32_t *)t->stack;
-    uint32_t words = t->info.stack_size / 4;
+    const uint32_t words = t->info.stack_size / 4;
+    // Start ABOVE the guard. Its words hold STACK_GUARD rather than STACK_PAINT,
+    // so a scan that began at zero would stop on the very first word and report
+    // the entire stack as used.
+    const uint32_t first = TASK_GUARD_BYTES / 4;
     uint32_t untouched = 0;
-    while (untouched < words && p[untouched] == STACK_PAINT) untouched++;
-    return t->info.stack_size - untouched * 4;
+    for (uint32_t i = first; i < words; i++) {
+        if (p[i] != STACK_PAINT) break;
+        untouched++;
+    }
+    return t->info.stack_size - TASK_GUARD_BYTES - untouched * 4;
 }
 
 // --- scheduling -------------------------------------------------------------
@@ -188,10 +209,23 @@ static void reschedule(TaskState park_as) {
     // something runnable" spin below and hang the device with no clue why.
     if (!g_up) return;
 
+    // Progress is being made, so the watchdog is satisfied. This is the one
+    // place every kind of yield passes through.
+    task_watchdog_feed();
+
     uint32_t core = task_this_core() % MAX_CORES;
 
     lock_hw_enter();
     Task *me = cur();
+
+    // Check the tripwire before anything else. A task that has overrun its stack
+    // has already written over its neighbour; the only useful thing left is to
+    // say which task it was, loudly, rather than let it keep running and put the
+    // damage somewhere it will be blamed on something else.
+    if (me && !guard_ok(me)) {
+        lock_hw_exit();
+        task_stack_overflow(me->info.name, me->info.stack_size);
+    }
 
     if (me) {
         me->info.cpu_ms += task_now_ms() - me->entered_ms;

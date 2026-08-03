@@ -8,6 +8,9 @@
 // on-disk format MicroPython's rp2 port uses, so a v1.0 device's data is at
 // least format-compatible with what v2.0 would mount.
 bool     storage_init(bool format_if_needed);
+// Erase and remake the filesystem, then mount it. The recovery path, used when
+// mounting fails or the device has repeatedly failed to reach a shell.
+bool     storage_format_and_mount(void);
 bool     storage_write_file(const char *name, const uint8_t *data, uint32_t len);
 // Append rather than truncate, for the shell's '>>' redirect. Creates the file
 // if it does not exist.

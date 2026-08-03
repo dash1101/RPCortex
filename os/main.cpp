@@ -6,6 +6,7 @@
 
 #include "pico/stdlib.h"
 #include "kernel.h"
+#include "task.h"
 #include "shell.h"
 #include "session.h"
 #include "pkg.h"
@@ -63,6 +64,11 @@ int main(void) {
     // output is not competing with the password prompt.
     jobs_start_services();
     jobs_run_startup();
+
+    // An interactive shell was reached, so this boot succeeded: clear the
+    // failure counter and arm the watchdog from here on.
+    kboot_succeeded();
+    task_watchdog_start();
 
     shell_run();
     return 0;

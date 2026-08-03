@@ -3,6 +3,8 @@
 // the symbols it needs. Nothing here ever switches, because those tests never
 // call task_init — and reschedule returns immediately when it has not.
 #include "task.h"
+#include <stdio.h>
+#include <stdlib.h>
 
 extern "C" {
 // Single-threaded host: the cross-core critical section has nothing to guard.
@@ -14,4 +16,15 @@ void  task_ctx_switch(void **, void *) {}
 uint32_t task_now_ms(void)     { return 0; }
 uint32_t task_core_count(void) { return 1; }
 uint32_t task_this_core(void)  { return 0; }
+
+// The scheduler's new safety hooks. On the host there is no watchdog and no
+// stack to overflow (ucontext gives each task a generous one), but the symbols
+// have to exist for anything linking task.cpp.
+void task_watchdog_start(void) {}
+void task_watchdog_feed(void)  {}
+void task_stack_overflow(const char *, uint32_t) {
+    fprintf(stderr, "  *** task_stack_overflow called on the host ***\n");
+    abort();
+}
+
 }

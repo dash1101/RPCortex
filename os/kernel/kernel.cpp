@@ -5,6 +5,7 @@
 #include "users.h"
 #include "out.h"
 #include "logring.h"
+#include "hardware/watchdog.h"
 #include "registry.h"
 
 #include <stdio.h>
@@ -64,6 +65,10 @@ uint32_t heap_free(void) {
     return heap_total() - (uint32_t)mi.uordblks;
 }
 
+// Called once the shell is running. Until then every boot counts as a failure,
+// which is what makes the three-strikes rebuild safe.
+void kboot_succeeded(void) { watchdog_hw->scratch[4] = 0; }
+
 bool kboot(void) {
     // stdio + USB are already up (main brought them up so boot messages are
     // visible). Here: mount storage, and report the machine.
@@ -81,10 +86,39 @@ bool kboot(void) {
         return false;
     }
 
+    // --- the last resort ----------------------------------------------------
+    //
+    // A boot counter in a watchdog scratch register, which survives a reset. It
+    // goes up here and is cleared once the shell is actually running, so it only
+    // grows when boots are FAILING. Three failures means the filesystem is what
+    // is stopping the device, and reformatting is the only move left that does
+    // not need a second computer and a nuke image.
+    //
+    // Losing the files is bad. Needing another machine to make the device boot
+    // at all is worse, and that is the situation this exists to end.
+    const uint32_t BOOT_MAGIC = 0x52504300u;
+    uint32_t attempts = 0;
+    if ((watchdog_hw->scratch[4] & 0xFFFFFF00u) == BOOT_MAGIC)
+        attempts = watchdog_hw->scratch[4] & 0xFFu;
+    attempts++;
+    watchdog_hw->scratch[4] = BOOT_MAGIC | (attempts & 0xFFu);
+
+    bool force_format = false;
+    if (attempts >= 3) {
+        klog(LOG_ERROR, "Boot attempt %u without reaching a shell.", (unsigned)attempts);
+        klog(LOG_ERROR, "Assuming the filesystem is at fault and rebuilding it.");
+        force_format = true;
+    }
+
     kstep("Mounting storage...");
-    if (!storage_init(true)) {
-        klog(LOG_ERROR, "Storage would not mount.");
-        return false;
+    if (!storage_init(true) || force_format) {
+        if (!force_format) klog(LOG_ERROR, "Storage would not mount.");
+        klog(LOG_WARN, "Rebuilding the filesystem. Files are lost; the device boots.");
+        if (!storage_format_and_mount()) {
+            klog(LOG_ERROR, "The flash itself will not take a filesystem.");
+            return false;
+        }
+        klog(LOG_INFO, "Filesystem rebuilt.");
     }
     klog(LOG_INFO, "Filesystem mounted  (%u KB free)", storage_free_bytes() / 1024);
 

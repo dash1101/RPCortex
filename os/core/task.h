@@ -34,11 +34,28 @@
 #define TASK_MAX        12
 #define TASK_NAME_MAX   16
 #define TASK_PATH_MAX   48
-#define TASK_STACK_MIN  512
-// The shell needs room for the line editor, path buffers and a command's own
-// locals. Measured against the deepest path (tree recursion at depth 8).
+// Stack sizes, measured rather than guessed.
+//
+// The deepest frames in this firmware are __sbprintf at 1128 bytes and
+// storage_copy at 440, and they NEST: a task that prints inside a filesystem
+// operation needs both at once plus littlefs's own 500-odd. Anything under 2 KB
+// that touches either is a stack overflow waiting to happen — and an overflow
+// here is not a crash, it is silent corruption of whatever malloc put below the
+// stack, which on this device was littlefs's cache. That got written to flash
+// and left a board that would not boot until it was erased.
+//
+// So the minimum is 2 KB, not 512 bytes. A task that genuinely needs less is not
+// worth the risk of being wrong about it.
+#define TASK_STACK_MIN   2048
+#define TASK_STACK_DEF   3072
+// The shell nests deepest of all: line editor, then a command, then a pipeline
+// stage, then whatever that command calls.
 #define TASK_STACK_SHELL 4096
-#define TASK_STACK_DEF   2048
+
+// Bytes at the low end of every stack kept as a tripwire. Checked at every
+// yield: if they have changed, the task has run off the end and the OS says so
+// by name instead of corrupting something and carrying on.
+#define TASK_GUARD_BYTES 16
 
 enum TaskState {
     TASK_FREE = 0,
@@ -142,6 +159,17 @@ uint32_t task_core_count(void);
 
 // The core this code is running on, 0-based.
 uint32_t task_this_core(void);
+
+// Called when a task's stack tripwire has been breached. Does not return: the
+// damage is already done, and continuing would spread it. The platform reports
+// and reboots.
+void task_stack_overflow(const char *name, uint32_t size) __attribute__((noreturn));
+
+// The watchdog. Started once the shell is up, fed by the scheduler. A device
+// that stops yielding has stopped making progress, and rebooting beats sitting
+// dark until someone unplugs it.
+void task_watchdog_start(void);
+void task_watchdog_feed(void);
 
 }  // extern "C"
 

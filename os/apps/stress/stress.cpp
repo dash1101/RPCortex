@@ -69,8 +69,8 @@ static void test_tasks(void) {
     section("Multitasking");
 
     g_ticks[0] = g_ticks[1] = g_ticks[2] = 0;
-    int a = fw_task_spawn("stress_a", worker, (void *)0, 1024);
-    int b = fw_task_spawn("stress_b", worker, (void *)1, 1024);
+    int a = fw_task_spawn("stress_a", worker, (void *)0, 2048);
+    int b = fw_task_spawn("stress_b", worker, (void *)1, 2048);
     check(a > 0 && b > 0, "two tasks started", a > 0 ? 0 : "spawn refused");
 
     // Yield until they have both had plenty of turns.
@@ -83,7 +83,7 @@ static void test_tasks(void) {
     // multitasking.
     check(g_ticks[0] > 5 && g_ticks[1] > 5, "both progressed together, not one then the other", 0);
 
-    int s = fw_task_spawn("stress_spin", spinner, 0, 1024);
+    int s = fw_task_spawn("stress_spin", spinner, 0, 2048);
     check(s > 0, "a non-terminating task started", 0);
     for (int i = 0; i < 20; i++) fw_task_yield();
     check(fw_task_kill(s) != 0, "kill accepted", 0);
@@ -103,6 +103,11 @@ static volatile int g_fs_done;
 
 // Each task hammers its OWN file. Concurrent writers to the same filesystem is
 // exactly the case the storage lock exists for.
+//
+// 4 KB of stack, not the 1280 this first had. A filesystem write nests
+// storage_copy (440 bytes) over littlefs's own frames, and printf alone is
+// 1128 — the original size overflowed, wrote through into littlefs's cache, and
+// that corruption reached flash and left a board that would not boot.
 static int fs_worker(void *arg) {
     int idx = (int)(long)arg;
     char path[32];
@@ -151,7 +156,7 @@ static void test_files(void) {
     // Now three tasks at once. Without the filesystem lock this is what
     // corrupts littlefs, so a clean run here is the lock doing its job.
     g_fs_errors = g_fs_done = 0;
-    for (long i = 0; i < 3; i++) fw_task_spawn("stress_fs", fs_worker, (void *)i, 1280);
+    for (long i = 0; i < 3; i++) fw_task_spawn("stress_fs", fs_worker, (void *)i, 4096);
     for (int i = 0; i < 4000 && g_fs_done < 3; i++) fw_task_yield();
 
     check(g_fs_done == 3, "three tasks finished their file work", 0);

@@ -15,6 +15,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 #include <ucontext.h>
 
 static int checks = 0, fails = 0;
@@ -68,6 +69,17 @@ static uint32_t g_now;
 uint32_t task_now_ms(void)    { return g_now; }
 uint32_t task_core_count(void){ return 1; }
 uint32_t task_this_core(void) { return 0; }
+
+// The scheduler's new safety hooks. On the host there is no watchdog and no
+// stack to overflow (ucontext gives each task a generous one), but the symbols
+// have to exist for anything linking task.cpp.
+void task_watchdog_start(void) {}
+void task_watchdog_feed(void)  {}
+void task_stack_overflow(const char *, uint32_t) {
+    fprintf(stderr, "  *** task_stack_overflow called on the host ***\n");
+    abort();
+}
+
 
 // --- what the tasks do ------------------------------------------------------
 

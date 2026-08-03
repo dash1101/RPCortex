@@ -312,6 +312,21 @@ bool storage_walk(const char *path, StorageWalkFn cb, void *ctx) {
     return true;
 }
 
+// Erase and remake the filesystem, then mount it.
+//
+// The recovery path: used when mounting fails, and when the boot counter says
+// the device has failed to reach a shell three times running. Losing the files
+// is bad; needing another computer and a nuke image to make the board boot at
+// all is worse, and that is what this exists to prevent.
+bool storage_format_and_mount(void) {
+    LockGuard _fs(&g_fs_lock);
+    if (g_mounted) { lfs_unmount(&g_lfs); g_mounted = false; }
+    if (lfs_format(&g_lfs, &g_cfg_live) < 0) return false;
+    if (lfs_mount(&g_lfs, &g_cfg_live) < 0)  return false;
+    g_mounted = true;
+    return true;
+}
+
 uint32_t storage_total_bytes(void) { return FS_SIZE; }
 
 // Where the firmware actually ends, so the boot check can compare it against the

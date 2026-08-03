@@ -26,6 +26,11 @@ void klog(LogLevel level, const char *fmt, ...);
 // recovery prompt rather than looping.
 bool kboot(void);
 
+// Mark this boot as having reached a usable shell. Until it is called a boot
+// counts as failed — three in a row and kboot rebuilds the filesystem rather
+// than leaving a device that needs another machine to recover.
+void kboot_succeeded(void);
+
 // Free heap right now. The single number that mattered most in v1 — here it is
 // honest (no GC to lie about fragmentation) and cheap.
 uint32_t heap_free(void);
