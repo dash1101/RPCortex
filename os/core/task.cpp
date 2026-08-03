@@ -351,25 +351,44 @@ static void reschedule(TaskState park_as) {
             return;
         }
 
-        // ASLEEP and nothing else to run. Returning here would set it back to
-        // RUNNING and continue immediately — sleep(200) would return in
-        // microseconds, which is not sleeping. Wait out the deadline instead.
+        // ASLEEP and nothing else to run *at this instant*. Returning here would
+        // set it back to RUNNING and continue immediately — sleep(200) would
+        // return in microseconds, which is not sleeping. So the deadline has to
+        // be waited out.
         //
-        // The wait is a spin because there is genuinely nothing else for this
-        // core to do; the watchdog is kept fed so it is not mistaken for a hang,
-        // and the other core is free to work throughout.
+        // The wait re-checks for work on every pass rather than spinning the
+        // whole deadline out. "Nothing runnable" was only true when the loop was
+        // entered: the other core finishes something, a service comes due, a
+        // keystroke wakes the shell — and a sleeper that kept the core to itself
+        // made all of those wait for a deadline that had nothing to do with
+        // them. A 50 ms poll in the network task therefore cost the shell up to
+        // 50 ms of latency for no reason, which is exactly the sort of thing
+        // that reads as "the device feels sluggish while it is downloading".
+        //
+        // Waking early is not a correctness risk: this task is still SLEEPING
+        // and still `live`, so nothing can pick it up, and it resumes here with
+        // its deadline intact.
         if (me && me->info.state == TASK_SLEEPING) {
             uint32_t wake = me->wake_at_ms;
-            lock_hw_exit();
-            while ((int32_t)(task_now_ms() - wake) < 0) {
+            while (true) {
+                lock_hw_exit();
                 if (core == 0) task_watchdog_feed();
+                lock_hw_enter();
+
+                if ((int32_t)(task_now_ms() - wake) >= 0) {
+                    me->info.state = TASK_RUNNING;
+                    me->entered_ms = task_now_ms();
+                    lock_hw_exit();
+                    return;
+                }
+
+                // Something became runnable while waiting: hand the core over
+                // and let this task be woken by whoever runs next. Falls through
+                // to the switch below with `next` chosen.
+                next = pick(core, me->info.pid);
+                if (next) break;
             }
-            lock_hw_enter();
-            me->info.state = TASK_RUNNING;
-            me->entered_ms = task_now_ms();
-            lock_hw_exit();
-            return;
-        }
+        } else
         // A FINISHED task must never return from here.
         //
         // task_exit calls reschedule and relies on never coming back. Returning

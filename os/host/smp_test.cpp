@@ -154,6 +154,43 @@ static void run_core(unsigned core) {
 
 static void *core1_main(void *) { run_core(1); return nullptr; }
 
+// Phase 2: a sleeping task must not keep its core while others come due.
+//
+// The scheduler only reaches the sleep path when NOTHING else is runnable, so
+// phase 1 never touches it — six busy workers mean pick() always finds someone.
+// This phase runs ONE core with every task pinned to it and every task asleep,
+// which is the only shape where the question arises at all.
+//
+// This is a SMOKE TEST for that path, not a proof of the handover. It is the
+// only place in the suite the sleep path executes at all, so it is what stops a
+// change there from going completely unexercised, and the double-schedule
+// assertion below applies to it as much as to phase 1.
+//
+// It is deliberately not a performance assertion. Handing the core over does
+// measure better — roughly 101 short sleeps against 53 when the handover is
+// removed — but the ratio swings with the task mix, and every threshold tried
+// either passed both ways or would be flaky on a loaded machine. A number that
+// cannot fail honestly is worse than no number, so the bound below is loose and
+// only catches the path breaking outright.
+#define LONG_SLEEP_MS 500
+#define SHORT_SLEEP_MS 20
+static std::atomic<long> g_short_done;
+
+static void run_core_staggered(void) {
+    t_core = 0;
+    while (!g_stop.load()) {
+        // Exactly two tasks: the adopted one sleeps long, the other briefly.
+        // Any more and somebody is always due, pick() never returns null, and
+        // the sleep path this exists to exercise is never reached at all.
+        if (task_self() == 1) {
+            task_sleep_ms(LONG_SLEEP_MS);
+        } else {
+            task_sleep_ms(SHORT_SLEEP_MS);
+            g_short_done++;
+        }
+    }
+}
+
 static int spin(void *) { return 0; }        // never reached; see above
 
 int main(void) {
@@ -161,6 +198,32 @@ int main(void) {
 
     t_core = 0;
     task_init("shell");
+
+    // --- phase 2: sleepers must release the core ----------------------------
+    //
+    // Everything pinned to core 0, so the tasks genuinely contend for one core
+    // rather than spreading out and never needing to hand anything over.
+    task_spawn("sleeper", "(test)", spin, nullptr, TASK_STACK_MIN, AFFINITY_CORE0);
+
+    pthread_t stopper2;
+    pthread_create(&stopper2, nullptr, [](void *) -> void * {
+        struct timespec ts = { 2, 0 };
+        nanosleep(&ts, nullptr);
+        g_stop.store(true);
+        return nullptr;
+    }, nullptr);
+    run_core_staggered();
+    pthread_join(stopper2, nullptr);
+
+    long sd = g_short_done.load();
+    printf("  %ld short sleeps completed while a long one was pending\n", sd);
+    // Loose on purpose; see the note above the phase. This catches the sleep
+    // path failing to complete sleeps at all, not the handover specifically.
+    ck(sd > 20, "sleeps complete while another task holds a long deadline");
+    ck(g_double_sched.load() == 0, "and still nothing is double-scheduled");
+
+
+    g_stop.store(false);      // phase 2 left it set
 
     // AFFINITY_ANY throughout: a task that cannot migrate cannot be scheduled
     // onto two of them, so pinned tasks would make this test vacuous. On the
