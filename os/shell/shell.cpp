@@ -52,6 +52,7 @@ void settings_register(void);
 void editor_register(void);
 void rps_register(void);
 void update_register(void);
+void update_report_boot(void);
 void netapps_register(void);
 void fetch_register(void);
 void ps_register(void);

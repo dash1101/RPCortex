@@ -29,6 +29,7 @@
 #include "interrupt.h"
 #include "kernel.h"
 #include "registry.h"
+#include "persist.h"
 #include "task.h"
 #include "users.h"
 #include "session.h"
@@ -45,7 +46,7 @@
 #include "hardware/regs/addressmap.h"
 #include "pico/multicore.h"
 
-bool update_apply_file(const char *path);   // defined below
+bool update_apply_file(const char *path, const char *to_version);   // defined below
 
 bool http_transport_get(HttpTransport *t);
 bool http_tls_available(void);
@@ -281,7 +282,7 @@ static int do_install(bool force) {
     out_multi("  The device reboots into %s when it finishes.", e.ver);
     if (!session_confirm("  Continue?")) { out_info("Cancelled. The download is kept."); return 0; }
 
-    return update_apply_file(IMAGE_PATH) ? 0 : 1;
+    return update_apply_file(IMAGE_PATH, e.ver) ? 0 : 1;
 }
 
 // Stage the image, then copy it over the firmware.
@@ -289,7 +290,7 @@ static int do_install(bool force) {
 // Two steps because source and destination share a flash chip. Staging is safe
 // and interruptible — it touches nothing the device needs — and it puts the
 // image at a fixed offset the final copy can read without a filesystem.
-bool update_apply_file(const char *path) {
+bool update_apply_file(const char *path, const char *to_version) {
     bool is_dir = false; uint32_t size = 0;
     if (!storage_stat(path, &is_dir, &size) || size == 0) {
         out_err("No image at %s.", path);
@@ -345,6 +346,16 @@ bool update_apply_file(const char *path) {
     }
     out_ok("Staged and verified.");
 
+    // A note to the NEXT boot, written before anything is erased.
+    //
+    // The firmware write leaves the filesystem alone, so the registry is the
+    // one thing guaranteed to survive it. Without this an update that works is
+    // indistinguishable from one that did nothing: the device reboots, comes
+    // back, and says nothing about why.
+    reg_set("System.Update_From", RPC_OS_VERSION);
+    reg_set("System.Update_To", to_version ? to_version : "a local image");
+    persist_save_registry();
+
     log_addf(LOG_K_WARN, "update: writing %lu bytes of firmware", (unsigned long)size);
     out_info("Writing firmware. Do not remove power.");
     sleep_ms(100);                     // let the serial buffer drain
@@ -388,7 +399,7 @@ static int cmd_update(int argc, char **argv) {
         out_warn("Writing %s over the firmware, unverified.", argv[2]);
         out_multi("  A local file has no checksum to check it against.");
         if (!session_confirm("  Continue?")) return 0;
-        return update_apply_file(argv[2]) ? 0 : 1;
+        return update_apply_file(argv[2], nullptr) ? 0 : 1;
     }
 
     out_multi("Usage:");
@@ -397,6 +408,25 @@ static int cmd_update(int argc, char **argv) {
     out_multi("  update install --force    reinstall the current version");
     out_multi("  update from-file <path>   apply an image already on the device");
     return 1;
+}
+
+// Called at boot. Reports a completed update once, then forgets it.
+void update_report_boot(void) {
+    const char *to = reg_get("System.Update_To", "");
+    if (!to[0]) return;
+    const char *from = reg_get("System.Update_From", "");
+
+    out_ok("Updated from %s to %s.", from[0] ? from : "an earlier build", to);
+    out_multi("  Now running %s %s.", RPC_OS_VERSION, RPC_OS_CODENAME);
+    log_addf(LOG_K_OK, "update: now running %s (was %s)", RPC_OS_VERSION, from);
+
+    reg_set("System.Update_To", "");
+    reg_set("System.Update_From", "");
+    persist_save_registry();
+
+    // The downloaded image has done its job and is most of a megabyte.
+    storage_remove(IMAGE_PATH);
+    storage_remove(MANIFEST_PATH);
 }
 
 void update_register(void) {

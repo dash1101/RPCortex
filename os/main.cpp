@@ -27,6 +27,7 @@
 void net_autoconnect(void);
 void task_start_core1(void);
 void stock_install_once(void);
+void update_report_boot(void);
 void fs_layout_check(bool verbose);
 bool fs_accounts_check(void);
 void jobs_run_startup(void);
@@ -36,6 +37,10 @@ void jobs_start_services(void);
 static int shell_task(void *) {
     net_autoconnect();       // rejoin a saved network, if one is set to auto
     session_boot();          // first-run setup, then login
+
+    // Before anything else prints: someone who just updated wants to know it
+    // worked, and wants to know it first.
+    update_report_boot();
 
     stock_install_once();    // first boot only; a removed package stays removed
     pkg_load_installed();    // installed packages' commands go live
