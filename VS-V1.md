@@ -95,6 +95,11 @@ could reflash. The equivalent here is handing USB back to the boot ROM.
 
 ## Known unstable
 
+- **HTTPS downloads larger than a few KB needed a wider TCP window.** The
+  receive window was smaller than one TLS record, which deadlocks: mbedtls
+  cannot decrypt a partial record, and lwIP does not acknowledge what mbedtls
+  has not consumed. Small responses were unaffected, which is why the package
+  index worked and a firmware image did not.
 - **`update` writes flash and is DEVICE-UNCONFIRMED.** Everything up to the
   write — manifest, download, checksum, size and board checks — uses the same
   code the package manager does and fails safely. The write itself can only be

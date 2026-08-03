@@ -10,7 +10,7 @@
       "author": "dash1101",
       "arch": "armv8m",
       "size": 711528,
-      "sha256": "aa3a9f2f939ba6707bf40908f3db9fcedba7135a78e8840d3bf835bb713d09be",
+      "sha256": "531ef8d6051264658cd0642566cf5303bc2ec6f1e5c6cfb298b802f8f89c2363",
       "url": "https://raw.githubusercontent.com/dash1101/RPCortex/main/releases/rpcortex-v2-pico2_w.bin"
     },
     {
@@ -20,7 +20,7 @@
       "author": "dash1101",
       "arch": "armv6m",
       "size": 743568,
-      "sha256": "e1b45cfd23ca644162306f9fd760979c0ef4f5117f16c1c6c745be7edd1c093b",
+      "sha256": "bc88633599df26db047b31c0e0cceaff646d55222562df6d9538cfd6d55a5e60",
       "url": "https://raw.githubusercontent.com/dash1101/RPCortex/main/releases/rpcortex-v2-pico_w.bin"
     },
     {

@@ -38,7 +38,27 @@
 #define LWIP_IPV4                   1
 #define LWIP_IPV6                   0
 
-#define TCP_WND                     (8 * TCP_MSS)
+// The receive window MUST be larger than one TLS record, and that is not a
+// tuning preference — it is a deadlock if it is not.
+//
+// A TLS record carries up to 16384 bytes of plaintext, plus a 5-byte header and
+// up to ~256 of MAC, padding and tag: about 16.6 KB on the wire. mbedtls cannot
+// decrypt a PARTIAL record, so if the window is smaller than one record the
+// sequence is:
+//
+//   the server fills the window with part of a record
+//   mbedtls has no complete record, so produces no plaintext
+//   nothing is consumed, so the window never advances
+//   the server cannot send the rest
+//
+// Both sides then wait forever. It is invisible for small responses, which
+// arrive in small records — which is exactly how it presented: a 1 KB manifest
+// downloaded fine and a 694 KB image stopped dead at 923 bytes, one byte past
+// the end of its 922-byte header block.
+//
+// 12 * 1460 = 17520, comfortably past a worst-case record. Do not reduce this
+// below 16 KB while MBEDTLS_SSL_IN_CONTENT_LEN is 16384; the two are a pair.
+#define TCP_WND                     (12 * TCP_MSS)
 #define TCP_MSS                     1460
 #define TCP_SND_BUF                 (8 * TCP_MSS)
 #define TCP_SND_QUEUELEN            ((4 * (TCP_SND_BUF) + (TCP_MSS - 1)) / (TCP_MSS))

@@ -285,6 +285,37 @@ Until then, two rules:
   the driver's own interrupt shares those structures. That part was missing
   entirely and is now in place.
 
+## The TCP window has to be bigger than a TLS record
+
+Kept because it presented as four different bugs and was one, and because the
+next person to tune lwIP for RAM will reach straight for this number.
+
+`TCP_WND` was `8 * TCP_MSS` — 11,680 bytes. A TLS record carries up to 16,384
+bytes of plaintext, plus header, MAC, padding and tag: about 16.6 KB on the
+wire. mbedtls cannot decrypt a PARTIAL record, and lwIP does not acknowledge
+data mbedtls has not consumed. So:
+
+- the server fills the window with part of one record
+- mbedtls has nothing complete, and produces no plaintext
+- nothing is consumed, so the window never advances
+- the server cannot send the rest of the record
+
+Both sides then wait until something times out. It is invisible for anything
+small, because small responses arrive in small records — which is exactly how it
+looked: a 1 KB manifest downloaded perfectly and a 694 KB image stopped dead at
+923 bytes, one byte past the end of its 922-byte header block.
+
+**`TCP_WND` and `MBEDTLS_SSL_IN_CONTENT_LEN` are a pair.** Reducing either
+without the other reintroduces this. If RAM ever demands a smaller window, the
+record size has to come down with it — which means negotiating RFC 6066
+`max_fragment_length` and accepting that a server may decline.
+
+Three earlier attempts at this were all real bugs in the receive path — refusing
+data lwIP would not re-deliver, holding a buffer chain that could never drain,
+acknowledging at the wrong moment — and none of them was the reason. Worth
+remembering that a symptom which survives three genuine fixes is probably not
+in the layer being fixed.
+
 ## The order
 
 1. ~~Finish the current reliability pass~~ — the loader fix landed; `bench` runs
