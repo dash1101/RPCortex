@@ -33,6 +33,7 @@ add_executable(rpcortex_v2
     ${OS_ROOT}/core/httpparse.cpp
     ${OS_ROOT}/core/httpfetch.cpp
     ${OS_ROOT}/core/repoindex.cpp
+    ${OS_ROOT}/core/preempt.cpp
     ${OS_ROOT}/core/cmdline.cpp
     ${OS_ROOT}/core/interrupt.cpp
     ${OS_ROOT}/core/task.cpp

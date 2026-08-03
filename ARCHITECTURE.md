@@ -169,14 +169,40 @@ board — use `pkg install <file>`", never a link error or a hang.
 The socket layer stays behind the seam `core/` already uses. The ESP32-S3 port
 does not have to happen now; it does have to not get harder.
 
+## The TUI layer, and making it better than v1's
+
+Not started, recorded so the shape is not re-derived later. v1 had five
+independent TUIs (`settings`, `sysmon`, `fileexp`, `editor`, `desktop`), each
+drawing its own boxes and reading its own keys. The improvement is not a nicer
+editor, it is that the fifth app costs almost nothing to write.
+
+- **A framework, not two apps.** Screen ownership already exists in concept from
+  v1's `appkit`; here it wants a widget layer — a list, a form field, a status
+  bar, a text buffer — so `edit` and `settings` are two clients of one thing.
+- **Mouse input is genuinely available.** Terminals implement xterm mouse
+  tracking: `\x1b[?1000h` enables reporting and `\x1b[?1006h` selects the SGR
+  encoding, after which clicks, drags and the wheel arrive as ordinary escape
+  sequences on the same serial line. PuTTY supports it. It costs a decoder in
+  `lineedit`, not a new transport, and the parsing is pure so it host-tests.
+  Worth doing: a scroll wheel in a file list is the difference between a
+  demonstration and a thing people use.
+- **Preemption comes first.** A full-screen app that hangs while owning the
+  terminal is the worst case for a device with one serial line.
+
 ## The order
 
-1. Finish the current reliability pass — confirm `stress` runs clean twice
-2. Automatic crash-log-to-flash *(small, independent, do it any time)*
-3. **The package fetcher, stages 1–4** *(the stated priority)*
-4. Preemption *(the large one; the MPU work waits on it)*
-5. MPU isolation for packages
-6. Service supervision — restart a failed service instead of leaving it dead
+1. ~~Finish the current reliability pass~~ — the loader fix landed; `bench` runs
+2. ~~The package fetcher~~ — done, verified by SHA-256 against the index
+3. **Preemption** *(in progress; the MPU work waits on it)*
+4. MPU isolation for packages
+5. The six commands that need nothing but writing — `diag`, `compat`,
+   `inputstat`, `regreset`, `pkgdisable`, `pkgenable`
+6. The TUI layer, then `edit` and `settings` on top of it
+7. `.rps` scripting, matching v1's semantics
+8. Service supervision — restart a failed service instead of leaving it dead
+9. Automatic crash-log-to-flash *(small, independent, do it any time)*
+10. The ESP32-S3 port — `core/` moves unchanged; the context switch, storage and
+    network layers do not
 
 Preemption sits directly behind the fetcher rather than after it in spirit only:
 a runaway package is a reboot today, and that stops being a rare annoyance the
