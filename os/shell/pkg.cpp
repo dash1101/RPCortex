@@ -82,8 +82,15 @@ bool pkg_install_file(const char *file, bool quiet) {
     }
     index_add(name, version);
     if (!quiet) out_okp("pkg", "Installed %s %s", name, version);
-    // Load it now so its commands are available without a reboot.
-    apps_launch(dst, 0, /*quiet*/true);
+    // Load it now so its commands are available without a reboot — and NOT
+    // quietly. A package whose commands could not register is the difference
+    // between "installed" and "usable", and staying silent about it produced
+    // exactly the report this comment exists because of: pkg said Installed,
+    // the command did not exist, and nothing anywhere said why.
+    if (apps_launch(dst, 0, /*quiet*/false) < 0) {
+        out_warnp("pkg", "'%s' is installed but did not load.", name);
+        out_multi("  It will be tried again at the next boot.");
+    }
     return true;
 }
 

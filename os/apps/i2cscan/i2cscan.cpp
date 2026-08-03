@@ -1,9 +1,9 @@
 // I2CScan — sweep the bus and name what answers. Converted from v1's I2CScan.
 //
-// The scan itself is one line of I2C per address: a zero-length write either
-// gets an acknowledge or does not, which is the whole protocol for "is anything
-// there". v1 used MicroPython's i2c.scan(); fw_i2c_write returning the SDK's
-// byte count straight through is what makes the same thing possible here.
+// The scan is one transaction per address: a one-byte read either gets an
+// acknowledge or does not, which is the whole protocol for "is anything there".
+// v1 used MicroPython's i2c.scan(); fw_i2c_read returning the SDK's byte count
+// straight through is what makes the same thing possible here.
 #include "rpc_app.h"
 
 RPC_APP_VER("i2cscan", "2.0");
@@ -98,9 +98,13 @@ static int i2cscan_cmd(int argc, char **argv) {
     // device addresses, so probing them would only produce noise.
     int found = 0;
     for (unsigned a = 0x08; a <= 0x77; a++) {
-        unsigned char probe = 0;
-        int r = fw_i2c_write(bus, a, &probe, 0, 0);
-        if (r < 0) continue;                       // no acknowledge: nothing there
+        // A ONE-byte read, not a zero-length write. i2c_write_blocking with a
+        // length of zero returns success without generating a transaction at
+        // all, so every address appeared to answer — this reported 112 devices
+        // on a bus with nothing attached to it.
+        unsigned char rx = 0;
+        int r = fw_i2c_read(bus, a, &rx, 1, 0);
+        if (r < 1) continue;                       // no acknowledge: nothing there
 
         const char *what = identify((unsigned char)a);
         if (what) fw_printf("  0x%02X   %s\n", a, what);

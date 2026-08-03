@@ -532,12 +532,27 @@ int pkg_repo_command(int argc, char **argv) {
         return do_info(argv[2]);
     }
     if (!strcmp(sub, "install")) {
-        if (argc < 3) { out_multi("Usage: pkg install <name|file>"); return 1; }
+        if (argc < 3) { out_multi("Usage: pkg install <name|file> [name...]"); return 1; }
+
+        // Every name given, not just the first. Installing one package at a
+        // time is the common case and taking several is free; silently doing
+        // one of three is not something anyone would expect.
+        //
         // A path installs from the filesystem; a bare name comes from the repo.
         // Distinguishing on the shape of the argument keeps one verb doing one
         // job from the user's side.
-        if (strchr(argv[2], '/')) return pkg_install_file(argv[2], false) ? 0 : 1;
-        return do_install(argv[2]);
+        int failed = 0, done = 0;
+        for (int i = 2; i < argc; i++) {
+            int rc = strchr(argv[i], '/') ? (pkg_install_file(argv[i], false) ? 0 : 1)
+                                          : do_install(argv[i]);
+            if (rc) failed++;
+            else    done++;
+            // Keep going after a failure. One name being wrong is no reason to
+            // skip the rest, and the summary below says what happened.
+        }
+        if (argc > 3)
+            out_infop("pkg", "%d installed, %d failed.", done, failed);
+        return failed ? 1 : 0;
     }
     return -1;      // not ours
 }

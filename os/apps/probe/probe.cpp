@@ -124,9 +124,11 @@ static void probe_hardware(void) {
     fw_printf("  i2c0 init (4,5)     %s\n", r == 0 ? "ok" : "refused");
     if (r == 0) {
         int found = 0;
+        // One-byte read: a zero-length write does not generate a transaction,
+        // so it reports every address as present.
         for (unsigned addr = 0x08; addr <= 0x77; addr++) {
-            unsigned char z = 0;
-            if (fw_i2c_write(0, addr, &z, 0, 0) >= 0) found++;
+            unsigned char rx = 0;
+            if (fw_i2c_read(0, addr, &rx, 1, 0) >= 1) found++;
         }
         fw_printf("  i2c0 devices        %d\n", found);
         fw_i2c_deinit(0);

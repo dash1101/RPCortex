@@ -21,6 +21,10 @@ bool cmd_register(const Command *cmd) {
     LockGuard _c(&g_cmd_lock);
     if (!cmd || !cmd->name || !cmd->fn)        { g_refused++; return false; }
     if (cmd_find(cmd->name))                   { g_refused++; return false; }  // no shadowing
+    // Counted rather than reported. This file is the table and nothing else —
+    // it does not know about the console, and every test that links it would
+    // have to link the output layer too. apps_launch compares cmd_refused()
+    // across a load and says what happened, which is where the context is.
     if (g_count >= CMD_MAX)                    { g_refused++; return false; }
     g_cmds[g_count++] = *cmd;
     return true;

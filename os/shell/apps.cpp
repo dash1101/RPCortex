@@ -67,6 +67,13 @@ int apps_launch(const char *file, int arg, bool quiet) {
         return -1;
     }
 
+    // A package that registers nothing usually just finished its work. One that
+    // TRIED and was refused is a different thing entirely, and used to be
+    // invisible: pkg reported it installed, the command did not exist, and
+    // nothing anywhere connected the two. The refusal counter is what tells
+    // them apart.
+    uint32_t refused_before = cmd_refused();
+
     api_set_current_app(app.image);
     g_current_app = app.header.name;
     // The first jump into loaded code. If a crash report stops here the loader
@@ -93,6 +100,15 @@ int apps_launch(const char *file, int arg, bool quiet) {
             app_unload(&app);
             if (!quiet) out_err("'%s' could not stay resident.", app.header.name);
         }
+    } else if (cmd_refused() != refused_before) {
+        // It asked for a command and did not get one. Almost always the table
+        // being full, which is a limit rather than a mistake in the package.
+        app_unload(&app);
+        out_errp("apps", "'%s' could not register its command%s.",
+                 app.header.name,
+                 cmd_refused() - refused_before > 1 ? "s" : "");
+        out_multi("  The command table is full (%d), or the name is taken.", CMD_MAX);
+        return -1;
     } else {
         app_unload(&app);
         if (!quiet) {

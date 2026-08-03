@@ -38,7 +38,13 @@ struct Command {
 
 // A fixed table: no allocation, and a hard ceiling is the right shape for a
 // device where runaway registration should fail loudly rather than eat the heap.
-#define CMD_MAX 96
+// Sized with room for packages, not just for the built-ins.
+//
+// This was 96 against 94 built-in commands, so the first two packages to
+// register took the last two slots and every one after that was refused —
+// silently, because installs launch quietly. "Installed" followed by "not a
+// command" with nothing in between is about the worst way to find that out.
+#define CMD_MAX 192
 
 // Register a command. Returns false if the table is full or the name collides
 // with an existing one — a silent overwrite would let an app shadow `reboot`.
@@ -56,7 +62,7 @@ void cmd_remove_owner(void *owner);
 // because it lists commands rather than every name that reaches them.
 struct Alias { const char *name; const char *target; };
 
-#define ALIAS_MAX 64
+#define ALIAS_MAX 96
 
 bool         cmd_alias(const char *name, const char *target);
 // The command an alias points at, or nullptr if `name` is not an alias.
