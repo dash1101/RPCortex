@@ -429,120 +429,51 @@ void net_autoconnect_now(void);      // the inline fallback, defined below
 // joined the network it was told to join is not news, and the prompt already
 // shows it. Only a failure speaks, because that is the case where someone needs
 // to do something.
-// What the join task reports back. Plain values, written by the task and read
-// by the shell — no registry, no printing, no shared structure.
-static volatile bool g_join_done;
-static volatile bool g_join_ok;
-static char          g_join_ssid[33];
-
-static int autoconnect_task(void *) {
-    // Scan first, then join the strongest SAVED network that is actually
-    // present — the same path `wifi autoconnect` takes.
-    //
-    // The earlier version read one saved SSID and connected to it blind, which
-    // meant a device carried somewhere else spent the whole join timeout
-    // failing to reach a network that was not there. Worse, a lookup that came
-    // back empty had it attempting to join '' with no idea anything was wrong.
-    // Asking what is in range costs one scan and cannot do either.
-    //
-    // persist false: this task writes no registry. The shell records the result
-    // afterwards, on the task where every other registry write happens.
-    g_join_ssid[0] = 0;
-    bool ok = wifi_autoconnect(/*quiet*/true, /*persist*/false) == 0;
-    snprintf(g_join_ssid, sizeof(g_join_ssid), "%s", g_last_joined);
-    g_join_ok = ok;
-    g_join_done = true;
-    return ok ? 0 : 1;
-}
-
-// Called by the shell once it is idle, to report what the join did. Runs on the
-// SHELL's task, so printing and persisting happen where they always did.
-void net_autoconnect_report(void) {
-    if (!g_join_done) return;
-    g_join_done = false;
-    if (g_join_ok && g_join_ssid[0]) {
-        reg_set("WiFi.Active", g_join_ssid);
-        log_addf(LOG_K_OK, "wifi: joined '%s' at boot", g_join_ssid);
-        return;                      // success is not news
-    }
-    // Naming the network only when there IS one. "Could not join ''" is worse
-    // than saying nothing was found, because it reads as a bug rather than as
-    // the ordinary case of being somewhere else.
-    if (g_join_ssid[0]) {
-        out_warnp("wifi", "Could not join '%s' automatically.", g_join_ssid);
-        out_multi("  'wifi connect %s' to retry, or 'wifi auto off' to stop trying.", g_join_ssid);
-    } else {
-        out_warnp("wifi", "No saved network is in range.");
-        out_multi("  'wifi scan' to see what is, or 'wifi auto off' to stop looking.");
-    }
-    log_addf(LOG_K_WARN, "wifi: no saved network joined at boot");
-}
+// The boot join runs INLINE, on the shell's task, and that is a correction
+// rather than a preference.
+//
+// It was briefly a background task, to stop the login prompt waiting on it.
+// That cannot work with this scheduler: cyw43_arch_lwip_begin blocks the CORE
+// on a mutex, and under cooperative scheduling a task that blocks the core on a
+// lock held by another task on the same core has stopped the only thing that
+// could release it. The result was a deadlock the watchdog cleaned up, and a
+// different fault each time depending on where it landed.
+//
+// The delay it was trying to avoid is mostly gone anyway. The old join read one
+// saved SSID and connected blind, so being anywhere else cost the entire join
+// timeout — eight seconds of nothing. Scanning first means a network that is
+// not there costs a scan rather than a timeout.
+//
+// Doing this properly needs ONE task owning every cyw43 and lwIP call, with
+// everything else asking it for work. That is a real change and belongs in
+// daylight rather than bolted on. ARCHITECTURE.md carries it.
+void net_autoconnect_report(void) { }
 
 void net_autoconnect(void) {
     if (strcmp(reg_get("WiFi.Auto", "false"), "true") != 0) return;
 
-    // If the LAST run died in this task, do not start it again.
-    //
-    // Without this a fault during the join is a boot loop: the watchdog
-    // reboots, autoconnect runs, it faults at the same point, forever — and the
-    // device is unusable rather than merely offline. One skipped join costs a
-    // manual `wifi connect`; a boot loop costs the whole device.
-    //
-    // Deliberately only skips the automatic attempt. Connecting by hand still
-    // works, which is what someone will try first.
+    // If the LAST run died joining, do not try again automatically. Without
+    // this a fault during the join is a boot loop, and a device that is
+    // unusable is far worse than one that is merely offline.
     const BlackBox *prev = bb_previous();
-    if (prev && strcmp(prev->task, "wifi-join") == 0) {
+    if (prev && (strcmp(prev->task, "wifi-join") == 0 ||
+                 strstr(prev->cmd, "autoconnect") != nullptr)) {
         out_warnp("wifi", "The last boot crashed while connecting — not retrying automatically.");
-        out_multi("  'wifi connect <ssid>' to try by hand, or 'wifi auto off' to stop.");
+        out_multi("  'wifi autoconnect' to try by hand, or 'wifi auto off' to stop.");
         log_add(LOG_K_WARN, "wifi: automatic join skipped after a crash in it");
         return;
     }
 
-    // Spawned, not called. The login prompt appears immediately and the join
-    // finishes underneath it — which is the whole point of having a scheduler.
-    // TASK_STACK_NET, not TASK_STACK_DEF. This task runs the cyw43 driver,
-    // lwIP's DHCP client and printf — the same paths the shell needs 8 KB for.
-    //
-    // Given 3 KB it overflowed, and a stack overflow does not announce itself:
-    // it writes over whatever is below, which then reads as a corrupted
-    // function pointer (a hard fault at an address that is not code), files
-    // appearing at the root with names taken from string literals, and a shell
-    // that behaves erratically in between. One cause, three symptoms that look
-    // unrelated.
-    //
-    // The guard only catches an overflow at a YIELD, and the driver can run a
-    // long way without one, so the size has to be right rather than watched.
-    if (task_spawn("wifi-join", "(kernel)", autoconnect_task, nullptr,
-                   TASK_STACK_NET, AFFINITY_ANY) >= 0) {
-        out_infop("wifi", "Looking for a saved network in the background...");
-        return;
-    }
-    // No room for a task: fall back to doing it inline rather than not at all.
+    out_infop("wifi", "Looking for a saved network...");
     net_autoconnect_now();
 }
 
 void net_autoconnect_now(void) {
     if (strcmp(reg_get("WiFi.Auto", "false"), "true") != 0) return;
-
-    char k[REG_KEY_MAX];
-    int slot = -1;
-    const char *last = reg_get("WiFi.Active", "");
-    if (last[0]) slot = saved_find(last);
-    if (slot < 0) {
-        for (int i = 0; i < NET_SAVED; i++) {
-            saved_key(i, "SSID", k, sizeof(k));
-            const char *v = reg_get(k, nullptr);
-            if (v && v[0]) { slot = i; break; }
-        }
-    }
-    if (slot < 0) return;
-
-    char ssid[33], pw[REG_VAL_MAX];
-    saved_key(slot, "SSID", k, sizeof(k)); snprintf(ssid, sizeof(ssid), "%s", reg_get(k, ""));
-    saved_key(slot, "PW",   k, sizeof(k)); snprintf(pw, sizeof(pw), "%s", reg_get(k, ""));
-    if (!ssid[0]) return;
-
-    wifi_connect(ssid, pw);      // reports its own success or failure
+    // Scan, then join the strongest SAVED network that is actually in range.
+    // Quiet: joining the network it was told to join is not news, and
+    // wifi_autoconnect reports it itself when nothing is found.
+    wifi_autoconnect(/*quiet*/true, /*persist*/true);
 }
 
 // --- first-run helper -------------------------------------------------------

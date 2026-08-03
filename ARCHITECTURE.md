@@ -251,6 +251,40 @@ suite rather than a package, it targets one board, and it is the piece most
 likely to want ABI additions — all of which argue for doing it last, on a stable
 base, rather than discovering the requirements through it.
 
+## Networking cannot be split across tasks yet
+
+Worth writing down, because it cost a whole evening and the answer was
+structural rather than a bug.
+
+Moving the boot WiFi join to its own task, so the login prompt did not wait on
+it, produced four different hard faults in a row — a bad data address, a null
+call, corrupted registry values, a boot loop. Each looked like its own bug and
+each fix revealed the next.
+
+The cause is that **`cyw43_arch_lwip_begin` blocks the core.** It takes a mutex
+by spinning, which is correct under a preemptive RTOS where the holder keeps
+running on another thread. Under COOPERATIVE scheduling a task that blocks the
+core on a lock held by another task on that core has stopped the only thing that
+could release it. The watchdog then cleans up from wherever it happened to be,
+which is why the symptom differed every time.
+
+So: **one task, and only one, may touch cyw43 or lwIP.** Today that is whichever
+task ran the command, and every network operation is therefore synchronous.
+
+The real fix is a network task that owns every driver and lwIP call, with other
+tasks posting requests to it and waiting on a result. That also gives background
+downloads and a non-blocking join for free. It is not large, but it is not
+something to bolt on at the end of an evening either.
+
+Until then, two rules:
+
+- No task other than the caller touches the network. A background join, a
+  background download, a service that polls a socket — all of them need the
+  network task first.
+- Every cyw43 and lwIP call still needs `cyw43_arch_lwip_begin`/`end`, because
+  the driver's own interrupt shares those structures. That part was missing
+  entirely and is now in place.
+
 ## The order
 
 1. ~~Finish the current reliability pass~~ — the loader fix landed; `bench` runs
