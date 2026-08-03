@@ -36,13 +36,17 @@ int main(void) {
     // the shell was up, which left the whole boot — including mounting a
     // possibly-corrupt filesystem — with nothing watching it. A hang there was
     // permanent.
+    // bb_init FIRST. It lives in memory that survives a reset, so until it has
+    // snapshotted and cleared the previous run its timestamps belong to a boot
+    // that no longer exists — and anything reading them in between is reading
+    // the future.
+    bb_init();
     task_watchdog_start();
 
     task_init("shell");
     // Before the banner: anything the boot logs should land in the ring, and a
     // ring that survived a warm reboot holds the reason for it.
     bool prior = log_init();
-    bb_init();
 
     banner_print();
     if (prior) out_warnp("Boot", "The device restarted. 'logdump' shows what led up to it.");

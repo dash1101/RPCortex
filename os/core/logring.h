@@ -43,6 +43,11 @@ void           log_clear(void);
 // rather than quietly presenting a partial history as a complete one.
 uint32_t log_dropped(void);
 
+// How many boots this ring has seen. Timestamps are milliseconds since the
+// CURRENT boot, so a dump spanning a restart needs the marker log_init writes to
+// be readable at all.
+uint32_t log_boot_count(void);
+
 // Prepare the ring. Checks the magic first: if it survived a warm reboot the
 // contents are kept, so the run-up to a crash is readable after the restart.
 // Returns true when previous contents were found.

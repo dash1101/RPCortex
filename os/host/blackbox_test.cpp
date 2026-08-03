@@ -64,6 +64,17 @@ int main(void) {
     bb_init();
     ck(bb_stall_ms(500000) == 0, "no stall reported before the first yield");
 
+    // A clock that has gone BACKWARDS. This is the real case, not a hypothetical:
+    // the struct survives a reset, so after a watchdog reboot it holds a
+    // timestamp from the previous run while the clock has restarted near zero.
+    // The unsigned subtraction wrapped to ~4.29 billion — read as a 49-day stall,
+    // which tripped every escalation stage instantly and forever.
+    bb_note_yield(16000);
+    ck(bb_stall_ms(3) == 0, "a clock that restarted reports no stall, not 49 days");
+    ck(bb_stall_ms(15999) == 0, "one millisecond behind is still no stall");
+    ck(bb_stall_ms(16000) == 0, "equal timestamps are no stall");
+    ck(bb_stall_ms(16500) == 500, "and forwards still measures correctly");
+
     printf("  blackbox: %d checks, %d failed\n", checks, fails);
     return fails ? 1 : 0;
 }

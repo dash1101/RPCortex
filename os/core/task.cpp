@@ -226,6 +226,19 @@ static void reschedule(TaskState park_as) {
     // had already yielded 812 times".
     bb_note_yield(task_now_ms());
 
+    // Record WHO is running on every pass, not only on a context switch.
+    //
+    // Recording it at the switch alone meant the shell was never recorded: pid 1
+    // is usually the only runnable task, so reschedule takes an early return and
+    // never switches to it. A hang at the login prompt therefore left the black
+    // box empty — which is exactly what happened, and left a crash report with
+    // nothing in it.
+    if (core == 0) {
+        const Task *now = cur();
+        if (now) bb_note_task(now->info.pid, (uint8_t)core, now->info.name,
+                              now->info.stack_used, now->info.stack_size);
+    }
+
     lock_hw_enter();
     Task *me = cur();
 

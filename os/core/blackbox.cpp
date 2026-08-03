@@ -53,5 +53,14 @@ void bb_note_yield(uint32_t now_ms) {
 
 uint32_t bb_stall_ms(uint32_t now_ms) {
     if (g_bb.magic != BB_MAGIC || g_bb.last_yield_ms == 0) return 0;
-    return now_ms - g_bb.last_yield_ms;
+    // Signed difference, then clamp.
+    //
+    // This struct survives a reset, so after a watchdog reboot last_yield_ms
+    // holds a timestamp from the PREVIOUS run — say 16000 — while task_now_ms
+    // has restarted near zero. The unsigned subtraction wrapped to about 4.29
+    // billion, which read as a 49-day stall and tripped every escalation stage
+    // instantly, forever. A clock that has gone backwards means "no stall
+    // measurable", not "the longest stall imaginable".
+    int32_t d = (int32_t)(now_ms - g_bb.last_yield_ms);
+    return d > 0 ? (uint32_t)d : 0;
 }

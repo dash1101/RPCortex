@@ -23,6 +23,7 @@ struct LogRing {
     uint32_t head;        // next slot to write
     uint32_t count;       // lines held, up to LOG_LINES
     uint32_t dropped;
+    uint32_t boot;        // how many times this ring has survived a restart
     LogLine  line[LOG_LINES];
 };
 
@@ -32,11 +33,23 @@ bool log_init(void) {
     bool survived = (g_ring.magic == LOG_MAGIC &&
                      g_ring.head < LOG_LINES &&
                      g_ring.count <= LOG_LINES);
-    if (survived) return true;
-    memset(&g_ring, 0, sizeof(g_ring));
-    g_ring.magic = LOG_MAGIC;
-    return false;
+    if (!survived) {
+        memset(&g_ring, 0, sizeof(g_ring));
+        g_ring.magic = LOG_MAGIC;
+        g_ring.boot  = 0;
+    }
+    g_ring.boot++;
+
+    // A marker between runs. Timestamps are milliseconds since THIS boot, so
+    // without one a dump of two runs looks like time going backwards halfway
+    // down — which is precisely how it read.
+    char line[LOG_LINE_MAX];
+    snprintf(line, sizeof(line), "──── boot #%u ────", (unsigned)g_ring.boot);
+    log_add(LOG_K_BOOT, line);
+    return survived;
 }
+
+uint32_t log_boot_count(void) { return g_ring.boot; }
 
 void log_add(LogKind kind, const char *text) {
     if (g_ring.magic != LOG_MAGIC) log_init();     // usable before log_init runs
