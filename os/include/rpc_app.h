@@ -23,7 +23,7 @@ extern "C" {
 // MINOR: a symbol added — older-minor apps still run (everything they want is
 //        present); newer-minor apps refused (they may want something absent).
 #define RPC_API_MAJOR 1
-#define RPC_API_MINOR 6
+#define RPC_API_MINOR 7
 
 typedef struct {
     uint32_t magic;          // RPC_APP_MAGIC
@@ -202,6 +202,90 @@ int      fw_i2c_deinit(unsigned bus);
 // loses the reading.
 uint32_t fw_micros(void);
 void     fw_busy_wait_us(uint32_t us);
+
+// --- PIO --------------------------------------------------------------------
+//
+// Added at 1.7, and the reason is timing. fw_busy_wait_us measures accurate to
+// about a microsecond on a quiet device, which is fine for anything with tens
+// of microseconds of tolerance and nowhere near enough for WS2812 (150 ns) or a
+// fast display. The difference is not precision of the loop, it is that a CPU
+// loop can be interrupted and a state machine cannot.
+//
+// A PIO program runs on its own hardware at up to the system clock, cycle
+// exact, and carries on regardless of what the scheduler, the USB stack or the
+// radio are doing. That is the only way this OS can promise steady output while
+// it is also doing everything else.
+//
+// Programs arrive as ASSEMBLED 16-bit words. There is no assembler on the
+// device — the encoders below build the words, so a package's program is
+// readable in source and costs nothing at runtime.
+
+#define FW_PIO_MAX_PROGRAM 32
+
+// Shift direction for the input and output registers.
+#define FW_PIO_SHIFT_LEFT   0
+#define FW_PIO_SHIFT_RIGHT  1
+
+// Claim a state machine. Returns a handle, or -1 when they are all in use —
+// there are 8 on RP2040 and 12 on RP2350, shared between every package, so a
+// package that takes one and never gives it back starves the rest.
+int  fw_pio_claim(void);
+void fw_pio_release(int h);
+
+// Load `len` assembled words. `wrap` and `wrap_target` are instruction offsets:
+// execution runs to `wrap` then jumps back to `wrap_target`, which is how a PIO
+// program loops without spending an instruction on a jump.
+int  fw_pio_load(int h, const unsigned short *prog, unsigned len,
+                 unsigned wrap_target, unsigned wrap);
+
+// `clk_div_x256` is the divider in 24.8 fixed point: 256 is full speed, 512 is
+// half. Fixed point rather than a float so the ABI carries no floating-point
+// calling convention, which differs between the two chips.
+int  fw_pio_config_pins(int h, unsigned out_base, unsigned out_count,
+                        unsigned set_base, unsigned set_count,
+                        unsigned sideset_base, unsigned sideset_count);
+int  fw_pio_config_shift(int h, int out_shift_dir, int autopull, unsigned pull_threshold);
+int  fw_pio_config_clock(int h, unsigned clk_div_x256);
+
+int  fw_pio_start(int h);
+void fw_pio_stop(int h);
+
+// FIFO. put returns 0 when the word was accepted, -1 if the queue stayed full
+// for `timeout_us`. get returns 1 on a word, 0 on nothing, -1 on a bad handle.
+int  fw_pio_put(int h, unsigned long value, unsigned timeout_us);
+int  fw_pio_get(int h, unsigned long *out, unsigned timeout_us);
+
+// How many state machines exist, and how many are still free.
+unsigned fw_pio_count(void);
+unsigned fw_pio_free(void);
+
+// --- instruction encoders ---------------------------------------------------
+//
+// Header-only, so they cost no ABI surface and a package can build its program
+// at compile time. `delay` is the cycles to idle after the instruction, which
+// is where most of a PIO program's timing actually lives.
+
+#define FW_PIO_DELAY(d)          (((d) & 0x1f) << 8)
+
+// SET dst, value  — dst: 0 pins, 1 x, 2 y, 4 pindirs
+#define FW_PIO_SET(dst, val, delay) \
+    ((unsigned short)(0xe000u | FW_PIO_DELAY(delay) | (((dst) & 7) << 5) | ((val) & 0x1f)))
+
+// JMP cond, addr  — cond: 0 always, 1 !x, 2 x--, 3 !y, 4 y--, 5 x!=y, 6 pin, 7 !osre
+#define FW_PIO_JMP(cond, addr, delay) \
+    ((unsigned short)(0x0000u | FW_PIO_DELAY(delay) | (((cond) & 7) << 5) | ((addr) & 0x1f)))
+
+// OUT dst, count  — dst: 0 pins, 1 x, 2 y, 3 null, 4 pindirs, 5 pc, 6 isr, 7 exec
+#define FW_PIO_OUT(dst, count, delay) \
+    ((unsigned short)(0x6000u | FW_PIO_DELAY(delay) | (((dst) & 7) << 5) | ((count) & 0x1f)))
+
+// IN src, count   — src: 0 pins, 1 x, 2 y, 3 null, 6 isr, 7 osr
+#define FW_PIO_IN(src, count, delay) \
+    ((unsigned short)(0x4000u | FW_PIO_DELAY(delay) | (((src) & 7) << 5) | ((count) & 0x1f)))
+
+// NOP is MOV y, y — the idiom PIO uses, since it has no dedicated encoding.
+#define FW_PIO_NOP(delay) \
+    ((unsigned short)(0xa000u | FW_PIO_DELAY(delay) | (2 << 5) | 2))
 
 uint32_t fw_heap_free(void);
 uint32_t fw_heap_total(void);

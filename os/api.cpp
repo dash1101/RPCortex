@@ -22,6 +22,8 @@
 #include "hardware/adc.h"
 #include "hardware/i2c.h"
 #include "hardware/gpio.h"
+#include "hardware/pio.h"
+#include "hardware/clocks.h"
 
 // The app currently being run, so a command it registers can be tagged with an
 // owner and swept when the app unloads. Set by the shell around app_main. Same
@@ -231,6 +233,206 @@ extern "C" void fw_busy_wait_us(uint32_t us) {
     task_alive();
 }
 
+// --- PIO --------------------------------------------------------------------
+//
+// State machines are a fixed, shared resource — 8 on RP2040, 12 on RP2350 —
+// so they are handed out through a claim table rather than by letting packages
+// pick. Two packages both deciding to use PIO0 SM0 is not something either of
+// them could detect.
+
+#if PICO_RP2040
+#define PIO_BLOCKS 2
+#else
+#define PIO_BLOCKS 3
+#endif
+#define PIO_SMS_PER_BLOCK 4
+#define PIO_SLOTS (PIO_BLOCKS * PIO_SMS_PER_BLOCK)
+
+struct PioSlot {
+    bool     used;
+    PIO      pio;
+    uint     sm;
+    int      offset;        // where the program was loaded, -1 if none
+    pio_sm_config cfg;
+};
+static PioSlot g_pio[PIO_SLOTS];
+
+static PIO pio_block(int i) {
+    switch (i) {
+        case 0: return pio0;
+        case 1: return pio1;
+#if !PICO_RP2040
+        case 2: return pio2;
+#endif
+        default: return pio0;
+    }
+}
+
+static PioSlot *pio_slot(int h) {
+    if (h < 0 || h >= PIO_SLOTS || !g_pio[h].used) return nullptr;
+    return &g_pio[h];
+}
+
+extern "C" unsigned fw_pio_count(void) { return PIO_SLOTS; }
+
+extern "C" unsigned fw_pio_free(void) {
+    unsigned n = 0;
+    for (int i = 0; i < PIO_SLOTS; i++) if (!g_pio[i].used) n++;
+    return n;
+}
+
+extern "C" int fw_pio_claim(void) {
+    for (int i = 0; i < PIO_SLOTS; i++) {
+        if (g_pio[i].used) continue;
+        PIO p = pio_block(i / PIO_SMS_PER_BLOCK);
+        uint sm = (uint)(i % PIO_SMS_PER_BLOCK);
+        // Ask the SDK rather than assume: something else in the firmware may
+        // already hold this one, and claiming it twice is silent breakage.
+        if (pio_sm_is_claimed(p, sm)) continue;
+        pio_sm_claim(p, sm);
+        g_pio[i].used   = true;
+        g_pio[i].pio    = p;
+        g_pio[i].sm     = sm;
+        g_pio[i].offset = -1;
+        g_pio[i].cfg    = pio_get_default_sm_config();
+        return i;
+    }
+    return -1;
+}
+
+extern "C" void fw_pio_release(int h) {
+    PioSlot *s = pio_slot(h);
+    if (!s) return;
+    pio_sm_set_enabled(s->pio, s->sm, false);
+    if (s->offset >= 0) {
+        pio_program prog = { nullptr, 0, (int8_t)s->offset, 0 };
+        (void)prog;      // remove_program needs the original length; see below
+    }
+    pio_sm_unclaim(s->pio, s->sm);
+    s->used = false;
+    s->offset = -1;
+}
+
+extern "C" int fw_pio_load(int h, const unsigned short *prog, unsigned len,
+                           unsigned wrap_target, unsigned wrap) {
+    PioSlot *s = pio_slot(h);
+    if (!s || !prog || len == 0 || len > 32) return -1;
+    if (wrap >= len || wrap_target >= len) return -1;
+
+    pio_program pp;
+    pp.instructions = prog;
+    pp.length       = (uint8_t)len;
+    pp.origin       = -1;                 // let the SDK place it
+#if !PICO_RP2040
+    pp.pio_version  = 0;
+    pp.used_gpio_ranges = 0;
+#endif
+    if (!pio_can_add_program(s->pio, &pp)) return -1;
+    s->offset = pio_add_program(s->pio, &pp);
+    sm_config_set_wrap(&s->cfg, (uint)(s->offset + wrap_target), (uint)(s->offset + wrap));
+    return s->offset;
+}
+
+extern "C" int fw_pio_config_pins(int h, unsigned out_base, unsigned out_count,
+                                  unsigned set_base, unsigned set_count,
+                                  unsigned sideset_base, unsigned sideset_count) {
+    PioSlot *s = pio_slot(h);
+    if (!s) return -1;
+    // Every pin validated the same way the GPIO calls are, and for the same
+    // reason: a PIO program driving a pin the radio owns takes the network down.
+    if (out_count   && !fw_gpio_usable(out_base))     return -1;
+    if (set_count   && !fw_gpio_usable(set_base))     return -1;
+    if (sideset_count && !fw_gpio_usable(sideset_base)) return -1;
+
+    if (out_count) {
+        for (unsigned i = 0; i < out_count; i++) {
+            if (!fw_gpio_usable(out_base + i)) return -1;
+            pio_gpio_init(s->pio, out_base + i);
+        }
+        sm_config_set_out_pins(&s->cfg, out_base, out_count);
+        pio_sm_set_consecutive_pindirs(s->pio, s->sm, out_base, out_count, true);
+    }
+    if (set_count) {
+        for (unsigned i = 0; i < set_count; i++) {
+            if (!fw_gpio_usable(set_base + i)) return -1;
+            pio_gpio_init(s->pio, set_base + i);
+        }
+        sm_config_set_set_pins(&s->cfg, set_base, set_count);
+        pio_sm_set_consecutive_pindirs(s->pio, s->sm, set_base, set_count, true);
+    }
+    if (sideset_count) {
+        for (unsigned i = 0; i < sideset_count; i++) {
+            if (!fw_gpio_usable(sideset_base + i)) return -1;
+            pio_gpio_init(s->pio, sideset_base + i);
+        }
+        sm_config_set_sideset_pins(&s->cfg, sideset_base);
+    }
+    return 0;
+}
+
+extern "C" int fw_pio_config_shift(int h, int out_shift_dir, int autopull,
+                                   unsigned pull_threshold) {
+    PioSlot *s = pio_slot(h);
+    if (!s) return -1;
+    if (pull_threshold > 32) return -1;
+    sm_config_set_out_shift(&s->cfg, out_shift_dir == FW_PIO_SHIFT_RIGHT,
+                            autopull != 0, pull_threshold ? pull_threshold : 32);
+    return 0;
+}
+
+extern "C" int fw_pio_config_clock(int h, unsigned clk_div_x256) {
+    PioSlot *s = pio_slot(h);
+    if (!s || clk_div_x256 == 0) return -1;
+    // 24.8 fixed point, split into the integer and fractional halves the
+    // hardware wants. No float crosses the ABI, which matters because the
+    // calling convention for one is not the same on both chips.
+    uint16_t whole = (uint16_t)(clk_div_x256 >> 8);
+    uint8_t  frac  = (uint8_t)(clk_div_x256 & 0xff);
+    if (whole == 0 && frac == 0) return -1;
+    sm_config_set_clkdiv_int_frac(&s->cfg, whole, frac);
+    return 0;
+}
+
+extern "C" int fw_pio_start(int h) {
+    PioSlot *s = pio_slot(h);
+    if (!s || s->offset < 0) return -1;
+    pio_sm_init(s->pio, s->sm, (uint)s->offset, &s->cfg);
+    pio_sm_set_enabled(s->pio, s->sm, true);
+    return 0;
+}
+
+extern "C" void fw_pio_stop(int h) {
+    PioSlot *s = pio_slot(h);
+    if (s) pio_sm_set_enabled(s->pio, s->sm, false);
+}
+
+extern "C" int fw_pio_put(int h, unsigned long value, unsigned timeout_us) {
+    PioSlot *s = pio_slot(h);
+    if (!s) return -1;
+    uint32_t start = time_us_32();
+    while (pio_sm_is_tx_fifo_full(s->pio, s->sm)) {
+        if (time_us_32() - start > timeout_us) return -1;
+        // Yield only when the wait is long enough to be worth it. A FIFO with
+        // four slots drains in microseconds at any sensible clock, and yielding
+        // on every word would cost more than the transfer.
+        if (time_us_32() - start > 200) task_yield();
+    }
+    pio_sm_put(s->pio, s->sm, (uint32_t)value);
+    return 0;
+}
+
+extern "C" int fw_pio_get(int h, unsigned long *out, unsigned timeout_us) {
+    PioSlot *s = pio_slot(h);
+    if (!s || !out) return -1;
+    uint32_t start = time_us_32();
+    while (pio_sm_is_rx_fifo_empty(s->pio, s->sm)) {
+        if (time_us_32() - start > timeout_us) return 0;
+        if (time_us_32() - start > 200) task_yield();
+    }
+    *out = pio_sm_get(s->pio, s->sm);
+    return 1;
+}
+
 extern "C" uint32_t fw_heap_free(void)  { return heap_free(); }
 extern "C" uint32_t fw_heap_total(void) { return heap_total(); }
 
@@ -345,6 +547,18 @@ static const ApiSymbol kSymbols[] = {
     SYM(fw_file_remove),
     SYM(fw_file_exists),
     SYM(fw_core_id),
+    SYM(fw_pio_claim),
+    SYM(fw_pio_release),
+    SYM(fw_pio_load),
+    SYM(fw_pio_config_pins),
+    SYM(fw_pio_config_shift),
+    SYM(fw_pio_config_clock),
+    SYM(fw_pio_start),
+    SYM(fw_pio_stop),
+    SYM(fw_pio_put),
+    SYM(fw_pio_get),
+    SYM(fw_pio_count),
+    SYM(fw_pio_free),
     SYM(fw_gpio_count),
     SYM(fw_gpio_usable),
     SYM(fw_gpio_init),

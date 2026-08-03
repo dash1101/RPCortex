@@ -122,6 +122,7 @@ static void probe_hardware(void) {
     // attached: this is checking the ABI is wired through, not the bus.
     int r = fw_i2c_init(0, 4, 5, 100000);
     fw_printf("  i2c0 init (4,5)     %s\n", r == 0 ? "ok" : "refused");
+    fw_printf("  pio state machines  %u free of %u\n", fw_pio_free(), fw_pio_count());
     if (r == 0) {
         int found = 0;
         // One-byte read: a zero-length write does not generate a transaction,
@@ -133,6 +134,60 @@ static void probe_hardware(void) {
         fw_printf("  i2c0 devices        %d\n", found);
         fw_i2c_deinit(0);
     }
+}
+
+// --- jitter -----------------------------------------------------------------
+//
+// The number the whole PIO argument rests on. fw_busy_wait_us measured about
+// 1 us of error on an idle device, which is fine for anything with tens of
+// microseconds of tolerance. What it does NOT show is what happens when the
+// USB stack and the radio are also running — a CPU loop can be interrupted and
+// a state machine cannot, and that difference is invisible on a quiet board.
+//
+// So the same wait is measured twice: undisturbed, then while the device is
+// doing as much as it can be made to do from here. The spread between them is
+// the honest figure for what a bit-banged protocol has to tolerate.
+
+static int noisy(void *) {
+    // Something for the other core to be busy with. Printing is deliberate:
+    // it drags in the USB stack, which is the interrupt most likely to land
+    // in the middle of somebody's pulse.
+    for (int i = 0; i < 400 && !fw_task_should_stop(); i++) {
+        fw_printf("");
+        fw_task_yield();
+    }
+    return 0;
+}
+
+static void measure_spread(const char *label, uint32_t us) {
+    uint32_t lo = 0xffffffffu, hi = 0;
+    for (int i = 0; i < 64; i++) {
+        uint32_t t0 = fw_micros();
+        fw_busy_wait_us(us);
+        uint32_t took = fw_micros() - t0;
+        if (took < lo) lo = took;
+        if (took > hi) hi = took;
+    }
+    fw_printf("  %-18s %u us asked, %u-%u seen  (spread %u us)\n",
+              label, us, lo, hi, hi - lo);
+}
+
+static void probe_jitter(void) {
+    fw_printf("JITTER\n");
+    measure_spread("quiet, 10 us", 10);
+    measure_spread("quiet, 50 us", 50);
+
+    int pid = fw_task_spawn("probe-noise", noisy, 0, 2048);
+    if (pid < 0) {
+        fw_printf("  under load         could not spawn the load task\n");
+        return;
+    }
+    measure_spread("busy, 10 us", 10);
+    measure_spread("busy, 50 us", 50);
+    fw_task_kill(pid);
+
+    fw_printf("  A spread of a microsecond or two is fine for a DHT. Tens of\n");
+    fw_printf("  microseconds means anything tighter than that needs PIO.\n");
 }
 
 // --- memory -----------------------------------------------------------------
@@ -156,6 +211,7 @@ static int probe_cmd(int argc, char **argv) {
     probe_cores();
     probe_timing();
     probe_hardware();
+    probe_jitter();
     probe_memory();
 
     fw_printf("%s\n", RULE);
