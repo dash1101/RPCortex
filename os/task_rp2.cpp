@@ -43,6 +43,8 @@ void *task_ctx_init(void *stack_top, TaskEntry entry) {
     return sp;
 }
 
+uint32_t task_now_us(void) { return time_us_32(); }
+
 uint32_t task_now_ms(void) {
     return (uint32_t)(time_us_64() / 1000ull);
 }

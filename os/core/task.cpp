@@ -379,6 +379,24 @@ void task_alive(void) {
     if (!g_up) return;
     if (task_this_core() != 0) return;      // core 0 owns the watchdog
 
+    // Rate-limited, because this is called from EVERY ABI entry point and a
+    // package can reach several dozen of them per frame.
+    //
+    // The work below is not free — a 64-bit division for the millisecond
+    // clock, a hardware watchdog write, a stall comparison and a stack probe —
+    // and doing it sixty times a frame was the single largest cost in drawing a
+    // screen. It made a full-screen app feel slower than the interpreted
+    // version it replaced.
+    //
+    // Liveness does not need millisecond resolution. The stall threshold is
+    // three seconds; reporting progress every 25 ms is two orders of magnitude
+    // finer than anything that reads it, and turns the common case into one
+    // comparison.
+    static uint32_t last_us;
+    uint32_t now_us = task_now_us();
+    if (now_us - last_us < 25000u) return;
+    last_us = now_us;
+
     // Progress, recorded BEFORE feeding. The stall detector measures time since
     // the last recorded progress, so without this a busy package would be
     // reported as unresponsive and asked to stop while it was working

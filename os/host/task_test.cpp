@@ -76,6 +76,9 @@ extern "C" void lock_hw_exit(void)  {}
 
 static uint32_t g_now;
 uint32_t task_now_ms(void)    { return g_now; }
+// Microseconds, for the rate limit inside task_alive. Driven from the same
+// fake clock so a test that advances time advances both.
+uint32_t task_now_us(void)   { return g_now * 1000; }
 uint32_t task_core_count(void){ return 1; }
 uint32_t task_this_core(void) { return 0; }
 

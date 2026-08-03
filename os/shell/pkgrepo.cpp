@@ -27,6 +27,8 @@
 #include "sha256.h"
 #include "interrupt.h"
 #include "pkg.h"
+#include "registry.h"
+#include "persist.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -40,7 +42,12 @@ bool stock_install_cacerts(bool force);
 void http_last_detail(char *out, unsigned cap);
 bool net_is_connected(void);
 
-#define REPO_URL   "https://raw.githubusercontent.com/dash1101/RPCortex-repo/main/repo-v2/index.json"
+// The repo list lives in the registry, one URL per comma-separated entry, so
+// it survives a reboot and is editable without a filesystem format. A device
+// with none configured falls back to the official one rather than being unable
+// to install anything.
+#define REPO_KEY      "Pkg.Repos"
+#define REPO_DEFAULT  "https://raw.githubusercontent.com/dash1101/RPCortex-repo/main/repo-v2/index.json"
 #define CACHE      "/os/pkg/repo.json"
 #define TMP_PKG    "/os/pkg/.download"
 #define INDEX_MAX  16384
@@ -90,6 +97,13 @@ static bool arch_runs_here(const char *arch) {
 
 // --- helpers ----------------------------------------------------------------
 
+// Each repo's cache is its own file, so one unreachable repo does not discard
+// what the others published.
+static void cache_path(int index, char *out, size_t cap) {
+    if (index == 0) snprintf(out, cap, "%s", CACHE);
+    else            snprintf(out, cap, "/os/pkg/repo%d.json", index);
+}
+
 static char *load_cache(uint32_t *len) {
     char *buf = (char *)malloc(INDEX_MAX);
     if (!buf) return nullptr;
@@ -105,6 +119,36 @@ static bool require_index(char **buf, uint32_t *len) {
     if (*buf) return true;
     out_err("No package list. Run 'pkg update' first.");
     return false;
+}
+
+// Search every cached repo in order, so a package from the second one is found
+// as readily as one from the first. Earlier repos win a name collision, which
+// makes the list an explicit priority order rather than an accident.
+static bool find_in_any_repo(const char *name, RepoEntry *out) {
+    for (int i = 0; i < 8; i++) {
+        char path[40]; cache_path(i, path, sizeof(path));
+        char *buf = (char *)malloc(INDEX_MAX);
+        if (!buf) return false;
+        uint32_t n = storage_read_file(path, (uint8_t *)buf, INDEX_MAX - 1);
+        if (n == 0) { free(buf); continue; }
+        buf[n] = 0;
+        bool hit = repo_find(buf, n, name, out);
+        free(buf);
+        if (hit) return true;
+    }
+    return false;
+}
+
+// Walk every cached repo's entries.
+static void walk_all_repos(RepoEntryFn cb, void *ctx) {
+    for (int i = 0; i < 8; i++) {
+        char path[40]; cache_path(i, path, sizeof(path));
+        char *buf = (char *)malloc(INDEX_MAX);
+        if (!buf) return;
+        uint32_t n = storage_read_file(path, (uint8_t *)buf, INDEX_MAX - 1);
+        if (n) { buf[n] = 0; repo_walk(buf, n, cb, ctx); }
+        free(buf);
+    }
 }
 
 struct DlSink { void *fh; Sha256Ctx sha; };
@@ -190,26 +234,133 @@ static bool download(const char *url, const char *dest, char *hex_out, uint64_t 
 
 // --- subcommands ------------------------------------------------------------
 
-static int do_update(void) {
-    out_info("Fetching the package list...");
+// Walk the configured repos, calling cb for each URL.
+typedef bool (*RepoUrlFn)(void *ctx, const char *url, int index);
+
+static int repo_each(RepoUrlFn cb, void *ctx) {
+    const char *list = reg_get(REPO_KEY, REPO_DEFAULT);
+    if (!list[0]) list = REPO_DEFAULT;
+    int n = 0;
+    char url[REPO_URL_MAX];
+    for (const char *p = list; *p; ) {
+        while (*p == ' ' || *p == ',') p++;
+        if (!*p) break;
+        const char *e = strchr(p, ',');
+        size_t len = e ? (size_t)(e - p) : strlen(p);
+        while (len && p[len - 1] == ' ') len--;
+        if (len && len < sizeof(url)) {
+            memcpy(url, p, len); url[len] = 0;
+            if (cb && !cb(ctx, url, n)) return n + 1;
+            n++;
+        }
+        if (!e) break;
+        p = e + 1;
+    }
+    return n;
+}
+
+struct UpdCtx { int ok; int failed; uint32_t total; };
+
+static bool update_one(void *ctx, const char *url, int index) {
+    UpdCtx *u = (UpdCtx *)ctx;
+    char path[40]; cache_path(index, path, sizeof(path));
+
+    out_info("%s", url);
     char hex[65]; uint64_t n = 0;
-    if (!download(REPO_URL, CACHE, hex, &n)) return 1;
+    if (!download(url, path, hex, &n)) { u->failed++; return true; }
 
     uint32_t len = 0;
-    char *buf = load_cache(&len);
-    if (!buf) { out_err("The package list did not save."); return 1; }
-    uint32_t count = repo_walk(buf, len, nullptr, nullptr);
+    char *buf = (char *)malloc(INDEX_MAX);
+    uint32_t got = buf ? storage_read_file(path, (uint8_t *)buf, INDEX_MAX - 1) : 0;
+    if (buf) buf[got] = 0;
+    len = got;
+    uint32_t count = buf ? repo_walk(buf, len, nullptr, nullptr) : 0;
     free(buf);
 
     if (count == 0) {
-        // Saving an unreadable list would make every later command fail with a
+        // Keeping an unreadable list would make every later command fail with a
         // confusing "not found" instead of pointing here.
-        storage_remove(CACHE);
-        out_err("The package list could not be read. Nothing cached.");
-        return 1;
+        storage_remove(path);
+        out_warn("  nothing readable at this repo");
+        u->failed++;
+        return true;
     }
-    out_ok("%lu package%s available.", (unsigned long)count, count == 1 ? "" : "s");
+    out_ok("  %lu package%s", (unsigned long)count, count == 1 ? "" : "s");
+    u->ok++;
+    u->total += count;
+    return true;
+}
+
+static int do_update(void) {
+    out_info("Fetching package lists...");
+    UpdCtx u{0, 0, 0};
+    repo_each(update_one, &u);
+
+    if (u.ok == 0) { out_err("No package list could be fetched."); return 1; }
+    out_ok("%lu package%s from %d repo%s.%s", (unsigned long)u.total,
+           u.total == 1 ? "" : "s", u.ok, u.ok == 1 ? "" : "s",
+           u.failed ? "  Some repos failed." : "");
     return 0;
+}
+
+// --- repo management --------------------------------------------------------
+
+static bool print_repo(void *, const char *url, int index) {
+    out_multi("  %d. %s", index + 1, url);
+    return true;
+}
+
+static int do_repo(int argc, char **argv) {
+    if (argc < 3 || !strcmp(argv[2], "list")) {
+        out_info("Package repositories:");
+        if (repo_each(print_repo, nullptr) == 0) out_multi("  (none)");
+        out_multi("  'pkg repo add <url>' / 'pkg repo remove <url|number>'");
+        return 0;
+    }
+
+    const char *list = reg_get(REPO_KEY, REPO_DEFAULT);
+    char buf[REG_VAL_MAX];
+
+    if (!strcmp(argv[2], "add")) {
+        if (argc < 4) { out_multi("Usage: pkg repo add <url>"); return 1; }
+        if (strncmp(argv[3], "http://", 7) && strncmp(argv[3], "https://", 8)) {
+            out_err("A repo URL must begin with http:// or https://");
+            return 1;
+        }
+        if (strstr(list, argv[3])) { out_ok("Already listed."); return 0; }
+        int n = snprintf(buf, sizeof(buf), "%s%s%s", list, list[0] ? "," : "", argv[3]);
+        if (n < 0 || (unsigned)n >= sizeof(buf)) {
+            out_err("The repo list is full. Remove one first.");
+            return 1;
+        }
+        reg_set(REPO_KEY, buf);
+        persist_save_registry();
+        out_ok("Added. Run 'pkg update' to fetch it.");
+        return 0;
+    }
+
+    if (!strcmp(argv[2], "remove")) {
+        if (argc < 4) { out_multi("Usage: pkg repo remove <url|number>"); return 1; }
+        // A number, because typing a full URL to delete it is unkind.
+        int want = atoi(argv[3]);
+        char work[REG_VAL_MAX]; snprintf(work, sizeof(work), "%s", list);
+        buf[0] = 0;
+        int i = 0, removed = 0;
+        for (char *p = strtok(work, ","); p; p = strtok(nullptr, ",")) {
+            i++;
+            if ((want > 0 && i == want) || !strcmp(p, argv[3])) { removed++; continue; }
+            if (buf[0]) strncat(buf, ",", sizeof(buf) - strlen(buf) - 1);
+            strncat(buf, p, sizeof(buf) - strlen(buf) - 1);
+        }
+        if (!removed) { out_err("No such repo."); return 1; }
+        reg_set(REPO_KEY, buf);
+        persist_save_registry();
+        out_ok("Removed.");
+        return 0;
+    }
+
+    out_multi("Usage: pkg repo list | add <url> | remove <url|number>");
+    return 1;
 }
 
 struct ListCtx { const char *q; int shown; };
@@ -234,10 +385,10 @@ static bool list_cb(void *ctx, const RepoEntry *e) {
 static int do_search(const char *query) {
     char *buf; uint32_t len;
     if (!require_index(&buf, &len)) return 1;
+    free(buf);                       // only needed to prove a list exists
     ListCtx c{query, 0};
     out_info(query ? "Matching packages:" : "Available packages:");
-    repo_walk(buf, len, list_cb, &c);
-    free(buf);
+    walk_all_repos(list_cb, &c);
     if (!c.shown) { out_warn("Nothing matched '%s'.", query ? query : ""); return 1; }
     return 0;
 }
@@ -245,10 +396,9 @@ static int do_search(const char *query) {
 static int do_info(const char *name) {
     char *buf; uint32_t len;
     if (!require_index(&buf, &len)) return 1;
-    RepoEntry e;
-    bool hit = repo_find(buf, len, name, &e);
     free(buf);
-    if (!hit) { out_err("No package called '%s'.", name); return 1; }
+    RepoEntry e;
+    if (!find_in_any_repo(name, &e)) { out_err("No package called '%s'.", name); return 1; }
 
     out_info("%s %s", e.name, e.ver);
     if (e.desc[0])   out_multi("  %s", e.desc);
@@ -271,10 +421,9 @@ static int do_info(const char *name) {
 static int do_install(const char *name) {
     char *buf; uint32_t len;
     if (!require_index(&buf, &len)) return 1;
-    RepoEntry e;
-    bool hit = repo_find(buf, len, name, &e);
     free(buf);
-    if (!hit) {
+    RepoEntry e;
+    if (!find_in_any_repo(name, &e)) {
         out_err("No package called '%s'.", name);
         out_multi("  'pkg search' lists what is available.");
         return 1;
@@ -338,9 +487,9 @@ static bool upgrade_cb(void *ctx, const RepoEntry *e) {
 static int do_upgrade(void) {
     char *buf; uint32_t len;
     if (!require_index(&buf, &len)) return 1;
-    UpCtx u{0, 0, 0};
-    repo_walk(buf, len, upgrade_cb, &u);
     free(buf);
+    UpCtx u{0, 0, 0};
+    walk_all_repos(upgrade_cb, &u);
     if (!u.found) { out_ok("Everything is up to date."); return 0; }
     out_ok("%d upgraded, %d failed.", u.done, u.failed);
     return u.failed ? 1 : 0;
@@ -379,6 +528,7 @@ static int do_certs(int argc, char **argv) {
 int pkg_repo_command(int argc, char **argv) {
     const char *sub = argv[1];
     if (!strcmp(sub, "certs")) return do_certs(argc, argv);
+    if (!strcmp(sub, "repo"))  return do_repo(argc, argv);
     if (!strcmp(sub, "update"))  return do_update();
     if (!strcmp(sub, "search"))  return do_search(argc >= 3 ? argv[2] : nullptr);
     if (!strcmp(sub, "upgrade")) return do_upgrade();

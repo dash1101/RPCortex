@@ -175,6 +175,12 @@ void  task_ctx_switch(void **save_sp, void *to_sp);
 // Milliseconds since boot, for sleep deadlines and CPU accounting.
 uint32_t task_now_ms(void);
 
+// Microseconds since boot, 32-bit and wrapping every ~71 minutes. For rate
+// limiting only, where a wrap costs one early call and nothing else. It exists
+// because task_now_ms needs a 64-bit division, which is far too expensive for
+// something on the hot path of every ABI call.
+uint32_t task_now_us(void);
+
 // How many cores the scheduler may use. 1 on a single-core part, or when
 // multicore is disabled. Called once by task_init.
 uint32_t task_core_count(void);

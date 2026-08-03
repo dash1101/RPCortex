@@ -55,6 +55,9 @@ void lock_hw_enter(void) {}
 unsigned lock_hw_core(void) { return 0; }
 void lock_hw_exit(void)  {}
 uint32_t task_now_ms(void)     { return 0; }
+// Microseconds, for the rate limit inside task_alive. Driven from the same
+// fake clock so a test that advances time advances both.
+uint32_t task_now_us(void)    { return 0; }
 uint32_t task_core_count(void) { return 1; }
 uint32_t task_this_core(void)  { return 0; }
 

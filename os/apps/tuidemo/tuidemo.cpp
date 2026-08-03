@@ -89,6 +89,12 @@ static int cmd_tuidemo(int, char **) {
     list.rows = h - 6;
     if (list.rows < 1) list.rows = 1;
 
+    // Measured, not guessed. A number on screen settles "is it fast now"
+    // without anyone having to describe how it feels.
+    unsigned frames = 0, fps = 0;
+    unsigned fps_at = fw_millis();
+    unsigned draw_ms = 0;
+
     int running = 1;
     int dirty = 1;                 // draw the first frame, then only on change
     while (running) {
@@ -97,6 +103,7 @@ static int cmd_tuidemo(int, char **) {
         // difference between responsive and not.
         if (dirty) {
         dirty = 0;
+        unsigned t0 = fw_millis();
 
         // --- draw -----------------------------------------------------------
         fw_tui_clear();
@@ -138,10 +145,27 @@ static int cmd_tuidemo(int, char **) {
         str_append(status, last_event);
         fw_tui_fill(0, h - 1, w, 1, ' ', FW_ATTR_REVERSE, 0);
         fw_tui_text(0, h - 1, status, FW_ATTR_REVERSE, 0);
-        fw_tui_text(w - 12, h - 1, "q to quit", FW_ATTR_REVERSE, 0);
+        // Frames drawn in the last second, and how long the last one took.
+        char perf[40];
+        char n2[12];
+        str_copy(perf, "");
+        num_to_str(fps, n2);   str_append(perf, n2); str_append(perf, " fps  ");
+        num_to_str(draw_ms, n2); str_append(perf, n2); str_append(perf, " ms   q quits");
+        fw_tui_text(w - 26, h - 1, perf, FW_ATTR_REVERSE, 0);
 
         fw_tui_present();
+        draw_ms = fw_millis() - t0;
+        frames++;
         }   // if (dirty)
+
+        // Once a second, so the figure is readable rather than flickering.
+        unsigned now = fw_millis();
+        if (now - fps_at >= 1000) {
+            fps = frames;
+            frames = 0;
+            fps_at = now;
+            dirty = 1;
+        }
 
         // --- input ----------------------------------------------------------
         FwTuiEvent e;
