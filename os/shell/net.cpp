@@ -24,6 +24,7 @@
 #include "interrupt.h"
 #include "task.h"
 #include "logring.h"
+#include "blackbox.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -35,11 +36,31 @@
 // testing it here silently compiles the "no hardware" stub onto a Pico W.
 #if defined(RPC_HAS_WIFI) && RPC_HAS_WIFI
 
+
 #include "pico/cyw43_arch.h"
 #include "pico/stdlib.h"
 #include "lwip/netif.h"
 #include "lwip/ip4_addr.h"
 #include "lwip/dns.h"
+
+// Every cyw43 and lwIP call has to hold this.
+//
+// The driver runs in threadsafe_background mode: its work happens in an
+// interrupt that can preempt at any instruction, and lwIP's structures are
+// shared with it. Reading netif_ip4_addr while DHCP is halfway through
+// replacing it returns a pointer that was valid a moment ago and is not now —
+// which faults as a bad data address somewhere that looks unrelated.
+//
+// This file had NO locking at all. That survived while only the shell touched
+// the network, because one caller plus an interrupt is a narrow window. Giving
+// the boot join its own task widened it to two callers and it started faulting
+// within seconds of associating.
+//
+// Scoped, so no early return can take the lock and forget to give it back.
+struct NetLock {
+    NetLock()  { cyw43_arch_lwip_begin(); }
+    ~NetLock() { cyw43_arch_lwip_end(); }
+};
 
 #define NET_SAVED     4        // saved networks, registry-backed
 #define SCAN_MAX     24        // networks reported by one scan
@@ -146,15 +167,30 @@ static int wifi_status(void) {
         out_multi("  Use 'wifi scan' or 'wifi connect <ssid>' to bring it up.");
         return 0;
     }
-    int st = cyw43_tcpip_link_status(&cyw43_state, CYW43_ITF_STA);
+    int st;
+    { NetLock _l; st = cyw43_tcpip_link_status(&cyw43_state, CYW43_ITF_STA); }
     out_multi("  Radio  : on");
     out_multi("  Link   : %s%s%s",
               st == CYW43_LINK_UP ? C_CYAN : C_WARN, link_text(st), C_RESET);
     out_multi("  Network: %s", reg_get("WiFi.Active", "(none)"));
-    if (netif_default && netif_is_up(netif_default)) {
-        out_multi("  Address: %s", ip4addr_ntoa(netif_ip4_addr(netif_default)));
-        out_multi("  Gateway: %s", ip4addr_ntoa(netif_ip4_gw(netif_default)));
-        out_multi("  Netmask: %s", ip4addr_ntoa(netif_ip4_netmask(netif_default)));
+    // Copied out under the lock, then printed. Printing while holding it would
+    // keep the driver waiting for a serial line, and formatting straight from
+    // netif fields lets DHCP change them mid-sentence.
+    char addr[20] = "", gw[20] = "", mask[20] = "";
+    bool up = false;
+    {
+        NetLock _l;
+        up = netif_default && netif_is_up(netif_default);
+        if (up) {
+            snprintf(addr, sizeof(addr), "%s", ip4addr_ntoa(netif_ip4_addr(netif_default)));
+            snprintf(gw,   sizeof(gw),   "%s", ip4addr_ntoa(netif_ip4_gw(netif_default)));
+            snprintf(mask, sizeof(mask), "%s", ip4addr_ntoa(netif_ip4_netmask(netif_default)));
+        }
+    }
+    if (up) {
+        out_multi("  Address: %s", addr);
+        out_multi("  Gateway: %s", gw);
+        out_multi("  Netmask: %s", mask);
     }
     return 0;
 }
@@ -303,12 +339,14 @@ static int wifi_connect(const char *ssid, const char *pw, bool quiet) {
     // routinely several seconds and can be the full timeout. Nothing reaches
     // the scheduler in that window, so nothing feeds the watchdog, and it
     // reported the shell as unresponsive during an entirely normal WiFi setup.
-    int rc = cyw43_arch_wifi_connect_async(ssid, (pw && pw[0]) ? pw : nullptr, auth);
+    int rc;
+    { NetLock _l; rc = cyw43_arch_wifi_connect_async(ssid, (pw && pw[0]) ? pw : nullptr, auth); }
     if (rc == 0) {
         absolute_time_t deadline = make_timeout_time_ms(JOIN_TIMEOUT);
         rc = -1;
         while (true) {
-            int st = cyw43_tcpip_link_status(&cyw43_state, CYW43_ITF_STA);
+            int st;
+            { NetLock _l; st = cyw43_tcpip_link_status(&cyw43_state, CYW43_ITF_STA); }
             if (st == CYW43_LINK_UP) { rc = 0; break; }
             if (st < 0) break;                       // failed or auth rejected
             if (absolute_time_diff_us(get_absolute_time(), deadline) < 0) break;
@@ -317,7 +355,8 @@ static int wifi_connect(const char *ssid, const char *pw, bool quiet) {
         }
     }
     if (rc != 0) {
-        int st = cyw43_tcpip_link_status(&cyw43_state, CYW43_ITF_STA);
+        int st;
+        { NetLock _l; st = cyw43_tcpip_link_status(&cyw43_state, CYW43_ITF_STA); }
         if (!quiet) out_err("Could not connect to '%s' — %s.", ssid, link_text(st));
         return 1;
     }
@@ -325,7 +364,9 @@ static int wifi_connect(const char *ssid, const char *pw, bool quiet) {
     saved_put(ssid, pw);
     if (!quiet) {
         out_ok("Connected to '%s'.", ssid);
-        if (netif_default) out_multi("  Address: %s", ip4addr_ntoa(netif_ip4_addr(netif_default)));
+        char a[20] = "";
+        { NetLock _l; if (netif_default) snprintf(a, sizeof(a), "%s", ip4addr_ntoa(netif_ip4_addr(netif_default))); }
+        if (a[0]) out_multi("  Address: %s", a);
     }
     return 0;
 }
@@ -408,6 +449,23 @@ static int autoconnect_task(void *) {
 void net_autoconnect(void) {
     if (strcmp(reg_get("WiFi.Auto", "false"), "true") != 0) return;
 
+    // If the LAST run died in this task, do not start it again.
+    //
+    // Without this a fault during the join is a boot loop: the watchdog
+    // reboots, autoconnect runs, it faults at the same point, forever — and the
+    // device is unusable rather than merely offline. One skipped join costs a
+    // manual `wifi connect`; a boot loop costs the whole device.
+    //
+    // Deliberately only skips the automatic attempt. Connecting by hand still
+    // works, which is what someone will try first.
+    const BlackBox *prev = bb_previous();
+    if (prev && strcmp(prev->task, "wifi-join") == 0) {
+        out_warnp("wifi", "The last boot crashed while connecting — not retrying automatically.");
+        out_multi("  'wifi connect <ssid>' to try by hand, or 'wifi auto off' to stop.");
+        log_add(LOG_K_WARN, "wifi: automatic join skipped after a crash in it");
+        return;
+    }
+
     // Spawned, not called. The login prompt appears immediately and the join
     // finishes underneath it — which is the whole point of having a scheduler.
     // TASK_STACK_NET, not TASK_STACK_DEF. This task runs the cyw43 driver,
@@ -470,6 +528,7 @@ bool net_is_connected(void) {
     // command about to send a packet cares about the second. netif is asked
     // directly rather than trusting a link enum, because that is the state the
     // packet path will actually use.
+    NetLock _l;
     return netif_default && netif_is_up(netif_default) &&
            !ip4_addr_isany(netif_ip4_addr(netif_default));
 }
