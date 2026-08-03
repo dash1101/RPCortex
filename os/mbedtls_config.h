@@ -81,6 +81,16 @@
 #define MBEDTLS_SSL_SERVER_NAME_INDICATION
 #endif
 
+// SHA-384. mbedtls 3.x gates it behind its OWN flag rather than folding it into
+// SHA512_C, and the SDK's configuration does not set it — so a certificate
+// signed with ecdsa-with-SHA384 fails to parse with "unknown signature
+// algorithm". ISRG Root X2 is exactly that, and one unparseable certificate
+// made the ENTIRE trust store unusable, because lwIP treats any non-zero parse
+// result as total failure.
+#ifndef MBEDTLS_SHA384_C
+#define MBEDTLS_SHA384_C
+#endif
+
 // PEM parsing, so the trusted roots can ship as text on the filesystem and be
 // replaced without reflashing when a root rotates.
 #ifndef MBEDTLS_PEM_PARSE_C

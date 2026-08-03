@@ -65,6 +65,17 @@ for t in "${!SRC[@]}"; do
     fi
 done
 
+# The CA bundle is not a C++ test — it needs mbedtls compiled with the DEVICE
+# config, since the host's own build would parse a bundle the device cannot.
+printf '  %-16s ' "cacerts"
+if PICO_SDK_PATH="${PICO_SDK_PATH:-$PWD/../../sdk}" ./cacerts_test.sh > "$OUT/cacerts.out" 2>&1; then
+    echo "ok  $(tail -1 "$OUT/cacerts.out" | tr -s ' ')"
+    pass=$((pass+1))
+else
+    echo "FAILED"; sed 's/^/      /' "$OUT/cacerts.out" | tail -6
+    fail=$((fail+1))
+fi
+
 echo
 echo "  $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
