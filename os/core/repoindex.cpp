@@ -136,6 +136,7 @@ uint32_t repo_walk(const char *json, uint32_t len, RepoEntryFn cb, void *ctx) {
             // uninstallable for a reason nothing would explain.
             else if (ieq(key, "sha256")) { if (!copy_str(vb, vn, e.sha256, sizeof(e.sha256))) bad = true; }
             else if (ieq(key, "abi"))    { copy_str(vb, vn, e.abi,  sizeof(e.abi),  true); }
+            else if (ieq(key, "kind"))   { copy_str(vb, vn, e.kind, sizeof(e.kind), true); }
             else if (ieq(key, "arch"))   { copy_str(vb, vn, e.arch, sizeof(e.arch), true); }
         }
 

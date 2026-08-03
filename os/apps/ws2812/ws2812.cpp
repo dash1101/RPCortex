@@ -13,7 +13,7 @@
 // downloading a firmware update.
 #include "rpc_app.h"
 
-RPC_APP_VER("ws2812", "1.0");
+RPC_APP_VER("ws2812", "1.1");
 
 // The program. Four instructions, and all of the timing is in the delays.
 //
@@ -129,6 +129,17 @@ static void put_pixel(unsigned r, unsigned g, unsigned b) {
     fw_pio_put(g_sm, v << 8, 10000);
 }
 
+// Something for the scheduler to carry while the strip runs. Printing is
+// deliberate: it takes the output lock and drags in the USB stack, which is the
+// interrupt most likely to land in the middle of a bit.
+static int load_task(void *) {
+    while (!fw_task_should_stop()) {
+        fw_printf("");
+        fw_task_yield();
+    }
+    return 0;
+}
+
 static int ws2812_cmd(int argc, char **argv) {
     if (argc < 2 || streq(argv[1], "help") || streq(argv[1], "-h")) {
         fw_printf("Usage:\n");
@@ -136,6 +147,7 @@ static int ws2812_cmd(int argc, char **argv) {
         fw_printf("  ws2812 off <pin> <count>               all off\n");
         fw_printf("  ws2812 chase <pin> <count> [times]     one lit LED, moving\n");
         fw_printf("  ws2812 info                            PIO usage\n");
+    fw_printf("  ws2812 proof <pin> <count>             chase, with the machine busy\n");
         return argc < 2 ? 1 : 0;
     }
 
@@ -187,6 +199,50 @@ static int ws2812_cmd(int argc, char **argv) {
             }
         }
         for (int i = 0; i < count; i++) put_pixel(0, 0, 0);
+        return 0;
+    }
+
+    if (streq(argv[1], "proof")) {
+        // The point of PIO, made watchable.
+        //
+        // Telling somebody to run a chase in one window and a download in
+        // another is not an instruction that works on a single serial line, so
+        // the load runs here: background tasks churning the scheduler and the
+        // output layer while the strip keeps going.
+        //
+        // What to watch for is simple. If the strip stutters, changes colour,
+        // or shows the wrong LED, the timing is being disturbed and PIO is not
+        // doing its job. If it looks exactly like the quiet run, it is.
+        fw_printf("Ten seconds quiet, then ten with four tasks hammering the\n");
+        fw_printf("scheduler and the console. The strip should look identical.\n");
+        fw_printf("Any stutter or wrong colour means the timing is being hit.\n\n");
+
+        for (int phase = 0; phase < 2; phase++) {
+            int pids[4] = { -1, -1, -1, -1 };
+            if (phase == 1) {
+                fw_printf("-- BUSY: four tasks running --\n");
+                for (int i = 0; i < 4; i++)
+                    pids[i] = fw_task_spawn("ws-load", load_task, 0, 2048);
+            } else {
+                fw_printf("-- QUIET --\n");
+            }
+
+            uint32_t until = fw_millis() + 10000;
+            int lit = 0;
+            while (fw_millis() < until && !fw_task_should_stop()) {
+                for (int i = 0; i < count; i++)
+                    if (i == lit) put_pixel(60, 20, 0); else put_pixel(0, 0, 0);
+                lit = (lit + 1) % count;
+                fw_task_sleep_ms(50);
+            }
+
+            for (int i = 0; i < 4; i++) if (pids[i] > 0) fw_task_kill(pids[i]);
+            fw_task_sleep_ms(200);
+        }
+
+        for (int i = 0; i < count; i++) put_pixel(0, 0, 0);
+        fw_printf("\nDone. Identical in both phases means the state machine held\n");
+        fw_printf("its timing through everything the rest of the OS was doing.\n");
         return 0;
     }
 

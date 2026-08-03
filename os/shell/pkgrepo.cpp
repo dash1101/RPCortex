@@ -371,7 +371,14 @@ static bool list_cb(void *ctx, const RepoEntry *e) {
         for (char *p = q; *p; p++) if (*p >= 'A' && *p <= 'Z') *p += 32;
         if (!strstr(ln, q)) return true;
     }
-    out_multi("  %s%-14s%s %-8s %s", C_CYAN, e->name, C_RESET, e->ver, e->desc);
+    // Diagnostics and examples are marked in the listing rather than hidden
+    // from it. They are genuinely useful — probe is how the last four bugs were
+    // found — but somebody scanning for something to install should be able to
+    // see at a glance which ones are there to prove the OS works.
+    const char *tag = "";
+    if      (e->kind[0] == 't') tag = "  [test]";
+    else if (e->kind[0] == 'e') tag = "  [example]";
+    out_multi("  %s%-14s%s %-8s %s%s", C_CYAN, e->name, C_RESET, e->ver, e->desc, tag);
     c->shown++;
     return true;
 }

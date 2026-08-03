@@ -39,6 +39,10 @@ struct RepoEntry {
     char sha256[REPO_HASH_MAX];   // "" when the index publishes none
     char abi[8];                  // loader ABI the package was built against
     char arch[12];                // armv6m / armv8m
+    // "app", "test" or "example". Diagnostics and worked examples exist to
+    // prove the OS works rather than to be useful, and being able to tell them
+    // apart is what makes them removable in one go later.
+    char kind[10];
     uint32_t size;                // 0 when unstated
 };
 
