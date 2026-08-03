@@ -34,6 +34,7 @@ add_executable(rpcortex_v2
     ${OS_ROOT}/core/interrupt.cpp
     ${OS_ROOT}/core/task.cpp
     ${OS_ROOT}/core/lock.cpp
+    ${OS_ROOT}/core/logring.cpp
     ${OS_ROOT}/core/lineedit.cpp
     ${OS_ROOT}/core/fmt.cpp
     ${OS_ROOT}/core/pkgindex.cpp
@@ -58,6 +59,8 @@ add_executable(rpcortex_v2
     ${OS_ROOT}/shell/netapps.cpp
     ${OS_ROOT}/shell/fetch.cpp
     ${OS_ROOT}/shell/ps.cpp
+    ${OS_ROOT}/shell/logcmd.cpp
+    ${OS_ROOT}/shell/stock.cpp
     ${OS_ROOT}/shell/shell.cpp
     ${SPIKE}/firmware/loader.cpp
     ${SPIKE}/firmware/storage.cpp
@@ -142,3 +145,21 @@ function(rpc_add_app name)
 endfunction()
 
 rpc_add_app(greet)
+rpc_add_app(stress)
+
+# --- packages that ship installed -------------------------------------------
+#
+# The .app bytes are baked into the firmware and written into /pkg on a first
+# boot. That is what keeps them real packages — `pkg remove stress` deletes it
+# like any other, and it stays gone — rather than built-in commands wearing a
+# package's clothes.
+add_custom_command(
+    OUTPUT ${CMAKE_BINARY_DIR}/stock_stress.cpp
+    COMMAND ${CMAKE_COMMAND} -E env python3 ${OS_ROOT}/tools_bin2c.py
+            ${CMAKE_BINARY_DIR}/apps/stress.app
+            ${CMAKE_BINARY_DIR}/stock_stress.cpp stock_stress
+    DEPENDS ${CMAKE_BINARY_DIR}/apps/stress.app ${OS_ROOT}/tools_bin2c.py
+    VERBATIM)
+add_custom_target(stock_stress_src DEPENDS ${CMAKE_BINARY_DIR}/stock_stress.cpp)
+target_sources(rpcortex_v2 PRIVATE ${CMAKE_BINARY_DIR}/stock_stress.cpp)
+add_dependencies(rpcortex_v2 stock_stress_src app_stress)

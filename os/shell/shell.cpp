@@ -46,6 +46,9 @@ void net_register(void);
 void netapps_register(void);
 void fetch_register(void);
 void ps_register(void);
+void log_register(void);
+void stock_register(void);
+void stock_install_once(void);
 
 // --- line input -------------------------------------------------------------
 //
@@ -305,9 +308,11 @@ void shell_register_builtins(void) {
     netapps_register();     // ping / nslookup / ntp
     fetch_register();       // fetch / neofetch
     ps_register();          // ps / kill — the task manager
+    log_register();         // logdump
     apps_register();        // apps / unload for resident packages
     pkg_init();             // ensure /pkg exists
     pkg_register();         // install / remove / list
+    stock_register();       // stock — the packages built into the firmware
 
     shell_load_aliases();   // Alias.* from the registry go live before the prompt
 

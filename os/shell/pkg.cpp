@@ -53,7 +53,7 @@ static void index_walk(PkgIndexFn cb, void *ctx) {
 
 // --- operations ------------------------------------------------------------
 
-static bool pkg_install(const char *file) {
+bool pkg_install_file(const char *file, bool quiet) {
     // Validate by actually loading it — this checks the ELF, the ABI version and
     // every relocation, not just that a file exists. The header gives the name
     // and version to record.
@@ -81,7 +81,7 @@ static bool pkg_install(const char *file) {
         return false;
     }
     index_add(name, version);
-    out_okp("pkg", "Installed %s %s", name, version);
+    if (!quiet) out_okp("pkg", "Installed %s %s", name, version);
     // Load it now so its commands are available without a reboot.
     apps_launch(dst, 0, /*quiet*/true);
     return true;
@@ -118,7 +118,7 @@ void pkg_load_installed(void) { index_walk(load_cb, nullptr); }
 void pkg_init(void) { storage_mkdir(PKG_DIR); }   // no-op if it already exists
 
 static int cmd_pkg(int argc, char **argv) {
-    if (argc >= 3 && !strcmp(argv[1], "install")) return pkg_install(argv[2]) ? 0 : 1;
+    if (argc >= 3 && !strcmp(argv[1], "install")) return pkg_install_file(argv[2], false) ? 0 : 1;
     if (argc >= 3 && !strcmp(argv[1], "remove"))  return pkg_remove(argv[2]) ? 0 : 1;
     if (argc >= 2 && !strcmp(argv[1], "list"))    { pkg_list(); return 0; }
     out_multi("Usage: pkg install <file> | pkg remove <name> | pkg list");

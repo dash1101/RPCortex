@@ -1,4 +1,5 @@
 #include "registry.h"
+#include "lock.h"
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -8,6 +9,9 @@ struct Entry {
     char val[REG_VAL_MAX];
 };
 
+// A background task calling reg_set while the shell is serializing the table to
+// flash writes a half-old, half-new file. One lock covers both sides.
+static RpcLock g_reg_lock;
 static Entry   g_reg[REG_MAX];
 static uint32_t g_count;
 static bool     g_dirty;
@@ -19,6 +23,7 @@ static int find(const char *key) {
 }
 
 const char *reg_get(const char *key, const char *def) {
+    LockGuard _r(&g_reg_lock);
     int i = find(key);
     return i >= 0 ? g_reg[i].val : def;
 }
@@ -32,6 +37,7 @@ int32_t reg_get_int(const char *key, int32_t def) {
 }
 
 bool reg_set(const char *key, const char *value) {
+    LockGuard _r(&g_reg_lock);
     if (!key || !value) return false;
     if (strlen(key) >= REG_KEY_MAX || strlen(value) >= REG_VAL_MAX) return false;
     int i = find(key);
@@ -52,6 +58,7 @@ const char *reg_key_at(uint32_t i) { return i < g_count ? g_reg[i].key : nullptr
 void reg_clear(void) { g_count = 0; g_dirty = true; }
 
 void reg_load(const char *text, uint32_t len) {
+    LockGuard _r(&g_reg_lock);
     g_count = 0;
     if (!text) { g_dirty = false; return; }
     uint32_t i = 0;
@@ -74,6 +81,7 @@ void reg_load(const char *text, uint32_t len) {
 }
 
 uint32_t reg_serialize(char *buf, uint32_t cap) {
+    LockGuard _r(&g_reg_lock);
     uint32_t need = 0;
     for (uint32_t i = 0; i < g_count; i++) {
         int n = snprintf(nullptr, 0, "%s=%s\n", g_reg[i].key, g_reg[i].val);

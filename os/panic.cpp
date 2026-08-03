@@ -19,6 +19,7 @@
 
 #include "pico/stdlib.h"
 #include "hardware/watchdog.h"
+#include "pico/bootrom.h"
 #include "out.h"
 
 #include <stdio.h>
@@ -46,19 +47,45 @@ extern "C" void __attribute__((noreturn)) rpc_panic_handler(const char *fmt, ...
     if (g_current_app)
         out_multi("   while running package '%s'", (const char *)g_current_app);
 
-    out_multi("   Rebooting in 3 seconds. Hold BOOTSEL now to flash instead.");
+    out_multi("   Press any key to reboot, or B for the bootloader.");
     printf("\n");
+    fflush(stdout);
 
-    // Long enough for the host to pull the last of the output off the USB
-    // endpoint before the device disappears.
-    for (int i = 0; i < 300; i++) {
-        sleep_ms(10);
-        // stdio_usb needs its task pumped in some configurations; a putchar of
-        // nothing is the cheapest way to keep the path warm without adding to
-        // the message.
+    // Wait for a key rather than rebooting on a fixed timer. The message is the
+    // only evidence of what went wrong, and a device that reboots while it is
+    // still being read has thrown that away — which is exactly what happened
+    // when this was a 3-second countdown.
+    //
+    // The wait is bounded anyway. A panic reached with interrupts masked leaves
+    // USB unserviced, so no key can ever arrive; rebooting after a minute means
+    // an unattended device recovers on its own instead of hanging until someone
+    // notices. A countdown is printed so the wait never looks like a freeze.
+    const int WAIT_S = 60;
+    for (int left = WAIT_S; left > 0; left--) {
+        for (int t = 0; t < 100; t++) {
+            int c = getchar_timeout_us(10000);
+            if (c != PICO_ERROR_TIMEOUT) {
+                if (c == 'b' || c == 'B') {
+                    printf("\n");
+                    out_multi("   Entering the bootloader...");
+                    fflush(stdout);
+                    sleep_ms(200);
+                    rom_reset_usb_boot(0, 0);
+                }
+                goto reboot;
+            }
+        }
+        // \r and clear-to-end, so the countdown rewrites one line instead of
+        // scrolling the message that matters off the screen.
+        printf("\r%s   rebooting automatically in %2d s%s\033[K", C_GRAY, left, C_RESET);
         fflush(stdout);
     }
 
+reboot:
+    printf("\n");
+    out_multi("   Rebooting.");
+    fflush(stdout);
+    sleep_ms(150);
     watchdog_reboot(0, 0, 0);
     while (true) { tight_loop_contents(); }
 }

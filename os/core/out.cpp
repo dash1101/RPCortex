@@ -1,4 +1,6 @@
 #include "out.h"
+#include "task.h"
+#include "logring.h"
 
 #include <stdio.h>
 #include <stdarg.h>
@@ -13,11 +15,24 @@ bool out_had_error(void)   { return g_had_error; }
 //   <colour>[<white><symbol><colour>] [<white><prefix><colour>] <reset><msg>
 static void emit(const char *colour, const char *symbol, const char *p,
                  const char *fmt, va_list ap) {
+    // Format once, so the console and the log get identical text and there is
+    // no second format string to drift.
+    char msg[LOG_LINE_MAX];
+    vsnprintf(msg, sizeof(msg), fmt, ap);
+
     printf("%s[%s%s%s]", colour, C_WHITE, symbol, colour);
     if (p) printf(" %s[%s%s%s]", colour, C_WHITE, p, colour);
-    printf(" %s", C_RESET);
-    vprintf(fmt, ap);
-    printf("\n");
+    printf(" %s%s\n", C_RESET, msg);
+
+    // Only the things worth keeping. Recording every [@] would fill the ring
+    // with routine success and push out the one warning that mattered.
+    LogKind kind = LOG_K_INFO;
+    if      (symbol[0] == '!') kind = LOG_K_ERR;
+    else if (symbol[0] == '?') kind = LOG_K_WARN;
+    else return;
+
+    if (p) log_addf(kind, "[%s] %s", p, msg);
+    else   log_add(kind, msg);
 }
 
 #define TAGGED(name, colour, symbol)                       \
@@ -67,6 +82,10 @@ void out_fatal(const char *fmt, ...) {
 static char    *g_cap;
 static uint32_t g_cap_size, g_cap_len;
 static bool     g_cap_over;
+// Whose pipeline the capture belongs to. A capture is per-COMMAND, so a
+// background task printing during `ls > f` must go to the console rather than
+// into someone else's redirect — its output has nothing to do with that file.
+static int      g_cap_owner;
 
 bool out_capturing(void)           { return g_cap != nullptr; }
 bool out_capture_overflowed(void)  { return g_cap_over; }
@@ -74,9 +93,13 @@ bool out_capture_overflowed(void)  { return g_cap_over; }
 bool out_capture_begin(char *buf, uint32_t cap) {
     if (g_cap || !buf || cap == 0) return false;
     g_cap = buf; g_cap_size = cap; g_cap_len = 0; g_cap_over = false;
+    g_cap_owner = task_self();
     g_cap[0] = 0;
     return true;
 }
+
+// True only for the task that started the capture.
+static bool capturing_here(void) { return g_cap && g_cap_owner == task_self(); }
 
 uint32_t out_capture_end(void) {
     uint32_t n = g_cap_len;
@@ -85,7 +108,7 @@ uint32_t out_capture_end(void) {
 }
 
 void out_write(const char *data, uint32_t len) {
-    if (!g_cap) { fwrite(data, 1, len, stdout); return; }
+    if (!capturing_here()) { fwrite(data, 1, len, stdout); return; }
     // Leave a byte for the terminator so the buffer is always a valid C string
     // for whatever reads it next.
     uint32_t room = g_cap_size - 1 - g_cap_len;
@@ -97,7 +120,7 @@ void out_write(const char *data, uint32_t len) {
 
 void out_multi(const char *fmt, ...) {
     va_list ap; va_start(ap, fmt);
-    if (!g_cap) {
+    if (!capturing_here()) {
         vprintf(fmt, ap);
         va_end(ap);
         printf("\n");

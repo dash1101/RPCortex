@@ -11,6 +11,7 @@
 #include "pico/multicore.h"
 #include "hardware/sync.h"
 #include "lock.h"
+#include "logring.h"
 
 // The frame task_ctx_switch pops: nine words, of which only the last matters.
 //

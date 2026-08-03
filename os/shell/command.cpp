@@ -1,6 +1,10 @@
 #include "command.h"
+#include "lock.h"
 #include <string.h>
 
+// A package loading on one core registers commands while the other resolves
+// one. Read-mostly, but the write side moves entries during cmd_remove_owner.
+static RpcLock  g_cmd_lock;
 static Command  g_cmds[CMD_MAX];
 static uint32_t g_count;
 
@@ -14,6 +18,7 @@ static uint32_t g_refused;
 uint32_t cmd_refused(void) { return g_refused; }
 
 bool cmd_register(const Command *cmd) {
+    LockGuard _c(&g_cmd_lock);
     if (!cmd || !cmd->name || !cmd->fn)        { g_refused++; return false; }
     if (cmd_find(cmd->name))                   { g_refused++; return false; }  // no shadowing
     if (g_count >= CMD_MAX)                    { g_refused++; return false; }
@@ -22,6 +27,7 @@ bool cmd_register(const Command *cmd) {
 }
 
 void cmd_remove_owner(void *owner) {
+    LockGuard _c(&g_cmd_lock);
     if (!owner) return;                      // never sweep the built-ins
     uint32_t w = 0;
     for (uint32_t r = 0; r < g_count; r++) {
@@ -34,6 +40,7 @@ void cmd_remove_owner(void *owner) {
 }
 
 const Command *cmd_find(const char *name) {
+    LockGuard _c(&g_cmd_lock);
     for (uint32_t i = 0; i < g_count; i++)
         if (strcmp(g_cmds[i].name, name) == 0) return &g_cmds[i];
     return nullptr;

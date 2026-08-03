@@ -9,6 +9,9 @@
 #include "rpc_app.h"
 #include "kernel.h"
 #include "command.h"
+#include "task.h"
+#include "storage.h"
+#include "logring.h"
 
 #include <string.h>
 #include <stdlib.h>
@@ -44,6 +47,52 @@ extern "C" int rpc_register_command(const char *name, const char *help,
     return cmd_register(&c) ? 1 : 0;
 }
 
+// --- API 1.3: tasks, files, memory ------------------------------------------
+//
+// Without these a package can print and allocate and nothing else, which is not
+// enough to be a program. They are the smallest set that lets one run work in
+// the background, keep state on disk, and see what memory it is using — added
+// as a MINOR bump, so every existing package still loads.
+
+extern "C" int fw_task_spawn(const char *name, TaskFn fn, void *arg, uint32_t stack) {
+    // A package's task is AFFINITY_ANY, so it uses the second core when there is
+    // one and the first when there is not. A package should never have to know.
+    return task_spawn(name, "(package)", fn, arg,
+                      stack ? stack : TASK_STACK_DEF, AFFINITY_ANY);
+}
+extern "C" void fw_task_yield(void)            { task_yield(); }
+extern "C" void fw_task_sleep_ms(uint32_t ms)  { task_sleep_ms(ms); }
+extern "C" int  fw_task_self(void)             { return task_self(); }
+extern "C" int  fw_task_should_stop(void)      { return task_should_stop() ? 1 : 0; }
+extern "C" int  fw_task_kill(int pid)          { return task_kill(pid) ? 1 : 0; }
+extern "C" uint32_t fw_cores(void)             { return task_core_count(); }
+
+extern "C" int fw_file_write(const char *path, const void *data, uint32_t len) {
+    return storage_write_file(path, (const uint8_t *)data, len) ? 1 : 0;
+}
+extern "C" uint32_t fw_file_read(const char *path, void *buf, uint32_t cap) {
+    return storage_read_file(path, (uint8_t *)buf, cap);
+}
+extern "C" int fw_file_remove(const char *path) { return storage_remove(path) ? 1 : 0; }
+extern "C" int fw_file_exists(const char *path) { return storage_stat(path, nullptr, nullptr) ? 1 : 0; }
+
+extern "C" uint32_t fw_heap_free(void)  { return heap_free(); }
+extern "C" uint32_t fw_heap_total(void) { return heap_total(); }
+
+// The biggest single allocation available right now, found by probing. Free
+// bytes do not predict whether the next allocation succeeds; this does.
+extern "C" uint32_t fw_heap_largest(void) {
+    uint32_t lo = 0, hi = heap_free(), best = 0;
+    while (lo <= hi) {
+        uint32_t mid = lo + (hi - lo) / 2;
+        if (mid == 0) break;
+        void *p = malloc(mid);
+        if (p) { free(p); best = mid; lo = mid + 1024; }
+        else   { if (mid < 1024) break; hi = mid - 1024; }
+    }
+    return best;
+}
+
 // --- the table -------------------------------------------------------------
 
 struct ApiSymbol { const char *name; uint32_t addr; };
@@ -56,6 +105,21 @@ static const ApiSymbol kSymbols[] = {
     SYM(fw_free),
     SYM(fw_log),
     SYM(rpc_register_command),
+    // API 1.3
+    SYM(fw_task_spawn),
+    SYM(fw_task_yield),
+    SYM(fw_task_sleep_ms),
+    SYM(fw_task_self),
+    SYM(fw_task_should_stop),
+    SYM(fw_task_kill),
+    SYM(fw_cores),
+    SYM(fw_file_write),
+    SYM(fw_file_read),
+    SYM(fw_file_remove),
+    SYM(fw_file_exists),
+    SYM(fw_heap_free),
+    SYM(fw_heap_total),
+    SYM(fw_heap_largest),
 };
 static const uint32_t kSymbolCount = sizeof(kSymbols) / sizeof(kSymbols[0]);
 

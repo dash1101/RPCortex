@@ -9,8 +9,11 @@
 #include "shell.h"
 #include "session.h"
 #include "pkg.h"
+void stock_install_once(void);
 #include "banner.h"
+#include "out.h"
 #include "task.h"
+#include "logring.h"
 
 void net_autoconnect(void);
 void task_start_core1(void);
@@ -24,8 +27,12 @@ int main(void) {
     // is a task like any other, which is what lets it be listed, and what lets
     // other things run while it waits at the prompt.
     task_init("shell");
+    // Before the banner: anything the boot logs should land in the ring, and a
+    // ring that survived a warm reboot holds the reason for it.
+    bool prior = log_init();
 
     banner_print();
+    if (prior) out_warnp("Boot", "The device restarted. 'logdump' shows what led up to it.");
 
     if (!kboot()) {
         // A usable shell is impossible (no storage). A real recovery prompt goes
@@ -41,6 +48,7 @@ int main(void) {
     shell_register_builtins();
     net_autoconnect();       // rejoin a saved network, if one is set to auto
     session_boot();          // first-run setup, then login
+    stock_install_once();    // first boot: write the built-in packages into /pkg
     pkg_load_installed();    // installed packages' commands go live
     shell_run();
     return 0;

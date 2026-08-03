@@ -10,6 +10,10 @@
 
 void pkg_init(void);              // ensure /pkg exists; call once at startup
 void pkg_load_installed(void);    // load every installed package (boot)
+// Install from a file. `quiet` suppresses the success line, for the first-boot
+// path that installs the built-in packages before anyone is watching.
+bool pkg_install_file(const char *file, bool quiet);
+
 void pkg_register(void);          // register the `pkg` command
 
 #endif  // RPC_PKG_H

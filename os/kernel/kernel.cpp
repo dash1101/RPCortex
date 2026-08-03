@@ -4,6 +4,7 @@
 #include "registry.h"
 #include "users.h"
 #include "out.h"
+#include "logring.h"
 #include "registry.h"
 
 #include <stdio.h>
@@ -33,7 +34,13 @@ void klog(LogLevel level, const char *fmt, ...) {
     switch (level) {
         case LOG_WARN:  out_warnp("POST", "%s", msg); break;
         case LOG_ERROR: out_errp ("POST", "%s", msg); break;
-        default:        out_okp  ("POST", "%s", msg); break;
+        default:
+            out_okp("POST", "%s", msg);
+            // out_ok is not logged (routine success would flood the ring), but
+            // the boot narrative IS worth keeping — it is the context for
+            // whatever went wrong afterwards.
+            log_addf(LOG_K_BOOT, "%s", msg);
+            break;
     }
 }
 

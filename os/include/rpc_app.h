@@ -23,7 +23,7 @@ extern "C" {
 // MINOR: a symbol added — older-minor apps still run (everything they want is
 //        present); newer-minor apps refused (they may want something absent).
 #define RPC_API_MAJOR 1
-#define RPC_API_MINOR 2
+#define RPC_API_MINOR 3
 
 typedef struct {
     uint32_t magic;          // RPC_APP_MAGIC
@@ -61,6 +61,33 @@ void     fw_log(int level, const char *msg);            // 0 info 1 warn 2 error
 // makes an app a package.
 typedef int (*RpcCommandFn)(int argc, char **argv);
 int      rpc_register_command(const char *name, const char *help, RpcCommandFn fn);
+
+// --- exported services (API 1.3) -------------------------------------------
+//
+// Tasks. A package's task is scheduled like any other and uses the second core
+// when the board has one — a package never has to know how many there are.
+typedef int (*TaskFn)(void *arg);
+int      fw_task_spawn(const char *name, TaskFn fn, void *arg, uint32_t stack);
+void     fw_task_yield(void);
+void     fw_task_sleep_ms(uint32_t ms);
+int      fw_task_self(void);
+// Non-zero once this task has been asked to stop. Any loop that runs for a
+// while must check it, or it cannot be killed.
+int      fw_task_should_stop(void);
+int      fw_task_kill(int pid);
+uint32_t fw_cores(void);
+
+// Files. Paths are absolute.
+int      fw_file_write(const char *path, const void *data, uint32_t len);
+uint32_t fw_file_read(const char *path, void *buf, uint32_t cap);
+int      fw_file_remove(const char *path);
+int      fw_file_exists(const char *path);
+
+// Memory. fw_heap_largest is the biggest single allocation available right now —
+// free bytes do not predict whether the next allocation succeeds, this does.
+uint32_t fw_heap_free(void);
+uint32_t fw_heap_total(void);
+uint32_t fw_heap_largest(void);
 
 // Entry point. Called once when the app is loaded. A command-only package can do
 // its registration here and return; a foreground app can run its loop.
