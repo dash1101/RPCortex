@@ -23,7 +23,9 @@
 #define MEM_SIZE                    16000
 #define MEMP_NUM_TCP_SEG            32
 #define MEMP_NUM_ARP_QUEUE          10
-#define PBUF_POOL_SIZE              24
+// Headroom for a large download. Received data is held until the reader takes
+// it, and a firmware image is nearly 700 KB — 24 was sized for ping and NTP.
+#define PBUF_POOL_SIZE              32
 
 #define LWIP_ARP                    1
 #define LWIP_ETHERNET               1
