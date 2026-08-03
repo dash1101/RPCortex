@@ -109,7 +109,7 @@ static int cmd_tuidemo(int, char **) {
         fw_tui_clear();
         fw_tui_box(0, 0, w, h - 1, "tuidemo - the TUI, exercised", FW_ATTR_NORMAL, 6);
 
-        fw_tui_text(2, 1, "arrows / pgup / pgdn / home / end move.  click a row.  wheel scrolls.",
+        fw_tui_text(2, 1, "arrows move.  click a row.  wheel scrolls.  ^L after resizing.  q quits.",
                     FW_ATTR_DIM, 0);
 
         for (int r = 0; r < list.rows; r++) {
@@ -188,6 +188,15 @@ static int cmd_tuidemo(int, char **) {
                     case FW_KEY_RIGHT: str_copy(last_event, "key right"); break;
                     case FW_KEY_ESC:   str_copy(last_event, "escape (its timeout works)"); break;
                     case 'q': case 3:  running = 0; break;
+                    case 12:           // Ctrl+L — after resizing the window
+                        if (fw_tui_refresh()) {
+                            fw_tui_size(&w, &h);
+                            list.rows = h - 6;
+                            if (list.rows < 1) list.rows = 1;
+                            list_clamp(&list);
+                        }
+                        str_copy(last_event, "refreshed");
+                        break;
                     default:
                         // Anything else: show the byte, so a terminal sending
                         // something unexpected reports itself instead of

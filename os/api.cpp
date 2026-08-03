@@ -181,6 +181,7 @@ static const ApiSymbol kSymbols[] = {
     SYM(fw_tui_fill),
     SYM(fw_tui_present),
     SYM(fw_tui_poll),
+    SYM(fw_tui_refresh),
 
     // The compiler's runtime. See above: emitted, not written.
     SYM(__aeabi_idiv),
@@ -275,6 +276,16 @@ extern "C" void fw_tui_fill(int x, int y, int w, int h, char ch,
 }
 
 extern "C" void fw_tui_present(void) { task_alive(); if (g_app_screen) tuiterm_present(g_app_screen); }
+
+extern "C" int fw_tui_refresh(void) {
+    task_alive();
+    if (!g_app_screen) return 0;
+    bool changed = tuiterm_refresh();
+    uint16_t tw = 80, th = 24;
+    tuiterm_size(&tw, &th);
+    tui_resize(g_app_screen, tw, th);
+    return changed ? 1 : 0;
+}
 
 extern "C" int fw_tui_poll(FwTuiEvent *out) {
     task_alive();

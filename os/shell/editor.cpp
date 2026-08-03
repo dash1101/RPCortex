@@ -193,8 +193,9 @@ static int cmd_edit(int argc, char **argv) {
     tuiterm_size(&tw, &th);
     tui_resize(&s, tw, th);
 
-    const int rows = s.h - 2;          // one header line, one status line
-    const int cols = s.w;
+    // Not const: Ctrl+L can change the window under us.
+    int rows = s.h - 2;                // one header line, one status line
+    int cols = s.w;
 
     // Reset per session. A function-static would leave the second `edit` of a
     // boot already armed, so it would quit on the first Ctrl+X and discard.
@@ -286,15 +287,21 @@ static int cmd_edit(int argc, char **argv) {
                 case '\t':
                     for (int i = 0; i < 4; i++) ed_insert(e, ' ');
                     break;
+                case 12:            // Ctrl+L — re-measure and repaint
+                    if (tuiterm_refresh()) {
+                        tuiterm_size(&tw, &th);
+                        tui_resize(&s, tw, th);
+                        rows = s.h - 2;
+                        cols = s.w;
+                    }
+                    break;
                 default:
                     if (ev.key >= 32 && ev.key < 127) ed_insert(e, (char)ev.key);
                     break;
             }
             // Anything other than the quit key disarms it, so a Ctrl+X now and
-            // another one minutes later cannot combine into a discard.
+            // another minutes later cannot combine into a discard.
             if (ev.key != 24 && ev.key != 3) quit_armed = 0;
-            if (false) {
-            }
         }
         if (!busy) task_sleep_ms(5);
     }

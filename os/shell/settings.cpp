@@ -162,6 +162,15 @@ static int cmd_settings(int, char **) {
                     case TUI_KEY_HOME: tuilist_home(&list); break;
                     case TUI_KEY_END:  tuilist_end(&list);  break;
                     case 'q': case 3: case TUI_KEY_ESCAPE: running = false; break;
+                    case 12:            // Ctrl+L — re-measure and repaint
+                        if (tuiterm_refresh()) {
+                            tuiterm_size(&tw, &th);
+                            tui_resize(&s, tw, th);
+                            list.rows = th - 5;
+                            if (list.rows < 1) list.rows = 1;
+                            tuilist_clamp(&list);
+                        }
+                        break;
                     case '\r': case '\n': case ' ': {
                         const Row &r = kRows[list.sel];
                         if (r.kind == ROW_BOOL) { toggle(r); changed = true; }

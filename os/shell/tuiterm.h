@@ -23,6 +23,12 @@ bool tuiterm_poll(TuiEvent *out);
 // The terminal's real size, asked for at begin. 80x24 when it does not answer.
 void tuiterm_size(uint16_t *w, uint16_t *h);
 
+// Re-ask the terminal how big it is and force a full repaint. Returns true when
+// the size actually changed, so a caller can re-lay-out. A serial line has no
+// resize notification, so this is bound to Ctrl+L rather than happening by
+// itself — asking on a timer would race with whatever is being typed.
+bool tuiterm_refresh(void);
+
 bool tuiterm_active(void);
 
 #endif  // RPC_TUITERM_H

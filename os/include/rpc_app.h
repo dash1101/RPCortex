@@ -23,7 +23,7 @@ extern "C" {
 // MINOR: a symbol added — older-minor apps still run (everything they want is
 //        present); newer-minor apps refused (they may want something absent).
 #define RPC_API_MAJOR 1
-#define RPC_API_MINOR 4
+#define RPC_API_MINOR 5
 
 typedef struct {
     uint32_t magic;          // RPC_APP_MAGIC
@@ -92,6 +92,10 @@ void fw_tui_present(void);
 // One event, or 0 when nothing is waiting. Non-blocking, so the caller owns its
 // own frame rate and stays responsive.
 int  fw_tui_poll(FwTuiEvent *out);
+// Re-ask the terminal its size and force a full repaint. Returns 1 when the
+// size changed, so an app can re-lay-out. A serial line carries no resize
+// notification, so this is what Ctrl+L should call.
+int  fw_tui_refresh(void);
 
 #define FW_ATTR_NORMAL  0
 #define FW_ATTR_BOLD    1

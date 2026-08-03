@@ -55,6 +55,17 @@ static void tx_flush(void) {
     if (!g_tx_len) return;
     out_write(g_tx, g_tx_len);
     g_tx_len = 0;
+    // fflush, and it is not optional.
+    //
+    // stdout is LINE buffered, and a frame of escape sequences contains no
+    // newline at all — so without this a small update simply sat in the C
+    // library's buffer until something later happened to fill it. Scrolling
+    // produced enough output to keep forcing flushes and looked smooth, while a
+    // single keypress produced a couple of hundred bytes that never left, which
+    // read as the keypress being ignored.
+    //
+    // That is the whole "sometimes it does not respond" symptom.
+    fflush(stdout);
 }
 
 static void tx(const char *data, uint32_t len) {
@@ -139,6 +150,26 @@ static void query_size(uint16_t *w, uint16_t *h) {
         *w = (uint16_t)cols;
         *h = (uint16_t)rows;
     }
+}
+
+// Ask again, for a window that changed size.
+//
+// A serial line carries no resize notification — there is no equivalent of
+// SIGWINCH, so the only way to notice is to ask. Doing that on a timer would
+// race with whatever the user is typing, since the reply arrives on the same
+// input stream. So it happens on request: Ctrl+L, the same key every terminal
+// program uses for "redraw, I do not trust what is on screen".
+bool tuiterm_refresh(void) {
+    if (!g_active) return false;
+    uint16_t w = g_term_w, h = g_term_h;
+    query_size(&w, &h);
+    bool changed = (w != g_term_w || h != g_term_h);
+    g_term_w = w; g_term_h = h;
+    // Force the next present to send everything: after a resize the terminal's
+    // contents bear no relation to what was drawn.
+    if (g_shown) { g_shown->w = 0; g_shown->h = 0; }
+    esc("\033[2J");
+    return changed;
 }
 
 void tuiterm_size(uint16_t *w, uint16_t *h) {
