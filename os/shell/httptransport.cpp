@@ -30,16 +30,21 @@
 
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 #include "pico/stdlib.h"
 
 bool net_is_connected(void);
-const char *fs_cwd(void);       // the shell's working directory (fs.cpp)
+const char *fs_cwd(void);
+bool http_tls_available(void);       // the shell's working directory (fs.cpp)
 
 #if defined(RPC_HAS_WIFI) && RPC_HAS_WIFI
 
 #include "pico/cyw43_arch.h"
-#include "lwip/tcp.h"
+#include "lwip/altcp.h"
+#include "lwip/altcp_tcp.h"
+#include "lwip/altcp_tls.h"
+#include "mbedtls/ssl.h"
 #include "lwip/dns.h"
 #include "lwip/ip_addr.h"
 
@@ -64,7 +69,7 @@ static bool wait_flag(volatile bool &flag, uint32_t ms, volatile bool *fail = nu
 // --- connection state -------------------------------------------------------
 
 struct TcpConn {
-    struct tcp_pcb *pcb;
+    struct altcp_pcb *pcb;
     uint8_t   ring[RX_RING];
     volatile uint16_t head;      // written by the lwIP callback
     volatile uint16_t tail;      // read by the task
@@ -83,7 +88,7 @@ static uint16_t ring_free(const TcpConn *c) {
 
 // --- lwIP callbacks (background context) ------------------------------------
 
-static err_t on_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err) {
+static err_t on_recv(void *arg, struct altcp_pcb *pcb, struct pbuf *p, err_t err) {
     TcpConn *c = (TcpConn *)arg;
     if (err != ERR_OK) { c->failed = true; if (p) pbuf_free(p); return ERR_OK; }
     if (!p) { c->closed = true; return ERR_OK; }        // clean FIN
@@ -115,7 +120,7 @@ static err_t on_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err) 
     // Ack only what was actually stored. Acking tot_len after a short copy is
     // precisely how a download loses bytes from its middle and still reports
     // success — the corruption the ERR_MEM path above exists to prevent.
-    tcp_recved(pcb, copied);
+    altcp_recved(pcb, copied);
     pbuf_free(p);
 
     // It fit, so a short copy cannot happen unless an assumption above is
@@ -130,14 +135,14 @@ static void on_err(void *arg, err_t) {
     c->failed = true;
 }
 
-static err_t on_connected(void *arg, struct tcp_pcb *, err_t err) {
+static err_t on_connected(void *arg, struct altcp_pcb *, err_t err) {
     TcpConn *c = (TcpConn *)arg;
     if (err != ERR_OK) { c->failed = true; return ERR_OK; }
     c->connected = true;
     return ERR_OK;
 }
 
-static err_t on_sent(void *arg, struct tcp_pcb *, u16_t len) {
+static err_t on_sent(void *arg, struct altcp_pcb *, u16_t len) {
     TcpConn *c = (TcpConn *)arg;
     if (c->unsent >= len) c->unsent -= len; else c->unsent = 0;
     return ERR_OK;
@@ -168,12 +173,54 @@ static bool resolve(const char *host, ip_addr_t *out) {
 
 // --- the HttpTransport implementation ---------------------------------------
 
+// --- trusted roots ----------------------------------------------------------
+//
+// The roots live in a FILE rather than baked into the image, because
+// certificate authorities rotate and a root compiled into firmware means
+// reflashing every device the day one expires. /os/ca.pem can be replaced with
+// a download.
+//
+// Loaded once and cached: parsing PEM costs both time and heap, and every
+// package install would otherwise pay for it again.
+#define CA_PATH  "/os/ca.pem"
+#define CA_MAX   8192
+
+static struct altcp_tls_config *g_tls_cfg;
+static bool g_tls_tried;
+
+// Returns null when there are no trusted roots. The caller REFUSES the
+// connection in that case; it does not fall back to an unverified one.
+//
+// Turning verification off would make https:// appear to work while providing
+// none of what it promises — anything on the path could serve a package and the
+// device would install it. A package manager is precisely the wrong place to be
+// relaxed about who is on the other end, so this fails closed and says why.
+static struct altcp_tls_config *tls_config(void) {
+    if (g_tls_tried) return g_tls_cfg;
+    g_tls_tried = true;
+
+    uint8_t *pem = (uint8_t *)malloc(CA_MAX);
+    if (!pem) return nullptr;
+
+    uint32_t n = storage_read_file(CA_PATH, pem, CA_MAX - 1);
+    if (n == 0) { free(pem); return nullptr; }
+    pem[n] = 0;                       // mbedtls wants the terminator counted
+
+    g_tls_cfg = altcp_tls_create_config_client(pem, n + 1);
+    free(pem);
+    return g_tls_cfg;
+}
+
+bool http_tls_available(void) { return tls_config() != nullptr; }
+
 static int lw_open(void *ctx, const char *host, uint16_t port, bool tls) {
     TcpConn *c = (TcpConn *)ctx;
 
-    // Stage 3's job. Saying so plainly beats connecting in the clear to a port
-    // expecting a handshake and reporting a confusing parse error.
-    if (tls) return -1;
+    struct altcp_tls_config *cfg = nullptr;
+    if (tls) {
+        cfg = tls_config();
+        if (!cfg) return -1;          // no roots: refuse, never downgrade
+    }
 
     memset(c, 0, sizeof(*c));
 
@@ -181,14 +228,21 @@ static int lw_open(void *ctx, const char *host, uint16_t port, bool tls) {
     if (!resolve(host, &addr)) return -1;
 
     cyw43_arch_lwip_begin();
-    c->pcb = tcp_new_ip_type(IP_GET_TYPE(&addr));
+    c->pcb = tls ? altcp_tls_new(cfg, IP_GET_TYPE(&addr))
+                 : altcp_tcp_new_ip_type(IP_GET_TYPE(&addr));
+
+    // SNI. Without it a shared host answers with the wrong certificate and the
+    // handshake fails for a reason that looks nothing like the cause —
+    // raw.githubusercontent.com is exactly such a host.
+    if (c->pcb && tls)
+        mbedtls_ssl_set_hostname((mbedtls_ssl_context *)altcp_tls_context(c->pcb), host);
     if (c->pcb) {
-        tcp_arg(c->pcb, c);
-        tcp_recv(c->pcb, on_recv);
-        tcp_err(c->pcb, on_err);
-        tcp_sent(c->pcb, on_sent);
+        altcp_arg(c->pcb, c);
+        altcp_recv(c->pcb, on_recv);
+        altcp_err(c->pcb, on_err);
+        altcp_sent(c->pcb, on_sent);
     }
-    err_t e = c->pcb ? tcp_connect(c->pcb, &addr, port, on_connected) : ERR_MEM;
+    err_t e = c->pcb ? altcp_connect(c->pcb, &addr, port, on_connected) : ERR_MEM;
     cyw43_arch_lwip_end();
 
     if (!c->pcb || e != ERR_OK) return -1;
@@ -204,12 +258,12 @@ static int lw_send(void *ctx, const uint8_t *data, uint32_t len) {
         if (c->failed || !c->pcb) return -1;
 
         cyw43_arch_lwip_begin();
-        uint32_t room = c->pcb ? tcp_sndbuf(c->pcb) : 0;
+        uint32_t room = c->pcb ? altcp_sndbuf(c->pcb) : 0;
         uint32_t n = len - at < room ? len - at : room;
         err_t e = ERR_OK;
         if (n) {
-            e = tcp_write(c->pcb, data + at, (u16_t)n, TCP_WRITE_FLAG_COPY);
-            if (e == ERR_OK) { c->unsent += n; e = tcp_output(c->pcb); }
+            e = altcp_write(c->pcb, data + at, (u16_t)n, TCP_WRITE_FLAG_COPY);
+            if (e == ERR_OK) { c->unsent += n; e = altcp_output(c->pcb); }
         }
         cyw43_arch_lwip_end();
 
@@ -254,14 +308,14 @@ static void lw_close(void *ctx) {
     TcpConn *c = (TcpConn *)ctx;
     cyw43_arch_lwip_begin();
     if (c->pcb) {
-        tcp_arg(c->pcb, nullptr);
-        tcp_recv(c->pcb, nullptr);
-        tcp_err(c->pcb, nullptr);
-        tcp_sent(c->pcb, nullptr);
-        // tcp_close can fail when memory is tight; abort then, because leaving
+        altcp_arg(c->pcb, nullptr);
+        altcp_recv(c->pcb, nullptr);
+        altcp_err(c->pcb, nullptr);
+        altcp_sent(c->pcb, nullptr);
+        // altcp_close can fail when memory is tight; abort then, because leaving
         // a pcb with our (stack) arg attached is how a later callback writes
         // into a connection that no longer exists.
-        if (tcp_close(c->pcb) != ERR_OK) tcp_abort(c->pcb);
+        if (altcp_close(c->pcb) != ERR_OK) altcp_abort(c->pcb);
         c->pcb = nullptr;
     }
     cyw43_arch_lwip_end();
@@ -282,6 +336,7 @@ bool http_transport_get(HttpTransport *t) {
 #else   // no radio on this board
 
 bool http_transport_get(HttpTransport *) { return false; }
+bool http_tls_available(void) { return false; }
 
 #endif
 
@@ -327,6 +382,17 @@ static int cmd_wget(int argc, char **argv) {
     HttpTransport t;
     if (!http_transport_get(&t)) {
         out_err("No network. Connect with 'wifi connect <ssid>' first.");
+        return 1;
+    }
+
+    // Say WHY an https URL cannot be fetched. Without the trusted roots the
+    // connection is refused rather than made unverified, and "could not
+    // connect" would send someone looking at their WiFi for a problem that is
+    // a missing file.
+    if (!strncmp(argv[1], "https://", 8) && !http_tls_available()) {
+        out_err("No trusted certificates, so HTTPS cannot be verified.");
+        out_multi("  Install them at /os/ca.pem. Unverified HTTPS is not offered:");
+        out_multi("  anything on the path could serve a package and it would install.");
         return 1;
     }
 
