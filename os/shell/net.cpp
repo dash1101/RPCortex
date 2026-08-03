@@ -275,7 +275,9 @@ static int scan_collect(void) {
     // A scan takes a couple of seconds; bail out rather than hang if the driver
     // never clears the flag.
     absolute_time_t deadline = make_timeout_time_ms(15000);
+    uint32_t scan_started = task_now_ms();
     while (cyw43_wifi_scan_active(&cyw43_state)) {
+        out_spinner("Scanning", task_now_ms() - scan_started);
         if (absolute_time_diff_us(get_absolute_time(), deadline) < 0) break;
         if (intr_check()) break;
         // task_sleep_ms, not sleep_ms: a raw sleep parks the core without
@@ -284,6 +286,7 @@ static int scan_collect(void) {
         // set a flag that made every later scan and ping give up instantly.
         task_sleep_ms(20);
     }
+    out_progress_done();
     if (!g_scan.n) { out_warn("No networks found."); return 1; }
 
     // Strongest first — insertion sort over at most SCAN_MAX entries.
@@ -356,6 +359,7 @@ static int wifi_connect(const char *ssid, const char *pw, bool quiet, bool persi
     { NetLock _l; rc = cyw43_arch_wifi_connect_async(ssid, (pw && pw[0]) ? pw : nullptr, auth); }
     if (rc == 0) {
         absolute_time_t deadline = make_timeout_time_ms(JOIN_TIMEOUT);
+        uint32_t started = task_now_ms();
         rc = -1;
         while (true) {
             int st;
@@ -364,8 +368,12 @@ static int wifi_connect(const char *ssid, const char *pw, bool quiet, bool persi
             if (st < 0) break;                       // failed or auth rejected
             if (absolute_time_diff_us(get_absolute_time(), deadline) < 0) break;
             if (intr_check()) break;                 // Ctrl+C during a long join
+            // No way to know how far along a join is, so show that it is still
+            // going and for how long — which is the honest version of progress.
+            if (!quiet) out_spinner("Connecting", task_now_ms() - started);
             task_sleep_ms(50);   // a join takes seconds; polling faster buys nothing
         }
+        if (!quiet) out_progress_done();
     }
     if (rc != 0) {
         int st;

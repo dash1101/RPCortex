@@ -163,3 +163,68 @@ void out_pad(const char *s, int width, char *dst, int cap) {
     while (vis < width && o + 1 < cap) { dst[o++] = ' '; vis++; }
     dst[o] = 0;
 }
+
+// --- progress ---------------------------------------------------------------
+
+void out_flush(void) {
+    if (capturing_here()) return;      // a capture is a buffer, not a terminal
+    fflush(stdout);
+}
+
+#define BAR_CELLS 20
+
+void out_progress(const char *label, uint64_t done, uint64_t total) {
+    if (capturing_here()) return;      // a bar down a pipe is noise, not data
+
+    char line[120];
+    int n = 0;
+    line[n++] = '\r';
+    n += snprintf(line + n, sizeof(line) - n, "  %-12s [", label ? label : "");
+
+    // Percent first, so the bar and the number can never disagree.
+    unsigned pct = total ? (unsigned)((done * 100) / total) : 0;
+    if (pct > 100) pct = 100;
+    unsigned filled = (pct * BAR_CELLS) / 100;
+    for (unsigned i = 0; i < BAR_CELLS && n + 1 < (int)sizeof(line); i++)
+        line[n++] = (i < filled) ? '#' : '-';
+
+    if (total) {
+        // KB once it is past a kilobyte; bytes below that, since "0/0 KB" tells
+        // nobody anything.
+        if (total >= 1024)
+            n += snprintf(line + n, sizeof(line) - n, "] %3u%%   %lu/%lu KB   ",
+                          pct, (unsigned long)(done / 1024), (unsigned long)(total / 1024));
+        else
+            n += snprintf(line + n, sizeof(line) - n, "] %3u%%   %lu/%lu B   ",
+                          pct, (unsigned long)done, (unsigned long)total);
+    } else {
+        n += snprintf(line + n, sizeof(line) - n, "] %lu KB   ",
+                      (unsigned long)(done / 1024));
+    }
+    out_write(line, (uint32_t)n);
+    out_flush();
+}
+
+void out_spinner(const char *label, uint32_t elapsed_ms) {
+    if (capturing_here()) return;
+    // ASCII, because a terminal that disagrees about a character set turns a
+    // spinner into line noise — and this is the first thing anyone sees.
+    static const char frames[] = "|/-\\";
+    char line[96];
+    int n = snprintf(line, sizeof(line), "\r  %-12s %c  %lus   ",
+                     label ? label : "",
+                     frames[(elapsed_ms / 150) & 3],
+                     (unsigned long)(elapsed_ms / 1000));
+    out_write(line, (uint32_t)n);
+    out_flush();
+}
+
+void out_progress_done(void) {
+    if (capturing_here()) return;
+    // Overwrite the bar rather than leaving it above: a finished operation
+    // reports its result, and a stale bar next to it just invites doubt.
+    char clear[100];
+    int n = snprintf(clear, sizeof(clear), "\r%*s\r", 78, "");
+    out_write(clear, (uint32_t)n);
+    out_flush();
+}

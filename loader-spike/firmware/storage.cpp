@@ -474,7 +474,7 @@ uint32_t storage_stage_offset(void)   { return RPC_STAGE_OFF; }
 // and the flash geometry in the same place. It is entirely safe: the staging
 // slot holds nothing the device needs, so a failure or an interruption costs
 // the copy and nothing else.
-uint32_t storage_stage_file(const char *path) {
+uint32_t storage_stage_file(const char *path, StorageProgressFn cb, void *ctx) {
     LockGuard _fs(&g_fs_lock);
     if (!g_mounted) return 0;
 
@@ -505,6 +505,9 @@ uint32_t storage_stage_file(const char *path) {
         ProgArgs pa{RPC_STAGE_OFF + done, buf, FLASH_SECTOR_SIZE};
         if (guarded(do_prog, &pa) != 0) { ok = false; break; }
         done += want;
+        // Every sector, not every so often: this is what feeds the watchdog
+        // through a copy that takes longer than its timeout.
+        if (cb) cb(ctx, done, size);
     }
 
     free(buf);

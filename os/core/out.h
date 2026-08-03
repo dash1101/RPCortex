@@ -99,3 +99,30 @@ bool     out_capture_overflowed(void);
 void out_prompt(const char *msg);
 
 #endif  // RPC_OUT_H
+
+// --- progress ---------------------------------------------------------------
+//
+// Anything that takes long enough to wonder about should say so, and the two
+// cases need different answers: a download knows how far it has to go, a WiFi
+// join does not.
+//
+// Both redraw in place with a carriage return and no newline — which is exactly
+// why out_flush exists. stdout is LINE buffered, so a line with no newline sits
+// in the C library's buffer until something later fills it. A 696 KB download
+// appeared to update twice, at 49% and 100%, because that is how often 1 KB of
+// buffered progress lines happened to fill.
+
+// A bar with a percentage and the figures behind it:
+//   Downloading  [##########----------]  49%   342/696 KB
+void out_progress(const char *label, uint64_t done, uint64_t total);
+
+// For work of unknown length: a turning bar and how long it has been going.
+//   Connecting  /  4s
+void out_spinner(const char *label, uint32_t elapsed_ms);
+
+// Finish a progress line: clears it and moves on, so the next output starts
+// clean rather than after a half-drawn bar.
+void out_progress_done(void);
+
+// Push whatever is buffered to the terminal now.
+void out_flush(void);

@@ -64,7 +64,12 @@ uint32_t storage_stage_offset(void);       // flash offset of the staging slot
 
 // Copy a file into the staging slot, 4 KB at a time. Safe and interruptible:
 // nothing that runs the device is touched. Returns the bytes staged, or 0.
-uint32_t storage_stage_file(const char *path);
+// Called every sector, so a caller can show progress and — importantly — keep
+// the watchdog fed. Staging 700 KB is around 174 erase-and-program cycles and
+// several seconds; without something yielding in there the watchdog concludes
+// the device has stopped and reboots mid-copy.
+typedef void (*StorageProgressFn)(void *ctx, uint32_t done, uint32_t total);
+uint32_t storage_stage_file(const char *path, StorageProgressFn cb, void *ctx);
 
 // Last modification time as a Unix epoch, or 0 when it was never recorded (the
 // clock had not been set when the file was written). Held as a littlefs custom

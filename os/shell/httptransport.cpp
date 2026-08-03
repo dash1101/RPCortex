@@ -458,20 +458,13 @@ static int file_sink(void *ctx, const uint8_t *data, uint32_t len) {
 static uint64_t g_progress_last;    // reset per download, not per boot
 
 static void show_progress(void *, uint64_t got, uint64_t total) {
-    uint64_t &last = g_progress_last;
-    // Only redraw every 4 KB. A line per segment costs more time than the
-    // transfer it is reporting on.
+    // Every 4 KB: often enough to look continuous, rare enough that drawing it
+    // does not slow the transfer it is reporting on.
+    static uint64_t last;
+    if (got < last) last = 0;
     if (got - last < 4096 && got != total) return;
     last = got;
-    char line[64];
-    int n;
-    if (total) n = snprintf(line, sizeof(line), "\r  %lu / %lu bytes (%lu%%)   ",
-                            (unsigned long)got, (unsigned long)total,
-                            (unsigned long)(got * 100 / total));
-    else       n = snprintf(line, sizeof(line), "\r  %lu bytes   ", (unsigned long)got);
-    // Written raw: this is a line being redrawn in place, so it must not get a
-    // tag or a newline, and it must not go down a pipe as data.
-    if (n > 0) out_write(line, (uint32_t)n);
+    out_progress("Downloading", got, total);
 }
 
 static int poll_interrupt(void *) { return intr_check() ? 1 : 0; }
@@ -536,7 +529,7 @@ static int cmd_wget(int argc, char **argv) {
         good = false;
         r.error = FETCH_ERR_SINK;
     }
-    out_write("\n", 1);
+    out_progress_done();
 
     if (!good) {
         storage_remove(full);        // a partial file is worse than none

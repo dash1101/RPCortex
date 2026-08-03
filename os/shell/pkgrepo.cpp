@@ -163,16 +163,10 @@ static int poll_intr(void *) { return intr_check() ? 1 : 0; }
 
 static void progress(void *, uint64_t got, uint64_t total) {
     static uint64_t last;
-    if (got < last) last = 0;               // new download
+    if (got < last) last = 0;
     if (got - last < 4096 && got != total) return;
     last = got;
-    char line[64];
-    int n = total
-        ? snprintf(line, sizeof(line), "\r  %lu / %lu bytes (%lu%%)   ",
-                   (unsigned long)got, (unsigned long)total,
-                   (unsigned long)(got * 100 / total))
-        : snprintf(line, sizeof(line), "\r  %lu bytes   ", (unsigned long)got);
-    if (n > 0) out_write(line, (uint32_t)n);
+    out_progress("Downloading", got, total);
 }
 
 static void hex_of(const uint8_t *digest, char *out) {
@@ -210,7 +204,7 @@ static bool download(const char *url, const char *dest, char *hex_out, uint64_t 
     FetchResult r;
     bool good = http_fetch(&t, url, dl_sink, &d, &o, &r);
     if (!storage_close_sink(d.fh) && good) { good = false; r.error = FETCH_ERR_SINK; }
-    out_write("\n", 1);
+    out_progress_done();
 
     if (!good) {
         storage_remove(dest);

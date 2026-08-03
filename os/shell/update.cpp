@@ -82,17 +82,13 @@ static int sink_write(void *ctx, const uint8_t *d, uint32_t n) {
 static int poll_intr(void *) { return intr_check() ? 1 : 0; }
 
 static void progress(void *, uint64_t got, uint64_t total) {
+    // Every 4 KB rather than every packet: often enough to look continuous,
+    // rare enough that drawing it does not slow the thing it is measuring.
     static uint64_t last;
     if (got < last) last = 0;
-    if (got - last < 8192 && got != total) return;
+    if (got - last < 4096 && got != total) return;
     last = got;
-    char line[64];
-    int n = total
-        ? snprintf(line, sizeof(line), "\r  %lu / %lu KB (%lu%%)   ",
-                   (unsigned long)(got / 1024), (unsigned long)(total / 1024),
-                   (unsigned long)(got * 100 / total))
-        : snprintf(line, sizeof(line), "\r  %lu KB   ", (unsigned long)(got / 1024));
-    if (n > 0) out_write(line, (uint32_t)n);
+    out_progress("Downloading", got, total);
 }
 
 static void hex_of(const uint8_t *d, char *out) {
@@ -123,7 +119,7 @@ static bool download(const char *url, const char *dest, char *hex, uint64_t *byt
     FetchResult r;
     bool good = http_fetch(&t, url, sink_write, &s, &o, &r);
     if (!storage_close_sink(s.fh) && good) { good = false; r.error = FETCH_ERR_SINK; }
-    out_write("\n", 1);
+    out_progress_done();
 
     if (!good) {
         storage_remove(dest);
@@ -285,6 +281,17 @@ static int do_install(bool force) {
     return update_apply_file(IMAGE_PATH, e.ver) ? 0 : 1;
 }
 
+// Called every sector while staging. It draws the bar, and — the part that
+// matters — it reaches the scheduler, which feeds the watchdog.
+//
+// Without it, staging 696 KB is around 174 erase-and-program cycles with
+// nothing yielding: several seconds against an 8 second watchdog, which
+// rebooted the device in the middle of the copy every time.
+static void stage_progress(void *, uint32_t done, uint32_t total) {
+    out_progress("Staging", done, total);
+    task_alive();
+}
+
 // Stage the image, then copy it over the firmware.
 //
 // Two steps because source and destination share a flash chip. Staging is safe
@@ -304,7 +311,8 @@ bool update_apply_file(const char *path, const char *to_version) {
     }
 
     out_info("Staging %lu KB...", (unsigned long)(size / 1024));
-    uint32_t staged = storage_stage_file(path);
+    uint32_t staged = storage_stage_file(path, stage_progress, nullptr);
+    out_progress_done();
     if (staged != size) {
         out_err("Could not stage the image (%lu of %lu bytes).",
                 (unsigned long)staged, (unsigned long)size);
