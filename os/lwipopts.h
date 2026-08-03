@@ -18,7 +18,9 @@
 // shell needs with it.
 #define MEM_LIBC_MALLOC             0
 #define MEM_ALIGNMENT               4
-#define MEM_SIZE                    4000
+// TLS needs materially more than plain TCP: handshake flights and 16 KB
+// records both come through here. 4000 was sized for ping and NTP.
+#define MEM_SIZE                    16000
 #define MEMP_NUM_TCP_SEG            32
 #define MEMP_NUM_ARP_QUEUE          10
 #define PBUF_POOL_SIZE              24
@@ -57,5 +59,15 @@
 #ifndef NDEBUG
 #define LWIP_DEBUG                  0      // the driver is noisy; the shell is not
 #endif
+
+// --- TLS --------------------------------------------------------------------
+//
+// altcp is lwIP's pluggable transport layer: the same tcp_* shaped API with a
+// TLS implementation slotted underneath, so the HTTP transport calls one set of
+// functions and the only difference between http:// and https:// is which
+// allocator made the connection.
+#define LWIP_ALTCP                  1
+#define LWIP_ALTCP_TLS              1
+#define LWIP_ALTCP_TLS_MBEDTLS      1
 
 #endif  // RPC_LWIPOPTS_H

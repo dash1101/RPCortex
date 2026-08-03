@@ -137,6 +137,19 @@ target_link_libraries(rpcortex_v2 pico_stdlib hardware_flash hardware_sync pico_
 if(PICO_CYW43_SUPPORTED)
     target_link_libraries(rpcortex_v2 pico_cyw43_arch_lwip_threadsafe_background)
     target_compile_definitions(rpcortex_v2 PRIVATE RPC_HAS_WIFI=1)
+
+    # TLS, for the package repo. GitHub serves over HTTPS only, so without this
+    # `pkg install <name>` cannot exist — plain HTTP is a testing path, not a
+    # shipping one.
+    #
+    # pico_lwip_mbedtls is the altcp glue; pico_mbedtls is the library plus the
+    # SDK's hardware entropy source, which matters more than it looks: a TLS
+    # client with a predictable random number generator is not a secure one, and
+    # a microcontroller has no other good source.
+    target_link_libraries(rpcortex_v2 pico_lwip_mbedtls pico_mbedtls)
+    target_compile_definitions(rpcortex_v2 PRIVATE
+        RPC_HAS_TLS=1
+        MBEDTLS_CONFIG_FILE="${OS_ROOT}/mbedtls_config.h")
 endif()
 pico_enable_stdio_usb(rpcortex_v2 1)
 pico_enable_stdio_uart(rpcortex_v2 0)
