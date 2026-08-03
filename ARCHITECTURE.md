@@ -189,6 +189,68 @@ editor, it is that the fifth app costs almost nothing to write.
 - **Preemption comes first.** A full-screen app that hangs while owning the
   terminal is the worst case for a device with one serial line.
 
+## One package, many devices
+
+The target list is `pico`, `pico w`, `pico 2`, `pico 2 w`, Pico Plus 2 W,
+ESP32-S3, ESP32-C5, ESP32 — and a package author should build once, not eight
+times. That goal is right, and the obvious reading of it is impossible, so the
+distinction matters.
+
+**Three instruction sets, not one.** RP2040 is ARM Cortex-M0+ (ARMv6-M). RP2350
+is Cortex-M33 (ARMv8-M) — and also ships RISC-V cores. ESP32 and ESP32-S3 are
+Xtensa. ESP32-C5 and its siblings are RISC-V. No single block of native code
+runs on all of those; that is a property of the silicon, not of the build system.
+
+What *is* achievable is that a developer runs one build command, publishes one
+file, and a user runs one `pkg install`. That is what "one build" has to mean
+here, and it is worth designing for now while the format is young.
+
+**Fat packages.** One `.app` containing several architecture slices, the way a
+universal binary works. A small directory at the front lists each slice's
+architecture and offset; the loader maps the one that matches and ignores the
+rest. Consequences:
+
+- the author builds once (a script drives the per-arch compilers) and publishes
+  one artifact
+- `index.json` keeps one entry per package rather than one per board
+- the sizes are trivial at this scale — `greet.app` is 1732 bytes, so five
+  slices is still under 10 KB
+- an installer may drop the slices it will never need, so the device stores one
+
+**Where the boundary really is.** Native code is per-architecture; everything
+else is not. `core/` already compiles on a host with no target hardware at all,
+which is the same property that makes it portable to Xtensa. The parts that do
+not move are the context switch, storage and the network layer, and those live
+in the OS rather than in packages — so a package author never meets them.
+
+**Locking a package to one board stays legitimate.** Nova D1 targets specific
+hardware and pins; a package that declares one architecture and one board is
+being honest, not lazy. The index already carries `arch`, and refusing to
+install where it cannot run is better than faulting later. Compatibility is a
+default to make easy, not a rule to enforce.
+
+**The ABI is the other half, and it already exists.** `RpcAppHeader` carries the
+API major and minor a package was built against, and the exported services are a
+stated compatibility commitment — adding one is a minor bump, changing one is a
+major bump. That is what stops a package built today from breaking on next
+year's firmware, and it is independent of architecture.
+
+## Converting v1's packages
+
+The existing repo has twenty `.pkg` archives of MicroPython. They cannot run
+under v2 and are not lost: each is a small program whose behaviour is already
+specified by working code, so porting is transcription rather than design.
+
+Worth doing in rough order of use: `calc`, `i2cscan`, `gpio`, `dht`, `httpd`,
+`fileexp`, `sysmon`, `speedtest`, `backup`, `ask`. Several become smaller as
+`.app` files than they were as Python, because the shell already provides the
+formatting and argument handling each one hand-rolled.
+
+Nova D1 is explicitly out of scope until the OS is otherwise shipping. It is a
+suite rather than a package, it targets one board, and it is the piece most
+likely to want ABI additions — all of which argue for doing it last, on a stable
+base, rather than discovering the requirements through it.
+
 ## The order
 
 1. ~~Finish the current reliability pass~~ — the loader fix landed; `bench` runs
