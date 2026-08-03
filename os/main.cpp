@@ -10,6 +10,8 @@
 #include "session.h"
 #include "pkg.h"
 void stock_install_once(void);
+void fs_layout_check(bool verbose);
+bool fs_accounts_check(void);
 void jobs_run_startup(void);
 void jobs_start_services(void);
 #include "banner.h"
@@ -46,6 +48,11 @@ int main(void) {
     // it. Started after storage and the registry are up, so nothing it picks up
     // can race against boot still finishing.
     task_start_core1();
+
+    // Before anything reads a file: put back any directory that is missing, so
+    // a deleted /os is a repaired boot rather than a reflash.
+    fs_layout_check(/*verbose*/false);
+    fs_accounts_check();
 
     shell_register_builtins();
     net_autoconnect();       // rejoin a saved network, if one is set to auto

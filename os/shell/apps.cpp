@@ -121,7 +121,7 @@ static int cmd_unload(int argc, char **argv) {
 void apps_register(void) {
     static const Command cmds[] = {
         {"apps",   "list resident packages", cmd_apps,   nullptr},
-        {"unload", "unload a package",        cmd_unload, nullptr},
+        {"unload", "unload a package",        cmd_unload, nullptr, LEVEL_ADMIN},
     };
     for (const auto &c : cmds) cmd_register(&c);
 }

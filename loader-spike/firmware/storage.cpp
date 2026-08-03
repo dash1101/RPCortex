@@ -33,8 +33,23 @@
 // lock is recursive, so an operation built out of other operations still works.
 RpcLock g_fs_lock;
 
-#define FS_SIZE        (512 * 1024)
-#define FS_OFFSET      (PICO_FLASH_SIZE_BYTES - FS_SIZE)
+// How much flash the FIRMWARE gets. Everything after it is the filesystem.
+//
+// A fixed reserve rather than "wherever the binary happens to end". The end of
+// the binary moves every time the firmware grows, and if the filesystem started
+// there, an update that added a few kilobytes would shift the whole filesystem
+// and lose every file on it. A fixed boundary means an update is safe as long as
+// the firmware still fits under it, and kboot checks exactly that.
+//
+// 1 MB against a current binary of ~490 KB: two times headroom, and it leaves
+// 3 MB of filesystem on a 4 MB board and 1 MB on a 2 MB one. The old fixed
+// 512 KB was simply an arbitrary number that ignored the other 87% of the chip.
+#ifndef RPC_FW_RESERVE
+#define RPC_FW_RESERVE (1024 * 1024)
+#endif
+
+#define FS_OFFSET      RPC_FW_RESERVE
+#define FS_SIZE        (PICO_FLASH_SIZE_BYTES - FS_OFFSET)
 #define FS_BLOCK_SIZE  FLASH_SECTOR_SIZE          // 4096 — the erase unit
 #define FS_PROG_SIZE   FLASH_PAGE_SIZE            // 256  — the program unit
 
@@ -298,6 +313,15 @@ bool storage_walk(const char *path, StorageWalkFn cb, void *ctx) {
 }
 
 uint32_t storage_total_bytes(void) { return FS_SIZE; }
+
+// Where the firmware actually ends, so the boot check can compare it against the
+// reserve. Provided by the linker.
+extern "C" char __flash_binary_end;
+
+uint32_t storage_firmware_bytes(void) {
+    return (uint32_t)((uintptr_t)&__flash_binary_end - XIP_BASE);
+}
+uint32_t storage_reserve_bytes(void) { return RPC_FW_RESERVE; }
 
 uint32_t storage_free_bytes(void) {
     LockGuard _fs(&g_fs_lock);

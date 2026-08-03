@@ -36,6 +36,7 @@ add_executable(rpcortex_v2
     ${OS_ROOT}/core/lock.cpp
     ${OS_ROOT}/core/logring.cpp
     ${OS_ROOT}/core/joblist.cpp
+    ${OS_ROOT}/core/perms.cpp
     ${OS_ROOT}/core/lineedit.cpp
     ${OS_ROOT}/core/fmt.cpp
     ${OS_ROOT}/core/pkgindex.cpp
@@ -63,6 +64,7 @@ add_executable(rpcortex_v2
     ${OS_ROOT}/shell/logcmd.cpp
     ${OS_ROOT}/shell/stock.cpp
     ${OS_ROOT}/shell/jobs.cpp
+    ${OS_ROOT}/shell/fsinit.cpp
     ${OS_ROOT}/shell/shell.cpp
     ${SPIKE}/firmware/loader.cpp
     ${SPIKE}/firmware/storage.cpp
@@ -141,7 +143,15 @@ function(rpc_add_app name)
         COMMAND ${CMAKE_CXX_COMPILER} ${APP_FLAGS}
                 -c ${OS_ROOT}/apps/${name}/${name}.cpp
                 -o ${CMAKE_BINARY_DIR}/apps/${name}.app
+        # Check every symbol resolves NOW, not when someone loads it on a device.
+        # An unresolved symbol otherwise surfaces as a load failure naming a
+        # function the author never wrote.
+        COMMAND ${CMAKE_COMMAND} -E env python3 ${OS_ROOT}/tools_checkapp.py
+                ${CMAKE_BINARY_DIR}/apps/${name}.app
+                ${OS_ROOT}/api.cpp
+                ${CMAKE_NM}
         DEPENDS ${OS_ROOT}/apps/${name}/${name}.cpp ${OS_ROOT}/include/rpc_app.h
+                ${OS_ROOT}/api.cpp ${OS_ROOT}/tools_checkapp.py
         VERBATIM)
     add_custom_target(app_${name} ALL DEPENDS ${CMAKE_BINARY_DIR}/apps/${name}.app)
 endfunction()

@@ -16,6 +16,7 @@
 #define RPC_COMMAND_H
 
 #include <stdint.h>
+#include "perms.h"
 
 // argc/argv, the shape every shell command in existence expects. argv[0] is the
 // command name. Return 0 for success; non-zero is an error status the shell can
@@ -29,6 +30,10 @@ struct Command {
     // Set when the command came from a loaded app rather than a built-in, so it
     // can be removed cleanly when that app unloads. nullptr for built-ins.
     void       *owner;
+    // What it takes to run this. Defaults to LEVEL_USER, so a command is only
+    // privileged if someone said so — the opposite default would silently lock
+    // out every package command.
+    CmdLevel    level;
 };
 
 // A fixed table: no allocation, and a hard ceiling is the right shape for a

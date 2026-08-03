@@ -71,6 +71,16 @@ bool kboot(void) {
     klog(LOG_INFO, "%s  %u KB RAM, %u KB free", PICO_BOARD,
          heap_total() / 1024, heap_free() / 1024);
 
+    // The filesystem starts at a fixed offset. If the firmware has grown past
+    // it, mounting would read the tail of the firmware as a filesystem and
+    // writing would destroy the firmware. Refuse, loudly, rather than either.
+    if (storage_firmware_bytes() >= storage_reserve_bytes()) {
+        klog(LOG_ERROR, "Firmware is %u KB but only %u KB is reserved for it.",
+             storage_firmware_bytes() / 1024, storage_reserve_bytes() / 1024);
+        klog(LOG_ERROR, "The filesystem would overlap the firmware. Not mounting.");
+        return false;
+    }
+
     kstep("Mounting storage...");
     if (!storage_init(true)) {
         klog(LOG_ERROR, "Storage would not mount.");

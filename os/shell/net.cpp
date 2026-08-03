@@ -604,6 +604,6 @@ static int cmd_wifi(int, char **) {
 #endif
 
 void net_register(void) {
-    static const Command c{"wifi", "wireless status and connection", cmd_wifi, nullptr};
+    static const Command c{"wifi", "wireless status and connection", cmd_wifi, nullptr, LEVEL_ADMIN};
     cmd_register(&c);
 }

@@ -8,21 +8,30 @@
 // Config files are small; a few KB each is generous. The read helper caps at
 // this, so a corrupted oversized file is truncated rather than eating the heap.
 #define CFG_BUF 4096
-#define REG_FILE   "registry.cfg"
-#define USERS_FILE "users.cfg"
+// The OS's own data lives under /os, away from anything a user creates. The
+// paths were at the root before; load_one falls back to the old name so an
+// existing device keeps its accounts across the move, and the next save writes
+// the new location.
+#define REG_FILE       "/os/registry.cfg"
+#define USERS_FILE     "/os/users.cfg"
+#define REG_FILE_OLD   "registry.cfg"
+#define USERS_FILE_OLD "users.cfg"
 
-static void load_one(const char *file, void (*loader)(const char *, uint32_t)) {
+// Returns false when the file held nothing, so the caller can try the pre-/os
+// location instead of loading an empty table over a perfectly good one.
+static bool load_one(const char *file, void (*loader)(const char *, uint32_t)) {
     uint8_t *buf = (uint8_t *)malloc(CFG_BUF);
-    if (!buf) return;
+    if (!buf) return false;
     uint32_t n = storage_read_file(file, buf, CFG_BUF - 1);
     buf[n] = 0;
-    loader((const char *)buf, n);
+    if (n) loader((const char *)buf, n);
     free(buf);
+    return n > 0;
 }
 
 void persist_load_all(void) {
-    load_one(REG_FILE, reg_load);
-    load_one(USERS_FILE, users_load);
+    if (!load_one(REG_FILE, reg_load))     load_one(REG_FILE_OLD, reg_load);
+    if (!load_one(USERS_FILE, users_load)) load_one(USERS_FILE_OLD, users_load);
 }
 
 static void save_one(const char *file, uint32_t (*ser)(char *, uint32_t)) {

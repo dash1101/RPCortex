@@ -20,6 +20,7 @@
 #include "out.h"
 #include "path.h"
 #include "cmdline.h"
+#include "perms.h"
 #include "lineedit.h"
 #include "interrupt.h"
 #include "task.h"
@@ -52,6 +53,8 @@ void stock_install_once(void);
 void jobs_register(void);
 void jobs_run_startup(void);
 void jobs_start_services(void);
+void fsinit_register(void);
+void fs_layout_check(bool verbose);
 
 // --- line input -------------------------------------------------------------
 //
@@ -259,6 +262,13 @@ static int cmd_bg(int argc, char **argv) {
     return 0;
 }
 
+// Never called: run_one handles sudo before dispatch. See the table below.
+static int cmd_sudo(int argc, char **argv) {
+    (void)argc; (void)argv;
+    out_multi("Usage: sudo <command> [args...]");
+    return 1;
+}
+
 static int cmd_reg(int argc, char **argv) {
     if (argc == 1) {
         for (uint32_t i = 0; i < reg_count(); i++) {
@@ -292,11 +302,15 @@ void shell_register_builtins(void) {
 
     static const Command builtins[] = {
         {"run", "run <app.app> [arg]",            cmd_run, nullptr},
-        {"put", "put <name> <len>  upload bytes", cmd_put, nullptr},
-        {"reg", "reg | reg get K | reg set K V",  cmd_reg, nullptr},
+        {"put", "put <name> <len>  upload bytes", cmd_put, nullptr, LEVEL_ADMIN},
+        {"reg", "reg | reg get K | reg set K V",  cmd_reg, nullptr, LEVEL_ADMIN},
         {"alias",   "alias name=command",         cmd_alias,   nullptr},
         {"unalias", "unalias <name>",             cmd_unalias, nullptr},
         {"bg",      "bg <command>  run in background", cmd_bg,  nullptr},
+        // sudo is intercepted in run_one before dispatch, so this entry exists
+        // to make it visible in help and Tab completion. Reaching the function
+        // means someone got past the interception, which cannot happen.
+        {"sudo",    "sudo <command>  run as an admin", cmd_sudo, nullptr},
     };
     for (const auto &c : builtins) cmd_register(&c);
     cmd_alias("exec", "run");     // v1's verb; run explains the difference
@@ -313,6 +327,7 @@ void shell_register_builtins(void) {
     ps_register();          // ps / kill — the task manager
     log_register();         // logdump
     jobs_register();        // startup / task / service / watch
+    fsinit_register();      // fscheck
     apps_register();        // apps / unload for resident packages
     pkg_init();             // ensure /pkg exists
     pkg_register();         // install / remove / list
@@ -355,6 +370,10 @@ uint32_t    shell_stdin_len(void) { return g_stdin_len; }
 
 // Run one command (no connectors, no pipes, no redirect left in it).
 // Returns its exit status; a missing command is status 1.
+// Set for the duration of one command by `sudo`. Not a mode: it is cleared the
+// moment that command returns, so a sudo cannot leak into the next thing typed.
+static bool g_elevated;
+
 static int run_one(char *seg) {
     // A user alias maps a name to a whole command line, so it is expanded into
     // the text BEFORE parsing: `alias ll=ls -l` has to contribute two argv
@@ -376,12 +395,43 @@ static int run_one(char *seg) {
         }
     }
 
-    char *argv[16];
-    int argc = cmdline_split_args(seg, argv, 16);
-    if (argc == 0) return 0;
+    char *raw[16];
+    int n = cmdline_split_args(seg, raw, 16);
+    if (n == 0) return 0;
+
+    // sudo <command> — raise the level for exactly this one command. The shift
+    // is done with an index rather than by moving the array pointer, so argv
+    // stays a real array and the command sees a normal argv[0].
+    char **argv = raw;
+    int argc = n;
+    bool elevated = g_elevated;
+    if (!strcmp(argv[0], "sudo")) {
+        if (argc < 2) { out_multi("Usage: sudo <command> [args...]"); return 1; }
+        if (!users_is_admin(session_user())) {
+            out_err("%s is not an admin. sudo cannot grant what the account does not have.",
+                    session_user());
+            return 1;
+        }
+        elevated = true;
+        argv = raw + 1;
+        argc = n - 1;
+    }
+
     const Command *c = cmd_resolve(argv[0]);
     if (!c) { out_err("'%s' is not a command or executable file.", argv[0]); return 1; }
-    return c->fn(argc, argv);
+
+    if (!perms_allows(session_user(), users_is_admin(session_user()), c->level, elevated)) {
+        out_err("'%s' needs an admin account.", c->name);
+        out_multi("  Signed in as %s. An admin can run it, or use 'sudo %s'.",
+                  session_user(), c->name);
+        return 1;
+    }
+
+    bool saved = g_elevated;
+    g_elevated = elevated;
+    int rc = c->fn(argc, argv);
+    g_elevated = saved;
+    return rc;
 }
 
 // alias / unalias. v1's syntax: `alias name=command line`, bare `alias` lists.

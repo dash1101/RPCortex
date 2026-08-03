@@ -325,9 +325,9 @@ static int cmd_watch(int argc, char **argv) {
 
 void jobs_register(void) {
     static const Command cmds[] = {
-        {"startup", "commands run at boot",            cmd_startup, nullptr},
-        {"task",    "commands run on a timer",         cmd_task,    nullptr},
-        {"service", "long-running background commands", cmd_service, nullptr},
+        {"startup", "commands run at boot",            cmd_startup, nullptr, LEVEL_ADMIN},
+        {"task",    "commands run on a timer",         cmd_task,    nullptr, LEVEL_ADMIN},
+        {"service", "long-running background commands", cmd_service, nullptr, LEVEL_ADMIN},
         {"watch",   "watch [-n secs] <command>",       cmd_watch,   nullptr},
     };
     for (const auto &c : cmds) cmd_register(&c);

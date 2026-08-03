@@ -10,8 +10,8 @@
 #include <string.h>
 #include <stdlib.h>
 
-#define PKG_DIR   "/pkg"
-#define PKG_INDEX "/pkg/index.cfg"
+#define PKG_DIR   "/os/pkg"
+#define PKG_INDEX "/os/pkg/index.cfg"
 #define IDX_BUF   2048
 
 // Path to a package's installed image: /pkg/<name>.app
@@ -126,6 +126,6 @@ static int cmd_pkg(int argc, char **argv) {
 }
 
 void pkg_register(void) {
-    static const Command c{"pkg", "install/remove/list packages", cmd_pkg, nullptr};
+    static const Command c{"pkg", "install/remove/list packages", cmd_pkg, nullptr, LEVEL_ADMIN};
     cmd_register(&c);
 }

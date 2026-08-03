@@ -159,9 +159,15 @@ static int cmd_meminfo(int, char **) {
     uint32_t free  = heap_free();
     uint32_t total = heap_total();
     uint32_t alloc = total - free;
+    // Used is shown in BYTES below a kilobyte. At rest almost nothing is
+    // allocated, so rounding to KB printed "0 KB (0%)", which reads as broken
+    // rather than as idle.
     out_multi("  Total : %u KB", (unsigned)(total / 1024));
-    out_multi("  Used  : %u KB  (%u%%)", (unsigned)(alloc / 1024),
-              (unsigned)(total ? alloc * 100 / total : 0));
+    if (alloc < 1024)
+        out_multi("  Used  : %u B  (nothing allocated right now)", (unsigned)alloc);
+    else
+        out_multi("  Used  : %u KB  (%u%%)", (unsigned)(alloc / 1024),
+                  (unsigned)(total ? alloc * 100 / total : 0));
     out_multi("  Free  : %u KB", (unsigned)(free / 1024));
     uint32_t big = largest_block();
     unsigned frag = free ? (unsigned)(100 - (big * 100 / free)) : 0;
@@ -349,7 +355,7 @@ static int cmd_sreboot(int, char **) {
 void sys_register(void) {
     static const Command cmds[] = {
         {"uptime",  "time since boot",              cmd_uptime,  nullptr},
-        {"date",    "date [set YYYY-MM-DD ..]",     cmd_date,    nullptr},
+        {"date",    "date [set YYYY-MM-DD ..]",     cmd_date,    nullptr, LEVEL_ADMIN},
         {"sysinfo", "system overview",              cmd_sysinfo, nullptr},
         {"meminfo", "RAM usage and fragmentation",  cmd_meminfo, nullptr},
         {"ver",     "version and board",            cmd_ver,     nullptr},
@@ -358,11 +364,11 @@ void sys_register(void) {
         {"which",   "which <command>",              cmd_which,   nullptr},
         {"history", "recent commands",              cmd_history, nullptr},
         {"sleep",   "sleep <seconds>",              cmd_sleep,   nullptr},
-        {"env",     "registry settings by section", cmd_env,     nullptr},
-        {"pulse",   "CPU clock management",         cmd_pulse,   nullptr},
-        {"reboot",  "restart the device",           cmd_reboot,  nullptr},
-        {"sreboot", "restart the device",           cmd_sreboot, nullptr},
-        {"bootloader", "reboot into USB flashing mode", cmd_bootloader, nullptr},
+        {"env",     "registry settings by section", cmd_env,     nullptr, LEVEL_ADMIN},
+        {"pulse",   "CPU clock management",         cmd_pulse,   nullptr, LEVEL_ADMIN},
+        {"reboot",  "restart the device",           cmd_reboot,  nullptr, LEVEL_ADMIN},
+        {"sreboot", "restart the device",           cmd_sreboot, nullptr, LEVEL_ADMIN},
+        {"bootloader", "reboot into USB flashing mode", cmd_bootloader, nullptr, LEVEL_ADMIN},
     };
     for (const auto &c : cmds) cmd_register(&c);
 

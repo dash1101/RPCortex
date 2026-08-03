@@ -93,6 +93,34 @@ extern "C" uint32_t fw_heap_largest(void) {
     return best;
 }
 
+// --- the compiler's runtime -------------------------------------------------
+//
+// Not "API" in the versioned sense — these are the helpers GCC EMITS CALLS TO
+// without being asked. An integer % becomes __aeabi_idivmod, a struct copy
+// becomes memcpy, and neither appears anywhere in the package's source. Leaving
+// them out meant any package doing arithmetic more complicated than addition
+// failed to load with "unresolved symbol", which is exactly what happened to the
+// self test.
+//
+// They are listed separately from the API because they are not a compatibility
+// commitment this OS makes — they are the C runtime the compiler assumes exists,
+// and adding one is not a MINOR bump.
+extern "C" {
+// Integer division. Cortex-M0+ has no divide instruction at all, so on RP2040
+// even a plain / turns into one of these.
+void __aeabi_idiv(void);
+void __aeabi_idivmod(void);
+void __aeabi_uidiv(void);
+void __aeabi_uidivmod(void);
+void __aeabi_ldivmod(void);
+void __aeabi_uldivmod(void);
+// 64-bit arithmetic.
+void __aeabi_lmul(void);
+void __aeabi_llsl(void);
+void __aeabi_llsr(void);
+void __aeabi_lasr(void);
+}
+
 // --- the table -------------------------------------------------------------
 
 struct ApiSymbol { const char *name; uint32_t addr; };
@@ -120,6 +148,30 @@ static const ApiSymbol kSymbols[] = {
     SYM(fw_heap_free),
     SYM(fw_heap_total),
     SYM(fw_heap_largest),
+
+    // The compiler's runtime. See above: emitted, not written.
+    SYM(__aeabi_idiv),
+    SYM(__aeabi_idivmod),
+    SYM(__aeabi_uidiv),
+    SYM(__aeabi_uidivmod),
+    SYM(__aeabi_ldivmod),
+    SYM(__aeabi_uldivmod),
+    SYM(__aeabi_lmul),
+    SYM(__aeabi_llsl),
+    SYM(__aeabi_llsr),
+    SYM(__aeabi_lasr),
+    SYM(memcpy),
+    SYM(memset),
+    SYM(memmove),
+    SYM(memcmp),
+    SYM(strlen),
+    SYM(strcmp),
+    SYM(strncmp),
+    SYM(strcpy),
+    SYM(strncpy),
+    SYM(strchr),
+    SYM(strstr),
+    SYM(snprintf),
 };
 static const uint32_t kSymbolCount = sizeof(kSymbols) / sizeof(kSymbols[0]);
 

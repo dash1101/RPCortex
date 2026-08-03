@@ -15,6 +15,7 @@
 #include "users.h"
 #include "registry.h"
 #include "persist.h"
+#include "storage.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -86,8 +87,12 @@ static int cmd_mkacct(int argc, char **argv) {
         return 1;
     }
     persist_save_users();
+    char home[USR_HOME_MAX + 8];
+    snprintf(home, sizeof(home), "/home/%s", name);
+    storage_mkdir(home);
     out_ok("Account '%s' created%s%s.", name,
            admin ? " (admin)" : "", nopass ? " (no password)" : "");
+    out_multi("  Home: %s", home);
     return 0;
 }
 
@@ -218,10 +223,10 @@ void user_register(void) {
     static const Command cmds[] = {
         {"whoami",  "the logged-in user",         cmd_whoami,  nullptr},
         {"users",   "list accounts",              cmd_users,   nullptr},
-        {"mkacct",  "mkacct <name> [--admin]",    cmd_mkacct,  nullptr},
-        {"passwd",  "passwd [user]",              cmd_passwd,  nullptr},
-        {"usermod", "usermod <user> <action>",    cmd_usermod, nullptr},
-        {"rmuser",  "rmuser <username>",          cmd_rmuser,  nullptr},
+        {"mkacct",  "mkacct <name> [--admin]",    cmd_mkacct,  nullptr, LEVEL_ADMIN},
+        {"passwd",  "passwd [user]",              cmd_passwd,  nullptr, LEVEL_ADMIN},
+        {"usermod", "usermod <user> <action>",    cmd_usermod, nullptr, LEVEL_ADMIN},
+        {"rmuser",  "rmuser <username>",          cmd_rmuser,  nullptr, LEVEL_ADMIN},
         {"logout",  "return to the login prompt", cmd_logout,  nullptr},
     };
     for (const auto &c : cmds) cmd_register(&c);
