@@ -407,10 +407,18 @@ void task_sleep_ms(uint32_t ms) {
     reschedule(TASK_SLEEPING);
 }
 
+// Set once the shell task starts. Zero before then, which is why every use is
+// guarded rather than assuming a valid pid.
+static int g_shell_pid;
+
 bool task_kill(int pid) {
     Task *t = slot_of(pid);
     if (!t) return false;
-    if (t->info.pid == 1) return false;          // the shell that owns the boot
+    // Never the shell: ending it leaves a device nobody can type at. The pid is
+    // looked up rather than assumed — it stopped being 1 the moment main became
+    // the idle task and the shell was spawned into its own.
+    if (t->info.pid == 1) return false;              // the idle task
+    if (g_shell_pid && t->info.pid == g_shell_pid) return false;
     if (t->info.state == TASK_DONE) return false;
     // Cooperative: the task stops itself at its next yield point, where it is by
     // definition not holding a lock or part-way through a flash write. Tearing
@@ -427,6 +435,14 @@ bool task_should_stop(void) {
     Task *t = cur();
     return t && t->info.kill_requested;
 }
+
+void task_clear_stop(void) {
+    Task *t = cur();
+    if (t) t->info.kill_requested = false;
+}
+
+void task_mark_shell(void) { Task *t = cur(); if (t) g_shell_pid = t->info.pid; }
+int  task_shell_pid(void)  { return g_shell_pid; }
 
 void task_exit(int code) {
     Task *me = cur();

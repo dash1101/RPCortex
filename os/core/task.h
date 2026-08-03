@@ -119,6 +119,26 @@ bool task_kill(int pid);
 // the same way it checks for Ctrl+C — in fact intr_check() folds it in.
 bool task_should_stop(void);
 
+// Clear the current task's stop request.
+//
+// A stop request is aimed at a COMMAND, but it lands on the task running it —
+// and the shell is a long-lived task that runs every command. Left set, it made
+// task_should_stop true forever, and since intr_check folds that in, every
+// interruptible loop afterwards gave up instantly: WiFi scans found nothing,
+// pings timed out immediately, and the device looked broken while the shell
+// itself carried on fine. The shell clears it when it returns to the prompt.
+void task_clear_stop(void);
+
+// The shell's pid, or 0 before it starts.
+//
+// The watchdog and task_kill both refuse to terminate the shell, since ending
+// it leaves a device with no way to type anything. That used to be a hardcoded
+// pid 1, which stopped being the shell the moment main became the idle task and
+// the shell was spawned — so the guard was protecting the idle task and happily
+// signalling the shell.
+void task_mark_shell(void);
+int  task_shell_pid(void);
+
 // Finish the current task with a status. Does not return.
 void task_exit(int code);
 

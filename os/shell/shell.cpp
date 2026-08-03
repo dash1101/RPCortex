@@ -649,7 +649,20 @@ static void run_line(char *line) {
 void shell_run(void) {
     char line[128];
 
+    // So the watchdog and task_kill know which task must never be terminated.
+    // Ending the shell leaves a device nobody can type at.
+    task_mark_shell();
+
     while (true) {
+        // A stop request is aimed at a COMMAND, but it lands on the task that
+        // ran it — and this task runs every command. Left set it made
+        // task_should_stop true forever, and since intr_check folds that in,
+        // every interruptible loop afterwards gave up instantly: WiFi scans
+        // found nothing, pings timed out at once, and the device looked broken
+        // while the shell carried on fine. Reaching the prompt means whatever
+        // was asked to stop has stopped.
+        task_clear_stop();
+
         char prompt[80];
         // v1's prompt, colour for colour: cyan user, grey @host, blue path.
         snprintf(prompt, sizeof(prompt), "%s%s%s@%s%s:%s%s%s%s>%s ",

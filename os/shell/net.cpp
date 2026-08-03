@@ -22,6 +22,7 @@
 #include "registry.h"
 #include "session.h"
 #include "interrupt.h"
+#include "task.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -238,7 +239,11 @@ static int scan_collect(void) {
     while (cyw43_wifi_scan_active(&cyw43_state)) {
         if (absolute_time_diff_us(get_absolute_time(), deadline) < 0) break;
         if (intr_check()) break;
-        sleep_ms(50);
+        // task_sleep_ms, not sleep_ms: a raw sleep parks the core without
+        // reaching the scheduler, so nothing feeds the watchdog. A scan can run
+        // for seconds, and the watchdog then asked the SHELL to stop — which
+        // set a flag that made every later scan and ping give up instantly.
+        task_sleep_ms(20);
     }
     if (!g_scan.n) { out_warn("No networks found."); return 1; }
 
@@ -283,8 +288,26 @@ static int wifi_connect(const char *ssid, const char *pw) {
 
     uint32_t auth = (pw && pw[0]) ? auth_for(ssid) : CYW43_AUTH_OPEN;
     out_info("Connecting to '%s'...", ssid);
-    int rc = cyw43_arch_wifi_connect_timeout_ms(ssid, (pw && pw[0]) ? pw : nullptr,
-                                                auth, JOIN_TIMEOUT);
+
+    // Async, then poll — NOT cyw43_arch_wifi_connect_timeout_ms.
+    //
+    // The blocking form does not return for as long as the join takes, which is
+    // routinely several seconds and can be the full timeout. Nothing reaches
+    // the scheduler in that window, so nothing feeds the watchdog, and it
+    // reported the shell as unresponsive during an entirely normal WiFi setup.
+    int rc = cyw43_arch_wifi_connect_async(ssid, (pw && pw[0]) ? pw : nullptr, auth);
+    if (rc == 0) {
+        absolute_time_t deadline = make_timeout_time_ms(JOIN_TIMEOUT);
+        rc = -1;
+        while (true) {
+            int st = cyw43_tcpip_link_status(&cyw43_state, CYW43_ITF_STA);
+            if (st == CYW43_LINK_UP) { rc = 0; break; }
+            if (st < 0) break;                       // failed or auth rejected
+            if (absolute_time_diff_us(get_absolute_time(), deadline) < 0) break;
+            if (intr_check()) break;                 // Ctrl+C during a long join
+            task_sleep_ms(50);
+        }
+    }
     if (rc != 0) {
         int st = cyw43_tcpip_link_status(&cyw43_state, CYW43_ITF_STA);
         out_err("Could not connect to '%s' — %s.", ssid, link_text(st));

@@ -111,7 +111,10 @@ void task_watchdog_feed(void) {
     if (stall < STALL_WARN_MS) { g_last_stage = 0; return; }
 
     const TaskInfo *t = task_current();
-    if (!t || t->pid == 1) return;      // the shell itself; nothing to kill
+    // Never the idle task, and never the shell — asking the shell to stop set a
+    // flag nothing cleared, which silently broke every later scan and ping.
+    if (!t || t->pid == 1) return;
+    if (t->pid == task_shell_pid()) return;
 
     if (stall >= STALL_KILL_MS && g_last_stage < 2) {
         g_last_stage = 2;
@@ -174,7 +177,8 @@ extern "C" void task_forced_exit(void) {
 // Should the task holding this core be terminated where it stands?
 static bool should_force(void) {
     const TaskInfo *t = task_current();
-    if (!t || t->pid == 1) return false;      // never the shell
+    if (!t || t->pid == 1) return false;              // the idle task
+    if (t->pid == task_shell_pid()) return false;    // and never the shell
 
     uint32_t now = task_now_ms();
     PreemptState ps{};

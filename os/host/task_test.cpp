@@ -280,6 +280,24 @@ int main(void) {
         spawned++;
     ck(spawned > 0 && task_count() <= TASK_MAX, "the table fills and then refuses");
 
+    // --- a stop request must not outlive the command ------------------------
+    //
+    // This one reached hardware. The watchdog asked the SHELL to stop during a
+    // slow WiFi join; nothing cleared the flag, so task_should_stop stayed true
+    // forever. intr_check folds it in, so every interruptible loop afterwards
+    // gave up at once — scans found no networks, pings timed out immediately —
+    // while the shell itself carried on looking perfectly healthy.
+    task_clear_stop();
+    ck(!task_should_stop(), "no stop request outstanding to begin with");
+
+    // The shell is exempt from being asked at all. Ending it leaves a device
+    // nobody can type at, and the guard used to be a hardcoded pid 1 — which
+    // stopped being the shell the moment main became the idle task.
+    task_mark_shell();
+    ck(task_shell_pid() == task_self(), "the shell identifies itself by pid");
+    ck(!task_kill(task_self()), "and cannot be asked to stop");
+    ck(!task_should_stop(), "so its flag is never set");
+
     printf("  task: %d checks, %d failed\n", checks, fails);
     return fails ? 1 : 0;
 }
