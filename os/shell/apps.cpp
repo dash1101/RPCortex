@@ -3,6 +3,7 @@
 #include "out.h"
 #include "storage.h"
 #include "kernel.h"
+#include "blackbox.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -68,7 +69,12 @@ int apps_launch(const char *file, int arg, bool quiet) {
 
     api_set_current_app(app.image);
     g_current_app = app.header.name;
+    // The first jump into loaded code. If a crash report stops here the loader
+    // produced something that does not execute, which is a very different
+    // problem from a package with a bug in it.
+    bb_note_phase("entering app_main");
     int ret = app.entry(arg);
+    bb_note_phase("app_main returned");
     g_current_app = nullptr;
     api_set_current_app(nullptr);
 

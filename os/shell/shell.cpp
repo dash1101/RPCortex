@@ -442,7 +442,24 @@ static int run_one(char *seg) {
 
     bool saved = g_elevated;
     g_elevated = elevated;
+
+    // Phase markers around the call itself. A package command jumps into code
+    // the loader put in RAM, and if THAT is what fails, no checkpoint inside the
+    // package can ever be reached — so the firmware records the attempt from
+    // outside. "entered" appearing without "returned" means the package's own
+    // code is where it stopped; "calling" without "entered" means it never got
+    // there at all.
+    char phase[40];
+    if (c->owner) {
+        snprintf(phase, sizeof(phase), "calling package '%s'", c->name);
+        bb_note_phase(phase);
+    }
     int rc = c->fn(argc, argv);
+    if (c->owner) {
+        snprintf(phase, sizeof(phase), "'%s' returned", c->name);
+        bb_note_phase(phase);
+    }
+
     g_elevated = saved;
     return rc;
 }

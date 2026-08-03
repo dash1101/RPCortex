@@ -10,6 +10,7 @@
 // unknown state and continuing would turn one clear failure into a vague one.
 
 #include <stdio.h>
+#include "blackbox.h"
 #include "pico/stdlib.h"
 #include "hardware/watchdog.h"
 
@@ -23,6 +24,30 @@ struct FaultFrame {
 };
 
 void fault_report(FaultFrame *f, const char *kind) {
+    // RECORD FIRST, print second.
+    //
+    // A fault runs with interrupts off, so nothing services USB and everything
+    // printed here sits in a buffer that is never delivered — the terminal sees
+    // the device disappear and that is all. Writing to memory the reset does not
+    // clear is the only way the report survives to be read, and it has to happen
+    // before anything that might itself fault.
+    char note[40];
+    const char *who = g_current_app ? (const char *)g_current_app : "firmware";
+    // Hand-built rather than snprintf: this is a fault handler, and calling into
+    // stdio here is exactly the sort of thing that faults again.
+    int n = 0;
+    const char *k = kind;
+    while (*k && n < 12) note[n++] = *k++;
+    note[n++] = ' '; note[n++] = 'i'; note[n++] = 'n'; note[n++] = ' ';
+    while (*who && n < 30) note[n++] = *who++;
+    note[n++] = ' '; note[n++] = 'p'; note[n++] = 'c'; note[n++] = '=';
+    for (int shift = 28; shift >= 0 && n < 39; shift -= 4) {
+        uint32_t nib = (f->pc >> shift) & 0xF;
+        note[n++] = (char)(nib < 10 ? '0' + nib : 'a' + nib - 10);
+    }
+    note[n] = 0;
+    bb_note_phase(note);
+
     printf("\n");
     printf("*** %s ***\n", kind);
     if (g_current_app) printf("    in app: %s\n", (const char *)g_current_app);

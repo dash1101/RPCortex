@@ -36,13 +36,18 @@ extern "C" void api_set_current_app(void *owner) { g_current_owner = owner; }
 // while without yielding is indistinguishable from a hang, and gets rebooted for
 // doing its job.
 extern "C" int fw_printf(const char *fmt, ...) {
+    // Reaching here at all proves the call from package code into the firmware
+    // works — the veneer, the relocation and the symbol lookup. If a crash
+    // report stops at "calling package 'x'" and never shows this, the fault is
+    // in getting here, not in anything the package does.
+    bb_note_phase("entered fw_printf");
     task_alive();
     va_list ap; va_start(ap, fmt);
     int n = vprintf(fmt, ap); va_end(ap);
     return n;
 }
-extern "C" uint32_t fw_millis(void) { task_alive(); return (uint32_t)(time_us_64() / 1000u); }
-extern "C" void    *fw_malloc(size_t n) { task_alive(); return malloc(n); }
+extern "C" uint32_t fw_millis(void) { bb_note_phase("entered fw_millis"); task_alive(); return (uint32_t)(time_us_64() / 1000u); }
+extern "C" void    *fw_malloc(size_t n) { bb_note_phase("entered fw_malloc"); task_alive(); return malloc(n); }
 extern "C" void     fw_free(void *p)    { task_alive(); free(p); }
 
 extern "C" void fw_log(int level, const char *msg) {
