@@ -14,6 +14,7 @@
 #include "out.h"
 #include "registry.h"
 #include "interrupt.h"
+#include "task.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -43,7 +44,11 @@ static bool wait_for(volatile bool &flag, uint32_t ms) {
     while (!flag) {
         if (absolute_time_diff_us(get_absolute_time(), deadline) < 0) return false;
         if (intr_check()) return false;      // Ctrl+C gets out of every wait
-        sleep_ms(5);
+        // task_sleep_ms, not sleep_ms: a raw sleep parks the core without
+        // reaching the scheduler, so nothing feeds the watchdog. resolve_host
+        // waits up to 8 s, which against an 8 s watchdog is a reboot rather
+        // than a timeout — the same bug that made the login prompt restart.
+        task_sleep_ms(5);
     }
     return true;
 }

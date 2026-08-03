@@ -92,18 +92,35 @@ static err_t on_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err) 
     // keeps the pbuf and re-delivers later. Dropping it instead would lose
     // bytes out of the middle of a download and produce a corrupt file that
     // looks like a successful one.
+    //
+    // The decision is made ONCE and committed to entirely. Consuming part of a
+    // pbuf is not an option: returning ERR_MEM afterwards would have lwIP
+    // re-deliver the whole thing and duplicate what was already stored, and
+    // freeing it would discard the remainder. Either all of it is taken or none
+    // of it is touched.
     if (p->tot_len > ring_free(c)) return ERR_MEM;
 
-    uint16_t off = 0;
-    while (off < p->tot_len) {
+    const uint16_t total = p->tot_len;      // p is freed below; keep the length
+    uint16_t copied = 0;
+    while (copied < total) {
+        uint16_t want = (uint16_t)(total - copied);
+        uint16_t room = (uint16_t)(RX_RING - c->head);      // to the ring's end
         uint16_t n = (uint16_t)pbuf_copy_partial(p, c->ring + c->head,
-                                                 (uint16_t)(RX_RING - c->head), off);
+                                                 room < want ? room : want, copied);
         if (n == 0) break;
         c->head = (uint16_t)((c->head + n) & (RX_RING - 1));
-        off = (uint16_t)(off + n);
+        copied = (uint16_t)(copied + n);
     }
-    tcp_recved(pcb, p->tot_len);
+
+    // Ack only what was actually stored. Acking tot_len after a short copy is
+    // precisely how a download loses bytes from its middle and still reports
+    // success — the corruption the ERR_MEM path above exists to prevent.
+    tcp_recved(pcb, copied);
     pbuf_free(p);
+
+    // It fit, so a short copy cannot happen unless an assumption above is
+    // wrong. Fail loudly instead of returning a quietly corrupt file.
+    if (copied != total) c->failed = true;
     return ERR_OK;
 }
 
@@ -279,8 +296,10 @@ static int file_sink(void *ctx, const uint8_t *data, uint32_t len) {
     return storage_sink_write(f->h, data, len) ? 0 : -1;
 }
 
+static uint64_t g_progress_last;    // reset per download, not per boot
+
 static void show_progress(void *, uint64_t got, uint64_t total) {
-    static uint64_t last;
+    uint64_t &last = g_progress_last;
     // Only redraw every 4 KB. A line per segment costs more time than the
     // transfer it is reporting on.
     if (got - last < 4096 && got != total) return;
@@ -329,6 +348,7 @@ static int cmd_wget(int argc, char **argv) {
     if (!fs.h) { out_err("Could not create '%s'.", full); return 1; }
 
     out_info("Fetching %s", argv[1]);
+    g_progress_last = 0;    // or a second wget shows nothing until it passes the first
 
     FetchOpts o{};
     o.poll = poll_interrupt;
