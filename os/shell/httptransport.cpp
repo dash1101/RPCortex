@@ -113,30 +113,20 @@ static uint16_t rx_available(const TcpConn *c) {
 
 static err_t on_recv(void *arg, struct altcp_pcb *pcb, struct pbuf *p, err_t err) {
     TcpConn *c = (TcpConn *)arg;
+    (void)pcb;
     if (err != ERR_OK) { c->failed = true; c->last_err = (int)err; if (p) pbuf_free(p); return ERR_OK; }
     if (!p) { c->closed = true; return ERR_OK; }        // clean FIN
 
     // Take it, always. Never refuse: under TLS a refused pbuf is not
     // re-delivered, and the transfer stops for good.
     //
-    // And acknowledge it HERE, on arrival, rather than as the reader consumes.
-    //
-    // Acknowledging on consumption is the textbook answer and it did not work:
-    // the headers arrived, were read and acked, and the body never came — the
-    // window opened once and never again. A 1 KB manifest completed because it
-    // fit in that first window; a 694 KB image stopped at 923 bytes, which is
-    // exactly the header block.
-    //
-    // Acking on arrival is safe HERE specifically because nothing is dropped:
-    // the data is already held in the chain below, and how much can pile up is
-    // bounded by TCP_WND, not by how fast the reader runs.
+    // Acknowledged as the reader CONSUMES it, not here. See lw_recv.
     // Read the length BEFORE chaining: after pbuf_cat this pbuf belongs to the
     // chain, and reasoning about its fields separately stops being safe.
     uint16_t n = p->tot_len;
     if (c->rx) pbuf_cat(c->rx, p);
     else       c->rx = p;
     c->got += n;
-    altcp_recved(pcb, n);
     return ERR_OK;
 }
 
@@ -376,6 +366,20 @@ static int lw_recv(void *ctx, uint8_t *buf, uint32_t cap) {
     // is fully consumed, returning the new head. So an offset is no longer
     // needed at all.
     c->rx = pbuf_free_header(c->rx, n);
+
+    // Acknowledge only what has actually been READ. This is TCP's flow control
+    // and it has to mean something.
+    //
+    // Acking on ARRIVAL instead loses it entirely: the sender keeps sending
+    // while this device is busy writing flash, the buffers fill, packets get
+    // dropped — and the sender believes they were delivered, so it never
+    // retransmits. A download then died partway with no error at around 145 KB,
+    // which is simply where writing to flash fell far enough behind.
+    //
+    // This only became workable once TCP_WND was made larger than one TLS
+    // record. Before that it deadlocked, which is exactly what made acking on
+    // arrival look like the fix. Two bugs concealing each other.
+    if (c->pcb && n) altcp_recved(c->pcb, n);
 
     cyw43_arch_lwip_end();
 
