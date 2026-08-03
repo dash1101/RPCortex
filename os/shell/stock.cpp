@@ -88,6 +88,27 @@ static void stock_record(const StockPkg &p) {
 // that would otherwise put the shipped one back.
 extern "C" const unsigned char stock_cacerts_data[];
 extern "C" const unsigned int  stock_cacerts_len;
+extern "C" const unsigned char stock_index_data[];
+extern "C" const unsigned int  stock_index_len;
+
+// The package catalogue this image shipped with, written out on a first boot
+// so `pkg available` answers before the device has ever been online. v1 shipped
+// its list the same way.
+//
+// Only when absent, never over the top: an index fetched with `pkg update` is
+// newer than the one compiled in, and putting the shipped copy back after a
+// firmware update would silently undo it.
+bool stock_install_index(void) {
+    bool is_dir = false; uint32_t size = 0;
+    if (storage_stat("/os/pkg/index.cfg", &is_dir, &size) && size > 0) return true;
+    if (!storage_write_file("/os/pkg/index.cfg", stock_index_data, stock_index_len)) {
+        log_add(LOG_K_WARN, "pkg: shipped index could not be written");
+        return false;
+    }
+    log_addf(LOG_K_OK, "pkg: installed the shipped catalogue (%u bytes)",
+             (unsigned)stock_index_len);
+    return true;
+}
 
 bool stock_install_cacerts(bool force) {
     bool is_dir = false; uint32_t size = 0;
@@ -112,6 +133,7 @@ static void install_cacerts(void) { stock_install_cacerts(false); }
 
 void stock_install_once(void) {
     install_cacerts();
+    stock_install_index();
     for (unsigned i = 0; i < N_STOCK; i++) {
         bool is_update = false;
         if (!stock_should_place(kStock[i], &is_update)) continue;

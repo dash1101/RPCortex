@@ -176,6 +176,21 @@ add_custom_command(
             ${OS_ROOT}/ca_certs.pem ${CMAKE_BINARY_DIR}/stock_cacerts.cpp stock_cacerts
     DEPENDS ${OS_ROOT}/ca_certs.pem ${OS_ROOT}/tools_bin2c.py
 )
+# The package index rides along too, so `pkg available` works on a device that
+# has never been online. v1 shipped its catalogue the same way. It goes stale
+# between releases, which is what `pkg update` is for — but a fresh device
+# should be able to see what exists before it can reach the network.
+add_custom_command(
+    OUTPUT ${CMAKE_BINARY_DIR}/stock_index.cpp
+    COMMAND ${CMAKE_COMMAND} -E env python3 ${OS_ROOT}/tools_bin2c.py
+            ${OS_ROOT}/../../RPCortex-repo/repo-v2/index.json
+            ${CMAKE_BINARY_DIR}/stock_index.cpp stock_index
+    DEPENDS ${OS_ROOT}/../../RPCortex-repo/repo-v2/index.json ${OS_ROOT}/tools_bin2c.py
+)
+add_custom_target(stock_index_src DEPENDS ${CMAKE_BINARY_DIR}/stock_index.cpp)
+target_sources(rpcortex_v2 PRIVATE ${CMAKE_BINARY_DIR}/stock_index.cpp)
+add_dependencies(rpcortex_v2 stock_index_src)
+
 add_custom_target(stock_cacerts_src DEPENDS ${CMAKE_BINARY_DIR}/stock_cacerts.cpp)
 target_sources(rpcortex_v2 PRIVATE ${CMAKE_BINARY_DIR}/stock_cacerts.cpp)
 add_dependencies(rpcortex_v2 stock_cacerts_src)
