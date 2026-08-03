@@ -29,15 +29,20 @@ bool lock_held_by_me(const RpcLock *l) {
 bool lock_try(RpcLock *l) {
     if (!l) return false;
     int self = me();
+    // A task killed while holding a lock leaves it owned by a pid that no
+    // longer exists, and every later acquire waits forever. Counting is what
+    // tells the forced-exit path to wait — and it has to happen BEFORE the
+    // lock is taken, not after. Preemption landing in between is exactly the
+    // case being defended against, and marking it afterwards leaves that window
+    // open: the task is redirected to task_forced_exit holding a lock nothing
+    // will ever release.
+    crit_enter();
     lock_hw_enter();
     bool got = false;
     if (l->owner == 0) { l->owner = self; l->depth = 1; got = true; }
     else if (l->owner == self) { l->depth++; got = true; }
     lock_hw_exit();
-    // A task killed while holding a lock leaves it owned by a pid that no
-    // longer exists, and every later acquire waits forever. Counting here is
-    // what tells the forced-exit path to wait.
-    if (got) crit_enter();
+    if (!got) crit_leave();
     return got;
 }
 

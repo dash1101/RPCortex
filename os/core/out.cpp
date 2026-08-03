@@ -48,6 +48,12 @@ struct OutGuard {
     OutGuard() {
         held = false;
         if (g_out_panic) return;
+        // BEFORE the acquire, not after. Preemption landing between taking
+        // ownership and marking the task busy redirects it to task_forced_exit,
+        // which never runs this destructor — so the lock would stay owned by a
+        // task that no longer exists and the other core would spin on it for
+        // good. The window is small and it is the whole failure.
+        crit_enter();
         uint32_t me = lock_hw_core() + 1;
         while (true) {
             lock_hw_enter();
@@ -55,20 +61,19 @@ struct OutGuard {
                 g_out_owner = me;
                 g_out_depth++;
                 lock_hw_exit();
-                break;
+                held = true;
+                return;
             }
             lock_hw_exit();
-            if (g_out_panic) return;      // the holder died mid-write
+            if (g_out_panic) { crit_leave(); return; }   // the holder died mid-write
         }
-        held = true;
-        crit_enter();    // a forced exit in here would never release it
     }
     ~OutGuard() {
         if (!held) return;
-        crit_leave();
         lock_hw_enter();
         if (g_out_depth && --g_out_depth == 0) g_out_owner = 0;
         lock_hw_exit();
+        crit_leave();    // busy until it is fully released, not until nearly
     }
 };
 

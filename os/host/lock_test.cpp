@@ -118,6 +118,31 @@ static int waiter(void *) {
     return 0;
 }
 
+// "Busy, do not interrupt" belongs to the TASK, not to the core it happens to
+// be on. This was a per-core counter, and two tasks share a core: while the
+// holder below sat parked mid-lock, the counter still read non-zero, so every
+// OTHER task scheduled onto that core also looked like it was in a critical
+// section. preempt_decide consults exactly that and defers, so a task holding
+// nothing at all was never preemptable.
+//
+// One core is enough to tell the two apart, which is why this test is here
+// rather than in the SMP harness.
+static bool g_saw_crit;
+static int quiet_holder(void *) {
+    lock_acquire(&g_lock);
+    task_yield();          // parked, still holding it
+    task_yield();
+    lock_release(&g_lock);
+    return 0;
+}
+static int observer(void *) {
+    for (int i = 0; i < 3; i++) {
+        if (crit_active()) g_saw_crit = true;   // it holds no lock; it is not busy
+        task_yield();
+    }
+    return 0;
+}
+
 // Recursion: an operation built out of other operations takes the same lock
 // again. storage_copy does exactly this, and a non-recursive lock deadlocks.
 static int nested(void *) {
@@ -187,6 +212,16 @@ int main(void) {
     ck(g_lock.waits > 0, "the wait was counted");
     ck(g_lock.owner == 0, "the lock ends up free");
     task_reap(h); task_reap(w);
+
+    // --- "in a critical section" is per task, not per core ------------------
+    g_saw_crit = false;
+    int qh = task_spawn("holder2",  nullptr, quiet_holder, nullptr, ST, AFFINITY_ANY);
+    int ob = task_spawn("observer", nullptr, observer,     nullptr, ST, AFFINITY_ANY);
+    for (int i = 0; i < 12; i++) task_yield();
+    ck(!g_saw_crit, "a task holding nothing is not 'busy' just because its core-mate is");
+    ck(!crit_active(), "and the count is clean once everyone has released");
+    ck(g_lock.owner == 0, "the lock ends up free");
+    task_reap(qh); task_reap(ob);
 
     printf("  lock: %d checks, %d failed\n", checks, fails);
     return fails ? 1 : 0;
