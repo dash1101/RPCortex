@@ -467,11 +467,63 @@ static int do_install(const char *name) {
 
 struct UpCtx { int found; int done; int failed; };
 
+// Whether the installed copy is byte-for-byte what the index describes.
+//
+// Version numbers are the normal signal, and they miss one real case: a package
+// REBUILT without its version changing. That is not a corner case during
+// development, it is what happens every time — and the symptom is a repo
+// serving new bytes while `pkg upgrade` reports everything up to date, with no
+// way to tell from the device that the two disagree.
+//
+// Hashing the installed file costs one read of a few KB and only happens for
+// packages whose version already matched, so it is off the common path.
+static bool installed_matches(const char *name, const char *want_hex) {
+    if (!want_hex || !want_hex[0]) return true;      // nothing published to compare
+
+    char path[48];
+    snprintf(path, sizeof(path), "/os/pkg/%s.app", name);
+
+    // Whole file in one read. A package is a few KB against a heap with
+    // hundreds free, and the alternative is a chunked reader this is the only
+    // caller of.
+    #define PKG_HASH_MAX 65536
+    uint8_t *buf = (uint8_t *)malloc(PKG_HASH_MAX);
+    if (!buf) return true;                            // cannot check: do not nag
+
+    uint32_t n = storage_read_file(path, buf, PKG_HASH_MAX);
+    if (n == 0) { free(buf); return true; }           // no file to compare
+
+    Sha256Ctx c; sha256_init(&c);
+    sha256_update(&c, buf, n);
+    free(buf);
+
+    uint8_t dg[SHA256_DIGEST_LEN];
+    sha256_final(&c, dg);
+    char hex[65];
+    for (int i = 0; i < SHA256_DIGEST_LEN; i++) {
+        static const char *H = "0123456789abcdef";
+        hex[i * 2]     = H[dg[i] >> 4];
+        hex[i * 2 + 1] = H[dg[i] & 15];
+    }
+    hex[64] = 0;
+    return strcmp(hex, want_hex) == 0;
+}
+
 static bool upgrade_cb(void *ctx, const RepoEntry *e) {
     UpCtx *u = (UpCtx *)ctx;
     char have[24];
     if (!pkg_installed_version(e->name, have, sizeof(have))) return true;   // not installed
-    if (repo_version_cmp(e->ver, have) <= 0) return true;                   // current
+
+    bool newer = repo_version_cmp(e->ver, have) > 0;
+    if (!newer) {
+        // Same version. Rebuilt, or genuinely identical?
+        if (installed_matches(e->name, e->sha256)) return true;
+        u->found++;
+        out_info("%s %s - rebuilt, the installed copy differs", e->name, e->ver);
+        if (do_install(e->name) == 0) u->done++; else u->failed++;
+        return !intr_check();
+    }
+
     u->found++;
     out_info("%s %s -> %s", e->name, have, e->ver);
     if (do_install(e->name) == 0) u->done++; else u->failed++;

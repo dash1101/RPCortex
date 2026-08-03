@@ -6,7 +6,7 @@
 // straight through is what makes the same thing possible here.
 #include "rpc_app.h"
 
-RPC_APP_VER("i2cscan", "2.0");
+RPC_APP_VER("i2cscan", "2.1");
 
 // The device table v1 carried, because an address on its own tells you almost
 // nothing. Addresses that several parts share list them together rather than

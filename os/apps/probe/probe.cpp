@@ -17,7 +17,7 @@
 // ambiguous and a failed one is data.
 #include "rpc_app.h"
 
-RPC_APP_VER("probe", "1.0");
+RPC_APP_VER("probe", "1.1");
 
 #define RULE "----------------------------------------------------------"
 
