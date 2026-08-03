@@ -28,14 +28,22 @@ extern "C" void api_set_current_app(void *owner) { g_current_owner = owner; }
 
 // --- implementations -------------------------------------------------------
 
+// Every one of these calls task_alive first.
+//
+// A package doing real work calls into the ABI constantly — printing, timing,
+// allocating, touching files — so this is the liveness signal, and it costs the
+// package nothing to provide. Without it, code that legitimately runs for a
+// while without yielding is indistinguishable from a hang, and gets rebooted for
+// doing its job.
 extern "C" int fw_printf(const char *fmt, ...) {
+    task_alive();
     va_list ap; va_start(ap, fmt);
     int n = vprintf(fmt, ap); va_end(ap);
     return n;
 }
-extern "C" uint32_t fw_millis(void) { return (uint32_t)(time_us_64() / 1000u); }
-extern "C" void    *fw_malloc(size_t n) { return malloc(n); }
-extern "C" void     fw_free(void *p)    { free(p); }
+extern "C" uint32_t fw_millis(void) { task_alive(); return (uint32_t)(time_us_64() / 1000u); }
+extern "C" void    *fw_malloc(size_t n) { task_alive(); return malloc(n); }
+extern "C" void     fw_free(void *p)    { task_alive(); free(p); }
 
 extern "C" void fw_log(int level, const char *msg) {
     LogLevel l = (level == 2) ? LOG_ERROR : (level == 1) ? LOG_WARN : LOG_INFO;
@@ -69,12 +77,14 @@ extern "C" int  fw_task_kill(int pid)          { return task_kill(pid) ? 1 : 0; 
 extern "C" uint32_t fw_cores(void)             { return task_core_count(); }
 
 extern "C" int fw_file_write(const char *path, const void *data, uint32_t len) {
+    task_alive();
     return storage_write_file(path, (const uint8_t *)data, len) ? 1 : 0;
 }
 extern "C" uint32_t fw_file_read(const char *path, void *buf, uint32_t cap) {
+    task_alive();
     return storage_read_file(path, (uint8_t *)buf, cap);
 }
-extern "C" int fw_file_remove(const char *path) { return storage_remove(path) ? 1 : 0; }
+extern "C" int fw_file_remove(const char *path) { task_alive(); return storage_remove(path) ? 1 : 0; }
 extern "C" int fw_file_exists(const char *path) { return storage_stat(path, nullptr, nullptr) ? 1 : 0; }
 
 extern "C" uint32_t fw_heap_free(void)  { return heap_free(); }
@@ -84,7 +94,7 @@ extern "C" uint32_t fw_heap_total(void) { return heap_total(); }
 // USB buffer when the device stops is never delivered, which is why a crash
 // report can name the command but not the line. This is recorded in memory the
 // reset does not clear, so the last checkpoint reached IS the failing step.
-extern "C" void fw_progress(const char *what) { bb_note_phase(what); }
+extern "C" void fw_progress(const char *what) { task_alive(); bb_note_phase(what); }
 
 // The biggest single allocation available right now, found by probing. Free
 // bytes do not predict whether the next allocation succeeds; this does.

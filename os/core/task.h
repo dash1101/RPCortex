@@ -173,6 +173,20 @@ void task_stack_overflow(const char *name, uint32_t size) __attribute__((noretur
 void task_watchdog_start(void);
 void task_watchdog_feed(void);
 
+// "Still working." For code that legitimately runs a long time WITHOUT yielding
+// — a benchmark loop, a flash write, a long computation inside a package.
+//
+// Liveness cannot depend on the running code choosing to yield. A package doing
+// real work looks exactly like a hang to a watchdog that is only fed by the
+// scheduler, and that is why `bench` — which never yields at all — was killed
+// after eight seconds while doing precisely what it was asked to do.
+//
+// So every ABI entry point calls this. A package doing anything at all is
+// calling fw_printf, fw_millis or fw_file_* regularly, which makes it a natural
+// liveness signal that costs a package nothing to provide. It also checks the
+// stack, which the yield path could not do for code that never yields.
+void task_alive(void);
+
 // Bytes still available below the current stack pointer on the MAIN stack. pid 1
 // runs on the C startup stack, which this scheduler never allocated and so
 // cannot paint with a tripwire — this is the equivalent check for it.

@@ -101,11 +101,14 @@ could reflash. The equivalent here is handing USB back to the boot ROM.
 
 ## Known unstable
 
-- **`stress` hangs the device.** The self test — deliberately the harshest thing
-  that runs — locks up partway through and the watchdog reboots it after 8 s.
-  Not a stack overflow (3152 of 8192 bytes used) and not consistently at the same
-  point. Checkpoints now record the exact step across the reboot; the next report
-  should name it.
+- **Long package commands were being killed for working.** `bench` failed the
+  same way `stress` did, and it shares almost nothing with it — no tasks, no
+  concurrency. The common factor was being a package command at all: neither
+  yields, so nothing fed the watchdog from the moment the command started and it
+  rebooted after eight seconds. The stack figure in those reports was stale for
+  the same reason, since the guard only ran at a yield. Liveness now comes from
+  the ABI entry points, which a working package calls constantly. Unconfirmed on
+  hardware.
 - **`wifi`, `ping`, `ntp` are unproven on hardware.** They build and the lwIP
   locking is right by construction, but none has been run against a real network.
 

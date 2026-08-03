@@ -375,6 +375,31 @@ static void reschedule(TaskState park_as) {
 
 void task_yield(void) { reschedule(TASK_READY); }
 
+void task_alive(void) {
+    if (!g_up) return;
+    if (task_this_core() != 0) return;      // core 0 owns the watchdog
+
+    // Progress, recorded BEFORE feeding. The stall detector measures time since
+    // the last recorded progress, so without this a busy package would be
+    // reported as unresponsive and asked to stop while it was working
+    // perfectly — feeding the watchdog but never clearing the stall.
+    bb_note_yield(task_now_ms());
+    task_watchdog_feed();
+
+    // The stack check the yield path would have done. Without this a package
+    // that never yields could overrun its stack with nothing watching, which is
+    // the one place an overflow does the most damage and is hardest to find.
+    Task *me = cur();
+    if (!me) return;
+    if (!me->stack) {
+        if (task_main_stack_headroom() < 256)
+            task_stack_overflow(me->info.name, me->info.stack_size);
+        return;
+    }
+    if (!guard_ok(me)) task_stack_overflow(me->info.name, me->info.stack_size);
+    me->info.stack_used = high_water(me);   // so a crash report is not stale
+}
+
 void task_sleep_ms(uint32_t ms) {
     Task *me = cur();
     if (!me) return;
