@@ -251,7 +251,29 @@ suite rather than a package, it targets one board, and it is the piece most
 likely to want ABI additions — all of which argue for doing it last, on a stable
 base, rather than discovering the requirements through it.
 
-## Networking cannot be split across tasks yet
+## Networking, and the one-owner rule
+
+**Resolved.** The section below is kept because the reasoning is what makes the
+current rule make sense, but the restriction it describes is lifted.
+
+Two changes did it. First, only ONE task is ever inside cyw43 or lwIP: every
+network operation takes `g_net_op`, an `RpcLock` that YIELDS while it waits
+rather than blocking the core. Second, and more important, the questions other
+tasks actually ask — "are we online", "what is the address" — read a cached
+struct instead of reaching into lwIP at all.
+
+That second part is what removes the contention rather than merely managing it.
+Five callers across four files ask whether the network is up: the prompt,
+`sysinfo`, `compat`, `ping` and the HTTP transport. Every one of them used to
+take a core-blocking lock from whatever task it happened to be on. They now read
+plain memory, so they can ask from anywhere, at any time, while a download is in
+flight.
+
+A connection holds ownership from open to close, so a download and a WiFi join
+can never be part-way through each other. The boot join is a background task
+again, and the login prompt no longer waits on it.
+
+## What the restriction was, and why
 
 Worth writing down, because it cost a whole evening and the answer was
 structural rather than a bug.

@@ -35,6 +35,11 @@
 #include "pico/stdlib.h"
 
 bool net_is_connected(void);
+// Only one task may be inside cyw43 or lwIP at a time — see net.cpp. A
+// connection holds that ownership from open to close, so a download and a WiFi
+// join can never be part-way through each other.
+void net_op_acquire(void);
+void net_op_release(void);
 const char *fs_cwd(void);
 void http_last_detail(char *out, unsigned cap);
 bool http_tls_available(void);       // the shell's working directory (fs.cpp)
@@ -259,17 +264,20 @@ void http_tls_reset(void) {
 
 static int lw_open(void *ctx, const char *host, uint16_t port, bool tls) {
     TcpConn *c = (TcpConn *)ctx;
+    // Taken here and released in lw_close, which the fetch driver always calls
+    // — including on every failure path and between redirect hops.
+    net_op_acquire();
 
     struct altcp_tls_config *cfg = nullptr;
     if (tls) {
         cfg = tls_config();
-        if (!cfg) return -1;          // no roots: refuse, never downgrade
+        if (!cfg) { net_op_release(); return -1; }   // no roots: refuse, never downgrade
     }
 
     memset(c, 0, sizeof(*c));
 
     ip_addr_t addr;
-    if (!resolve(host, &addr)) return -1;
+    if (!resolve(host, &addr)) { net_op_release(); return -1; }
 
     cyw43_arch_lwip_begin();
     c->pcb = tls ? altcp_tls_new(cfg, IP_GET_TYPE(&addr))
@@ -289,8 +297,8 @@ static int lw_open(void *ctx, const char *host, uint16_t port, bool tls) {
     err_t e = c->pcb ? altcp_connect(c->pcb, &addr, port, on_connected) : ERR_MEM;
     cyw43_arch_lwip_end();
 
-    if (!c->pcb || e != ERR_OK) return -1;
-    if (!wait_flag(c->connected, CONNECT_MS, &c->failed)) return -1;
+    if (!c->pcb || e != ERR_OK) { net_op_release(); return -1; }
+    if (!wait_flag(c->connected, CONNECT_MS, &c->failed)) { net_op_release(); return -1; }
     return 0;
 }
 
@@ -402,6 +410,7 @@ static void lw_close(void *ctx) {
         c->pcb = nullptr;
     }
     cyw43_arch_lwip_end();
+    net_op_release();
 }
 
 // The connection is big (a 2 KB ring), so it does not live on a task stack.

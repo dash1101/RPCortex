@@ -25,6 +25,7 @@
 #include "task.h"
 #include "logring.h"
 #include "persist.h"
+#include "lock.h"
 #include "blackbox.h"
 
 #include <stdio.h>
@@ -64,11 +65,70 @@ struct NetLock {
     ~NetLock() { cyw43_arch_lwip_end(); }
 };
 
+// --- one owner at a time ----------------------------------------------------
+//
+// NetLock above blocks the CORE. That is right for excluding the driver's
+// interrupt, and fatal between tasks under cooperative scheduling: a task that
+// blocks the core waiting for a lock another task holds has stopped the only
+// thing that could release it.
+//
+// So the rule is that only ONE task is ever inside cyw43 or lwIP. This lock
+// enforces it, and it is an RpcLock rather than the driver's — RpcLock YIELDS
+// while it waits, so a task holding it keeps running and the waiter does not
+// take the core down with it.
+//
+// Every network OPERATION takes it. Reads do not, because reads no longer
+// touch lwIP at all — see NetStatus.
+static RpcLock g_net_op;
+
+// Exposed so the HTTP transport can hold ownership for the length of a
+// connection. It lives here rather than there because this is where the rule
+// is stated, and a second lock would defeat the point of having one.
+void net_op_acquire(void) { lock_acquire(&g_net_op); }
+void net_op_release(void) { lock_release(&g_net_op); }
+
+// What the last operation saw, in plain memory.
+//
+// This exists so that "are we online?" costs nothing and cannot deadlock.
+// Five callers across four files ask that question — the prompt, sysinfo,
+// compat, ping, the HTTP transport — and every one of them used to reach into
+// lwIP from whatever task it happened to be on. Reading a struct instead means
+// they can ask from anywhere, at any time, while a download is in flight.
+struct NetStatus {
+    volatile bool connected;
+    char     ssid[33];
+    char     ip[16];
+    char     gw[16];
+    char     mask[16];
+    volatile int link;
+};
+static NetStatus g_status;
+
+// Whether the radio has been powered up. Declared here because the status
+// refresh below needs it.
+static bool g_radio_up = false;
+
+// Refresh the cache from lwIP. Only ever called by whoever holds g_net_op.
+static void status_refresh(void) {
+    NetLock _l;
+    g_status.link = g_radio_up ? cyw43_tcpip_link_status(&cyw43_state, CYW43_ITF_STA)
+                               : CYW43_LINK_DOWN;
+    bool up = g_radio_up && netif_default && netif_is_up(netif_default) &&
+              !ip4_addr_isany(netif_ip4_addr(netif_default));
+    if (up) {
+        snprintf(g_status.ip,   sizeof(g_status.ip),   "%s", ip4addr_ntoa(netif_ip4_addr(netif_default)));
+        snprintf(g_status.gw,   sizeof(g_status.gw),   "%s", ip4addr_ntoa(netif_ip4_gw(netif_default)));
+        snprintf(g_status.mask, sizeof(g_status.mask), "%s", ip4addr_ntoa(netif_ip4_netmask(netif_default)));
+    } else {
+        g_status.ip[0] = g_status.gw[0] = g_status.mask[0] = 0;
+    }
+    g_status.connected = up;
+}
+
 #define NET_SAVED     4        // saved networks, registry-backed
 #define SCAN_MAX     24        // networks reported by one scan
 #define JOIN_TIMEOUT 20000     // ms; a WPA2 join that has not landed by now failed
 
-static bool g_radio_up = false;
 
 // --- radio lifecycle --------------------------------------------------------
 
@@ -169,8 +229,10 @@ static int wifi_status(void) {
         out_multi("  Use 'wifi scan' or 'wifi connect <ssid>' to bring it up.");
         return 0;
     }
-    int st;
-    { NetLock _l; st = cyw43_tcpip_link_status(&cyw43_state, CYW43_ITF_STA); }
+    // `wifi` is the one command whose whole job is to report the truth right
+    // now, so it pays for a live look rather than reading the cache.
+    { LockGuard _own(&g_net_op); status_refresh(); }
+    int st = g_status.link;
     out_multi("  Radio  : on");
     out_multi("  Link   : %s%s%s",
               st == CYW43_LINK_UP ? C_CYAN : C_WARN, link_text(st), C_RESET);
@@ -263,6 +325,10 @@ static uint32_t auth_for(const char *ssid) {
 }
 
 static int scan_collect(void) {
+    // A scan is a driver operation, so it takes ownership too. Recursive, so a
+    // caller that already holds it (autoconnect, which scans then joins) is
+    // not blocked by itself.
+    LockGuard _own(&g_net_op);
     if (!radio_up()) return 1;
     g_scan.n = 0;
     cyw43_wifi_scan_options_t opts;
@@ -339,6 +405,8 @@ static bool wifi_connect_quiet(const char *ssid, const char *pw) {
 }
 
 static int wifi_connect(const char *ssid, const char *pw, bool quiet, bool persist) {
+    // Whoever holds this is the one task allowed inside cyw43 and lwIP.
+    LockGuard _own(&g_net_op);
     if (!radio_up()) return 1;
 
     // No password given: fall back to a saved one before assuming an open
@@ -378,6 +446,7 @@ static int wifi_connect(const char *ssid, const char *pw, bool quiet, bool persi
     if (rc != 0) {
         int st;
         { NetLock _l; st = cyw43_tcpip_link_status(&cyw43_state, CYW43_ITF_STA); }
+        status_refresh();
         if (!quiet) out_err("Could not connect to '%s' — %s.", ssid, link_text(st));
         return 1;
     }
@@ -388,6 +457,8 @@ static int wifi_connect(const char *ssid, const char *pw, bool quiet, bool persi
     // they survive a rejoin rather than lasting until the next DHCP lease.
     net_apply_addressing();
     net_apply_dns();
+    status_refresh();
+    snprintf(g_status.ssid, sizeof(g_status.ssid), "%s", ssid);
     if (persist) {
         reg_set("WiFi.Active", ssid);
         saved_put(ssid, pw);
@@ -464,7 +535,37 @@ void net_autoconnect_now(void);      // the inline fallback, defined below
 // Doing this properly needs ONE task owning every cyw43 and lwIP call, with
 // everything else asking it for work. That is a real change and belongs in
 // daylight rather than bolted on. ARCHITECTURE.md carries it.
-void net_autoconnect_report(void) { }
+static volatile bool g_join_done;
+static volatile bool g_join_ok;
+
+// Reported by the SHELL at its prompt, not by the task. Printing from a
+// background task lands in the middle of whatever is being typed.
+void net_autoconnect_report(void) {
+    if (!g_join_done) return;
+    g_join_done = false;
+    if (g_join_ok) return;             // joining the network it was told to is not news
+    out_warnp("wifi", "No saved network joined at boot.");
+    out_multi("  'wifi autoconnect' to retry, or 'wifi auto off' to stop looking.");
+}
+
+// The join runs as its own task again, and this time it can.
+//
+// It was pulled back inline because cyw43_arch_lwip_begin blocks the CORE:
+// under cooperative scheduling, a task blocking the core on a lock another
+// task holds has stopped the only thing that could release it. Four different
+// hard faults came out of that.
+//
+// What changed is that only ONE task is ever inside cyw43 or lwIP now.
+// g_net_op enforces it and YIELDS while it waits, and the questions other
+// tasks actually ask — "are we online", "what is the address" — read a cached
+// struct instead of reaching into lwIP at all. So there is nothing left to
+// contend over.
+static int autoconnect_task(void *) {
+    bool ok = wifi_autoconnect(/*quiet*/true, /*persist*/true) == 0;
+    g_join_ok = ok;
+    g_join_done = true;
+    return ok ? 0 : 1;
+}
 
 void net_autoconnect(void) {
     if (strcmp(reg_get("WiFi.Auto", "false"), "true") != 0) return;
@@ -481,6 +582,14 @@ void net_autoconnect(void) {
         return;
     }
 
+    g_join_done = false;
+    g_join_ok = false;
+    if (task_spawn("wifi-join", "(kernel)", autoconnect_task, nullptr,
+                   TASK_STACK_NET, AFFINITY_ANY) >= 0) {
+        out_infop("wifi", "Looking for a saved network in the background...");
+        return;
+    }
+    // No room for a task: do it inline rather than not at all.
     out_infop("wifi", "Looking for a saved network...");
     net_autoconnect_now();
 }
@@ -501,7 +610,15 @@ bool net_available(void) { return true; }
 // "usable", and a command that needs to send a packet cares about the second.
 const char *net_active_ssid(void) { return reg_get("WiFi.Active", "(none)"); }
 
-bool net_is_connected(void) {
+// A plain read of the cache. No lock, no lwIP, safe from any task at any time
+// — including while another task is midway through a download.
+//
+// It reflects the last completed operation rather than this instant. That is
+// the right trade: the alternative was reaching into lwIP from five different
+// tasks, which is what deadlocked the device.
+bool net_is_connected(void) { return g_status.connected; }
+
+static bool net_is_connected_live(void) {
     if (!g_radio_up) return false;
     // The address is the thing that matters: "joined" is not "usable", and a
     // command about to send a packet cares about the second. netif is asked
@@ -587,6 +704,9 @@ static int wifi_connect_interactive(const char *ssid, bool quiet) {
 // signal. Picking by signal rather than by slot order is what makes this useful
 // on a device that moves between two known places.
 static int wifi_autoconnect(bool quiet, bool persist) {
+    // Held across the whole scan-then-join, so nothing else touches the driver
+    // in between and finds it mid-operation.
+    LockGuard _own(&g_net_op);
     char k[REG_KEY_MAX];
     bool any = false;
     for (int i = 0; i < NET_SAVED && !any; i++) {
@@ -878,6 +998,8 @@ static int cmd_wifi(int argc, char **argv) {
 
 #else   // no CYW43 part on this board
 
+void net_op_acquire(void) {}
+void net_op_release(void) {}
 void net_autoconnect(void) {}
 void net_autoconnect_now(void) {}
 void net_autoconnect_report(void) {}

@@ -9,8 +9,8 @@
       "desc": "RPCortex v2.0.0 Vela II for pico2_w",
       "author": "dash1101",
       "arch": "armv8m",
-      "size": 714672,
-      "sha256": "cb5627182b5e5998712c0c6a2937d06a50637d21d13238a8eb0b66c26d5f6f4f",
+      "size": 715256,
+      "sha256": "a99dc6bd5397bc882eb93e6e52a859968728bc990ff4d3683814d502e0247440",
       "url": "https://raw.githubusercontent.com/dash1101/RPCortex/main/releases/rpcortex-v2-pico2_w.bin"
     },
     {
@@ -19,8 +19,8 @@
       "desc": "RPCortex v2.0.0 Vela II for pico_w",
       "author": "dash1101",
       "arch": "armv6m",
-      "size": 747032,
-      "sha256": "d333e66cf20111ea47e3fc634d0934a4eb7864cd56c27da731865ca4f104827d",
+      "size": 747640,
+      "sha256": "27ace20c4bca692a72c063534e35158342eb5300bb919380c579e76e0789ad9f",
       "url": "https://raw.githubusercontent.com/dash1101/RPCortex/main/releases/rpcortex-v2-pico_w.bin"
     },
     {
@@ -30,7 +30,7 @@
       "author": "dash1101",
       "arch": "armv8m",
       "size": 260264,
-      "sha256": "cf3b22c2999e98e4d3bfeac163a7a0913459bb0bbf1672b61785f7ba1d7bd822",
+      "sha256": "99b0f043b37002de793cd502e5aa650079d1892552cf3d75d57c38f41204db3e",
       "url": "https://raw.githubusercontent.com/dash1101/RPCortex/main/releases/rpcortex-v2-pico2.bin"
     },
     {
@@ -40,7 +40,7 @@
       "author": "dash1101",
       "arch": "armv6m",
       "size": 272824,
-      "sha256": "84267d40c04574a198c4538fea5eea54c0ca0b03e132aaa29d7a252373f87bcc",
+      "sha256": "d929500cddab6f6edf259e2d4e40334c33b0455079b3d316ffe62278611bc457",
       "url": "https://raw.githubusercontent.com/dash1101/RPCortex/main/releases/rpcortex-v2-pico.bin"
     }
   ]
