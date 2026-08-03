@@ -22,10 +22,11 @@ trap 'rm -rf "$OUT"' EXIT
 declare -A SRC=(
     [path_test]="$CORE/path.cpp"
     [cmdline_test]="$CORE/cmdline.cpp"
-    [lineedit_test]="$CORE/lineedit.cpp"
+    [lineedit_test]="$CORE/lineedit.cpp $CORE/interrupt.cpp"
     [fmt_test]="$CORE/fmt.cpp"
+    [interrupt_test]="$CORE/interrupt.cpp"
     [pkgindex_test]="$CORE/pkgindex.cpp"
-    [textcore_test]="$CORE/textcore.cpp"
+    [textcore_test]="$CORE/textcore.cpp $CORE/interrupt.cpp"
     [history_test]="$CORE/history.cpp"
     [core_test]="$CORE/sha256.cpp $CORE/registry.cpp $CORE/users.cpp"
     [out_test]="$CORE/out.cpp"

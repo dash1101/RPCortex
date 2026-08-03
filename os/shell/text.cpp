@@ -11,6 +11,7 @@
 #include "storage.h"
 #include "textcore.h"
 #include "path.h"
+#include "interrupt.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -210,7 +211,7 @@ static int cmd_sort(int argc, char **argv) {
         lines[j] = key;
     }
 
-    for (uint32_t i = 0; i < n; i++) out_multi("%s", lines[i]);
+    for (uint32_t i = 0; i < n && !intr_check(); i++) out_multi("%s", lines[i]);
     if (trunc)        out_warn("File truncated at %u KB.", TEXT_CAP / 1024);
     if (n == SORT_MAX) out_warn("Stopped at %u lines.", (unsigned)SORT_MAX);
     free(lines);
@@ -252,7 +253,7 @@ static int cmd_hex(int argc, char **argv) {
     if (want > src.size) want = src.size;
 
     uint8_t row[16];
-    for (uint32_t off = 0; off < want; off += 16) {
+    for (uint32_t off = 0; off < want && !intr_check(); off += 16) {
         uint32_t n = want - off; if (n > 16) n = 16;
         int got = src.read(src.ctx, off, row, n);
         if (got <= 0) break;

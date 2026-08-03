@@ -21,6 +21,7 @@
 #include "out.h"
 #include "registry.h"
 #include "session.h"
+#include "interrupt.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -143,7 +144,7 @@ static int wifi_status(void) {
         out_multi("  Use 'wifi scan' or 'wifi connect <ssid>' to bring it up.");
         return 0;
     }
-    int st = cyw43_wifi_link_status(&cyw43_state, CYW43_ITF_STA);
+    int st = cyw43_tcpip_link_status(&cyw43_state, CYW43_ITF_STA);
     out_multi("  Radio  : on");
     out_multi("  Link   : %s%s%s",
               st == CYW43_LINK_UP ? C_CYAN : C_WARN, link_text(st), C_RESET);
@@ -236,6 +237,7 @@ static int scan_collect(void) {
     absolute_time_t deadline = make_timeout_time_ms(15000);
     while (cyw43_wifi_scan_active(&cyw43_state)) {
         if (absolute_time_diff_us(get_absolute_time(), deadline) < 0) break;
+        if (intr_check()) break;
         sleep_ms(50);
     }
     if (!g_scan.n) { out_warn("No networks found."); return 1; }
@@ -284,7 +286,7 @@ static int wifi_connect(const char *ssid, const char *pw) {
     int rc = cyw43_arch_wifi_connect_timeout_ms(ssid, (pw && pw[0]) ? pw : nullptr,
                                                 auth, JOIN_TIMEOUT);
     if (rc != 0) {
-        int st = cyw43_wifi_link_status(&cyw43_state, CYW43_ITF_STA);
+        int st = cyw43_tcpip_link_status(&cyw43_state, CYW43_ITF_STA);
         out_err("Could not connect to '%s' — %s.", ssid, link_text(st));
         return 1;
     }
@@ -359,7 +361,10 @@ bool net_available(void) { return true; }
 // "usable", and a command that needs to send a packet cares about the second.
 bool net_is_connected(void) {
     if (!g_radio_up) return false;
-    if (cyw43_wifi_link_status(&cyw43_state, CYW43_ITF_STA) != CYW43_LINK_UP) return false;
+    // The address is the thing that matters: "joined" is not "usable", and a
+    // command about to send a packet cares about the second. netif is asked
+    // directly rather than trusting a link enum, because that is the state the
+    // packet path will actually use.
     return netif_default && netif_is_up(netif_default) &&
            !ip4_addr_isany(netif_ip4_addr(netif_default));
 }

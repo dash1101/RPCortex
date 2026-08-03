@@ -1,4 +1,5 @@
 #include "textcore.h"
+#include "interrupt.h"
 
 static bool is_space(char c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r'; }
 
@@ -26,6 +27,8 @@ uint32_t text_line_count(const char *buf, uint32_t len) {
 }
 
 void text_for_lines(char *buf, uint32_t len, LineFn cb, void *ctx) {
+    // Every line-oriented command runs through here, so one check covers
+    // grep, head, tail, uniq and wc at once.
     uint32_t start = 0, n = 0;
     for (uint32_t i = 0; i <= len; i++) {
         if (i == len || buf[i] == '\n') {

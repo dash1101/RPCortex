@@ -13,6 +13,7 @@
 #include "command.h"
 #include "out.h"
 #include "registry.h"
+#include "interrupt.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -41,6 +42,7 @@ static bool wait_for(volatile bool &flag, uint32_t ms) {
     absolute_time_t deadline = make_timeout_time_ms(ms);
     while (!flag) {
         if (absolute_time_diff_us(get_absolute_time(), deadline) < 0) return false;
+        if (intr_check()) return false;      // Ctrl+C gets out of every wait
         sleep_ms(5);
     }
     return true;
@@ -187,7 +189,14 @@ static int cmd_ping(int argc, char **argv) {
         } else {
             out_multi("  Request timed out.  icmp_seq=%u", (unsigned)(i + 1));
         }
-        if (i + 1 < count) sleep_ms(700);
+        if (intr_check()) break;
+        // Broken into slices so Ctrl+C lands during the gap between pings, not
+        // just during the wait for a reply.
+        for (int slice = 0; slice < 7 && i + 1 < count; slice++) {
+            if (intr_check()) break;
+            sleep_ms(100);
+        }
+        if (intr_check()) break;
     }
 
     cyw43_arch_lwip_begin();

@@ -17,6 +17,7 @@
 #include "registry.h"
 #include "users.h"
 #include "history.h"
+#include "interrupt.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -52,7 +53,11 @@ const char *fs_cwd(void);
 // ceiling as catastrophic fragmentation; the same trap applies, so the cap is
 // the whole arena.
 static uint32_t largest_block(void) {
-    uint32_t lo = 0, hi = heap_total(), best = 0;
+    // Cap at what is actually free: a probe above that can never succeed, and
+    // asking newlib for 400 KB only to be refused is wasted work. The cap must
+    // still sit ABOVE any plausible answer or the probe reports its own ceiling
+    // as catastrophic fragmentation, which is the trap v1 fell into.
+    uint32_t lo = 0, hi = heap_free(), best = 0;
     while (lo <= hi) {
         uint32_t mid = lo + (hi - lo) / 2;
         if (mid == 0) break;
@@ -218,8 +223,14 @@ static int cmd_sleep(int argc, char **argv) {
     double secs = strtod(argv[1], &end);
     if (end == argv[1] || secs < 0) { out_warn("Invalid number: '%s'", argv[1]); return 1; }
     if (secs > 3600) secs = 3600;             // a shell that sleeps for a day is a hang
-    sleep_ms((uint32_t)(secs * 1000.0));
-    return 0;
+    // Sliced so Ctrl+C interrupts a long sleep instead of waiting it out.
+    uint32_t left = (uint32_t)(secs * 1000.0);
+    while (left && !intr_check()) {
+        uint32_t slice = left > 50 ? 50 : left;
+        sleep_ms(slice);
+        left -= slice;
+    }
+    return intr_pending() ? 130 : 0;
 }
 
 // env — the registry as a browsable listing, grouped by the prefix before the

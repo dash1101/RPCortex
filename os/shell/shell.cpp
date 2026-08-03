@@ -21,6 +21,7 @@
 #include "path.h"
 #include "cmdline.h"
 #include "lineedit.h"
+#include "interrupt.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -59,6 +60,13 @@ static int shell_getch(void *, uint32_t timeout_us) {
 }
 
 static void shell_putch(void *, char c) { putchar(c); }
+
+// Non-blocking single byte, for interrupt.cpp to scan while a COMMAND owns the
+// input rather than the line editor.
+static int shell_poll_byte(void) {
+    int c = getchar_timeout_us(0);
+    return (c == PICO_ERROR_TIMEOUT) ? -1 : c;
+}
 
 static const char *shell_history(void *, int depth) { return hist_get(depth); }
 
@@ -216,6 +224,8 @@ static int cmd_reg(int argc, char **argv) {
 
 
 void shell_register_builtins(void) {
+    intr_set_poll(shell_poll_byte);
+
     static const Command builtins[] = {
         {"run", "run <app.app> [arg]",            cmd_run, nullptr},
         {"put", "put <name> <len>  upload bytes", cmd_put, nullptr},
@@ -364,10 +374,16 @@ static void run_line(char *line) {
                        (kind == CON_OR  && last_status == 0);
         if (*seg && !skip_it) {
             out_clear_error();
+            intr_clear();      // a stray Ctrl+C at the prompt must not kill this
             last_status = run_segment(seg);
             // A command that printed an error but returned 0 still failed, as
             // far as && is concerned. v1's had_error() served the same purpose.
             if (last_status == 0 && out_had_error()) last_status = 1;
+            if (intr_pending()) {
+                out_warn("Interrupted.");
+                last_status = 130;          // 128 + SIGINT, the usual convention
+                intr_clear();
+            }
             persist_save_dirty();
         }
         kind = next_kind;

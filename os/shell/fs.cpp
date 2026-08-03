@@ -10,6 +10,7 @@
 #include "storage.h"
 #include "path.h"
 #include "fmt.h"
+#include "interrupt.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -113,6 +114,7 @@ static bool cat_one(const char *path) {
     uint32_t off = 0;
     bool ends_nl = true;
     while (off < src.size) {
+        if (intr_check()) break;     // cat of a huge file is interruptible
         uint32_t want = src.size - off; if (want > sizeof(chunk)) want = sizeof(chunk);
         int n = src.read(src.ctx, off, chunk, want);
         if (n <= 0) break;
@@ -220,6 +222,7 @@ static void tree_walk(const char *base, const char *prefix, int depth);
 
 static void tree_print(void *ctx, const char *name, bool is_dir, uint32_t) {
     TreeCtx *c = (TreeCtx *)ctx;
+    if (intr_check()) return;        // a deep tree stops where the user says
     bool last = (++c->seen == c->total);
 
     out_multi("%s%s%s%s%s", c->prefix, last ? "└── " : "├── ",
@@ -292,6 +295,7 @@ static void du_walk(const char *base, int depth, DuCtx *acc);
 
 static void du_cb(void *ctx, const char *name, bool is_dir, uint32_t size) {
     DuCtx *c = (DuCtx *)ctx;
+    if (intr_check()) return;
     if (!is_dir) { c->bytes += size; c->files++; return; }
     c->dirs++;
     if (c->depth >= 8) return;

@@ -25,9 +25,11 @@ add_executable(rpcortex_v2
     ${OS_ROOT}/main.cpp
     ${OS_ROOT}/api.cpp
     ${OS_ROOT}/platform_rp2.cpp
+    ${OS_ROOT}/panic.cpp
     ${OS_ROOT}/kernel/kernel.cpp
     ${OS_ROOT}/core/path.cpp
     ${OS_ROOT}/core/cmdline.cpp
+    ${OS_ROOT}/core/interrupt.cpp
     ${OS_ROOT}/core/lineedit.cpp
     ${OS_ROOT}/core/fmt.cpp
     ${OS_ROOT}/core/pkgindex.cpp
@@ -65,7 +67,18 @@ target_include_directories(rpcortex_v2 PRIVATE
 )
 
 target_compile_definitions(rpcortex_v2 PRIVATE
-    LFS_NO_DEBUG=1 LFS_NO_WARN=1 LFS_NO_ERROR=1 LFS_NO_ASSERT=1)
+    LFS_NO_DEBUG=1 LFS_NO_WARN=1 LFS_NO_ERROR=1 LFS_NO_ASSERT=1
+
+    # An allocation failure must RETURN NULL, not kill the device. The SDK
+    # default (1) panics, which made every "if (!buf)" check in this OS
+    # unreachable and turned `meminfo`'s largest-block probe — which asks for
+    # allocations it expects to fail — into a crash.
+    PICO_MALLOC_PANIC=0
+
+    # Route panics through rpc_panic_handler (panic.cpp): print the whole
+    # message, let USB drain it, then reboot. The default spins with interrupts
+    # off, which truncates the message and wedges the terminal.
+    PICO_PANIC_FUNCTION=rpc_panic_handler)
 
 target_compile_options(rpcortex_v2 PRIVATE
     -Wall -Wextra -Wno-unused-parameter

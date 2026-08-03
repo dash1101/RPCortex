@@ -2,6 +2,7 @@
 
 #include <string.h>
 #include <stdio.h>
+#include "interrupt.h"
 
 // --- pure buffer operations -------------------------------------------------
 
@@ -171,7 +172,6 @@ uint32_t line_edit(const LineEdit *le, char *buf, uint32_t cap) {
     Term t{&le->io};
     uint32_t len = 0, pos = 0;
     int  browse = -1;                    // -1 = the live line; 0.. = history depth
-    bool last_was_tab = false;
 
     buf[0] = 0;
     t.puts(le->prompt);
@@ -188,12 +188,14 @@ uint32_t line_edit(const LineEdit *le, char *buf, uint32_t cap) {
             return len;
         }
 
-        // Ctrl+C: abandon the line, as every shell does.
+        // Ctrl+C: abandon the line, as every shell does. The flag is raised as
+        // well so anything that checks it sees a consistent story.
         if (c == 0x03) {
+            intr_raise();
             t.puts("^C\n");
             len = 0; pos = 0; buf[0] = 0;
+            intr_clear();               // consumed here; the next line is clean
             t.puts(le->prompt);
-            last_was_tab = false;
             continue;
         }
 
@@ -205,14 +207,12 @@ uint32_t line_edit(const LineEdit *le, char *buf, uint32_t cap) {
         if (c == 0x7F) {                             // Backspace: one character
             len = line_delete_back(buf, len, pos, 1, &pos);
             browse = -1; redraw(t, le->prompt, buf, len, pos);
-            last_was_tab = false;
             continue;
         }
         if (c == 0x08 || c == 0x17) {                // Ctrl+Backspace / Ctrl+W
             uint32_t start = line_word_start(buf, len, pos);
             len = line_delete_back(buf, len, pos, pos - start, &pos);
             browse = -1; redraw(t, le->prompt, buf, len, pos);
-            last_was_tab = false;
             continue;
         }
         if (c == 0x15) {                             // Ctrl+U: to start of line
@@ -243,8 +243,6 @@ uint32_t line_edit(const LineEdit *le, char *buf, uint32_t cap) {
             }
             if (!n) continue;
             int key = line_decode_escape(seq, n);
-            last_was_tab = false;
-
             switch (key) {
                 case KEY_LEFT:  if (pos) pos--;      break;
                 case KEY_RIGHT: if (pos < len) pos++; break;
@@ -274,7 +272,7 @@ uint32_t line_edit(const LineEdit *le, char *buf, uint32_t cap) {
 
         // --- tab completion ---------------------------------------------------
         if (this_is_tab) {
-            if (!le->complete) { last_was_tab = false; continue; }
+            if (!le->complete) continue;
             uint32_t ws = line_word_start(buf, len, pos);
             char prefix[COMP_LEN];
             uint32_t plen = pos - ws;
@@ -291,7 +289,7 @@ uint32_t line_edit(const LineEdit *le, char *buf, uint32_t cap) {
                 n++;
             }
 
-            if (n == 0) { last_was_tab = false; continue; }
+            if (n == 0) continue;          // nothing matches; leave the line alone
 
             char common[COMP_LEN];
             uint32_t clen = line_common_prefix(cands, n, common, sizeof(common));
@@ -305,10 +303,12 @@ uint32_t line_edit(const LineEdit *le, char *buf, uint32_t cap) {
                 if (n == 1 && len + 1 < cap && (pos == len || buf[pos] != ' '))
                     len = line_insert(buf, len, cap, pos++, ' ');
                 redraw(t, le->prompt, buf, len, pos);
-                last_was_tab = false;
-            } else if (last_was_tab) {
-                // Second tab with nothing more to add: show what the choices are,
-                // then reprint the line so the user is where they left off.
+            } else {
+                // Nothing more can be added — the prefix is already as far as
+                // the candidates agree. Show them NOW rather than waiting for a
+                // second tab: with fifty-odd commands most prefixes are
+                // ambiguous, and a Tab that appears to do nothing reads as a Tab
+                // that does not work.
                 t.put('\n');
                 for (uint32_t i = 0; i < n; i++) {
                     t.puts("  ");
@@ -317,9 +317,6 @@ uint32_t line_edit(const LineEdit *le, char *buf, uint32_t cap) {
                 }
                 if (n == COMP_MAX) t.puts("  ...\n");
                 redraw(t, le->prompt, buf, len, pos);
-                last_was_tab = false;
-            } else {
-                last_was_tab = true;      // one more tab lists them
             }
             continue;
         }
@@ -337,6 +334,5 @@ uint32_t line_edit(const LineEdit *le, char *buf, uint32_t cap) {
                 else            redraw(t, le->prompt, buf, len, pos);
             }
         }
-        last_was_tab = false;
     }
 }
