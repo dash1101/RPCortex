@@ -61,6 +61,14 @@ unsigned        fake_pio_divider(int h);
 unsigned        fake_pio_puts(int h, unsigned long *out, unsigned cap);
 void            fake_set_clock_hz(uint32_t hz);
 
+// A fake network. Nothing here reaches a socket; it models what a package can
+// observe — connected or not, a list of access points, a name that resolves,
+// and one URL that returns a body.
+void fake_net_up(const char *ssid, const char *ip);
+void fake_net_down(void);
+void fake_net_add_ap(const char *ssid, int rssi, int channel, int secured);
+void fake_http_serve(const char *url, const char *body);
+
 // The fake clock, in microseconds. Advances on its own during busy waits so a
 // package that polls a deadline makes progress.
 uint32_t fake_now_us(void);

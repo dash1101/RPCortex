@@ -23,7 +23,7 @@ extern "C" {
 // MINOR: a symbol added — older-minor apps still run (everything they want is
 //        present); newer-minor apps refused (they may want something absent).
 #define RPC_API_MAJOR 1
-#define RPC_API_MINOR 8
+#define RPC_API_MINOR 9
 
 typedef struct {
     uint32_t magic;          // RPC_APP_MAGIC
@@ -208,6 +208,53 @@ uint32_t fw_clock_hz(void);
 
 uint32_t fw_micros(void);
 void     fw_busy_wait_us(uint32_t us);
+
+// --- network ----------------------------------------------------------------
+//
+// Added at 1.9, and it was the largest gap by a wide margin. Measured against
+// the v1 Nova D1 sources, `network` appears 78 times — more than every hardware
+// call in it put together — and the ABI had nothing at all.
+//
+// None of this is new capability. The OS already joins networks, resolves
+// names, verifies TLS and streams downloads to flash; these are the doors into
+// what is already there. A package cannot open a raw socket, and deliberately:
+// every call here goes through the same one-owner lock and core pinning the
+// shell uses, so a package doing network work cannot break the driver in the
+// ways this OS has already been broken once.
+
+#define FW_NET_SSID_MAX  33
+#define FW_NET_ADDR_MAX  16
+
+struct FwNetAp {
+    char ssid[FW_NET_SSID_MAX];
+    int  rssi;
+    int  channel;
+    int  secured;            // non-zero when it wants a password
+};
+
+// Is there a working connection right now? Reads a cached value, so it costs
+// nothing and can be asked from anywhere at any time.
+int fw_net_connected(void);
+
+// The current network's name and address. Both return the length written, or 0.
+int fw_net_ssid(char *out, unsigned cap);
+int fw_net_ip(char *out, unsigned cap);
+
+// Scan for access points, strongest first. Returns how many were written, or
+// negative if the radio could not be used. Takes seconds.
+int fw_net_scan(FwNetAp *out, unsigned max);
+
+// Resolve a hostname. Returns the length written to `ip_out`, or negative.
+int fw_net_resolve(const char *host, char *ip_out, unsigned cap);
+
+// Fetch a URL into a buffer. Returns the number of bytes, or negative on
+// error. HTTPS is verified against the built-in roots; an unverifiable
+// connection is refused rather than downgraded, exactly as it is for the shell.
+int fw_http_get(const char *url, void *buf, unsigned cap);
+
+// Fetch a URL straight to a file, which is how anything larger than RAM is
+// handled. Returns bytes written, or negative.
+int fw_http_download(const char *url, const char *path);
 
 // --- SPI --------------------------------------------------------------------
 //

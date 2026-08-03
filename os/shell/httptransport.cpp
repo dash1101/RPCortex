@@ -42,6 +42,7 @@ bool net_is_connected(void);
 void net_op_acquire(void);
 void net_op_release(void);
 bool net_core_ok(void);
+static int cmd_wget(int argc, char **argv);
 const char *fs_cwd(void);
 void http_last_detail(char *out, unsigned cap);
 bool http_tls_available(void);       // the shell's working directory (fs.cpp)
@@ -471,6 +472,20 @@ bool http_transport_get(HttpTransport *t) {
     return true;
 }
 
+// --- what packages see -------------------------------------------------------
+
+int net_pkg_resolve(const char *host, char *out, unsigned cap) {
+    if (!host || !out || cap == 0) return -1;
+    net_op_acquire();
+    if (!net_core_ok()) { net_op_release(); return -1; }
+    ip_addr_t addr;
+    bool ok = resolve(host, &addr);
+    net_op_release();
+    if (!ok) return -1;
+    int n = snprintf(out, cap, "%s", ipaddr_ntoa(&addr));
+    return n < 0 ? -1 : n;
+}
+
 #else   // no radio on this board
 
 bool http_transport_get(HttpTransport *) { return false; }
@@ -478,6 +493,9 @@ bool http_tls_available(void) { return false; }
 void http_last_detail(char *out, unsigned cap) { snprintf(out, cap, "no wireless"); }
 const char *http_tls_why(void) { return "no wireless on this board"; }
 void http_tls_reset(void) {}
+// No radio, so nothing to resolve. The HTTP wrappers below are shared and
+// already fail through http_transport_get.
+int net_pkg_resolve(const char *, char *out, unsigned cap) { if (out && cap) out[0] = 0; return -1; }
 
 #endif
 
@@ -506,16 +524,57 @@ static void show_progress(void *, uint64_t got, uint64_t total) {
 
 static int poll_interrupt(void *) { return intr_check() ? 1 : 0; }
 
-// runurl <url> [--keep] [-y]
-//
-// Fetching and executing a remote script is arbitrary code execution, so the
-// confirmation is the feature rather than friction — -y is there for scripts
-// that have already decided, not as the shortcut to reach for by default.
-//
-// The download reuses wget wholesale rather than duplicating the fetch, sink
-// and progress handling, and the run hands off to `script` the same way `run`
-// does for a .rps. Two copies of either would drift.
-static int cmd_wget(int argc, char **argv);
+// Into a caller's buffer. Bounded by that buffer rather than by a limit of its
+// own: a package asking for a page into 4 KB gets at most 4 KB, and the fetch
+// stops rather than the buffer overflowing.
+struct MemSink { unsigned char *buf; unsigned cap; unsigned len; };
+
+static int mem_sink(void *ctx, const uint8_t *data, uint32_t len) {
+    MemSink *m = (MemSink *)ctx;
+    uint32_t room = m->cap > m->len ? m->cap - m->len : 0;
+    uint32_t take = len < room ? len : room;
+    if (take) { memcpy(m->buf + m->len, data, take); m->len += take; }
+    return (take < len) ? -1 : 0;      // full: stop, and say the transfer ended
+}
+
+int net_pkg_http_get(const char *url, void *buf, unsigned cap) {
+    if (!url || !buf || cap == 0) return -1;
+    HttpTransport t;
+    if (!http_transport_get(&t)) return -1;
+
+    MemSink m{ (unsigned char *)buf, cap, 0 };
+    FetchOpts o{};
+    o.poll = poll_interrupt;
+    o.max_bytes = cap;
+
+    FetchResult r;
+    bool good = http_fetch(&t, url, mem_sink, &m, &o, &r);
+    // A full buffer stops the transfer, which is not a failure — the caller
+    // asked for that much and got it.
+    if (!good && m.len < cap) return -1;
+    return (int)m.len;
+}
+
+int net_pkg_http_download(const char *url, const char *path) {
+    if (!url || !path) return -1;
+    HttpTransport t;
+    if (!http_transport_get(&t)) return -1;
+
+    FileSink fs{nullptr};
+    fs.h = storage_open_sink(path);
+    if (!fs.h) return -1;
+
+    FetchOpts o{};
+    o.poll = poll_interrupt;
+    uint32_t room = storage_free_bytes();
+    o.max_bytes = room > 8192 ? room - 8192 : 1;
+
+    FetchResult r;
+    bool good = http_fetch(&t, url, file_sink, &fs, &o, &r);
+    if (!storage_close_sink(fs.h)) good = false;
+    if (!good) { storage_remove(path); return -1; }
+    return (int)r.bytes;
+}
 
 static int cmd_runurl(int argc, char **argv) {
     if (argc < 2) {
@@ -556,6 +615,17 @@ static int cmd_runurl(int argc, char **argv) {
     else       out_info("Kept as %s", tmp);
     return rc;
 }
+
+
+// runurl <url> [--keep] [-y]
+//
+// Fetching and executing a remote script is arbitrary code execution, so the
+// confirmation is the feature rather than friction — -y is there for scripts
+// that have already decided, not as the shortcut to reach for by default.
+//
+// The download reuses wget wholesale rather than duplicating the fetch, sink
+// and progress handling, and the run hands off to `script` the same way `run`
+// does for a .rps. Two copies of either would drift.
 
 static int cmd_wget(int argc, char **argv) {
     if (argc < 2) {

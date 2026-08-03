@@ -236,6 +236,42 @@ extern "C" void fw_busy_wait_us(uint32_t us) {
     task_alive();
 }
 
+// --- network ----------------------------------------------------------------
+//
+// Every one of these is a door into something the OS already does, opened for
+// packages. Nothing here talks to lwIP directly: the implementations live with
+// the code that owns the radio, so a package cannot reach the driver by a route
+// that has not been made safe.
+
+int net_pkg_scan(FwNetAp *out, unsigned max);
+int net_pkg_ssid(char *out, unsigned cap);
+int net_pkg_ip(char *out, unsigned cap);
+int net_pkg_resolve(const char *host, char *out, unsigned cap);
+int net_pkg_http_get(const char *url, void *buf, unsigned cap);
+int net_pkg_http_download(const char *url, const char *path);
+bool net_is_connected(void);
+
+extern "C" int fw_net_connected(void) { return net_is_connected() ? 1 : 0; }
+extern "C" int fw_net_ssid(char *out, unsigned cap) { return net_pkg_ssid(out, cap); }
+extern "C" int fw_net_ip(char *out, unsigned cap)   { return net_pkg_ip(out, cap); }
+
+extern "C" int fw_net_scan(FwNetAp *out, unsigned max) {
+    task_alive();
+    return net_pkg_scan(out, max);
+}
+extern "C" int fw_net_resolve(const char *host, char *out, unsigned cap) {
+    task_alive();
+    return net_pkg_resolve(host, out, cap);
+}
+extern "C" int fw_http_get(const char *url, void *buf, unsigned cap) {
+    task_alive();
+    return net_pkg_http_get(url, buf, cap);
+}
+extern "C" int fw_http_download(const char *url, const char *path) {
+    task_alive();
+    return net_pkg_http_download(url, path);
+}
+
 // --- SPI --------------------------------------------------------------------
 
 static spi_inst_t *spi_of(unsigned bus) {
@@ -632,6 +668,13 @@ static const ApiSymbol kSymbols[] = {
     SYM(fw_file_remove),
     SYM(fw_file_exists),
     SYM(fw_core_id),
+    SYM(fw_net_connected),
+    SYM(fw_net_ssid),
+    SYM(fw_net_ip),
+    SYM(fw_net_scan),
+    SYM(fw_net_resolve),
+    SYM(fw_http_get),
+    SYM(fw_http_download),
     SYM(fw_spi_init),
     SYM(fw_spi_set_baud),
     SYM(fw_spi_write),

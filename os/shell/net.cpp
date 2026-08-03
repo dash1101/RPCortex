@@ -27,6 +27,7 @@
 #include "persist.h"
 #include "lock.h"
 #include "blackbox.h"
+#include "rpc_app.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -1100,6 +1101,38 @@ static int cmd_wifi(int argc, char **argv) {
     return 1;
 }
 
+// --- what packages see -------------------------------------------------------
+//
+// Thin, and thin on purpose. A package gets the same scan the shell gets,
+// through the same one-owner lock and the same core pinning, so it cannot reach
+// the driver by a route that has not already been made safe.
+
+int net_pkg_scan(FwNetAp *out, unsigned max) {
+    if (!out || max == 0) return -1;
+    if (scan_collect(/*quiet*/true) != 0) return -1;
+
+    unsigned n = g_scan.n < max ? g_scan.n : max;
+    for (unsigned i = 0; i < n; i++) {
+        snprintf(out[i].ssid, sizeof(out[i].ssid), "%s", g_scan.e[i].ssid);
+        out[i].rssi    = g_scan.e[i].rssi;
+        out[i].channel = g_scan.e[i].channel;
+        out[i].secured = g_scan.e[i].auth ? 1 : 0;
+    }
+    return (int)n;
+}
+
+int net_pkg_ssid(char *out, unsigned cap) {
+    if (!out || cap == 0) return 0;
+    int n = snprintf(out, cap, "%s", g_status.connected ? g_status.ssid : "");
+    return n < 0 ? 0 : n;
+}
+
+int net_pkg_ip(char *out, unsigned cap) {
+    if (!out || cap == 0) return 0;
+    int n = snprintf(out, cap, "%s", g_status.connected ? g_status.ip : "");
+    return n < 0 ? 0 : n;
+}
+
 #else   // no CYW43 part on this board
 
 void net_op_acquire(void) {}
@@ -1107,6 +1140,9 @@ void net_op_release(void) {}
 // No radio, so no core to be wrong about. The transport still calls it.
 bool net_core_ok(void) { return true; }
 bool radio_locked(void) { return false; }   // nothing to lock
+int  net_pkg_scan(FwNetAp *, unsigned) { return -1; }
+int  net_pkg_ssid(char *out, unsigned cap) { if (out && cap) out[0] = 0; return 0; }
+int  net_pkg_ip(char *out, unsigned cap)   { if (out && cap) out[0] = 0; return 0; }
 void net_autoconnect(void) {}
 void net_autoconnect_now(void) {}
 void net_autoconnect_report(void) {}

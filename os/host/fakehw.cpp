@@ -49,6 +49,14 @@ static char        g_out[FAKE_OUT_MAX];
 static unsigned    g_out_len;
 static uint64_t    g_now_ns;
 static uint32_t    g_clock_hz = 125000000u;
+static bool     g_net_up;
+static char     g_net_ssid[FW_NET_SSID_MAX];
+static char     g_net_ip[FW_NET_ADDR_MAX];
+static FwNetAp  g_aps[16];
+static unsigned g_n_aps;
+static char     g_url[128];
+static char     g_body[2048];
+static unsigned g_body_len;
 static bool        g_i2c_up[2];
 static bool        g_spi_up[2];
 
@@ -61,6 +69,7 @@ void fake_reset(void) {
     memset(g_pio, 0, sizeof(g_pio));
     memset(g_i2c_up, 0, sizeof(g_i2c_up));
     memset(g_spi_up, 0, sizeof(g_spi_up));
+    g_net_up = false; g_n_aps = 0; g_url[0] = 0; g_body_len = 0;
     g_out_len = 0; g_out[0] = 0;
     g_now_ns = 1000000ull;
     g_clock_hz = 125000000u;
@@ -101,6 +110,31 @@ void fake_output_clear(void)    { g_out_len = 0; g_out[0] = 0; }
 uint32_t fake_now_us(void)      { return (uint32_t)(g_now_ns / 1000ull); }
 void fake_advance_us(uint32_t us) { g_now_ns += (uint64_t)us * 1000ull; }
 void fake_set_clock_hz(uint32_t hz) { g_clock_hz = hz; }
+
+void fake_net_up(const char *ssid, const char *ip) {
+    g_net_up = true;
+    snprintf(g_net_ssid, sizeof(g_net_ssid), "%s", ssid ? ssid : "test");
+    snprintf(g_net_ip,   sizeof(g_net_ip),   "%s", ip   ? ip   : "192.168.1.50");
+}
+void fake_net_down(void) { g_net_up = false; }
+
+void fake_net_add_ap(const char *ssid, int rssi, int channel, int secured) {
+    if (g_n_aps >= 16) return;
+    FwNetAp &a = g_aps[g_n_aps++];
+    snprintf(a.ssid, sizeof(a.ssid), "%s", ssid ? ssid : "");
+    a.rssi = rssi; a.channel = channel; a.secured = secured;
+}
+
+void fake_http_serve(const char *url, const char *body) {
+    snprintf(g_url, sizeof(g_url), "%s", url ? url : "");
+    g_body_len = 0;
+    if (body) {
+        unsigned n = (unsigned)strlen(body);
+        if (n > sizeof(g_body)) n = sizeof(g_body);
+        memcpy(g_body, body, n);
+        g_body_len = n;
+    }
+}
 
 unsigned fake_pio_program(int h, unsigned short *out, unsigned cap) {
     if (h < 0 || h >= 12 || !g_pio[h].used) return 0;
@@ -362,6 +396,54 @@ int  fw_pio_put(int h, unsigned long v, unsigned) {
 int fw_pio_get(int h, unsigned long *out, unsigned) {
     if (h < 0 || h >= 12 || !g_pio[h].used || !out) return -1;
     return 0;
+}
+
+// --- network ----------------------------------------------------------------
+//
+// A fake network, so a package that fetches or scans is testable the same way
+// one that reads a pin is. What it models is the SHAPE: connected or not, a
+// list of access points, a name that resolves, and a URL that returns bytes.
+
+int fw_net_connected(void) { return g_net_up ? 1 : 0; }
+
+int fw_net_ssid(char *out, unsigned cap) {
+    if (!out || !cap) return 0;
+    int n = snprintf(out, cap, "%s", g_net_up ? g_net_ssid : "");
+    return n < 0 ? 0 : n;
+}
+int fw_net_ip(char *out, unsigned cap) {
+    if (!out || !cap) return 0;
+    int n = snprintf(out, cap, "%s", g_net_up ? g_net_ip : "");
+    return n < 0 ? 0 : n;
+}
+
+int fw_net_scan(FwNetAp *out, unsigned max) {
+    if (!out || !max) return -1;
+    unsigned n = g_n_aps < max ? g_n_aps : max;
+    for (unsigned i = 0; i < n; i++) out[i] = g_aps[i];
+    return (int)n;
+}
+
+int fw_net_resolve(const char *host, char *out, unsigned cap) {
+    if (!host || !out || !cap) return -1;
+    if (!g_net_up) return -1;
+    // Anything resolves while connected, to a fixed address. A test that cares
+    // which address it got is testing the fake.
+    int n = snprintf(out, cap, "93.184.216.34");
+    return n < 0 ? -1 : n;
+}
+
+int fw_http_get(const char *url, void *buf, unsigned cap) {
+    if (!url || !buf || !cap || !g_net_up) return -1;
+    if (g_url[0] && strcmp(url, g_url) != 0) return -1;   // only the one set up
+    unsigned n = g_body_len < cap ? g_body_len : cap;
+    memcpy(buf, g_body, n);
+    return (int)n;
+}
+
+int fw_http_download(const char *url, const char *) {
+    if (!url || !g_net_up) return -1;
+    return (int)g_body_len;
 }
 
 // --- files ------------------------------------------------------------------

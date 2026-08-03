@@ -247,6 +247,64 @@ int main(void) {
         ck(rc != 0, "ws2812 refuses a reserved pin");
     }
 
+    // --- the network ABI, as a package would use it -------------------------
+    //
+    // Not a package yet — the network conversions come next — but the calls are
+    // new and this is what says they are usable rather than merely present.
+    // Nova D1 reaches for `network` 78 times, so these are the ones the whole
+    // conversion rests on.
+    {
+        fake_reset();
+        ck(fw_net_connected() == 0, "offline reports offline");
+
+        char buf[64];
+        ck(fw_net_ssid(buf, sizeof(buf)) == 0 && buf[0] == 0,
+           "and has no network name to give");
+        ck(fw_http_get("http://example.com", buf, sizeof(buf)) < 0,
+           "a fetch while offline fails rather than hanging");
+        ck(fw_net_resolve("example.com", buf, sizeof(buf)) < 0,
+           "and so does a lookup");
+
+        fake_net_up("dash_", "192.168.1.50");
+        ck(fw_net_connected() == 1, "connected reports connected");
+        fw_net_ssid(buf, sizeof(buf));
+        ck(strcmp(buf, "dash_") == 0, "and gives the network name");
+        fw_net_ip(buf, sizeof(buf));
+        ck(strcmp(buf, "192.168.1.50") == 0, "and the address");
+
+        // A short buffer must truncate rather than run over. Packages hold
+        // small stack buffers and this is the call that would find out.
+        char tiny[4];
+        fw_net_ssid(tiny, sizeof(tiny));
+        ck(strlen(tiny) < sizeof(tiny), "a short buffer is truncated, not overrun");
+
+        fake_net_add_ap("dash_", -42, 6, 1);
+        fake_net_add_ap("neighbour", -71, 11, 1);
+        fake_net_add_ap("open-guest", -80, 1, 0);
+        FwNetAp aps[8];
+        int n = fw_net_scan(aps, 8);
+        ck(n == 3, "a scan returns every access point");
+        ck(strcmp(aps[0].ssid, "dash_") == 0, "strongest first");
+        ck(aps[0].rssi == -42 && aps[0].channel == 6, "with its signal and channel");
+        ck(aps[2].secured == 0, "and whether it wants a password");
+
+        // Asking for fewer than exist must not write past the array.
+        FwNetAp two[2];
+        n = fw_net_scan(two, 2);
+        ck(n == 2, "a scan into a smaller array stops at its size");
+
+        fake_http_serve("http://example.com/x", "hello from the fake network");
+        int got = fw_http_get("http://example.com/x", buf, sizeof(buf));
+        ck(got == 27, "a fetch returns the body length");
+        ck(memcmp(buf, "hello from", 10) == 0, "and the body");
+
+        // A body larger than the buffer is truncated to it, not refused: the
+        // caller said how much room there was.
+        char small[8];
+        got = fw_http_get("http://example.com/x", small, sizeof(small));
+        ck(got == 8, "a fetch into a small buffer fills it and stops");
+    }
+
     printf("\n  %d checks, %d failed\n", checks, fails);
     return fails ? 1 : 0;
 }
