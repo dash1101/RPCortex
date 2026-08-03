@@ -22,4 +22,8 @@ void session_prompt(const char *msg, char *buf, unsigned max, bool secret);
 // action should not proceed on a stray keypress.
 bool session_confirm(const char *msg);
 
+// Register session commands (`autonomy`). Separate from session_boot because
+// the command has to exist whether or not anyone has logged in yet.
+void session_register(void);
+
 #endif  // RPC_SESSION_H

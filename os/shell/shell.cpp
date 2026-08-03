@@ -368,7 +368,8 @@ void shell_register_builtins(void) {
     text_register();        // grep / wc / sort / uniq / hex ...
     sys_register();         // sysinfo / meminfo / date / pulse ...
     user_register();        // whoami / users / passwd / logout ...
-    net_register();         // wifi
+    net_register();         // wifi, net, radio
+    session_register();     // autonomy
     netapps_register();     // ping / nslookup / ntp
     http_register();        // wget
     fetch_register();       // fetch / neofetch

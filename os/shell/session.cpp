@@ -18,6 +18,8 @@
 #include "registry.h"
 #include "persist.h"
 #include "kernel.h"
+#include "command.h"
+#include "logring.h"
 #include "out.h"
 #include "task.h"
 
@@ -70,6 +72,60 @@ static void read_field(const char *prompt, char *buf, size_t max, bool secret) {
             else        out_write((const char *)&c, 1);
         }
     }
+}
+
+// autonomy status | on [user] | off
+//
+// Lives here because accept() is what a login actually is, and it is static to
+// this file. Admin-only: turning the lock screen off for everyone is exactly the
+// sort of thing that should not be one command away from a guest account.
+static int cmd_autonomy(int argc, char **argv) {
+    const char *sub = argc > 1 ? argv[1] : "status";
+
+    if (strcmp(sub, "status") == 0) {
+        const char *u = reg_get("System.Autonomous", "");
+        if (!u[0]) { out_infop("autonomy", "Off — this device asks for a login."); return 0; }
+        if (!users_exists(u))
+            out_warnp("autonomy", "Set to '%s', which no longer exists. It will ask instead.", u);
+        else
+            out_okp("autonomy", "On, as '%s'.", u);
+        return 0;
+    }
+
+    if (strcmp(sub, "off") == 0) {
+        reg_set("System.Autonomous", "");
+        persist_save_dirty();
+        out_ok("Autonomy off. This device will ask for a login.");
+        log_add(LOG_K_WARN, "autonomy: disabled");
+        return 0;
+    }
+
+    if (strcmp(sub, "on") == 0) {
+        // Defaults to whoever is turning it on, since that is nearly always the
+        // intent and naming yourself is a strange thing to have to do.
+        const char *who = argc > 2 ? argv[2] : session_user();
+        if (!who || !who[0]) { out_err("No user to log in as."); return 1; }
+        if (!users_exists(who)) { out_err("No such user '%s'.", who); return 1; }
+        out_warn("This device will boot straight to a shell as '%s'.", who);
+        out_multi("  Anyone with physical access has that account without a password.");
+        if (!session_confirm("Enable autonomy")) { out_info("Cancelled."); return 1; }
+        reg_set("System.Autonomous", who);
+        persist_save_dirty();
+        out_ok("Autonomy on, as '%s'.", who);
+        log_addf(LOG_K_WARN, "autonomy: enabled as '%s'", who);
+        return 0;
+    }
+
+    out_multi("Usage: autonomy status      is it on, and as whom");
+    out_multi("       autonomy on [user]   boot straight to a shell (defaults to you)");
+    out_multi("       autonomy off         ask for a login again");
+    return 1;
+}
+
+void session_register(void) {
+    static const Command c{"autonomy", "run with no login prompt", cmd_autonomy,
+                           nullptr, LEVEL_ADMIN};
+    cmd_register(&c);
 }
 
 void session_prompt(const char *msg, char *buf, unsigned max, bool secret) {
@@ -232,6 +288,24 @@ static void accept(const char *name) {
 void session_boot(void) {
     if (users_count() == 0 || strcmp(reg_get("System.Setup", "false"), "true") != 0)
         first_run();
+
+    // Autonomous: come up logged in, with no prompt at all. For a device that
+    // lives on a shelf doing a job, where there is nobody present to type a
+    // password and a login prompt is just a thing that stops it working.
+    //
+    // AFTER first_run deliberately — a fresh device still gets its setup — and
+    // guarded on the account still existing, because removing the autonomous
+    // user would otherwise leave a device that logs in as nobody and has no way
+    // to reach a prompt.
+    const char *auto_user = reg_get("System.Autonomous", "");
+    if (auto_user[0]) {
+        if (users_exists(auto_user)) {
+            out_infop("autonomy", "Logging in as '%s' without a prompt.", auto_user);
+            accept(auto_user);
+            return;
+        }
+        out_warnp("autonomy", "Account '%s' no longer exists — asking instead.", auto_user);
+    }
 
     out_info("=== Login ===");
     out_multi("  Type 'root' or 'guest' to log in.");

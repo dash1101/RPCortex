@@ -328,7 +328,10 @@ void editor_register(void) {
     static const Command c_edit{"edit", "edit a text file", cmd_edit};
     static const Command c_nano{"nano", "edit a text file", cmd_edit};
     static const Command c_vi{"vi", "edit a text file", cmd_edit};
+    // The name is a convenience, not a promise of that program's bindings.
+    static const Command c_vim{"vim", "edit a text file", cmd_edit};
     cmd_register(&c_edit);
     cmd_register(&c_nano);
     cmd_register(&c_vi);
+    cmd_register(&c_vim);
 }

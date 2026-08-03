@@ -336,6 +336,7 @@ void diag_register(void) {
     static const Command c_compat{"compat", "probe what this board actually supports", cmd_compat, nullptr};
     static const Command c_diag{"diag", "system state, and whether the last run crashed", cmd_diag, nullptr};
     static const Command c_input{"inputstat", "show the bytes this terminal sends", cmd_inputstat, nullptr};
+    cmd_alias("keycode", "inputstat");      // what v1 called it
     static const Command c_regreset{"regreset", "restore every setting to its default", cmd_regreset, nullptr, LEVEL_ADMIN};
     static const Command c_pkgdis{"pkgdisable", "stop a package loading at boot", cmd_pkgdisable, nullptr, LEVEL_ADMIN};
     static const Command c_pkgen{"pkgenable", "let a disabled package load again", cmd_pkgenable, nullptr, LEVEL_ADMIN};

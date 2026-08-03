@@ -21,6 +21,7 @@
 //     timeout.
 
 #include "command.h"
+#include "session.h"
 #include "out.h"
 #include "httpfetch.h"
 #include "interrupt.h"
@@ -488,6 +489,57 @@ static void show_progress(void *, uint64_t got, uint64_t total) {
 
 static int poll_interrupt(void *) { return intr_check() ? 1 : 0; }
 
+// runurl <url> [--keep] [-y]
+//
+// Fetching and executing a remote script is arbitrary code execution, so the
+// confirmation is the feature rather than friction — -y is there for scripts
+// that have already decided, not as the shortcut to reach for by default.
+//
+// The download reuses wget wholesale rather than duplicating the fetch, sink
+// and progress handling, and the run hands off to `script` the same way `run`
+// does for a .rps. Two copies of either would drift.
+static int cmd_wget(int argc, char **argv);
+
+static int cmd_runurl(int argc, char **argv) {
+    if (argc < 2) {
+        out_multi("Usage: runurl <url> [--keep] [-y]");
+        out_multi("  Downloads a .rps script and runs it.");
+        out_multi("  --keep  leave the file behind afterwards");
+        out_multi("  -y      do not ask first");
+        return 1;
+    }
+
+    const char *url = argv[1];
+    bool keep = false, yes = false;
+    for (int i = 2; i < argc; i++) {
+        if (strcmp(argv[i], "--keep") == 0)                                  keep = true;
+        else if (strcmp(argv[i], "-y") == 0 || strcmp(argv[i], "--yes") == 0) yes = true;
+    }
+
+    if (!yes) {
+        out_warn("This downloads a script and runs it on this device.");
+        out_multi("  %s", url);
+        if (!session_confirm("Run it")) { out_info("Cancelled."); return 1; }
+    }
+
+    const char *tmp = "/tmp_runurl.rps";
+    char *wargv[3] = { (char *)"wget", (char *)url, (char *)tmp };
+    if (cmd_wget(3, wargv) != 0) return 1;
+
+    const Command *sc = cmd_resolve("script");
+    if (!sc || !sc->fn) {
+        out_err("The script interpreter is not available.");
+        storage_remove(tmp);
+        return 1;
+    }
+    char *sargv[3] = { (char *)"script", (char *)tmp, nullptr };
+    int rc = sc->fn(2, sargv);
+
+    if (!keep) storage_remove(tmp);
+    else       out_info("Kept as %s", tmp);
+    return rc;
+}
+
 static int cmd_wget(int argc, char **argv) {
     if (argc < 2) {
         out_multi("Usage: wget <url> [file]");
@@ -642,6 +694,9 @@ static int cmd_curl(int argc, char **argv) {
 }
 
 void http_register(void) {
+    static const Command cr{"runurl", "fetch a script and run it", cmd_runurl, nullptr,
+                            LEVEL_ADMIN};
+    cmd_register(&cr);
     static const Command c{"wget", "download a file over HTTP", cmd_wget, nullptr};
     static const Command c2{"curl", "fetch a URL and print it", cmd_curl, nullptr};
     cmd_register(&c);
