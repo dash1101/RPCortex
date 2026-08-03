@@ -34,10 +34,10 @@ ping, a directory walk — because the interrupt check and the scheduler yield a
 the same call, so every place that can be interrupted is also a place that can
 be rescheduled.
 
-**Real background work.** v1's `task run` entered a FOREGROUND scheduler: you got
-scheduled tasks or an interactive shell, not both, and the documented workaround
-was to boot into the scheduler and give up the prompt. Here the timer is just
-another task.
+**Real background work.** v1's `task run` entered a FOREGROUND scheduler: it
+offered scheduled tasks or an interactive shell, not both, and the documented
+workaround was to boot into the scheduler and give up the prompt. Here the timer
+is just another task.
 
 **A task manager.** `ps` shows pid, state, core, stack used against allocated,
 CPU time and the path each was started from. `kill` stops one. v1 had none of

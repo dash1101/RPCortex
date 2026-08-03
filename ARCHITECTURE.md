@@ -41,7 +41,7 @@ What it takes is well-trodden and every RTOS does it identically:
 The payoff is not faster scheduling — cooperative scheduling is fine for this
 workload. It is that **a runaway task becomes a killed task instead of a dead
 device**, which is the difference between a package being a risk and a package
-being a thing you can experiment with.
+being a thing worth experimenting with.
 
 It should stay cooperative *by default*: preemption used as a safety net, not as
 the normal path, so the reasoning about shared state stays simple. Preempt only

@@ -1,7 +1,7 @@
 # RPCortex v2.0 — loader spike
 
 A proof of concept for running separately-compiled applications on a C++
-RPCortex. This is the go/no-go for the whole rewrite: RPCortex is *an OS you
+RPCortex. This is the go/no-go for the whole rewrite: RPCortex is *an OS whose
 install packages onto*, and a C++ base that cannot load code at runtime would be
 a different product.
 
