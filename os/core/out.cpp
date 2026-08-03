@@ -183,8 +183,23 @@ uint32_t out_capture_end(void) {
     return n;
 }
 
+// Flushed, always. stdout is line buffered, so a write with no newline in it
+// sits in the buffer until something else happens to emit one — which for
+// echoed keystrokes means the characters someone is typing do not appear until
+// they press Enter. That is invisible most of the time, because something is
+// usually printing; it showed up as soon as the background WiFi join went
+// quiet, leaving nothing at all to flush the login prompt's echo.
+//
+// The callers here are interactive echo, progress lines and `echo` itself —
+// none of them hot enough for the extra flush to matter. The TUI does not come
+// through this path.
 void out_write(const char *data, uint32_t len) {
-    if (!capturing_here()) { OutGuard _o; fwrite(data, 1, len, stdout); return; }
+    if (!capturing_here()) {
+        OutGuard _o;
+        fwrite(data, 1, len, stdout);
+        fflush(stdout);
+        return;
+    }
     // Leave a byte for the terminator so the buffer is always a valid C string
     // for whatever reads it next.
     uint32_t room = g_cap_size - 1 - g_cap_len;
@@ -217,6 +232,7 @@ void out_blank(void) { OutGuard _o; putchar('\n'); }
 void out_prompt(const char *msg) {
     OutGuard _o;
     printf("%s%s %s••>  %s", C_RESET, msg, C_CYAN, C_RESET);
+    fflush(stdout);      // a prompt ends without a newline; see out_write
 }
 
 // Copy `s` and append spaces until it is `width` visible characters wide,

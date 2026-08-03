@@ -192,6 +192,11 @@ void redraw(const Term &t, const char *prompt, const char *buf,
         t.num(back);
         t.put('D');
     }
+
+    // The line just drawn has no newline in it, so on a buffered stdout none
+    // of it reaches the terminal until something else emits one. Optional: the
+    // host tests drive a string buffer and have nothing to flush.
+    if (t.io->flush) t.io->flush(t.io->ctx);
 }
 
 }  // namespace

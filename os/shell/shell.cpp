@@ -92,6 +92,9 @@ static int shell_getch(void *, uint32_t timeout_us) {
 }
 
 static void shell_putch(void *, char c) { putchar(c); }
+// putchar buffers; a line being edited never ends in a newline, so without
+// this nothing typed appears until Enter.
+static void shell_flush(void *) { fflush(stdout); }
 
 // Non-blocking single byte, for interrupt.cpp to scan while a COMMAND owns the
 // input rather than the line editor.
@@ -165,6 +168,7 @@ static bool read_line(const char *prompt, char *buf, size_t max) {
     LineEdit le{};
     le.io.getch     = shell_getch;
     le.io.putch     = shell_putch;
+    le.io.flush     = shell_flush;
     le.io.ctx       = nullptr;
     le.complete     = shell_complete;
     le.history      = shell_history;

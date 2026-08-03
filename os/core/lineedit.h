@@ -22,6 +22,11 @@
 struct LineIO {
     int  (*getch)(void *ctx, uint32_t timeout_us);
     void (*putch)(void *ctx, char c);
+    // Called once a redraw is complete. Optional — null is fine, and the host
+    // tests leave it so. It exists because a line being edited never ends in a
+    // newline, and on a buffered stdout that means nothing the user types
+    // reaches the terminal until they press Enter.
+    void (*flush)(void *ctx);
     void  *ctx;
 };
 
