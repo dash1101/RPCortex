@@ -37,6 +37,7 @@ declare -A SRC=(
     [logring_test]="$CORE/logring.cpp $CORE/task.cpp $CORE/blackbox.cpp host_task_stub.cpp"
     [task_test]="$CORE/task.cpp $CORE/blackbox.cpp"
     [smp_test]="$CORE/task.cpp $CORE/blackbox.cpp"
+    [calc_test]=""
     [lock_test]="$CORE/lock.cpp $CORE/task.cpp $CORE/blackbox.cpp"
     [interrupt_test]="$CORE/interrupt.cpp $CORE/task.cpp $CORE/blackbox.cpp host_task_stub.cpp"
     [pkgindex_test]="$CORE/pkgindex.cpp"

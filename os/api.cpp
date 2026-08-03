@@ -141,6 +141,44 @@ void __aeabi_lmul(void);
 void __aeabi_llsl(void);
 void __aeabi_llsr(void);
 void __aeabi_lasr(void);
+// Double-precision soft float. Neither RP2040 nor RP2350 has a double FPU, so
+// every `double` operation in a package is one of these — including comparisons
+// and the conversions at the edges. The first converted package that did any
+// arithmetic at all (calc) needed eleven of them, which is a fair sign that
+// leaving them out would have met every later one too.
+void __aeabi_dadd(void);
+void __aeabi_dsub(void);
+void __aeabi_dmul(void);
+void __aeabi_ddiv(void);
+void __aeabi_dcmpeq(void);
+void __aeabi_dcmplt(void);
+void __aeabi_dcmple(void);
+void __aeabi_dcmpge(void);
+void __aeabi_dcmpgt(void);
+void __aeabi_dcmpun(void);
+void __aeabi_d2iz(void);
+void __aeabi_d2uiz(void);
+void __aeabi_d2lz(void);
+void __aeabi_d2ulz(void);
+void __aeabi_i2d(void);
+void __aeabi_ui2d(void);
+void __aeabi_l2d(void);
+void __aeabi_ul2d(void);
+// Single precision, for the same reason — a package using float rather than
+// double would otherwise hit the identical wall one conversion later.
+void __aeabi_fadd(void);
+void __aeabi_fsub(void);
+void __aeabi_fmul(void);
+void __aeabi_fdiv(void);
+void __aeabi_fcmpeq(void);
+void __aeabi_fcmplt(void);
+void __aeabi_fcmple(void);
+void __aeabi_fcmpge(void);
+void __aeabi_fcmpgt(void);
+void __aeabi_f2iz(void);
+void __aeabi_i2f(void);
+void __aeabi_f2d(void);
+void __aeabi_d2f(void);
 }
 
 // --- the table -------------------------------------------------------------
@@ -194,6 +232,37 @@ static const ApiSymbol kSymbols[] = {
     SYM(__aeabi_llsl),
     SYM(__aeabi_llsr),
     SYM(__aeabi_lasr),
+    SYM(__aeabi_dadd),
+    SYM(__aeabi_dsub),
+    SYM(__aeabi_dmul),
+    SYM(__aeabi_ddiv),
+    SYM(__aeabi_dcmpeq),
+    SYM(__aeabi_dcmplt),
+    SYM(__aeabi_dcmple),
+    SYM(__aeabi_dcmpge),
+    SYM(__aeabi_dcmpgt),
+    SYM(__aeabi_dcmpun),
+    SYM(__aeabi_d2iz),
+    SYM(__aeabi_d2uiz),
+    SYM(__aeabi_d2lz),
+    SYM(__aeabi_d2ulz),
+    SYM(__aeabi_i2d),
+    SYM(__aeabi_ui2d),
+    SYM(__aeabi_l2d),
+    SYM(__aeabi_ul2d),
+    SYM(__aeabi_fadd),
+    SYM(__aeabi_fsub),
+    SYM(__aeabi_fmul),
+    SYM(__aeabi_fdiv),
+    SYM(__aeabi_fcmpeq),
+    SYM(__aeabi_fcmplt),
+    SYM(__aeabi_fcmple),
+    SYM(__aeabi_fcmpge),
+    SYM(__aeabi_fcmpgt),
+    SYM(__aeabi_f2iz),
+    SYM(__aeabi_i2f),
+    SYM(__aeabi_f2d),
+    SYM(__aeabi_d2f),
     SYM(memcpy),
     SYM(memset),
     SYM(memmove),

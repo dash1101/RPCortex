@@ -242,6 +242,7 @@ function(rpc_add_app name)
     add_custom_target(app_${name} ALL DEPENDS ${CMAKE_BINARY_DIR}/apps/${name}.app)
 endfunction()
 
+rpc_add_app(calc)
 rpc_add_app(greet)
 rpc_add_app(tuidemo)
 rpc_add_app(stress)
