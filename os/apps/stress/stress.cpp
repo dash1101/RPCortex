@@ -41,8 +41,14 @@ static void check(int cond, const char *what, const char *detail) {
     if (cond) ok(what); else bad(what, detail);
 }
 static void section(const char *name) {
+    fw_progress(name);
     fw_printf("\n\033[95m[:]\033[0m \033[1m%s\033[0m\n", name);
 }
+
+// A checkpoint before each individual step. Printed output is lost when the
+// device hangs, so this is the only record that survives — the last one recorded
+// is the step that did not come back.
+static void step(const char *what) { fw_progress(what); }
 
 // --- tasks ------------------------------------------------------------------
 
@@ -69,11 +75,13 @@ static void test_tasks(void) {
     section("Multitasking");
 
     g_ticks[0] = g_ticks[1] = g_ticks[2] = 0;
+    step("tasks: spawn a");
     int a = fw_task_spawn("stress_a", worker, (void *)0, 2048);
     int b = fw_task_spawn("stress_b", worker, (void *)1, 2048);
     check(a > 0 && b > 0, "two tasks started", a > 0 ? 0 : "spawn refused");
 
     // Yield until they have both had plenty of turns.
+    step("tasks: waiting for a and b");
     for (int i = 0; i < 200 && (g_ticks[0] < 40 || g_ticks[1] < 40); i++) fw_task_yield();
 
     check(g_ticks[0] >= 40, "task A ran to completion", 0);
@@ -83,9 +91,11 @@ static void test_tasks(void) {
     // multitasking.
     check(g_ticks[0] > 5 && g_ticks[1] > 5, "both progressed together, not one then the other", 0);
 
+    step("tasks: spawn spinner");
     int s = fw_task_spawn("stress_spin", spinner, 0, 2048);
     check(s > 0, "a non-terminating task started", 0);
     for (int i = 0; i < 20; i++) fw_task_yield();
+    step("tasks: kill spinner");
     check(fw_task_kill(s) != 0, "kill accepted", 0);
     for (int i = 0; i < 50; i++) fw_task_yield();
     ok("the killed task stopped at its next yield");
@@ -143,6 +153,7 @@ static void test_files(void) {
 
     // Single-threaded first, so a plain failure is not blamed on concurrency.
     const char *msg = "rpcortex stress";
+    step("files: single write");
     check(fw_file_write("/stress.tmp", msg, 15) != 0, "wrote a file", 0);
     char back[32];
     uint32_t n = fw_file_read("/stress.tmp", back, sizeof(back));
@@ -156,8 +167,11 @@ static void test_files(void) {
     // Now three tasks at once. Without the filesystem lock this is what
     // corrupts littlefs, so a clean run here is the lock doing its job.
     g_fs_errors = g_fs_done = 0;
+    step("files: spawn 3 concurrent writers");
     for (long i = 0; i < 3; i++) fw_task_spawn("stress_fs", fs_worker, (void *)i, 4096);
+    step("files: waiting for the writers");
     for (int i = 0; i < 4000 && g_fs_done < 3; i++) fw_task_yield();
+    step("files: writers finished");
 
     check(g_fs_done == 3, "three tasks finished their file work", 0);
     check(g_fs_errors == 0, "no corruption with three writers at once",
@@ -170,6 +184,7 @@ static void test_files(void) {
 static void test_memory(void) {
     section("Memory");
 
+    step("memory: read heap");
     uint32_t before = fw_heap_free();
     fw_printf("      heap: %u KB free of %u KB\n",
               (unsigned)(before / 1024), (unsigned)(fw_heap_total() / 1024));
@@ -202,6 +217,7 @@ static void test_memory(void) {
     check(after >= before - 512, "memory came back after freeing",
           after < before ? "some was not returned" : 0);
 
+    step("memory: heap_largest (malloc probe)");
     uint32_t largest = fw_heap_largest();
     fw_printf("      largest single block: %u KB\n", (unsigned)(largest / 1024));
     check(largest > 8 * 1024, "a large contiguous block is still available",
@@ -209,6 +225,7 @@ static void test_memory(void) {
 
     // A refused allocation must RETURN NULL, not kill the device. This is the
     // exact bug that made meminfo panic, so it is worth a permanent check.
+    step("memory: impossible allocation");
     void *huge = fw_malloc(0x7000000);
     check(huge == 0, "an impossible allocation fails cleanly instead of panicking", 0);
     if (huge) fw_free(huge);
@@ -220,14 +237,23 @@ static void test_memory(void) {
 // would otherwise have to ask — which board, how much memory, how many cores,
 // how fragmented — is answered before the first check runs.
 static void report_header(void) {
+    step("header: start");
     fw_printf("\n\033[96m=== RPCortex self test ===\033[0m\n");
     fw_printf("\033[90mPaste the whole output when reporting. Ctrl+C stops it.\033[0m\n\n");
+    step("header: cores");
     fw_printf("  cores      : %u\n", (unsigned)fw_cores());
+    step("header: heap_free");
     fw_printf("  heap       : %u / %u KB free\n",
               (unsigned)(fw_heap_free() / 1024), (unsigned)(fw_heap_total() / 1024));
+    // Suspect number one: this probes with malloc in a binary search, allocating
+    // hundreds of kilobytes at a time, and never yields while it does.
+    step("header: heap_largest (malloc probe)");
     fw_printf("  largest    : %u KB contiguous\n", (unsigned)(fw_heap_largest() / 1024));
+    step("header: uptime");
     fw_printf("  uptime     : %u ms\n", (unsigned)fw_millis());
+    step("header: pid");
     fw_printf("  this task  : pid %d\n", fw_task_self());
+    step("header: done");
 }
 
 // --- scheduled work ---------------------------------------------------------
@@ -253,12 +279,15 @@ static void test_scheduling(void) {
     section("Scheduling");
 
     g_slept = -1;
-    int p = fw_task_spawn("stress_sleep", sleeper, (void *)200, 1024);
+    step("sched: spawn sleeper");
+    int p = fw_task_spawn("stress_sleep", sleeper, (void *)200, 2048);
     check(p > 0, "a sleeping task started", 0);
 
     uint32_t t0 = fw_millis();
     int spins = 0;
+    step("sched: waiting for the sleeper to wake");
     while (g_slept < 0 && fw_millis() - t0 < 3000) { spins++; fw_task_yield(); }
+    step("sched: sleeper returned");
 
     check(g_slept >= 0, "the sleeping task woke up at all", "it never came back");
     if (g_slept >= 0) {
@@ -296,6 +325,7 @@ static int cmd_stress(int argc, char **argv) {
               (unsigned)(fw_heap_free() / 1024), (unsigned)(fw_heap_total() / 1024),
               (unsigned)(fw_heap_largest() / 1024));
 
+    step("finished");
     fw_printf("\n");
     if (g_fail == 0)
         fw_printf("  \033[96m[@]\033[0m \033[1m%d checks passed\033[0m in %u ms\n",

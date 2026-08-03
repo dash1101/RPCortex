@@ -283,7 +283,28 @@ static void reschedule(TaskState park_as) {
     // Nothing else to run. If this task is still runnable, just carry on —
     // switching to ourselves would be a pointless save/restore.
     if (!next) {
-        if (me && (me->info.state == TASK_READY || me->info.state == TASK_SLEEPING)) {
+        // Still runnable, just nothing better to switch to: carry on.
+        if (me && me->info.state == TASK_READY) {
+            me->info.state = TASK_RUNNING;
+            me->entered_ms = task_now_ms();
+            lock_hw_exit();
+            return;
+        }
+
+        // ASLEEP and nothing else to run. Returning here would set it back to
+        // RUNNING and continue immediately — sleep(200) would return in
+        // microseconds, which is not sleeping. Wait out the deadline instead.
+        //
+        // The wait is a spin because there is genuinely nothing else for this
+        // core to do; the watchdog is kept fed so it is not mistaken for a hang,
+        // and the other core is free to work throughout.
+        if (me && me->info.state == TASK_SLEEPING) {
+            uint32_t wake = me->wake_at_ms;
+            lock_hw_exit();
+            while ((int32_t)(task_now_ms() - wake) < 0) {
+                if (core == 0) task_watchdog_feed();
+            }
+            lock_hw_enter();
             me->info.state = TASK_RUNNING;
             me->entered_ms = task_now_ms();
             lock_hw_exit();

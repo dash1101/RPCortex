@@ -190,6 +190,23 @@ int main(void) {
     eq(g_log, "sS", "it wakes once the deadline passes");
     task_reap(s);
 
+    // A sleeper with NOTHING else runnable must still wait out its deadline.
+    // Returning early would set it back to RUNNING and continue immediately —
+    // sleep(200) finishing in microseconds, which is not sleeping. pid 1 drives
+    // the clock forward here the way the real timer would.
+    g_log[0] = 0;
+    g_now = 2000;
+    int alone = task_spawn("alone", nullptr, task_sleeper, nullptr, ST, AFFINITY_ANY);
+    task_yield();                       // it runs and parks itself
+    eq(g_log, "s", "the lone sleeper parked");
+    ck(task_find(alone)->state == TASK_SLEEPING, "and is genuinely SLEEPING");
+    g_now = 2049;
+    ck(task_find(alone)->state == TASK_SLEEPING, "still asleep one ms early");
+    g_now = 2050;
+    task_yield();
+    eq(g_log, "sS", "and wakes exactly on the deadline, not before");
+    task_reap(alone);
+
     // --- cooperative kill ---------------------------------------------------
     g_log[0] = 0;
     int f = task_spawn("f", nullptr, task_forever, nullptr, ST, AFFINITY_ANY);

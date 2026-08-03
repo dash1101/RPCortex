@@ -46,6 +46,11 @@ void bb_note_command(const char *line) {
     snprintf(g_bb.cmd, sizeof(g_bb.cmd), "%s", line ? line : "");
 }
 
+void bb_note_phase(const char *what) {
+    if (g_bb.magic != BB_MAGIC) bb_init();
+    snprintf(g_bb.phase, sizeof(g_bb.phase), "%s", what ? what : "");
+}
+
 void bb_note_yield(uint32_t now_ms) {
     g_bb.last_yield_ms = now_ms;
     g_bb.yields++;

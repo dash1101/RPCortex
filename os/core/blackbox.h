@@ -33,6 +33,7 @@ struct BlackBox {
     uint32_t yields;               // how many times it had yielded
     uint32_t stack_used;           // and how close it was to its limit
     uint32_t stack_size;
+    char     phase[40];            // the last checkpoint a program reported
 };
 
 // Record the task about to run. Called from the scheduler; deliberately cheap.
@@ -46,6 +47,12 @@ void bb_note_command(const char *line);
 // Mark progress. Separate from bb_note_task because a long-running task keeps
 // yielding without being rescheduled onto a different core.
 void bb_note_yield(uint32_t now_ms);
+
+// A checkpoint inside a long-running program. Printed output is lost when the
+// device hangs — the terminal never receives what was in the USB buffer — but
+// this survives the reboot, so the last checkpoint reached names the exact step
+// that did not finish. Exposed to packages as fw_progress.
+void bb_note_phase(const char *what);
 
 // Read what the previous run left behind. Returns null when there is nothing —
 // a cold boot, or a clean shutdown.

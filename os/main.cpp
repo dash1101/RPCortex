@@ -74,7 +74,9 @@ int main(void) {
     if (bb && bb->task[0]) {
         out_errp("Crash", "Last run stopped while running '%s' (pid %d, core %u).",
                  bb->task, bb->pid, (unsigned)bb->core);
-        if (bb->cmd[0]) out_multi("   Command   : %s", bb->cmd);
+        if (bb->cmd[0])   out_multi("   Command   : %s", bb->cmd);
+        if (bb->phase[0]) out_multi("   Reached   : %s%s%s   <- it stopped here",
+                                    C_WARN, bb->phase, C_RESET);
         out_multi("   Yields    : %u before it stopped", (unsigned)bb->yields);
         if (bb->stack_size)
             out_multi("   Stack     : %u of %u bytes used%s",

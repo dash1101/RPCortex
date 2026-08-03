@@ -89,6 +89,12 @@ uint32_t fw_heap_free(void);
 uint32_t fw_heap_total(void);
 uint32_t fw_heap_largest(void);
 
+// Record a checkpoint that survives a crash. Anything printed is lost when the
+// device hangs — it never leaves the USB buffer — so a long-running program
+// should call this before each step it might not come back from. The last one
+// recorded is shown in the crash report at the next boot.
+void     fw_progress(const char *what);
+
 // Entry point. Called once when the app is loaded. A command-only package can do
 // its registration here and return; a foreground app can run its loop.
 int app_main(int arg);

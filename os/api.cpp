@@ -12,6 +12,7 @@
 #include "task.h"
 #include "storage.h"
 #include "logring.h"
+#include "blackbox.h"
 
 #include <string.h>
 #include <stdlib.h>
@@ -78,6 +79,12 @@ extern "C" int fw_file_exists(const char *path) { return storage_stat(path, null
 
 extern "C" uint32_t fw_heap_free(void)  { return heap_free(); }
 extern "C" uint32_t fw_heap_total(void) { return heap_total(); }
+
+// A checkpoint that survives a hang. Printed output does not: whatever is in the
+// USB buffer when the device stops is never delivered, which is why a crash
+// report can name the command but not the line. This is recorded in memory the
+// reset does not clear, so the last checkpoint reached IS the failing step.
+extern "C" void fw_progress(const char *what) { bb_note_phase(what); }
 
 // The biggest single allocation available right now, found by probing. Free
 // bytes do not predict whether the next allocation succeeds; this does.
@@ -148,6 +155,7 @@ static const ApiSymbol kSymbols[] = {
     SYM(fw_heap_free),
     SYM(fw_heap_total),
     SYM(fw_heap_largest),
+    SYM(fw_progress),
 
     // The compiler's runtime. See above: emitted, not written.
     SYM(__aeabi_idiv),
