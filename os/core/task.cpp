@@ -1,5 +1,6 @@
 #include "task.h"
 #include "lock.h"
+#include "blackbox.h"
 
 #include <string.h>
 #include <stdlib.h>
@@ -220,6 +221,11 @@ static void reschedule(TaskState park_as) {
     // watching the thing that matters.
     if (core == 0) task_watchdog_feed();
 
+    // Progress, recorded where it survives a reset. This is what turns "the
+    // watchdog fired" into "the watchdog fired while 'stress' was running and it
+    // had already yielded 812 times".
+    bb_note_yield(task_now_ms());
+
     lock_hw_enter();
     Task *me = cur();
 
@@ -302,6 +308,9 @@ static void reschedule(TaskState park_as) {
 
     next->info.state    = TASK_RUNNING;   // claims it; no other core will pick it
     next->info.core     = (uint8_t)core;
+    if (core == 0)
+        bb_note_task(next->info.pid, (uint8_t)core, next->info.name,
+                     next->info.stack_used, next->info.stack_size);
     next->info.switches++;
     next->entered_ms    = task_now_ms();
     g_current[core]     = next->info.pid;

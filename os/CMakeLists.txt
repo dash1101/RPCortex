@@ -35,6 +35,7 @@ add_executable(rpcortex_v2
     ${OS_ROOT}/core/task.cpp
     ${OS_ROOT}/core/lock.cpp
     ${OS_ROOT}/core/logring.cpp
+    ${OS_ROOT}/core/blackbox.cpp
     ${OS_ROOT}/core/joblist.cpp
     ${OS_ROOT}/core/perms.cpp
     ${OS_ROOT}/core/lineedit.cpp

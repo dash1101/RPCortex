@@ -12,6 +12,7 @@
 #include "hardware/sync.h"
 #include "lock.h"
 #include "logring.h"
+#include "blackbox.h"
 #include "hardware/watchdog.h"
 #include "pico/flash.h"
 #include "out.h"
@@ -54,17 +55,67 @@ uint32_t task_now_ms(void) {
 // Generous on purpose. The longest legitimate gap between yields is a flash
 // erase-and-write, which is under 200 ms; 8 seconds cannot be hit by anything
 // that is actually working.
-#define WATCHDOG_MS 8000
+// The hardware watchdog is the LAST resort, not the only one. Before it fires,
+// two softer stages get a chance to save the session:
+//
+//   3 s   say which task has stopped yielding, and ask it to stop. A task stuck
+//         in a loop that checks task_should_stop — which every loop in this OS
+//         does, because intr_check folds it in — will exit here and the shell
+//         carries on as if nothing happened.
+//   6 s   it ignored the request. Say so, and let the hardware take it.
+//   8 s   the hardware watchdog reboots.
+//
+// The point is that a wedged COMMAND should cost you that command, not the
+// device. Only a wedged kernel should cost a reboot.
+//
+// What this cannot do is forcibly terminate a task that never yields at all.
+// That needs preemption — a timer interrupt switching away from it — which
+// means running tasks on the process stack with PendSV, and is a much larger
+// change than this. The escalation is honest about the difference: it asks, and
+// if asking does not work it says so before the reboot rather than after.
+#define WATCHDOG_MS   8000
+#define STALL_WARN_MS 3000
+#define STALL_KILL_MS 6000
 
-static bool g_wd_on;
+static bool     g_wd_on;
+static uint32_t g_last_stage;      // which escalation has already been reported
 
 void task_watchdog_start(void) {
     watchdog_enable(WATCHDOG_MS, /*pause_on_debug*/true);
     g_wd_on = true;
 }
 
+// Called from the scheduler on core 0. Feeding is only half of it: the other
+// half is noticing that the task holding the core has stopped making progress
+// and doing something about it before the reboot.
 void task_watchdog_feed(void) {
-    if (g_wd_on) watchdog_update();
+    if (!g_wd_on) return;
+    watchdog_update();
+
+    uint32_t stall = bb_stall_ms(task_now_ms());
+    if (stall < STALL_WARN_MS) { g_last_stage = 0; return; }
+
+    const TaskInfo *t = task_current();
+    if (!t || t->pid == 1) return;      // the shell itself; nothing to kill
+
+    if (stall >= STALL_KILL_MS && g_last_stage < 2) {
+        g_last_stage = 2;
+        out_errp("watchdog", "'%s' (pid %d) has not responded for %u s.",
+                 t->name, t->pid, (unsigned)(stall / 1000));
+        out_multi("  It ignored the request to stop. Rebooting shortly.");
+        log_addf(LOG_K_ERR, "watchdog: '%s' pid %d unresponsive %u ms",
+                 t->name, t->pid, (unsigned)stall);
+        return;
+    }
+
+    if (g_last_stage < 1) {
+        g_last_stage = 1;
+        out_warnp("watchdog", "'%s' (pid %d) has not yielded for %u s — asking it to stop.",
+                  t->name, t->pid, (unsigned)(stall / 1000));
+        log_addf(LOG_K_WARN, "watchdog: asking '%s' pid %d to stop after %u ms",
+                 t->name, t->pid, (unsigned)stall);
+        task_kill(t->pid);
+    }
 }
 
 // --- stack overflow ---------------------------------------------------------

@@ -21,6 +21,7 @@
 #include "path.h"
 #include "cmdline.h"
 #include "perms.h"
+#include "blackbox.h"
 #include "lineedit.h"
 #include "interrupt.h"
 #include "task.h"
@@ -576,6 +577,7 @@ static int run_segment(char *seg) {
 // watch get pipes, chaining and redirection for free instead of each growing
 // its own half-parser.
 int shell_run_line_now(char *line) {
+    bb_note_command(line);
     out_clear_error();
     int rc = run_segment(line);
     if (rc == 0 && out_had_error()) rc = 1;
@@ -630,6 +632,8 @@ void shell_run(void) {
                  C_BLUE, fs_cwd(), C_RESET, C_CYAN, C_RESET);
         if (!read_line(prompt, line, sizeof(line))) continue;
         hist_add(line);          // record before the parser chops it up
+        bb_note_command(line);   // so a hang can name the command, not just the task
         run_line(line);
+        bb_note_command("");     // finished cleanly; do not blame it for the next hang
     }
 }

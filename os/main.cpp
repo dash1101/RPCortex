@@ -19,6 +19,7 @@ void jobs_start_services(void);
 #include "out.h"
 #include "task.h"
 #include "logring.h"
+#include "blackbox.h"
 
 void net_autoconnect(void);
 void task_start_core1(void);
@@ -41,9 +42,27 @@ int main(void) {
     // Before the banner: anything the boot logs should land in the ring, and a
     // ring that survived a warm reboot holds the reason for it.
     bool prior = log_init();
+    bb_init();
 
     banner_print();
     if (prior) out_warnp("Boot", "The device restarted. 'logdump' shows what led up to it.");
+
+    // What the previous run was doing when it stopped. A hang writes no log
+    // lines — logging is something running code does — so this is the only
+    // record of it, and it is the first thing worth seeing.
+    const BlackBox *bb = bb_previous();
+    if (bb && bb->task[0]) {
+        out_errp("Crash", "Last run stopped while running '%s' (pid %d, core %u).",
+                 bb->task, bb->pid, (unsigned)bb->core);
+        if (bb->cmd[0])
+            out_multi("   Command   : %s", bb->cmd);
+        out_multi("   Yields    : %u before it stopped", (unsigned)bb->yields);
+        if (bb->stack_size)
+            out_multi("   Stack     : %u of %u bytes used%s",
+                      (unsigned)bb->stack_used, (unsigned)bb->stack_size,
+                      bb->stack_used * 100 / bb->stack_size >= 80 ? "  (NEARLY FULL)" : "");
+        out_blank();
+    }
 
     if (!kboot()) {
         // A usable shell is impossible (no storage). A real recovery prompt goes
