@@ -18,6 +18,9 @@
 #include "task.h"
 #include "persist.h"
 #include "kernel.h"
+#include "session.h"
+#include "users.h"
+#include "logring.h"
 #include "logring.h"
 #include "blackbox.h"
 #include "perms.h"
@@ -330,6 +333,108 @@ static int cmd_pkgenable(int argc, char **argv) {
     return 0;
 }
 
+// --- factoryreset -----------------------------------------------------------
+//
+// Everything a person put on the device goes; the OS itself stays. That split
+// matters for /os/ca.pem in particular — it is part of the image rather than
+// user data, and taking it out would leave a reset device unable to verify a
+// single HTTPS connection, which is to say unable to install anything.
+//
+// Reboots rather than returning. The accounts it just deleted include the one
+// running this command, so there is no session left to hand back to.
+bool fs_rmtree(const char *path, int depth);
+void sys_reboot(void);
+
+static void wipe(const char *path) {
+    bool is_dir = false;
+    if (!storage_stat(path, &is_dir, nullptr)) return;   // already gone
+    if (is_dir) fs_rmtree(path, 0);
+    else        storage_remove(path);
+}
+
+static int cmd_factoryreset(int, char **) {
+    out_warnp("reset", "FACTORY RESET - THIS CANNOT BE UNDONE");
+    out_blank();
+    out_multi("  This removes:");
+    out_multi("    every account, including root");
+    out_multi("    every setting, back to defaults");
+    out_multi("    every installed package");
+    out_multi("    /home, /etc and /tmp in full");
+    out_blank();
+    out_multi("  It keeps the OS itself, so the device still boots and can");
+    out_multi("  still reach the network to install things again.");
+    out_blank();
+
+    if (!session_confirm("Erase everything and restart")) {
+        out_info("Cancelled. Nothing was changed.");
+        return 1;
+    }
+
+    log_add(LOG_K_WARN, "factoryreset: erasing");
+    out_info("Erasing...");
+
+    wipe("/os/users.cfg");        // accounts
+    wipe("/os/pkg");              // installed packages and the repo cache
+    wipe("/home");                // user data
+    wipe("/etc");                 // startup items, services, scheduled tasks
+    wipe("/tmp");
+
+    // The registry last, and through reg_clear rather than by deleting the file,
+    // so the in-memory copy cannot be written back over the top on the way down.
+    reg_clear();
+    wipe("/os/registry.cfg");
+
+    out_ok("Done. Restarting into first-run setup.");
+    out_flush();
+    task_sleep_ms(400);           // let the message reach the terminal
+    sys_reboot();
+    return 0;                     // not reached
+}
+
+// --- safeboot ---------------------------------------------------------------
+//
+// Reboot into a shell with no startup items, no services and no packages, for
+// when one of those is what is stopping the device from being usable. With an
+// argument the command is staged and run once the maintenance shell is up.
+//
+// The flag is one-shot and is cleared BEFORE it is acted on, not after. A crash
+// between reading and clearing would otherwise latch the device into maintenance
+// mode on every subsequent boot, which is a far worse failure than the one being
+// diagnosed.
+static int cmd_safeboot(int argc, char **argv) {
+    char staged[96] = {0};
+    for (int i = 1; i < argc; i++) {
+        if (staged[0]) strncat(staged, " ", sizeof(staged) - strlen(staged) - 1);
+        strncat(staged, argv[i], sizeof(staged) - strlen(staged) - 1);
+    }
+
+    reg_set("System.SafeBoot", "true");
+    reg_set("System.SafeBootCmd", staged);
+    persist_save_dirty();
+
+    if (staged[0]) out_info("Safe boot: restarting to run '%s' on its own.", staged);
+    else {
+        out_info("Safe boot: restarting without startup items or services.");
+        out_multi("  Reboot normally when you are done to bring them back.");
+    }
+    out_flush();
+    task_sleep_ms(400);
+    sys_reboot();
+    return 0;                     // not reached
+}
+
+// Whether this boot is a maintenance boot. Consumes the flag: reading it clears
+// it and persists that, so the next boot is normal however this one ends.
+bool safeboot_consume(char *staged, uint32_t cap) {
+    bool on = strcmp(reg_get("System.SafeBoot", "false"), "true") == 0;
+    if (staged && cap) snprintf(staged, cap, "%s", reg_get("System.SafeBootCmd", ""));
+    if (!on) return false;
+    reg_set("System.SafeBoot", "false");
+    reg_set("System.SafeBootCmd", "");
+    persist_save_dirty();
+    return true;
+}
+
 // --- registration -----------------------------------------------------------
 
 void diag_register(void) {
@@ -346,4 +451,10 @@ void diag_register(void) {
     cmd_register(&c_regreset);
     cmd_register(&c_pkgdis);
     cmd_register(&c_pkgen);
+    static const Command c_fr{"factoryreset", "erase all data and restart", cmd_factoryreset,
+                              nullptr, LEVEL_ADMIN};
+    static const Command c_sb{"safeboot", "restart with no services or packages", cmd_safeboot,
+                              nullptr, LEVEL_ADMIN};
+    cmd_register(&c_fr);
+    cmd_register(&c_sb);
 }

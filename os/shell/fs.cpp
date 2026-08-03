@@ -317,6 +317,48 @@ static void du_walk(const char *base, int depth, DuCtx *acc) {
     acc->base = save_base; acc->depth = save_depth;
 }
 
+// Remove a directory and everything under it.
+//
+// storage_remove takes a file or an EMPTY directory, so anything that wants to
+// clear a tree has to do the walking itself. One entry is taken per pass rather
+// than collecting a list, because removing entries while iterating a littlefs
+// directory is asking for trouble and a list needs RAM proportional to the
+// directory. Quadratic, and it does not matter: this runs once, from a command
+// that reboots afterwards.
+bool fs_rmtree(const char *path, int depth) {
+    if (depth > 8) return false;              // same ceiling the other walkers use
+
+    struct First {
+        char name[64];
+        bool is_dir;
+        bool found;
+    };
+    struct Cb {
+        static void first(void *ctx, const char *name, bool is_dir, uint32_t) {
+            First *f = (First *)ctx;
+            if (f->found) return;
+            snprintf(f->name, sizeof(f->name), "%s", name);
+            f->is_dir = is_dir;
+            f->found  = true;
+        }
+    };
+
+    // Bounded so a directory that will not empty cannot spin forever.
+    for (int guard = 0; guard < 2048; guard++) {
+        First f{};
+        storage_walk(path, Cb::first, &f);
+        if (!f.found) break;
+
+        char child[128];
+        if (strcmp(path, "/") == 0) snprintf(child, sizeof(child), "/%s", f.name);
+        else                        snprintf(child, sizeof(child), "%s/%s", path, f.name);
+
+        bool ok = f.is_dir ? fs_rmtree(child, depth + 1) : storage_remove(child);
+        if (!ok) return false;
+    }
+    return storage_remove(path);
+}
+
 static int cmd_du(int argc, char **argv) {
     char path[128];
     resolve(argc >= 2 ? argv[1] : ".", path, sizeof(path));

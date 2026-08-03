@@ -522,7 +522,7 @@ static int cmd_runurl(int argc, char **argv) {
         if (!session_confirm("Run it")) { out_info("Cancelled."); return 1; }
     }
 
-    const char *tmp = "/tmp_runurl.rps";
+    const char *tmp = "/tmp/runurl.rps";
     char *wargv[3] = { (char *)"wget", (char *)url, (char *)tmp };
     if (cmd_wget(3, wargv) != 0) return 1;
 

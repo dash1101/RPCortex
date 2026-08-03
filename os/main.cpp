@@ -33,6 +33,8 @@ void fs_layout_check(bool verbose);
 bool fs_accounts_check(void);
 void jobs_run_startup(void);
 void jobs_start_services(void);
+bool safeboot_consume(char *staged, uint32_t cap);
+int  shell_run_line_now(char *line);
 
 // Everything that needs a real stack. Runs as pid 2.
 static int shell_task(void *) {
@@ -43,13 +45,34 @@ static int shell_task(void *) {
     // worked, and wants to know it first.
     update_report_boot();
 
-    stock_install_once();    // first boot only; a removed package stays removed
-    pkg_load_installed();    // installed packages' commands go live
-    jobs_start_services();
-    jobs_run_startup();
+    // A maintenance boot skips everything that could be the reason the device is
+    // unusable: installed packages, services, startup items. The flag is
+    // consumed here — read and cleared in one go, before anything acts on it —
+    // so however this boot ends, the next one is normal. A crash between
+    // reading and clearing would otherwise latch the device into maintenance
+    // mode permanently, which is worse than whatever it was diagnosing.
+    char staged[96];
+    bool safe = safeboot_consume(staged, sizeof(staged));
+
+    if (safe) {
+        out_warnp("safeboot", "Maintenance boot: no packages, services or startup items.");
+        out_multi("  Reboot normally to bring them back.");
+    } else {
+        stock_install_once();    // first boot only; a removed package stays removed
+        pkg_load_installed();    // installed packages' commands go live
+        jobs_start_services();
+        jobs_run_startup();
+    }
 
     // An interactive shell was reached, so this boot succeeded.
     kboot_succeeded();
+
+    // A staged command runs with the machine as quiet as it gets, which is the
+    // whole point of staging it. Failures are the command's to report.
+    if (safe && staged[0]) {
+        out_infop("safeboot", "Running '%s'.", staged);
+        shell_run_line_now(staged);
+    }
 
     shell_run();             // never returns
     return 0;
