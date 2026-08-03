@@ -74,8 +74,6 @@ original escape sequences.
 | What | Needs |
 |---|---|
 | `curl` `runurl` | nothing; the HTTP client is there |
-| `edit` / `nano` / `vi` | a TUI layer |
-| `settings` panel | the same TUI layer |
 | `update` / `safeboot` (OTA) | A/B flash slots |
 | `.rps` scripting | a small interpreter — v1's semantics are simple enough to match |
 | `sd` card support | a driver |

@@ -235,21 +235,36 @@ void tuiterm_cursor(int x, int y, bool visible) {
 bool tuiterm_poll(TuiEvent *out) {
     if (!g_active || !out) return false;
 
-    uint32_t now = task_now_ms();
-    int c = getchar_timeout_us(0);
-    if (c == PICO_ERROR_TIMEOUT) {
-        // A lone Escape only becomes an Escape once enough time has passed
-        // without a following byte. Polling for it here is what makes the key
-        // work at all rather than appearing dead until the next keypress.
-        TuiEvent e = tuikey_timeout(&g_keys, now);
+    // Consume bytes until an event is COMPLETE, or the input runs dry.
+    //
+    // Reading one byte per call and returning false on a partial sequence was
+    // wrong in a way that looked like flaky hardware. An arrow key is three
+    // bytes and a mouse report is around eleven, so a caller's
+    // `while (poll(&e))` loop exited part-way through one, drew a frame, and
+    // came back later. If that took longer than the lone-Escape timeout, the
+    // parser gave up mid-sequence and emitted an Escape, and the remaining
+    // bytes — '[', '<', digits — arrived as literal keystrokes.
+    //
+    // That is why scrolling jumbled the screen and why keys sometimes did
+    // nothing: the sequence was being torn in half by the frame in between.
+    //
+    // Bounded so a stream of bytes cannot hold the caller here forever; the
+    // limit is far above any real sequence.
+    for (int guard = 0; guard < 64; guard++) {
+        uint32_t now = task_now_ms();
+        int c = getchar_timeout_us(0);
+        if (c == PICO_ERROR_TIMEOUT) {
+            // A lone Escape only becomes an Escape once enough time has passed
+            // without a following byte. Checking here is what makes the key
+            // work rather than appearing dead until some later keypress.
+            TuiEvent e = tuikey_timeout(&g_keys, now);
+            if (e.kind != TUI_EV_NONE) { *out = e; return true; }
+            return false;
+        }
+        TuiEvent e = tuikey_feed(&g_keys, (uint8_t)c, now);
         if (e.kind != TUI_EV_NONE) { *out = e; return true; }
-        return false;
     }
-
-    TuiEvent e = tuikey_feed(&g_keys, (uint8_t)c, now);
-    if (e.kind == TUI_EV_NONE) return false;
-    *out = e;
-    return true;
+    return false;
 }
 
 bool tuiterm_active(void) { return g_active; }

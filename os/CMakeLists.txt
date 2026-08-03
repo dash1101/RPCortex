@@ -65,6 +65,8 @@ add_executable(rpcortex_v2
     ${OS_ROOT}/shell/pkgrepo.cpp
     ${OS_ROOT}/shell/diag.cpp
     ${OS_ROOT}/shell/tuiterm.cpp
+    ${OS_ROOT}/shell/settings.cpp
+    ${OS_ROOT}/shell/editor.cpp
     ${OS_ROOT}/shell/text.cpp
     ${OS_ROOT}/shell/sys.cpp
     ${OS_ROOT}/shell/user.cpp
