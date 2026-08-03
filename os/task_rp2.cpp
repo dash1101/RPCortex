@@ -120,6 +120,24 @@ void task_watchdog_feed(void) {
 
 // --- stack overflow ---------------------------------------------------------
 
+// pid 1 runs on the C startup stack, which this scheduler did not allocate and
+// therefore cannot paint. The linker knows where it ends, so the check is
+// against that: how much room is left below the current stack pointer.
+extern "C" char __StackBottom;
+
+extern "C" char __StackTop;
+
+uint32_t task_main_stack_size(void) {
+    return (uint32_t)((uintptr_t)&__StackTop - (uintptr_t)&__StackBottom);
+}
+
+uint32_t task_main_stack_headroom(void) {
+    uint32_t sp;
+    __asm volatile ("mov %0, sp" : "=r" (sp));
+    uint32_t floor = (uint32_t)(uintptr_t)&__StackBottom;
+    return sp > floor ? sp - floor : 0;
+}
+
 void task_stack_overflow(const char *name, uint32_t size) {
     // Interrupts stay on: this needs USB to deliver the message, and the damage
     // is already done so there is nothing left to protect.

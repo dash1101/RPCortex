@@ -89,6 +89,23 @@ target_compile_definitions(rpcortex_v2 PRIVATE
     # allocations it expects to fail — into a crash.
     PICO_MALLOC_PANIC=0
 
+    # The MAIN stack — pid 1, where the shell and therefore every command runs.
+    #
+    # The SDK default is 2048 bytes. __sbprintf alone needs 1128 of them, and the
+    # shell's call chain to a package command is deep: read_line, run_line,
+    # run_segment, run_one, apps_launch, app_main, and then whatever the package
+    # does. `stress` overflowed it and the device hung — the spawned tasks were
+    # given 2-4 KB last pass, but the shell itself was still on the default and
+    # is where commands actually execute.
+    #
+    # 8 KB, with a guard checked at every yield so the next one is reported
+    # rather than silently corrupting whatever sits below.
+    # The boot stack lives in SCRATCH_Y, which is 4 KB and cannot grow — so this
+    # is as large as it goes, and it is why the SHELL is spawned as a proper task
+    # with its own allocated stack rather than running on this one. See main.cpp.
+    PICO_STACK_SIZE=4096
+    PICO_CORE1_STACK_SIZE=4096
+
     # Route panics through rpc_panic_handler (panic.cpp): print the whole
     # message, let USB drain it, then reboot. The default spins with interrupts
     # off, which truncates the message and wedges the terminal.

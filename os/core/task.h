@@ -48,9 +48,11 @@
 // worth the risk of being wrong about it.
 #define TASK_STACK_MIN   2048
 #define TASK_STACK_DEF   3072
-// The shell nests deepest of all: line editor, then a command, then a pipeline
-// stage, then whatever that command calls.
-#define TASK_STACK_SHELL 4096
+// The shell nests deepest of ALL: read_line, run_line, run_segment, run_one,
+// apps_launch, app_main, then whatever a package does — and __sbprintf alone
+// wants 1128 bytes somewhere in there. It gets 8 KB because it is the one task
+// every command runs inside, and because the alternative was found the hard way.
+#define TASK_STACK_SHELL 8192
 
 // Bytes at the low end of every stack kept as a tripwire. Checked at every
 // yield: if they have changed, the task has run off the end and the OS says so
@@ -170,6 +172,13 @@ void task_stack_overflow(const char *name, uint32_t size) __attribute__((noretur
 // dark until someone unplugs it.
 void task_watchdog_start(void);
 void task_watchdog_feed(void);
+
+// Bytes still available below the current stack pointer on the MAIN stack. pid 1
+// runs on the C startup stack, which this scheduler never allocated and so
+// cannot paint with a tripwire — this is the equivalent check for it.
+uint32_t task_main_stack_headroom(void);
+// Total size of that stack, from the linker.
+uint32_t task_main_stack_size(void);
 
 }  // extern "C"
 

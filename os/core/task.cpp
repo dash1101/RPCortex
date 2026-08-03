@@ -131,7 +131,10 @@ void task_init(const char *name) {
     t.info.state    = TASK_RUNNING;
     t.info.affinity = AFFINITY_CORE0;      // it owns the terminal
     t.info.core     = 0;
-    t.stack         = nullptr;             // the C startup stack; not ours to measure
+    t.stack         = nullptr;             // the C startup stack; not ours to free
+    // Its size IS known — the linker placed it — so the guard and `ps` can both
+    // report something real for the task that runs every command.
+    t.info.stack_size = task_main_stack_size();
     t.entered_ms    = task_now_ms();
     snprintf(t.info.name, sizeof(t.info.name), "%s", name ? name : "init");
     snprintf(t.info.path, sizeof(t.info.path), "%s", "(kernel)");
@@ -224,7 +227,10 @@ static void reschedule(TaskState park_as) {
     // Progress, recorded where it survives a reset. This is what turns "the
     // watchdog fired" into "the watchdog fired while 'stress' was running and it
     // had already yielded 812 times".
-    bb_note_yield(task_now_ms());
+    // Core 0 only. Core 1's idle loop yields thousands of times a second, so
+    // counting both made the figure a measure of how long the device had been
+    // on rather than of what the foreground was doing.
+    if (core == 0) bb_note_yield(task_now_ms());
 
     // Record WHO is running on every pass, not only on a context switch.
     //
@@ -249,6 +255,19 @@ static void reschedule(TaskState park_as) {
     if (me && !guard_ok(me)) {
         lock_hw_exit();
         task_stack_overflow(me->info.name, me->info.stack_size);
+    }
+
+    // The adopted task (pid 1) has no painted stack, so it gets the equivalent
+    // check against the linker's floor. Without this the shell — where every
+    // command actually runs — was the one task in the system with no tripwire
+    // at all, which is exactly where the overflow turned out to be.
+    if (me && !me->stack && core == 0) {
+        uint32_t left = task_main_stack_headroom();
+        me->info.stack_used = me->info.stack_size > left ? me->info.stack_size - left : 0;
+        if (left < 256) {
+            lock_hw_exit();
+            task_stack_overflow(me->info.name, me->info.stack_size);
+        }
     }
 
     if (me) {
