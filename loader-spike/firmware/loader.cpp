@@ -366,10 +366,18 @@ LoadResult app_load(const AppSource &src, LoadedApp *out) {
             case R_ARM_ABS32:
             case R_ARM_TARGET1: {
                 uint32_t *p = (uint32_t *)(uintptr_t)P;
-                // The Thumb bit belongs in a function POINTER. Without it a
-                // call through a stored pointer lands in ARM state and faults
-                // instantly on a core that has none.
-                *p = *p + S + (is_func ? 1u : 0u);
+                // S ALREADY carries the Thumb bit. AAELF stores it in st_value
+                // itself: a symbol referring to Thumb code has bit 0 set, which
+                // readelf shows as st_value = 1 for a function at the start of
+                // its section. Adding another one here produced a pointer to
+                // function+2 with the Thumb bit CLEAR, and calling it faulted
+                // with INVSTATE the instant a package command was invoked.
+                //
+                // app_main escaped it because the entry point is resolved
+                // through the symbol lookup rather than a relocation — which is
+                // exactly why loading a package always worked and running one
+                // never did.
+                *p = *p + S;
                 break;
             }
 
@@ -424,7 +432,13 @@ LoadResult app_load(const AppSource &src, LoadedApp *out) {
                 // four bytes early — it links, it loads, and it jumps into the
                 // middle of the previous instruction.
                 int32_t addend = thumb_decode_branch(p);
-                uint32_t real_target = S + (uint32_t)addend + 4;
+                // The Thumb bit is masked OFF for the arithmetic. S carries it
+                // (see R_ARM_ABS32 above), and a branch displacement computed
+                // from an odd address is wrong by one — Thumb branch offsets are
+                // even by construction. It goes back on for the veneer target
+                // below, where an address is what is wanted rather than an
+                // offset.
+                uint32_t real_target = (S & ~1u) + (uint32_t)addend + 4;
                 int32_t disp = (int32_t)(real_target - (P + 4));
                 if (!thumb_bl_in_range(disp)) {
                     // This is the normal case, not an edge case: firmware lives

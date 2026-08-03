@@ -17,6 +17,7 @@
 //     branching to it is out of BL range — a false failure that says nothing
 //     about a device whose whole heap is 400 KB.
 #include "loader.h"
+#include "elf.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -65,6 +66,31 @@ uint32_t api_lookup(const char *n) {
 }
 uint32_t api_symbol_count(void) { return 64; }
 
+// Is a loaded-image offset inside an executable section? Recomputes the
+// loader's layout from the ELF so the answer matches what was actually placed.
+static bool in_text(const char *path, uint32_t off) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return false;
+    fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET);
+    uint8_t *b = (uint8_t *)malloc(sz);
+    if (fread(b, 1, sz, f) != (size_t)sz) { fclose(f); free(b); return false; }
+    fclose(f);
+    Elf32_Ehdr *eh = (Elf32_Ehdr *)b;
+    Elf32_Shdr *sh = (Elf32_Shdr *)(b + eh->e_shoff);
+    uint32_t total = 0; bool hit = false;
+    for (int i = 0; i < eh->e_shnum; i++) {
+        if (!(sh[i].sh_flags & SHF_ALLOC) || sh[i].sh_size == 0) continue;
+        uint32_t al = sh[i].sh_addralign ? sh[i].sh_addralign : 4;
+        if (al < 4) al = 4;
+        total = (total + al - 1) & ~(al - 1);
+        if (off >= total && off < total + sh[i].sh_size)
+            hit = (sh[i].sh_flags & SHF_EXECINSTR) != 0;
+        total += sh[i].sh_size;
+    }
+    free(b);
+    return hit;
+}
+
 static int load_one(const char *path) {
     g_f = fopen(path, "rb");
     if (!g_f) { printf("  SKIP %s (not built)\n", path); return 0; }
@@ -103,6 +129,37 @@ static int load_one(const char *path) {
         printf("       FAIL veneer pool overran\n");
         bad = 1;
     }
+
+    // EVERY function pointer the package stores must be odd.
+    //
+    // ARM ELF already carries the Thumb bit in st_value, so a loader that adds
+    // one itself produces function+2 with the bit CLEAR. Calling that faults
+    // with INVSTATE the moment a registered command is invoked — which is
+    // exactly what happened, and only to commands, because the entry point is
+    // resolved by symbol lookup rather than by a relocation.
+    //
+    // Scanning the whole image for words that land inside it and look like code
+    // catches the whole class: any ABS32 to a function, not just the ones a
+    // hand-written test thought to check.
+    uint32_t *words = (uint32_t *)app.image;
+    int checked = 0, even_ptrs = 0;
+    for (uint32_t w = 0; w < app.image_size / 4; w++) {
+        uint32_t v = words[w];
+        if (v < b || v >= b + app.image_size) continue;   // not a pointer into us
+        uint32_t off = (v & ~1u) - b;
+        // Only judge values that point into an executable section. Data pointers
+        // are legitimately even, so counting them would be noise.
+        if (!in_text(path, off)) continue;
+        checked++;
+        if (!(v & 1u)) {
+            printf("       FAIL word at +0x%x holds %08x -> code at +0x%x with NO Thumb bit\n",
+                   w * 4, v, off);
+            even_ptrs++;
+        }
+    }
+    if (checked) printf("       %d code pointer(s), %d missing the Thumb bit\n",
+                        checked, even_ptrs);
+    if (even_ptrs) bad = 1;
     fclose(g_f);
     return bad;
 }

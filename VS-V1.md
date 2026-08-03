@@ -101,16 +101,31 @@ could reflash. The equivalent here is handing USB back to the boot ROM.
 
 ## Known unstable
 
-- **Long package commands were being killed for working.** `bench` failed the
-  same way `stress` did, and it shares almost nothing with it — no tasks, no
-  concurrency. The common factor was being a package command at all: neither
-  yields, so nothing fed the watchdog from the moment the command started and it
-  rebooted after eight seconds. The stack figure in those reports was stale for
-  the same reason, since the guard only ran at a yield. Liveness now comes from
-  the ABI entry points, which a working package calls constantly. Unconfirmed on
-  hardware.
 - **`wifi`, `ping`, `ntp` are unproven on hardware.** They build and the lwIP
   locking is right by construction, but none has been run against a real network.
+
+## Why no package command ever ran
+
+Kept because it took several passes to find and the reasoning is worth not
+repeating. Every package command hard-faulted the instant it was invoked —
+`bench` and `stress` alike, though they share almost nothing — while *loading* a
+package always worked. That split was the whole clue.
+
+The loader added the ARM Thumb bit to function addresses itself. It should not
+have: AAELF already carries it in `st_value`, so a function at the start of its
+section shows as `st_value = 1` in `readelf`. Adding a second one produced a
+pointer to *function+2* with bit 0 clear, and `blx` to an even address is
+`INVSTATE` — an illegal state fault, before the first instruction of the command
+ran. `app_main` escaped it because the entry point is resolved through symbol
+lookup rather than a relocation, which is exactly why loading worked and running
+never did.
+
+The device named it in the end: `fault INVSTATE no Thumb bit cfsr=00020000`, and
+the crash mapper put the PC at `bench+0x262` and `stress+0xafa` across six runs.
+`os/host/realapp_test.cpp` now loads the real built `.app` files through the real
+loader and checks every code pointer in the image for its Thumb bit. Reverting
+the fix makes it report those same two offsets on the host, so the fault is
+reproducible off-device and cannot come back unnoticed.
 
 ## Reliability work that has landed
 
@@ -127,4 +142,9 @@ the next port will hit the same ground.
 - A stall timer comparing against a timestamp from before the reset, wrapping to
   49 days.
 - The shell running on the 2 KB boot stack instead of its own.
-- Built-in packages installing once and never updating with the firmware.
+- Built-in packages installing once and never updating with the firmware, so
+  several passes of debugging checkpoints never actually ran.
+- Long package commands killed for working: neither `bench` nor `stress` yields,
+  so nothing fed the watchdog once the command started. Liveness now comes from
+  the ABI entry points, which a working package calls constantly.
+- The loader adding a Thumb bit the symbol already carried — see above.
