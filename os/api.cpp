@@ -19,6 +19,9 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include "pico/stdlib.h"
+#include "hardware/adc.h"
+#include "hardware/i2c.h"
+#include "hardware/gpio.h"
 
 // The app currently being run, so a command it registers can be tagged with an
 // owner and swept when the app unloads. Set by the shell around app_main. Same
@@ -91,6 +94,140 @@ extern "C" uint32_t fw_file_read(const char *path, void *buf, uint32_t cap) {
 }
 extern "C" int fw_file_remove(const char *path) { task_alive(); return storage_remove(path) ? 1 : 0; }
 extern "C" int fw_file_exists(const char *path) { return storage_stat(path, nullptr, nullptr) ? 1 : 0; }
+
+// --- hardware ---------------------------------------------------------------
+//
+// Thin wrappers over the SDK, with the pin checked first. On RP2 an out of
+// range pin number is not an error the hardware reports — it aliases onto some
+// other register — so refusing here is the difference between "that pin does
+// not exist" and a device that behaves strangely for reasons nobody can find.
+
+// Pins the OS owns, which a package must not have. On the wireless boards the
+// radio is wired to GPIO 23/24/25/29 through the CYW43, and driving those from
+// a package takes the network down in a way that looks like a WiFi fault.
+static bool pin_reserved(unsigned pin) {
+#if defined(RPC_HAS_WIFI) && RPC_HAS_WIFI
+    return pin == 23 || pin == 24 || pin == 25 || pin == 29;
+#else
+    (void)pin;
+    return false;
+#endif
+}
+
+extern "C" unsigned fw_gpio_count(void) { return NUM_BANK0_GPIOS; }
+
+extern "C" int fw_gpio_usable(unsigned pin) {
+    return (pin < NUM_BANK0_GPIOS && !pin_reserved(pin)) ? 1 : 0;
+}
+
+extern "C" int fw_gpio_init(unsigned pin, int dir) {
+    if (!fw_gpio_usable(pin)) return -1;
+    task_alive();
+    gpio_init(pin);
+    gpio_set_dir(pin, dir == FW_PIN_OUT);
+    return 0;
+}
+
+extern "C" int fw_gpio_pull(unsigned pin, int mode) {
+    if (!fw_gpio_usable(pin)) return -1;
+    gpio_set_pulls(pin, mode == FW_PULL_UP, mode == FW_PULL_DOWN);
+    return 0;
+}
+
+extern "C" int fw_gpio_put(unsigned pin, int value) {
+    if (!fw_gpio_usable(pin)) return -1;
+    gpio_put(pin, value != 0);
+    return 0;
+}
+
+extern "C" int fw_gpio_get(unsigned pin) {
+    if (!fw_gpio_usable(pin)) return -1;
+    return gpio_get(pin) ? 1 : 0;
+}
+
+// The ADC. Channel 4 is the temperature sensor on RP2040; RP2350 moved it to
+// channel 4 as well on the 30-pin parts but the SDK's own constant is the only
+// thing worth trusting here, so it is reported rather than assumed.
+static bool g_adc_ready;
+
+extern "C" unsigned fw_adc_temp_channel(void) { return 4; }
+
+extern "C" int fw_adc_init(unsigned channel) {
+    if (channel > 4) return -1;
+    if (!g_adc_ready) { adc_init(); g_adc_ready = true; }
+    if (channel == fw_adc_temp_channel()) adc_set_temp_sensor_enabled(true);
+    else                                  adc_gpio_init(26 + channel);
+    return 0;
+}
+
+extern "C" int fw_adc_read(unsigned channel) {
+    if (channel > 4 || !g_adc_ready) return -1;
+    task_alive();
+    adc_select_input(channel);
+    return (int)adc_read();
+}
+
+// I2C. Returning the SDK's byte count straight through is what makes a bus scan
+// work: a zero-length write to an address either acknowledges or does not, and
+// the caller can tell those apart without a separate probe call.
+static i2c_inst_t *i2c_of(unsigned bus) {
+    if (bus == 0) return i2c0;
+    if (bus == 1) return i2c1;
+    return nullptr;
+}
+static bool g_i2c_ready[2];
+
+extern "C" int fw_i2c_init(unsigned bus, unsigned sda, unsigned scl, unsigned baud) {
+    i2c_inst_t *i = i2c_of(bus);
+    if (!i) return -1;
+    if (!fw_gpio_usable(sda) || !fw_gpio_usable(scl)) return -1;
+    if (baud == 0) baud = 100000;
+    task_alive();
+    i2c_init(i, baud);
+    gpio_set_function(sda, GPIO_FUNC_I2C);
+    gpio_set_function(scl, GPIO_FUNC_I2C);
+    gpio_pull_up(sda);
+    gpio_pull_up(scl);
+    g_i2c_ready[bus] = true;
+    return 0;
+}
+
+extern "C" int fw_i2c_write(unsigned bus, unsigned addr, const void *data,
+                            unsigned len, int nostop) {
+    i2c_inst_t *i = i2c_of(bus);
+    if (!i || !g_i2c_ready[bus] || addr > 0x7f) return -1;
+    task_alive();
+    return i2c_write_blocking(i, (uint8_t)addr, (const uint8_t *)data, len, nostop != 0);
+}
+
+extern "C" int fw_i2c_read(unsigned bus, unsigned addr, void *buf,
+                           unsigned len, int nostop) {
+    i2c_inst_t *i = i2c_of(bus);
+    if (!i || !g_i2c_ready[bus] || addr > 0x7f) return -1;
+    task_alive();
+    return i2c_read_blocking(i, (uint8_t)addr, (uint8_t *)buf, len, nostop != 0);
+}
+
+extern "C" int fw_i2c_deinit(unsigned bus) {
+    i2c_inst_t *i = i2c_of(bus);
+    if (!i || !g_i2c_ready[bus]) return -1;
+    i2c_deinit(i);
+    g_i2c_ready[bus] = false;
+    return 0;
+}
+
+extern "C" uint32_t fw_micros(void) { return time_us_32(); }
+
+// Busy, not yielding, and that is the point. A protocol timed in microseconds
+// cannot survive a task switch in the middle of it — a DHT's whole conversation
+// is over in about 5 ms, and yielding once loses the reading. Capped so this
+// cannot be used to take the core away indefinitely; anything longer belongs in
+// fw_task_sleep_ms, which yields properly.
+extern "C" void fw_busy_wait_us(uint32_t us) {
+    if (us > 20000) us = 20000;
+    busy_wait_us(us);
+    task_alive();
+}
 
 extern "C" uint32_t fw_heap_free(void)  { return heap_free(); }
 extern "C" uint32_t fw_heap_total(void) { return heap_total(); }
@@ -205,6 +342,21 @@ static const ApiSymbol kSymbols[] = {
     SYM(fw_file_read),
     SYM(fw_file_remove),
     SYM(fw_file_exists),
+    SYM(fw_gpio_count),
+    SYM(fw_gpio_usable),
+    SYM(fw_gpio_init),
+    SYM(fw_gpio_pull),
+    SYM(fw_gpio_put),
+    SYM(fw_gpio_get),
+    SYM(fw_adc_init),
+    SYM(fw_adc_read),
+    SYM(fw_adc_temp_channel),
+    SYM(fw_i2c_init),
+    SYM(fw_i2c_write),
+    SYM(fw_i2c_read),
+    SYM(fw_i2c_deinit),
+    SYM(fw_micros),
+    SYM(fw_busy_wait_us),
     SYM(fw_heap_free),
     SYM(fw_heap_total),
     SYM(fw_heap_largest),

@@ -23,7 +23,7 @@ extern "C" {
 // MINOR: a symbol added — older-minor apps still run (everything they want is
 //        present); newer-minor apps refused (they may want something absent).
 #define RPC_API_MAJOR 1
-#define RPC_API_MINOR 5
+#define RPC_API_MINOR 6
 
 typedef struct {
     uint32_t magic;          // RPC_APP_MAGIC
@@ -142,6 +142,64 @@ int      fw_file_exists(const char *path);
 
 // Memory. fw_heap_largest is the biggest single allocation available right now —
 // free bytes do not predict whether the next allocation succeeds, this does.
+// --- hardware ---------------------------------------------------------------
+//
+// Added at 1.6, because the first three packages that needed it (gpio, i2cscan,
+// dht) found there was nothing here at all — and neither is there a way to
+// build the Nova D1 suite without it.
+//
+// Deliberately thin. These are the SDK's own operations with the pin validated
+// and the board's limits applied, not a device framework: a package that wants
+// to drive a pin should not have to learn an abstraction first, and anything
+// richer would have to be guessed at before there are packages to guess from.
+//
+// Every call validates its pin against what the board actually has. An out of
+// range pin is refused rather than poked, because on RP2 a bad pin number is
+// not an error, it is a different peripheral.
+
+#define FW_PIN_IN     0
+#define FW_PIN_OUT    1
+
+#define FW_PULL_NONE  0
+#define FW_PULL_UP    1
+#define FW_PULL_DOWN  2
+
+// How many GPIOs this board exposes. Packages that scan a range should ask
+// rather than assume 30 — the count differs across RP2040, RP2350 and the
+// wireless variants, where some pins belong to the radio.
+unsigned fw_gpio_count(void);
+
+// True when the pin is safe for a package to use. False for pins that are out
+// of range, or that the board wires to something the OS owns.
+int      fw_gpio_usable(unsigned pin);
+
+int      fw_gpio_init(unsigned pin, int dir);          // FW_PIN_IN / FW_PIN_OUT
+int      fw_gpio_pull(unsigned pin, int mode);         // FW_PULL_*
+int      fw_gpio_put(unsigned pin, int value);
+int      fw_gpio_get(unsigned pin);                    // 0/1, or -1 if refused
+
+// ADC. Channels 0-3 are GPIO 26-29; the board's temperature sensor is on the
+// channel fw_adc_temp_channel() reports, which is not the same number on every
+// part. Returns the raw 12-bit reading, or -1.
+int      fw_adc_init(unsigned channel);
+int      fw_adc_read(unsigned channel);
+unsigned fw_adc_temp_channel(void);
+
+// I2C. `bus` is 0 or 1. Returns the number of bytes moved, or negative on
+// error — which is what makes a bus scan possible: a write of zero bytes to an
+// address either acknowledges or does not.
+int      fw_i2c_init(unsigned bus, unsigned sda, unsigned scl, unsigned baud);
+int      fw_i2c_write(unsigned bus, unsigned addr, const void *data, unsigned len, int nostop);
+int      fw_i2c_read(unsigned bus, unsigned addr, void *buf, unsigned len, int nostop);
+int      fw_i2c_deinit(unsigned bus);
+
+// Microsecond timing. fw_task_sleep_ms yields, which is right for anything
+// waiting on the world and wrong for a protocol that is timed in microseconds —
+// a DHT's whole conversation is over in 5 ms and a yield in the middle of it
+// loses the reading.
+uint32_t fw_micros(void);
+void     fw_busy_wait_us(uint32_t us);
+
 uint32_t fw_heap_free(void);
 uint32_t fw_heap_total(void);
 uint32_t fw_heap_largest(void);
