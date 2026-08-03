@@ -51,6 +51,8 @@ void task_ctx_switch(void **save_sp, void *to_sp) {
     swapcontext(from, (ucontext_t *)to_sp);
 }
 void lock_hw_enter(void) {}
+// One "core" here: these tests exercise the lock's logic, not the silicon.
+unsigned lock_hw_core(void) { return 0; }
 void lock_hw_exit(void)  {}
 uint32_t task_now_ms(void)     { return 0; }
 uint32_t task_core_count(void) { return 1; }

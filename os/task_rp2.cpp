@@ -3,6 +3,8 @@
 // task_ctx_switch is in task_switch.S; everything else it needs is here.
 
 #include "task.h"
+#include "preempt.h"
+#include "lock.h"
 
 #include <stdint.h>
 #include <string.h>
@@ -68,11 +70,23 @@ uint32_t task_now_ms(void) {
 // The point is that a wedged COMMAND should cost you that command, not the
 // device. Only a wedged kernel should cost a reboot.
 //
-// What this cannot do is forcibly terminate a task that never yields at all.
-// That needs preemption — a timer interrupt switching away from it — which
-// means running tasks on the process stack with PendSV, and is a much larger
-// change than this. The escalation is honest about the difference: it asks, and
-// if asking does not work it says so before the reboot rather than after.
+// A task that never yields at all cannot be asked anything, and that is what
+// forced exit below is for. It does NOT need the process stack and PendSV that
+// a general preemptive scheduler needs, because a task being killed is never
+// resumed — so its registers do not have to be preserved, and none of the
+// machinery that exists to preserve them is required.
+//
+// What it needs instead is one write. When an interrupt fires, the hardware has
+// already pushed the interrupted PC onto the stack; changing that word makes
+// the task resume somewhere else when the handler returns. Pointing it at a
+// routine that marks the task dead and reschedules turns a runaway loop into a
+// terminated command, using the task's own stack and the existing cooperative
+// switch.
+//
+// The whole mechanism is a stack write and an ordinary function. That is a very
+// different amount of risk from re-basing every task onto PSP, and it buys the
+// thing that was actually wanted: a wedged package costs that package.
+#define PREEMPT_TICK_US  100000     // 100 ms; fine enough against a 6 s threshold
 #define WATCHDOG_MS   8000
 #define STALL_WARN_MS 3000
 #define STALL_KILL_MS 6000
@@ -116,6 +130,97 @@ void task_watchdog_feed(void) {
                  t->name, t->pid, (unsigned)stall);
         task_kill(t->pid);
     }
+}
+
+// --- forced exit ------------------------------------------------------------
+//
+// DEVICE-UNCONFIRMED. The policy this consults is host-tested; the stack write
+// below is ARM and can only be proven on hardware.
+
+// Where a forced task resumes. Runs on the task's OWN stack, in thread mode,
+// as an ordinary function — the interrupt has already returned by the time this
+// executes, so everything here is allowed to yield, log and allocate.
+//
+// It never returns. task_exit does not come back, and reaching the end of this
+// would return into a stack frame that has been abandoned.
+extern "C" void task_forced_exit(void) {
+    const TaskInfo *t = task_current();
+    if (t) {
+        out_errp("watchdog", "'%s' (pid %d) would not stop. Terminated.", t->name, t->pid);
+        log_addf(LOG_K_ERR, "watchdog: force-terminated '%s' pid %d", t->name, t->pid);
+    }
+    task_exit(1);
+    for (;;) task_yield();     // unreachable; task_exit does not return
+}
+
+// Redirect the interrupted task to task_forced_exit by rewriting the PC the
+// hardware stacked on exception entry.
+//
+// The frame the hardware pushed is r0, r1, r2, r3, r12, LR, PC, xPSR, so PC is
+// word 6 and xPSR word 7.
+//
+// xPSR needs care on ARMv8-M. If the interrupt landed inside an IT block, the
+// stacked xPSR carries the condition bits for the instructions that were about
+// to run; returning with those set would execute the first instructions of
+// task_forced_exit under a stale predicate, possibly skipping them. Clearing
+// them costs nothing on ARMv6-M, which has no IT block at all.
+//
+// Bit 24 (Thumb) is preserved rather than assumed: an exception return with it
+// clear faults in a way that looks nothing like its cause.
+#define XPSR_THUMB   (1u << 24)
+#define XPSR_IT_ICI  ((3u << 25) | (0x3fu << 10))
+
+static void redirect_stacked_pc(uint32_t *frame) {
+    frame[6] = (uint32_t)(uintptr_t)&task_forced_exit | 1u;   // PC, Thumb bit set
+    frame[7] = (frame[7] & ~XPSR_IT_ICI) | XPSR_THUMB;        // xPSR
+}
+
+// Should the task holding this core be terminated where it stands?
+static bool should_force(void) {
+    const TaskInfo *t = task_current();
+    if (!t || t->pid == 1) return false;      // never the shell
+
+    uint32_t now = task_now_ms();
+    PreemptState ps{};
+    ps.now_ms        = now;
+    // bb_stall_ms already handles the pre-reset case; expressing it back as a
+    // timestamp keeps one definition of "how long since it yielded".
+    ps.last_yield_ms = now - bb_stall_ms(now);
+    ps.enabled       = true;
+    ps.in_critical   = crit_active();
+    // More than one task in play. task_count includes DONE slots, so this is a
+    // deliberately loose test: forcing when there is genuinely nothing else to
+    // run gains nothing, and the watchdog still covers that case.
+    ps.runnable_peer = task_count() > 1;
+    ps.is_idle_task  = false;
+    // Only after asking politely has already failed. Stage 1 sets a stop flag
+    // that every loop in this OS checks; forcing before that would terminate
+    // tasks that were about to stop on their own.
+    ps.slice_ms      = STALL_KILL_MS;
+
+    return preempt_decide(ps) == PREEMPT_SWITCH;
+}
+
+// The alarm handler. Deliberately does almost nothing: it decides, writes one
+// word, and returns. Printing or allocating from an interrupt that fired inside
+// an arbitrary instruction is how a fault handler comes to fault.
+static int64_t preempt_alarm(alarm_id_t, void *) {
+    if (should_force()) {
+        // EXC_RETURN bit 2 says which stack the interrupted code was using.
+        // Both are checked rather than assumed, because assuming MSP would
+        // silently rewrite the wrong stack the day tasks move to PSP.
+        uint32_t exc_return;
+        __asm volatile ("mov %0, lr" : "=r"(exc_return));
+        uint32_t *frame;
+        if (exc_return & 4u) __asm volatile ("mrs %0, psp" : "=r"(frame));
+        else                 __asm volatile ("mrs %0, msp" : "=r"(frame));
+        redirect_stacked_pc(frame);
+    }
+    return PREEMPT_TICK_US;    // reschedule this alarm
+}
+
+void task_preempt_start(void) {
+    add_alarm_in_us(PREEMPT_TICK_US, preempt_alarm, nullptr, /*fire_if_past*/true);
 }
 
 // --- stack overflow ---------------------------------------------------------
@@ -174,6 +279,8 @@ uint32_t task_core_count(void) {
 // deadlock against itself.
 static uint32_t g_hw_save;
 static spin_lock_t *g_hw;
+
+extern "C" unsigned lock_hw_core(void) { return get_core_num(); }
 
 extern "C" void lock_hw_enter(void) {
     if (!g_hw) g_hw = spin_lock_instance(spin_lock_claim_unused(true));

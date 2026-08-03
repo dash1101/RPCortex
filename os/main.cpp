@@ -60,6 +60,7 @@ int main(void) {
     // the future.
     bb_init();
     task_watchdog_start();
+    task_preempt_start();   // force-terminate a task that stops yielding entirely
 
     task_init("init");
     bool prior = log_init();

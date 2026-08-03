@@ -41,6 +41,29 @@ bool lock_try(RpcLock *l);
 
 bool lock_held_by_me(const RpcLock *l);
 
+// --- critical sections ------------------------------------------------------
+//
+// "Is it safe to take the core away from whatever is running right now?"
+//
+// Holding a lock is one reason it is not: the forced-exit path below terminates
+// a task where it stands, and a task killed mid-lock leaves that lock owned by
+// a pid that no longer exists — every later acquire waits forever. Flash
+// operations are the other: an erase interrupted halfway leaves a corrupt
+// sector, which has already cost boards once.
+//
+// Counted rather than boolean, because these nest: a filesystem operation built
+// from other filesystem operations takes the same recursive lock several times.
+// Per core, since the two cores are in different places at any moment.
+void crit_enter(void);
+void crit_leave(void);
+bool crit_active(void);
+
+// Scoped form, so an early return cannot leave the count raised.
+struct CritGuard {
+    CritGuard()  { crit_enter(); }
+    ~CritGuard() { crit_leave(); }
+};
+
 // Scope guard, so a lock cannot be leaked by an early return. Anything with
 // more than one exit path should use this rather than paired calls.
 struct LockGuard {
@@ -58,6 +81,9 @@ struct LockGuard {
 // few instructions only — never across a yield.
 extern "C" {
 void lock_hw_enter(void);
+// Which core is asking. Same per-platform split as the two above: the hardware
+// answer on a device, always 0 on the host.
+unsigned lock_hw_core(void);
 void lock_hw_exit(void);
 }
 

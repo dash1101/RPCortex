@@ -9,6 +9,8 @@
 extern "C" {
 // Single-threaded host: the cross-core critical section has nothing to guard.
 void lock_hw_enter(void) {}
+// One "core" on the host; the tests exercise the scheduler, not the silicon.
+unsigned lock_hw_core(void) { return 0; }
 void lock_hw_exit(void)  {}
 
 void *task_ctx_init(void *stack_top, TaskEntry) { return stack_top; }

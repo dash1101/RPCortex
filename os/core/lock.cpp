@@ -12,6 +12,15 @@ static int me(void) {
     return pid > 0 ? pid : PRE_INIT_OWNER;
 }
 
+// Per core. Two cores are in different places at any given moment, and a
+// count shared between them would report one core's flash write as a reason not
+// to preempt a runaway task on the other.
+static volatile uint32_t g_crit[2];
+
+void crit_enter(void) { g_crit[lock_hw_core() & 1]++; }
+void crit_leave(void) { unsigned c = lock_hw_core() & 1; if (g_crit[c]) g_crit[c]--; }
+bool crit_active(void) { return g_crit[lock_hw_core() & 1] != 0; }
+
 bool lock_held_by_me(const RpcLock *l) {
     return l && l->owner == me();
 }
@@ -24,6 +33,10 @@ bool lock_try(RpcLock *l) {
     if (l->owner == 0) { l->owner = self; l->depth = 1; got = true; }
     else if (l->owner == self) { l->depth++; got = true; }
     lock_hw_exit();
+    // A task killed while holding a lock leaves it owned by a pid that no
+    // longer exists, and every later acquire waits forever. Counting here is
+    // what tells the forced-exit path to wait.
+    if (got) crit_enter();
     return got;
 }
 
@@ -45,8 +58,10 @@ void lock_release(RpcLock *l) {
     // Releasing a lock this task does not hold is a bug in the caller, not
     // something to paper over — but clearing another task's ownership would turn
     // it into corruption somewhere else entirely, so it is ignored.
-    if (l->owner == me() && l->depth > 0) {
+    bool was_held = (l->owner == me() && l->depth > 0);
+    if (was_held) {
         if (--l->depth == 0) l->owner = 0;
     }
     lock_hw_exit();
+    if (was_held) crit_leave();
 }

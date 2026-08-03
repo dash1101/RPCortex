@@ -170,6 +170,11 @@ void task_stack_overflow(const char *name, uint32_t size) __attribute__((noretur
 // The watchdog. Started once the shell is up, fed by the scheduler. A device
 // that stops yielding has stopped making progress, and rebooting beats sitting
 // dark until someone unplugs it.
+// Arm the timer that force-terminates a task which has stopped yielding
+// entirely. Separate from the watchdog: the watchdog reboots the device, this
+// ends one task and leaves everything else running. Call once, after task_init.
+void task_preempt_start(void);
+
 void task_watchdog_start(void);
 void task_watchdog_feed(void);
 
