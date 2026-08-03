@@ -46,6 +46,7 @@ void user_register(void);
 void help_register(void);
 void net_register(void);
 void http_register(void);
+void net_autoconnect_report(void);
 void diag_register(void);
 void settings_register(void);
 void editor_register(void);
@@ -702,6 +703,11 @@ void shell_run(void) {
         // while the shell carried on fine. Reaching the prompt means whatever
         // was asked to stop has stopped.
         task_clear_stop();
+
+        // Report a background join here rather than from its own task: printing
+        // from there lands in the middle of whatever is being typed, and this
+        // is the one place the shell is known to be idle.
+        net_autoconnect_report();
 
         char prompt[80];
         // v1's prompt, colour for colour: cyan user, grey @host, blue path.

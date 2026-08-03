@@ -315,14 +315,17 @@ static int wifi_scan(void) {
 
 // --- connect / disconnect ---------------------------------------------------
 
-static int wifi_connect(const char *ssid, const char *pw, bool quiet = false);
+static int wifi_connect(const char *ssid, const char *pw, bool quiet = false,
+                        bool persist = true);
 
-// True on success. Wraps the join so the boot path can stay silent about it.
+// True on success. The boot join uses this: silent, and it does NOT touch the
+// registry — the shell records the result afterwards, on its own task, where
+// every other registry write in this OS already happens.
 static bool wifi_connect_quiet(const char *ssid, const char *pw) {
-    return wifi_connect(ssid, pw, /*quiet*/true) == 0;
+    return wifi_connect(ssid, pw, /*quiet*/true, /*persist*/false) == 0;
 }
 
-static int wifi_connect(const char *ssid, const char *pw, bool quiet) {
+static int wifi_connect(const char *ssid, const char *pw, bool quiet, bool persist) {
     if (!radio_up()) return 1;
 
     // No password given: fall back to a saved one before assuming an open
@@ -360,8 +363,10 @@ static int wifi_connect(const char *ssid, const char *pw, bool quiet) {
         if (!quiet) out_err("Could not connect to '%s' — %s.", ssid, link_text(st));
         return 1;
     }
-    reg_set("WiFi.Active", ssid);
-    saved_put(ssid, pw);
+    if (persist) {
+        reg_set("WiFi.Active", ssid);
+        saved_put(ssid, pw);
+    }
     if (!quiet) {
         out_ok("Connected to '%s'.", ssid);
         char a[20] = "";
@@ -416,34 +421,42 @@ void net_autoconnect_now(void);      // the inline fallback, defined below
 // joined the network it was told to join is not news, and the prompt already
 // shows it. Only a failure speaks, because that is the case where someone needs
 // to do something.
+// What the join task reports back. Plain values, written by the task and read
+// by the shell — no registry, no printing, no shared structure.
+static volatile bool g_join_done;
+static volatile bool g_join_ok;
+static char          g_join_ssid[33];
+static char          g_join_pw[REG_VAL_MAX];
+
 static int autoconnect_task(void *) {
-    char k[REG_KEY_MAX];
-    int slot = -1;
-    const char *last = reg_get("WiFi.Active", "");
-    if (last[0]) slot = saved_find(last);
-    if (slot < 0) {
-        for (int i = 0; i < NET_SAVED; i++) {
-            saved_key(i, "SSID", k, sizeof(k));
-            const char *v = reg_get(k, nullptr);
-            if (v && v[0]) { slot = i; break; }
-        }
-    }
-    if (slot < 0) return 0;
+    // Deliberately does ONE thing: join. It does not print, does not write the
+    // registry, and does not read anything the shell might be writing.
+    //
+    // Everything that made this task dangerous was shared state rather than the
+    // join itself. Printing from here interleaves with a login prompt; writing
+    // the registry races every reg_get in the shell, which hands back a pointer
+    // into its table; and both happened while the driver's interrupt rewrote
+    // lwIP underneath. Reporting through two flags and a copied string removes
+    // all of it at once.
+    bool ok = wifi_connect_quiet(g_join_ssid, g_join_pw[0] ? g_join_pw : nullptr);
+    g_join_ok = ok;
+    g_join_done = true;
+    return ok ? 0 : 1;
+}
 
-    char ssid[33], pw[REG_VAL_MAX];
-    saved_key(slot, "SSID", k, sizeof(k)); snprintf(ssid, sizeof(ssid), "%s", reg_get(k, ""));
-    saved_key(slot, "PW",   k, sizeof(k)); snprintf(pw, sizeof(pw), "%s", reg_get(k, ""));
-    if (!ssid[0]) return 0;
-
-    if (wifi_connect_quiet(ssid, pw)) {
-        log_addf(LOG_K_OK, "wifi: joined '%s' at boot", ssid);
-        return 0;
+// Called by the shell once it is idle, to report what the join did. Runs on the
+// SHELL's task, so printing and persisting happen where they always did.
+void net_autoconnect_report(void) {
+    if (!g_join_done) return;
+    g_join_done = false;
+    if (g_join_ok) {
+        reg_set("WiFi.Active", g_join_ssid);
+        log_addf(LOG_K_OK, "wifi: joined '%s' at boot", g_join_ssid);
+        return;                      // success is not news
     }
-    // Loud, because this is the case that needs a person.
-    out_warnp("wifi", "Could not join '%s' automatically.", ssid);
-    out_multi("  'wifi connect %s' to retry, or 'wifi auto off' to stop trying.", ssid);
-    log_addf(LOG_K_WARN, "wifi: boot join of '%s' failed", ssid);
-    return 1;
+    out_warnp("wifi", "Could not join '%s' automatically.", g_join_ssid);
+    out_multi("  'wifi connect %s' to retry, or 'wifi auto off' to stop trying.", g_join_ssid);
+    log_addf(LOG_K_WARN, "wifi: boot join failed");
 }
 
 void net_autoconnect(void) {
@@ -482,8 +495,7 @@ void net_autoconnect(void) {
     // long way without one, so the size has to be right rather than watched.
     if (task_spawn("wifi-join", "(kernel)", autoconnect_task, nullptr,
                    TASK_STACK_NET, AFFINITY_ANY) >= 0) {
-        out_infop("wifi", "Connecting to '%s' in the background...",
-                  reg_get("WiFi.Active", "a saved network"));
+        out_infop("wifi", "Connecting to '%s' in the background...", g_join_ssid);
         return;
     }
     // No room for a task: fall back to doing it inline rather than not at all.
@@ -754,6 +766,7 @@ static int cmd_wifi(int argc, char **argv) {
 
 void net_autoconnect(void) {}
 void net_autoconnect_now(void) {}
+void net_autoconnect_report(void) {}
 bool net_available(void) { return false; }
 bool net_is_connected(void) { return false; }
 const char *net_active_ssid(void) { return "(no radio)"; }
