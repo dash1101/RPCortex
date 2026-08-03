@@ -37,6 +37,7 @@ bool http_tls_available(void);
 const char *http_tls_why(void);
 void http_tls_reset(void);
 bool stock_install_cacerts(bool force);
+void http_last_detail(char *out, unsigned cap);
 bool net_is_connected(void);
 
 #define REPO_URL   "https://raw.githubusercontent.com/dash1101/RPCortex-repo/main/repo-v2/index.json"
@@ -170,6 +171,14 @@ static bool download(const char *url, const char *dest, char *hex_out, uint64_t 
     if (!good) {
         storage_remove(dest);
         out_err("%s%s%s", fetch_error_str(r.error), r.detail[0] ? " - " : "", r.detail);
+        // A transport failure on its own says almost nothing. What the
+        // connection actually managed is what points at the cause.
+        if (r.error == FETCH_ERR_RECV || r.error == FETCH_ERR_CONNECT ||
+            r.error == FETCH_ERR_SEND) {
+            char d[96];
+            http_last_detail(d, sizeof(d));
+            out_multi("  %s", d);
+        }
         return false;
     }
     uint8_t digest[32];

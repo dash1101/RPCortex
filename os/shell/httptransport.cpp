@@ -51,6 +51,7 @@ bool http_tls_available(void);       // the shell's working directory (fs.cpp)
 #define RX_RING       2048      // one BDP's worth on a local network
 #define CONNECT_MS    10000
 #define READ_MS       15000
+#define SEND_MS       10000
 
 // --- waiting ----------------------------------------------------------------
 
@@ -77,6 +78,14 @@ struct TcpConn {
     volatile bool closed;        // peer sent FIN
     volatile bool failed;
     volatile uint32_t unsent;    // bytes still in flight
+
+    // Enough to say WHAT went wrong rather than that something did. "connection
+    // lost" covers a refused handshake, a peer that hung up, and a read that
+    // timed out, and those need three different next steps.
+    volatile int   last_err;     // the lwIP error, when one arrived
+    volatile bool  handshook;    // the connected callback fired
+    volatile uint32_t sent;      // request bytes handed to the stack
+    volatile uint32_t got;       // payload bytes received
 };
 
 static uint16_t ring_used(const TcpConn *c) {
@@ -121,6 +130,7 @@ static err_t on_recv(void *arg, struct altcp_pcb *pcb, struct pbuf *p, err_t err
     // precisely how a download loses bytes from its middle and still reports
     // success — the corruption the ERR_MEM path above exists to prevent.
     altcp_recved(pcb, copied);
+    c->got += copied;
     pbuf_free(p);
 
     // It fit, so a short copy cannot happen unless an assumption above is
@@ -129,9 +139,10 @@ static err_t on_recv(void *arg, struct altcp_pcb *pcb, struct pbuf *p, err_t err
     return ERR_OK;
 }
 
-static void on_err(void *arg, err_t) {
+static void on_err(void *arg, err_t e) {
     TcpConn *c = (TcpConn *)arg;
     c->pcb = nullptr;            // lwIP has already freed it; never touch it again
+    c->last_err = (int)e;
     c->failed = true;
 }
 
@@ -139,6 +150,7 @@ static err_t on_connected(void *arg, struct altcp_pcb *, err_t err) {
     TcpConn *c = (TcpConn *)arg;
     if (err != ERR_OK) { c->failed = true; return ERR_OK; }
     c->connected = true;
+    c->handshook = true;         // for TLS this means the handshake finished
     return ERR_OK;
 }
 
@@ -294,6 +306,7 @@ static int lw_open(void *ctx, const char *host, uint16_t port, bool tls) {
 static int lw_send(void *ctx, const uint8_t *data, uint32_t len) {
     TcpConn *c = (TcpConn *)ctx;
     uint32_t at = 0;
+    absolute_time_t send_deadline = make_timeout_time_ms(SEND_MS);
 
     while (at < len) {
         if (c->failed || !c->pcb) return -1;
@@ -309,11 +322,19 @@ static int lw_send(void *ctx, const uint8_t *data, uint32_t len) {
         cyw43_arch_lwip_end();
 
         if (e == ERR_MEM) { task_sleep_ms(2); continue; }   // transient; retry
-        if (e != ERR_OK) return -1;
+        if (e != ERR_OK) { c->last_err = (int)e; return -1; }
         at += n;
+        c->sent += n;
         if (n == 0) {
+            // No send window. This needs a deadline of its own: without one a
+            // stack that never opens the window spins here until the watchdog
+            // notices, with nothing to show for it.
             if (intr_check()) return -1;
-            task_sleep_ms(2);      // no window; let the peer drain
+            if (absolute_time_diff_us(get_absolute_time(), send_deadline) < 0) {
+                c->last_err = -100;      // "the send window never opened"
+                return -1;
+            }
+            task_sleep_ms(2);
         }
     }
     return 0;
@@ -326,7 +347,10 @@ static int lw_recv(void *ctx, uint8_t *buf, uint32_t cap) {
     while (ring_used(c) == 0) {
         if (c->failed) return -1;
         if (c->closed) return 0;                 // clean end of body
-        if (absolute_time_diff_us(get_absolute_time(), deadline) < 0) return -1;
+        if (absolute_time_diff_us(get_absolute_time(), deadline) < 0) {
+            c->last_err = -101;                  // "nothing arrived in time"
+            return -1;
+        }
         if (intr_check()) return -1;
         task_sleep_ms(2);
     }
@@ -367,6 +391,24 @@ static void lw_close(void *ctx) {
 // is not a thing worth the second buffer.
 static TcpConn g_conn;
 
+// What the last transfer did, for an error message worth reading.
+void http_last_detail(char *out, unsigned cap) {
+    const char *why = "";
+    switch (g_conn.last_err) {
+        case 0:    why = "no error reported"; break;
+        case -100: why = "the send window never opened"; break;
+        case -101: why = "nothing arrived within the read timeout"; break;
+        case -13:  why = "the peer reset the connection"; break;   // ERR_RST
+        case -14:  why = "the connection closed"; break;           // ERR_CLSD
+        case -11:  why = "the peer aborted"; break;                // ERR_ABRT
+        case -1:   why = "out of memory in the network stack"; break;
+        default:   why = "lwIP error"; break;
+    }
+    snprintf(out, cap, "%s; handshake %s, sent %lu, received %lu",
+             why, g_conn.handshook ? "ok" : "NOT DONE",
+             (unsigned long)g_conn.sent, (unsigned long)g_conn.got);
+}
+
 bool http_transport_get(HttpTransport *t) {
     if (!net_is_connected()) return false;
     t->open = lw_open; t->send = lw_send; t->recv = lw_recv; t->close = lw_close;
@@ -378,6 +420,7 @@ bool http_transport_get(HttpTransport *t) {
 
 bool http_transport_get(HttpTransport *) { return false; }
 bool http_tls_available(void) { return false; }
+void http_last_detail(char *out, unsigned cap) { snprintf(out, cap, "no wireless"); }
 const char *http_tls_why(void) { return "no wireless on this board"; }
 void http_tls_reset(void) {}
 
