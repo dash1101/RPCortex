@@ -44,6 +44,8 @@
 #include "hardware/flash.h"
 #include "hardware/sync.h"
 #include "hardware/watchdog.h"
+#include "hardware/structs/watchdog.h"
+#include "hardware/regs/watchdog.h"
 #include "hardware/regs/addressmap.h"
 #include "pico/multicore.h"
 
@@ -182,8 +184,17 @@ static bool fetch_manifest(RepoEntry *out) {
 // The window in which this device cannot boot runs from the first erase to the
 // last program. Nothing that can fail happens inside it: no allocation, no
 // filesystem, no formatting, no decisions.
-static void __not_in_flash_func(apply_staged)(uint32_t stage_off, uint32_t len,
-                                              uint8_t *buf) {
+// __no_inline_not_in_flash_func, and the "no_inline" half is not optional.
+//
+// __not_in_flash_func places the function in RAM but does nothing to stop the
+// compiler INLINING it into its caller — and its caller lives in flash. A
+// static function called exactly once gets inlined every time, so the whole
+// copy loop was executing from the flash it was erasing. It died on the first
+// erase, which is exactly the lockup.
+//
+// Verified with nm rather than assumed: this symbol must resolve to 0x2xxxxxxx.
+static void __no_inline_not_in_flash_func(apply_staged)(uint32_t stage_off, uint32_t len,
+                                                        uint8_t *buf) {
     uint32_t total = (len + FLASH_SECTOR_SIZE - 1) & ~(FLASH_SECTOR_SIZE - 1);
 
     // Interrupts stay off for the WHOLE copy, not per operation.
@@ -218,7 +229,31 @@ static void __not_in_flash_func(apply_staged)(uint32_t stage_off, uint32_t len,
         done += FLASH_SECTOR_SIZE;
     }
 
-    restore_interrupts(ints);
+    // Reboot from HERE. This must never return.
+    //
+    // The caller lives in the flash that was just overwritten. Its return
+    // address points at whatever the NEW image happens to put at that offset —
+    // which is not the rest of update_apply_file, and on a real version change
+    // is not a function boundary at all. Returning executes whatever is there.
+    //
+    // On a --force reinstall of an identical image that would accidentally
+    // work, which is the worst kind of bug: it appears fine until the first
+    // update that actually changes something, and then hangs with no output
+    // because the write itself had already succeeded.
+    //
+    // Interrupts are deliberately NOT restored. The vector table on disk is the
+    // new one, but nothing above has been re-entered and there is nothing left
+    // to return to.
+    (void)ints;
+    // Reset by writing the watchdog register directly, NOT through
+    // watchdog_reboot() — that function lives in flash, and flash no longer
+    // holds what it did. Calling into it here branches into a region erased
+    // seconds ago, and faults with no handler left to catch it.
+    //
+    // A single volatile store with no call in it is the only kind of sequence
+    // that is safe at this point.
+    watchdog_hw->ctrl = WATCHDOG_CTRL_TRIGGER_BITS;
+    while (true) __asm volatile ("nop");
 }
 
 // --- the command ------------------------------------------------------------
@@ -414,8 +449,32 @@ bool update_apply_file(const char *path, const char *to_version) {
     persist_save_registry();
 
     log_addf(LOG_K_WARN, "update: writing %lu bytes of firmware", (unsigned long)size);
-    out_info("Writing firmware. Do not remove power.");
-    sleep_ms(100);                     // let the serial buffer drain
+
+    // Say plainly what is about to happen, because what it LOOKS like is a
+    // crash.
+    //
+    // The write needs interrupts off from the first erase to the last program —
+    // the vector table is in the flash being erased, so there is nowhere for an
+    // interrupt to go. USB is an interrupt-driven device, so the serial
+    // connection drops for the whole operation: no output, no echo, nothing.
+    //
+    // That is several seconds of a terminal that appears dead, and pulling the
+    // plug during it leaves a half-written image and a board that needs
+    // BOOTSEL. Which is exactly what happens if nobody warns you.
+    out_blank();
+    out_warn("The console will go SILENT for up to 30 seconds now.");
+    out_multi("  That is normal: USB stops while flash is being written.");
+    out_multi("  %sDo not unplug the device%s, however dead it looks.", C_BOLD, C_RESET);
+    out_multi("  It reboots by itself when it finishes.");
+    out_blank();
+    for (int i = 3; i > 0; i--) {
+        out_progress("Starting in", (uint64_t)(3 - i), 3);
+        sleep_ms(600);
+    }
+    out_progress_done();
+    out_info("Writing firmware...");
+    out_flush();
+    sleep_ms(150);                     // let the serial buffer actually drain
 
     // Stop core 1 before touching flash.
     //
@@ -436,10 +495,10 @@ bool update_apply_file(const char *path, const char *to_version) {
 
     // fbuf becomes the copier's sector buffer: allocated HERE, because nothing
     // may allocate once the erase has begun.
+    // Does not return: it reboots from inside, because the code that called it
+    // no longer exists by the time it finishes.
     apply_staged(storage_stage_offset(), size, fbuf);
-
-    watchdog_reboot(0, 0, 0);
-    while (true) tight_loop_contents();
+    return true;                       // unreachable
 }
 
 static int cmd_update(int argc, char **argv) {

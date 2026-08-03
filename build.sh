@@ -70,6 +70,13 @@ for board in "${BOARDS[@]}"; do
     size=$(stat -c%s "out/rpcortex-v2-$board.uf2")
     printf '    out/rpcortex-v2-%s.uf2  (%s KB)\n' "$board" "$((size / 1024))"
 
+    # The firmware-writing routine must be in RAM, with every call it makes also
+    # in RAM — it runs while the flash holding everything else is being erased.
+    # Checked in the built image rather than trusted from the annotations,
+    # because the two ways to get this wrong are both invisible in the source.
+    python3 "$(dirname "$0")/tools/check-flashsafe.py" \
+        "$dir/rpcortex_v2.elf" arm-none-eabi-nm arm-none-eabi-objdump || exit 1
+
     # The raw image too, for OTA. A .uf2 wraps every 256 bytes in a 512-byte
     # block with a header, which is right for the boot ROM's drag-and-drop and
     # pure overhead for an update that writes flash directly.
