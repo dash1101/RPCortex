@@ -110,14 +110,25 @@ void net_op_acquire(void) {
     if (task_this_core() == target) return;
 
     int me = task_self();
-    for (int i = 0; i < NET_OWNERS; i++) {
-        if (g_net_prev[i].pid) continue;
-        g_net_prev[i].pid = me;
-        g_net_prev[i].was = task_affinity(me);
-        break;
+    int slot = -1;
+    for (int i = 0; i < NET_OWNERS; i++)
+        if (!g_net_prev[i].pid) { slot = i; break; }
+
+    // No room to remember where this task came from. Migrating anyway would
+    // pin it to core 0 for the rest of its life, since nothing would ever put
+    // its affinity back — a slow leak that ends with every task on one core.
+    // Better to leave it where it is: net_core_ok then refuses the call with a
+    // message, which is visible and recoverable.
+    if (slot < 0) {
+        out_warnp("net", "Too many tasks using the network at once.");
+        return;
     }
-    // A failure here is not fatal: net_core_ok still refuses the call, so the
-    // outcome is a clear message rather than corruption.
+
+    g_net_prev[slot].pid = me;
+    g_net_prev[slot].was = task_affinity(me);
+
+    // A failure here is not fatal either: net_core_ok still refuses the call,
+    // so the outcome is a clear message rather than corruption.
     task_migrate_to(target);
 }
 

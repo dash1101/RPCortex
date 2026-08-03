@@ -319,6 +319,7 @@ struct PioSlot {
     PIO      pio;
     uint     sm;
     int      offset;        // where the program was loaded, -1 if none
+    uint8_t  prog_len;      // needed to give the instruction memory back
     pio_sm_config cfg;
 };
 static PioSlot g_pio[PIO_SLOTS];
@@ -370,13 +371,30 @@ extern "C" void fw_pio_release(int h) {
     PioSlot *s = pio_slot(h);
     if (!s) return;
     pio_sm_set_enabled(s->pio, s->sm, false);
-    if (s->offset >= 0) {
-        pio_program prog = { nullptr, 0, (int8_t)s->offset, 0 };
-        (void)prog;      // remove_program needs the original length; see below
+
+    // Give the instruction memory back, not just the state machine.
+    //
+    // There are 32 instruction slots per PIO block and they are the scarcer
+    // resource — four state machines share them. Releasing the machine without
+    // removing the program leaked those slots, so a package claiming and
+    // releasing in a loop would eventually fail to load anything with the state
+    // machines all reporting free. The length is kept for exactly this.
+    if (s->offset >= 0 && s->prog_len) {
+        pio_program pp;
+        pp.instructions = nullptr;      // remove only needs origin and length
+        pp.length       = s->prog_len;
+        pp.origin       = (int8_t)s->offset;
+#if !PICO_RP2040
+        pp.pio_version  = 0;
+        pp.used_gpio_ranges = 0;
+#endif
+        pio_remove_program(s->pio, &pp, (uint)s->offset);
     }
+
     pio_sm_unclaim(s->pio, s->sm);
     s->used = false;
     s->offset = -1;
+    s->prog_len = 0;
 }
 
 extern "C" int fw_pio_load(int h, const unsigned short *prog, unsigned len,
@@ -394,7 +412,8 @@ extern "C" int fw_pio_load(int h, const unsigned short *prog, unsigned len,
     pp.used_gpio_ranges = 0;
 #endif
     if (!pio_can_add_program(s->pio, &pp)) return -1;
-    s->offset = pio_add_program(s->pio, &pp);
+    s->offset   = pio_add_program(s->pio, &pp);
+    s->prog_len = (uint8_t)len;
     sm_config_set_wrap(&s->cfg, (uint)(s->offset + wrap_target), (uint)(s->offset + wrap));
     return s->offset;
 }
