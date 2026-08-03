@@ -48,7 +48,6 @@ bool http_tls_available(void);       // the shell's working directory (fs.cpp)
 #include "lwip/dns.h"
 #include "lwip/ip_addr.h"
 
-#define RX_RING       2048      // one BDP's worth on a local network
 #define CONNECT_MS    10000
 #define READ_MS       15000
 #define SEND_MS       10000
@@ -71,9 +70,23 @@ static bool wait_flag(volatile bool &flag, uint32_t ms, volatile bool *fail = nu
 
 struct TcpConn {
     struct altcp_pcb *pcb;
-    uint8_t   ring[RX_RING];
-    volatile uint16_t head;      // written by the lwIP callback
-    volatile uint16_t tail;      // read by the task
+
+    // The received data, held as lwIP's own pbufs rather than copied into a
+    // ring.
+    //
+    // The ring version refused data it could not fit by returning ERR_MEM,
+    // which is correct for raw TCP: lwIP keeps the pbuf and re-delivers it.
+    // It is NOT correct under TLS. The plaintext pbuf is produced by the TLS
+    // layer, and refusing it does not come back — the transfer simply stops.
+    // That is exactly what happened: 918 bytes arrived, the next record did not
+    // fit alongside them, and the connection stalled until the read timed out.
+    //
+    // Holding the chain removes the failure mode rather than making the buffer
+    // bigger and hoping. It also removes a copy, and lets flow control be done
+    // properly: bytes are acknowledged as the reader CONSUMES them, so the
+    // window reflects what has actually been dealt with.
+    struct pbuf *rx;
+    uint16_t     rx_off;         // bytes of `rx` already handed to the reader
     volatile bool connected;
     volatile bool closed;        // peer sent FIN
     volatile bool failed;
@@ -88,54 +101,31 @@ struct TcpConn {
     volatile uint32_t got;       // payload bytes received
 };
 
-static uint16_t ring_used(const TcpConn *c) {
-    return (uint16_t)((c->head - c->tail) & (RX_RING - 1));
-}
-static uint16_t ring_free(const TcpConn *c) {
-    return (uint16_t)(RX_RING - 1 - ring_used(c));
+static uint16_t rx_available(const TcpConn *c) {
+    if (!c->rx) return 0;
+    return (uint16_t)(c->rx->tot_len - c->rx_off);
 }
 
 // --- lwIP callbacks (background context) ------------------------------------
 
 static err_t on_recv(void *arg, struct altcp_pcb *pcb, struct pbuf *p, err_t err) {
     TcpConn *c = (TcpConn *)arg;
-    if (err != ERR_OK) { c->failed = true; if (p) pbuf_free(p); return ERR_OK; }
+    (void)pcb;
+    if (err != ERR_OK) { c->failed = true; c->last_err = (int)err; if (p) pbuf_free(p); return ERR_OK; }
     if (!p) { c->closed = true; return ERR_OK; }        // clean FIN
 
-    // Backpressure done properly: if it does not fit, return ERR_MEM and lwIP
-    // keeps the pbuf and re-delivers later. Dropping it instead would lose
-    // bytes out of the middle of a download and produce a corrupt file that
-    // looks like a successful one.
+    // Take it, always. Never refuse: under TLS a refused pbuf is not
+    // re-delivered, and the transfer stops for good.
     //
-    // The decision is made ONCE and committed to entirely. Consuming part of a
-    // pbuf is not an option: returning ERR_MEM afterwards would have lwIP
-    // re-deliver the whole thing and duplicate what was already stored, and
-    // freeing it would discard the remainder. Either all of it is taken or none
-    // of it is touched.
-    if (p->tot_len > ring_free(c)) return ERR_MEM;
-
-    const uint16_t total = p->tot_len;      // p is freed below; keep the length
-    uint16_t copied = 0;
-    while (copied < total) {
-        uint16_t want = (uint16_t)(total - copied);
-        uint16_t room = (uint16_t)(RX_RING - c->head);      // to the ring's end
-        uint16_t n = (uint16_t)pbuf_copy_partial(p, c->ring + c->head,
-                                                 room < want ? room : want, copied);
-        if (n == 0) break;
-        c->head = (uint16_t)((c->head + n) & (RX_RING - 1));
-        copied = (uint16_t)(copied + n);
-    }
-
-    // Ack only what was actually stored. Acking tot_len after a short copy is
-    // precisely how a download loses bytes from its middle and still reports
-    // success — the corruption the ERR_MEM path above exists to prevent.
-    altcp_recved(pcb, copied);
-    c->got += copied;
-    pbuf_free(p);
-
-    // It fit, so a short copy cannot happen unless an assumption above is
-    // wrong. Fail loudly instead of returning a quietly corrupt file.
-    if (copied != total) c->failed = true;
+    // altcp_recved is deliberately NOT called here. Acknowledging on arrival
+    // would open the window for data nothing has read yet; acknowledging as the
+    // reader consumes is what makes the window mean something.
+    // Read the length BEFORE chaining: after pbuf_cat this pbuf belongs to the
+    // chain, and reasoning about its fields separately stops being safe.
+    uint16_t n = p->tot_len;
+    if (c->rx) pbuf_cat(c->rx, p);
+    else       c->rx = p;
+    c->got += n;
     return ERR_OK;
 }
 
@@ -344,7 +334,7 @@ static int lw_recv(void *ctx, uint8_t *buf, uint32_t cap) {
     TcpConn *c = (TcpConn *)ctx;
 
     absolute_time_t deadline = make_timeout_time_ms(READ_MS);
-    while (ring_used(c) == 0) {
+    while (rx_available(c) == 0) {
         if (c->failed) return -1;
         if (c->closed) return 0;                 // clean end of body
         if (absolute_time_diff_us(get_absolute_time(), deadline) < 0) {
@@ -356,14 +346,23 @@ static int lw_recv(void *ctx, uint8_t *buf, uint32_t cap) {
     }
 
     cyw43_arch_lwip_begin();
-    uint16_t used = ring_used(c);
-    uint32_t n = used < cap ? used : cap;
-    // One or two copies depending on whether the data wraps the ring.
-    uint32_t first = RX_RING - c->tail;
-    if (first > n) first = n;
-    memcpy(buf, c->ring + c->tail, first);
-    if (n > first) memcpy(buf + first, c->ring, n - first);
-    c->tail = (uint16_t)((c->tail + n) & (RX_RING - 1));
+    uint16_t avail = rx_available(c);
+    uint16_t n = (uint16_t)(cap < avail ? cap : avail);
+    n = pbuf_copy_partial(c->rx, buf, n, c->rx_off);
+    c->rx_off = (uint16_t)(c->rx_off + n);
+
+    // Free the chain once it is fully read. Doing it per-pbuf would need the
+    // chain taken apart; waiting until it is empty is simpler and bounded,
+    // because the window below only opens for what has been consumed.
+    if (c->rx_off >= c->rx->tot_len) {
+        pbuf_free(c->rx);
+        c->rx = nullptr;
+        c->rx_off = 0;
+    }
+
+    // NOW acknowledge, so the peer may send that much more. This is the flow
+    // control the ring version got wrong by acknowledging on arrival.
+    if (c->pcb && n) altcp_recved(c->pcb, n);
     cyw43_arch_lwip_end();
 
     return (int)n;
@@ -372,6 +371,7 @@ static int lw_recv(void *ctx, uint8_t *buf, uint32_t cap) {
 static void lw_close(void *ctx) {
     TcpConn *c = (TcpConn *)ctx;
     cyw43_arch_lwip_begin();
+    if (c->rx) { pbuf_free(c->rx); c->rx = nullptr; c->rx_off = 0; }
     if (c->pcb) {
         altcp_arg(c->pcb, nullptr);
         altcp_recv(c->pcb, nullptr);
