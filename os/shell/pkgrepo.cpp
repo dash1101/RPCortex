@@ -34,6 +34,9 @@
 
 bool http_transport_get(HttpTransport *t);
 bool http_tls_available(void);
+const char *http_tls_why(void);
+void http_tls_reset(void);
+bool stock_install_cacerts(bool force);
 bool net_is_connected(void);
 
 #define REPO_URL   "https://raw.githubusercontent.com/dash1101/RPCortex-repo/main/repo-v2/index.json"
@@ -141,7 +144,8 @@ static bool download(const char *url, const char *dest, char *hex_out, uint64_t 
         return false;
     }
     if (!strncmp(url, "https://", 8) && !http_tls_available()) {
-        out_err("No trusted certificates at /os/ca.pem, so HTTPS cannot be verified.");
+        out_err("HTTPS cannot be verified: %s", http_tls_why());
+        out_multi("  Try 'pkg certs install' — the bundle ships in the firmware.");
         out_multi("  Unverified HTTPS is not offered: anything on the path could");
         out_multi("  serve a package and it would be installed.");
         return false;
@@ -335,8 +339,37 @@ static int do_upgrade(void) {
 
 // --- entry ------------------------------------------------------------------
 
+// `pkg certs` — what the trust store looks like, and a way to put it back.
+//
+// The bundle ships in flash and is written on a first boot, but a write can
+// fail, a file can be truncated, and neither announces itself: the only symptom
+// is `pkg update` refusing to verify. This turns that into a readable answer
+// and a one-word repair, without a reflash.
+static int do_certs(int argc, char **argv) {
+    if (argc >= 3 && !strcmp(argv[2], "install")) {
+        if (!stock_install_cacerts(/*force*/true)) return 1;
+        http_tls_reset();          // so the repair takes effect immediately
+        out_ok("Trusted roots reinstalled.");
+    }
+
+    bool is_dir = false; uint32_t size = 0;
+    bool present = storage_stat("/os/ca.pem", &is_dir, &size);
+    out_info("Trusted roots");
+    out_multi("  File     /os/ca.pem  %s", present ? "present" : "MISSING");
+    if (present) out_multi("  Size     %lu bytes", (unsigned long)size);
+
+    if (http_tls_available()) {
+        out_ok("HTTPS can be verified.");
+    } else {
+        out_warn("HTTPS cannot be verified: %s", http_tls_why());
+        out_multi("  'pkg certs install' writes the bundle that ships in firmware.");
+    }
+    return 0;
+}
+
 int pkg_repo_command(int argc, char **argv) {
     const char *sub = argv[1];
+    if (!strcmp(sub, "certs")) return do_certs(argc, argv);
     if (!strcmp(sub, "update"))  return do_update();
     if (!strcmp(sub, "search"))  return do_search(argc >= 3 ? argv[2] : nullptr);
     if (!strcmp(sub, "upgrade")) return do_upgrade();

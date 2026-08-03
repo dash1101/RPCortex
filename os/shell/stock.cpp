@@ -11,6 +11,7 @@
 #include "command.h"
 #include "out.h"
 #include "storage.h"
+#include "logring.h"
 #include "registry.h"
 
 #include <stdio.h>
@@ -88,11 +89,26 @@ static void stock_record(const StockPkg &p) {
 extern "C" const unsigned char stock_cacerts_data[];
 extern "C" const unsigned int  stock_cacerts_len;
 
-static void install_cacerts(void) {
-    bool is_dir; uint32_t size;
-    if (storage_stat("/os/ca.pem", &is_dir, &size) && size > 0) return;
-    storage_write_file("/os/ca.pem", stock_cacerts_data, stock_cacerts_len);
+bool stock_install_cacerts(bool force) {
+    bool is_dir = false; uint32_t size = 0;
+    // Only when absent or empty, so a hand-updated bundle survives a firmware
+    // update that would otherwise put the shipped one back.
+    if (!force && storage_stat("/os/ca.pem", &is_dir, &size) && size > 0) return true;
+
+    if (!storage_write_file("/os/ca.pem", stock_cacerts_data, stock_cacerts_len)) {
+        // Saying nothing here is how a device ends up unable to install
+        // packages with no clue why: pkg update reports "no trusted
+        // certificates" and nothing ever explains that the write failed.
+        out_errp("certs", "Could not write /os/ca.pem — HTTPS will not verify.");
+        log_add(LOG_K_ERR, "certs: /os/ca.pem could not be written");
+        return false;
+    }
+    log_addf(LOG_K_OK, "certs: installed %u bytes of trusted roots",
+             (unsigned)stock_cacerts_len);
+    return true;
 }
+
+static void install_cacerts(void) { stock_install_cacerts(false); }
 
 void stock_install_once(void) {
     install_cacerts();

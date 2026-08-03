@@ -187,6 +187,9 @@ static bool resolve(const char *host, ip_addr_t *out) {
 
 static struct altcp_tls_config *g_tls_cfg;
 static bool g_tls_tried;
+// WHY it failed, so the answer is a step rather than a shrug. "It does not
+// work" and "the file is 0 bytes" need very different next actions.
+static char g_tls_why[80];
 
 // Returns null when there are no trusted roots. The caller REFUSES the
 // connection in that case; it does not fall back to an unverified one.
@@ -199,19 +202,57 @@ static struct altcp_tls_config *tls_config(void) {
     if (g_tls_tried) return g_tls_cfg;
     g_tls_tried = true;
 
+    bool is_dir = false; uint32_t fsize = 0;
+    if (!storage_stat(CA_PATH, &is_dir, &fsize)) {
+        snprintf(g_tls_why, sizeof(g_tls_why), "%s does not exist", CA_PATH);
+        return nullptr;
+    }
+    if (fsize == 0) {
+        snprintf(g_tls_why, sizeof(g_tls_why), "%s is empty", CA_PATH);
+        return nullptr;
+    }
+    if (fsize >= CA_MAX) {
+        snprintf(g_tls_why, sizeof(g_tls_why), "%s is %lu bytes, over the %d limit",
+                 CA_PATH, (unsigned long)fsize, CA_MAX);
+        return nullptr;
+    }
+
     uint8_t *pem = (uint8_t *)malloc(CA_MAX);
-    if (!pem) return nullptr;
+    if (!pem) {
+        snprintf(g_tls_why, sizeof(g_tls_why), "no room to load %lu bytes",
+                 (unsigned long)fsize);
+        return nullptr;
+    }
 
     uint32_t n = storage_read_file(CA_PATH, pem, CA_MAX - 1);
-    if (n == 0) { free(pem); return nullptr; }
-    pem[n] = 0;                       // mbedtls wants the terminator counted
+    if (n == 0) {
+        snprintf(g_tls_why, sizeof(g_tls_why), "%s would not read back", CA_PATH);
+        free(pem);
+        return nullptr;
+    }
+    pem[n] = 0;                       // mbedtls counts the terminator for PEM
 
     g_tls_cfg = altcp_tls_create_config_client(pem, n + 1);
+    if (!g_tls_cfg)
+        snprintf(g_tls_why, sizeof(g_tls_why),
+                 "%lu bytes read, but no certificate parsed", (unsigned long)n);
     free(pem);
     return g_tls_cfg;
 }
 
 bool http_tls_available(void) { return tls_config() != nullptr; }
+
+const char *http_tls_why(void) {
+    tls_config();
+    return g_tls_why[0] ? g_tls_why : "no trusted certificates";
+}
+
+// Forget the cached answer, so a repaired bundle takes effect without a reboot.
+void http_tls_reset(void) {
+    g_tls_tried = false;
+    g_tls_cfg = nullptr;
+    g_tls_why[0] = 0;
+}
 
 static int lw_open(void *ctx, const char *host, uint16_t port, bool tls) {
     TcpConn *c = (TcpConn *)ctx;
@@ -337,6 +378,8 @@ bool http_transport_get(HttpTransport *t) {
 
 bool http_transport_get(HttpTransport *) { return false; }
 bool http_tls_available(void) { return false; }
+const char *http_tls_why(void) { return "no wireless on this board"; }
+void http_tls_reset(void) {}
 
 #endif
 

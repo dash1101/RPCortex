@@ -176,6 +176,7 @@ static int cmd_pkg(int argc, char **argv) {
     out_multi("  pkg upgrade             update everything with a newer version");
     out_multi("  pkg remove <name>       uninstall");
     out_multi("  pkg list                what is installed");
+    out_multi("  pkg certs [install]     trusted roots for HTTPS");
     return 1;
 }
 
