@@ -74,7 +74,6 @@ original escape sequences.
 | What | Needs |
 |---|---|
 | `curl` `runurl` | nothing; the HTTP client is there |
-| `update` / `safeboot` (OTA) | A/B flash slots |
 | `sd` card support | a driver |
 | ESP32-S3 | a port: core/ moves unchanged, the context switch, storage and network layers do not |
 
@@ -96,6 +95,11 @@ could reflash. The equivalent here is handing USB back to the boot ROM.
 
 ## Known unstable
 
+- **`update` writes flash and is DEVICE-UNCONFIRMED.** Everything up to the
+  write — manifest, download, checksum, size and board checks — uses the same
+  code the package manager does and fails safely. The write itself can only be
+  proven by doing it, and `update from-file` on a locally built image is the way
+  to try it with nothing depending on the network.
 - **`wifi`, `ping`, `ntp` are unproven on hardware.** They build and the lwIP
   locking is right by construction, but none has been run against a real network.
 - **Forced termination is new and DEVICE-UNCONFIRMED.** A task that stops

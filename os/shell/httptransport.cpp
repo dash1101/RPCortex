@@ -36,6 +36,7 @@
 
 bool net_is_connected(void);
 const char *fs_cwd(void);
+void http_last_detail(char *out, unsigned cap);
 bool http_tls_available(void);       // the shell's working directory (fs.cpp)
 
 #if defined(RPC_HAS_WIFI) && RPC_HAS_WIFI
@@ -535,7 +536,89 @@ static int cmd_wget(int argc, char **argv) {
     return 0;
 }
 
+// --- curl -------------------------------------------------------------------
+//
+// wget saves; curl prints. That is the whole difference, and it matters because
+// printing means the output goes down a PIPE — `curl <url> | grep something`
+// works, which is most of what anyone wants a curl for on a device like this.
+
+struct PrintSink { uint64_t n; };
+
+static int print_sink(void *ctx, const uint8_t *data, uint32_t len) {
+    PrintSink *p = (PrintSink *)ctx;
+    // Straight to the data channel, so a pipe or a redirect sees it and the
+    // status tags do not end up in the middle of a JSON document.
+    out_write((const char *)data, len);
+    p->n += len;
+    return 0;
+}
+
+static int cmd_curl(int argc, char **argv) {
+    const char *url = nullptr;
+    const char *save = nullptr;
+    bool quiet = false;
+
+    for (int i = 1; i < argc; i++) {
+        if (!strcmp(argv[i], "-o") && i + 1 < argc) { save = argv[++i]; continue; }
+        if (!strcmp(argv[i], "-s")) { quiet = true; continue; }
+        if (argv[i][0] != '-') { url = argv[i]; continue; }
+    }
+    if (!url) {
+        out_multi("Usage: curl <url> [-o file] [-s]");
+        out_multi("  Prints the body, so it can be piped:  curl <url> | grep name");
+        out_multi("  -o writes to a file instead;  -s hides the summary.");
+        return 1;
+    }
+
+    HttpTransport t;
+    if (!http_transport_get(&t)) {
+        out_err("No network. Connect with 'wifi connect <ssid>' first.");
+        return 1;
+    }
+    if (!strncmp(url, "https://", 8) && !http_tls_available()) {
+        out_err("HTTPS cannot be verified: %s", http_tls_why());
+        out_multi("  Try 'pkg certs install'.");
+        return 1;
+    }
+
+    FetchOpts o{};
+    o.poll = poll_interrupt;
+    uint32_t room = storage_free_bytes();
+    o.max_bytes = save ? (room > 8192 ? room - 8192 : 1) : 0;
+
+    FetchResult r;
+    bool good;
+    if (save) {
+        char full[128];
+        path_resolve(fs_cwd(), save, full, sizeof(full));
+        FileSink fs{nullptr};
+        fs.h = storage_open_sink(full);
+        if (!fs.h) { out_err("Could not create '%s'.", full); return 1; }
+        good = http_fetch(&t, url, file_sink, &fs, &o, &r);
+        if (!storage_close_sink(fs.h) && good) { good = false; r.error = FETCH_ERR_SINK; }
+        if (!good) storage_remove(full);
+        else if (!quiet) out_ok("Saved %s (%lu bytes)", full, (unsigned long)r.bytes);
+    } else {
+        PrintSink ps{0};
+        good = http_fetch(&t, url, print_sink, &ps, &o, &r);
+        // A body that did not end in a newline would run into the prompt.
+        if (good && ps.n && !quiet) out_write("\n", 1);
+    }
+
+    if (!good) {
+        out_err("%s%s%s", fetch_error_str(r.error), r.detail[0] ? " - " : "", r.detail);
+        if (r.error == FETCH_ERR_RECV || r.error == FETCH_ERR_CONNECT || r.error == FETCH_ERR_SEND) {
+            char d[96]; http_last_detail(d, sizeof(d));
+            out_multi("  %s", d);
+        }
+        return 1;
+    }
+    return 0;
+}
+
 void http_register(void) {
     static const Command c{"wget", "download a file over HTTP", cmd_wget, nullptr};
+    static const Command c2{"curl", "fetch a URL and print it", cmd_curl, nullptr};
     cmd_register(&c);
+    cmd_register(&c2);
 }

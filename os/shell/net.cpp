@@ -24,6 +24,7 @@
 #include "interrupt.h"
 #include "task.h"
 #include "logring.h"
+#include "persist.h"
 #include "blackbox.h"
 
 #include <stdio.h>
@@ -42,6 +43,7 @@
 #include "lwip/netif.h"
 #include "lwip/ip4_addr.h"
 #include "lwip/dns.h"
+#include "lwip/dhcp.h"
 
 // Every cyw43 and lwIP call has to hold this.
 //
@@ -323,6 +325,9 @@ static int wifi_autoconnect(bool quiet, bool persist = true);
 // deliberately does not write settings can still report what it did.
 static char g_last_joined[33];
 
+void net_apply_addressing(void);
+void net_apply_dns(void);
+
 // True on success. The boot join uses this: silent, and it does NOT touch the
 // registry — the shell records the result afterwards, on its own task, where
 // every other registry write in this OS already happens.
@@ -371,6 +376,10 @@ static int wifi_connect(const char *ssid, const char *pw, bool quiet, bool persi
     // Recorded whether or not it is persisted, so a caller that deliberately
     // does not write the registry can still say what it joined.
     snprintf(g_last_joined, sizeof(g_last_joined), "%s", ssid);
+    // Static addressing and a chosen resolver are applied at every connect, so
+    // they survive a rejoin rather than lasting until the next DHCP lease.
+    net_apply_addressing();
+    net_apply_dns();
     if (persist) {
         reg_set("WiFi.Active", ssid);
         saved_put(ssid, pw);
@@ -614,6 +623,153 @@ static int wifi_autoconnect(bool quiet, bool persist) {
     return wifi_connect(best, pw[0] ? pw : nullptr, quiet, persist);
 }
 
+// --- addressing -------------------------------------------------------------
+//
+// DHCP is the default and right for almost everyone. Static addressing exists
+// because "almost" is not "all": a device that has to be reachable at a known
+// address, or a network with no DHCP server, or a DNS server that resolves
+// names the default one does not.
+//
+// Settings live in the registry and are applied at every connect, so they
+// survive a reboot and a rejoin rather than lasting until the next DHCP lease.
+
+static bool parse_ip(const char *s, ip4_addr_t *out) {
+    return s && s[0] && ip4addr_aton(s, out) != 0;
+}
+
+// Apply whatever addressing is configured. Called after a join.
+void net_apply_addressing(void) {
+    if (strcmp(reg_get("Net.Static", "false"), "true") != 0) return;
+
+    ip4_addr_t ip, mask, gw;
+    if (!parse_ip(reg_get("Net.IP", ""), &ip) ||
+        !parse_ip(reg_get("Net.Mask", "255.255.255.0"), &mask) ||
+        !parse_ip(reg_get("Net.Gateway", ""), &gw)) {
+        out_warnp("net", "Static addressing is on but incomplete — using DHCP.");
+        return;
+    }
+
+    NetLock _l;
+    if (!netif_default) return;
+    // Stop DHCP first, or its next renewal replaces what was just set.
+    dhcp_stop(netif_default);
+    netif_set_addr(netif_default, &ip, &mask, &gw);
+}
+
+void net_apply_dns(void) {
+    const char *p = reg_get("Net.DNS", "");
+    const char *sec = reg_get("Net.DNS2", "");
+    NetLock _l;
+    ip_addr_t a;
+    if (p[0] && ip4addr_aton(p, ip_2_ip4(&a))) { IP_SET_TYPE(&a, IPADDR_TYPE_V4); dns_setserver(0, &a); }
+    if (sec[0] && ip4addr_aton(sec, ip_2_ip4(&a))) { IP_SET_TYPE(&a, IPADDR_TYPE_V4); dns_setserver(1, &a); }
+}
+
+static void net_show(void) {
+    bool stat = strcmp(reg_get("Net.Static", "false"), "true") == 0;
+    out_info("Network configuration");
+    out_multi("  Mode      %s", stat ? "static" : "DHCP");
+
+    char ip[20] = "", mask[20] = "", gw[20] = "", d1[20] = "", d2[20] = "";
+    bool up = false;
+    {
+        NetLock _l;
+        up = netif_default && netif_is_up(netif_default);
+        if (up) {
+            snprintf(ip,   sizeof(ip),   "%s", ip4addr_ntoa(netif_ip4_addr(netif_default)));
+            snprintf(mask, sizeof(mask), "%s", ip4addr_ntoa(netif_ip4_netmask(netif_default)));
+            snprintf(gw,   sizeof(gw),   "%s", ip4addr_ntoa(netif_ip4_gw(netif_default)));
+        }
+        const ip_addr_t *s0 = dns_getserver(0);
+        const ip_addr_t *s1 = dns_getserver(1);
+        if (s0) snprintf(d1, sizeof(d1), "%s", ipaddr_ntoa(s0));
+        if (s1) snprintf(d2, sizeof(d2), "%s", ipaddr_ntoa(s1));
+    }
+
+    out_multi("  Address   %s", up ? ip : "(not connected)");
+    if (up) {
+        out_multi("  Netmask   %s", mask);
+        out_multi("  Gateway   %s", gw);
+    }
+    out_multi("  DNS       %s%s%s", d1[0] ? d1 : "(none)",
+              d2[0] && strcmp(d2, "0.0.0.0") ? ", " : "", d2[0] && strcmp(d2, "0.0.0.0") ? d2 : "");
+
+    if (stat) {
+        out_blank();
+        out_multi("  Configured: %s / %s via %s",
+                  reg_get("Net.IP", "(unset)"), reg_get("Net.Mask", "255.255.255.0"),
+                  reg_get("Net.Gateway", "(unset)"));
+    }
+}
+
+static int cmd_net(int argc, char **argv) {
+    if (argc < 2 || !strcmp(argv[1], "status")) { net_show(); return 0; }
+
+    if (!strcmp(argv[1], "dhcp")) {
+        reg_set("Net.Static", "false");
+        persist_save_registry();
+        out_ok("Set to DHCP. Reconnect for it to take effect.");
+        return 0;
+    }
+
+    if (!strcmp(argv[1], "static")) {
+        if (argc < 5) {
+            out_multi("Usage: net static <address> <netmask> <gateway>");
+            out_multi("  e.g.  net static 10.1.1.50 255.255.255.0 10.1.1.1");
+            return 1;
+        }
+        ip4_addr_t t;
+        // Validated before saving, so a typo is caught at the prompt rather
+        // than becoming a device that will not come back on the network.
+        if (!parse_ip(argv[2], &t)) { out_err("'%s' is not an address.", argv[2]); return 1; }
+        if (!parse_ip(argv[3], &t)) { out_err("'%s' is not a netmask.", argv[3]); return 1; }
+        if (!parse_ip(argv[4], &t)) { out_err("'%s' is not a gateway.", argv[4]); return 1; }
+        reg_set("Net.IP", argv[2]);
+        reg_set("Net.Mask", argv[3]);
+        reg_set("Net.Gateway", argv[4]);
+        reg_set("Net.Static", "true");
+        persist_save_registry();
+        out_ok("Static addressing saved.");
+        out_multi("  Applied now, and at every connect from here on.");
+        net_apply_addressing();
+        return 0;
+    }
+
+    if (!strcmp(argv[1], "dns")) {
+        if (argc < 3) {
+            out_multi("Usage: net dns <server> [second]");
+            out_multi("  e.g.  net dns 1.1.1.1 1.0.0.1     |    net dns clear");
+            return 1;
+        }
+        if (!strcmp(argv[2], "clear")) {
+            reg_set("Net.DNS", "");
+            reg_set("Net.DNS2", "");
+            persist_save_registry();
+            out_ok("DNS cleared. Reconnect to take whatever DHCP offers.");
+            return 0;
+        }
+        ip4_addr_t t;
+        if (!parse_ip(argv[2], &t)) { out_err("'%s' is not an address.", argv[2]); return 1; }
+        reg_set("Net.DNS", argv[2]);
+        if (argc >= 4) {
+            if (!parse_ip(argv[3], &t)) { out_err("'%s' is not an address.", argv[3]); return 1; }
+            reg_set("Net.DNS2", argv[3]);
+        }
+        persist_save_registry();
+        net_apply_dns();
+        out_ok("DNS set.");
+        return 0;
+    }
+
+    out_multi("Usage:");
+    out_multi("  net status                       what the connection looks like");
+    out_multi("  net dhcp                         take the address from the network");
+    out_multi("  net static <ip> <mask> <gw>      set it by hand");
+    out_multi("  net dns <server> [second]        which resolver to use");
+    out_multi("  net dns clear                    go back to the network's own");
+    return 1;
+}
+
 static void wifi_usage(void) {
     out_info("=== WiFi Commands ===");
     out_multi("  wifi status                Connection status");
@@ -727,9 +883,18 @@ static int cmd_wifi(int, char **) {
     return 1;
 }
 
+// Present so the command exists and explains itself, rather than being absent
+// and looking like a feature that was forgotten.
+static int cmd_net(int, char **) {
+    out_err("This board has no network interface to configure.");
+    return 1;
+}
+
 #endif
 
 void net_register(void) {
+    static const Command cn{"net", "addressing, DNS and connection detail", cmd_net, nullptr};
+    cmd_register(&cn);
     static const Command c{"wifi", "wireless status and connection", cmd_wifi, nullptr, LEVEL_ADMIN};
     cmd_register(&c);
 }

@@ -69,6 +69,7 @@ add_executable(rpcortex_v2
     ${OS_ROOT}/shell/settings.cpp
     ${OS_ROOT}/shell/editor.cpp
     ${OS_ROOT}/shell/rpscmd.cpp
+    ${OS_ROOT}/shell/update.cpp
     ${OS_ROOT}/shell/text.cpp
     ${OS_ROOT}/shell/sys.cpp
     ${OS_ROOT}/shell/user.cpp
@@ -193,6 +194,8 @@ target_compile_definitions(rpcortex_v2 PRIVATE
 pico_enable_stdio_usb(rpcortex_v2 1)
 pico_enable_stdio_uart(rpcortex_v2 0)
 pico_add_extra_outputs(rpcortex_v2)
+# The raw image, which is what an OTA writes to flash.
+pico_add_bin_output(rpcortex_v2)
 
 # --- apps (relocatable objects, never linked) ------------------------------
 # Packages are built for cortex-m0plus REGARDLESS of the board being built.

@@ -51,6 +51,7 @@ void diag_register(void);
 void settings_register(void);
 void editor_register(void);
 void rps_register(void);
+void update_register(void);
 void netapps_register(void);
 void fetch_register(void);
 void ps_register(void);
@@ -374,6 +375,7 @@ void shell_register_builtins(void) {
     settings_register();    // settings — the TUI panel
     editor_register();      // edit / nano / vi
     rps_register();         // script — .rps files
+    update_register();      // update — OTA firmware
     apps_register();        // apps / unload for resident packages
     pkg_init();             // ensure /pkg exists
     pkg_register();         // install / remove / list

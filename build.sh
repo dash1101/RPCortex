@@ -69,6 +69,17 @@ for board in "${BOARDS[@]}"; do
     cp "$dir/rpcortex_v2.uf2" "out/rpcortex-v2-$board.uf2"
     size=$(stat -c%s "out/rpcortex-v2-$board.uf2")
     printf '    out/rpcortex-v2-%s.uf2  (%s KB)\n' "$board" "$((size / 1024))"
+
+    # The raw image too, for OTA. A .uf2 wraps every 256 bytes in a 512-byte
+    # block with a header, which is right for the boot ROM's drag-and-drop and
+    # pure overhead for an update that writes flash directly.
+    if [ -f "$dir/rpcortex_v2.bin" ]; then
+        cp "$dir/rpcortex_v2.bin" "out/rpcortex-v2-$board.bin"
+        bsize=$(stat -c%s "out/rpcortex-v2-$board.bin")
+        printf '    out/rpcortex-v2-%s.bin  (%s KB)  sha256 %s\n' \
+            "$board" "$((bsize / 1024))" \
+            "$(sha256sum "out/rpcortex-v2-$board.bin" | cut -c1-16)..."
+    fi
 done
 
 echo

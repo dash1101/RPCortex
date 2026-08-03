@@ -42,11 +42,19 @@ RpcLock g_fs_lock;
 // and lose every file on it. A fixed boundary means an update is safe as long as
 // the firmware still fits under it, and kboot checks exactly that.
 //
-// 1 MB against a current binary of ~490 KB: two times headroom, and it leaves
-// 3 MB of filesystem on a 4 MB board and 1 MB on a 2 MB one. The old fixed
-// 512 KB was simply an arbitrary number that ignored the other 87% of the chip.
+// 1.5 MB against a current binary of ~750 KB.
+//
+// Sized for OTA rather than for today. An update downloads the new image to the
+// filesystem and then writes it over this region, so the reserve has to hold an
+// image with room to grow — and an image that outgrew its reserve mid-update
+// would be discovered by overwriting the start of the filesystem.
+//
+// It leaves 2.5 MB of filesystem on a 4 MB board. Raising it MOVES where the
+// filesystem starts, so the first boot after this change finds none and builds
+// a fresh one: accounts, settings and installed packages go once. Paid
+// deliberately now rather than after anyone is relying on the contents.
 #ifndef RPC_FW_RESERVE
-#define RPC_FW_RESERVE (1024 * 1024)
+#define RPC_FW_RESERVE (1536 * 1024)
 #endif
 
 #define FS_OFFSET      RPC_FW_RESERVE
