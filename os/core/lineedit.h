@@ -49,6 +49,16 @@ struct LineEdit {
 // Read one line. Returns the length. Blocks until Enter.
 uint32_t line_edit(const LineEdit *le, char *buf, uint32_t cap);
 
+// The inline suggestion shown ahead of the cursor in grey — the rest of the
+// single candidate that matches what has been typed, so you can see what Tab
+// would give you before pressing it. Right arrow or End at the end of the line
+// accepts it.
+//
+// Only shown when there is exactly ONE candidate. With several, the shared part
+// is not a prediction and showing it would be guessing at the user.
+uint32_t line_ghost(const char *const *cands, uint32_t n, const char *prefix,
+                    char *out, uint32_t cap);
+
 // --- the pure pieces, exposed for testing -----------------------------------
 
 // Start of the word at or before `pos` (a word is a run of non-space).

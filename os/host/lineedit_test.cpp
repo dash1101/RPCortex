@@ -313,12 +313,49 @@ static void t_loop(void) {
     eq(b, "sysinfo x", "typing continues after a completion");
 }
 
+// --- the inline suggestion --------------------------------------------------
+
+static void t_ghost(void) {
+    char out[64];
+    const char *one[]   = {"reboot"};
+    const char *two[]   = {"reboot", "reg"};
+    const char *three[] = {"reboot", "reg", "rename"};
+
+    eqn(line_ghost(one, 1, "reb", out, sizeof(out)), 3, "ghost length for one match");
+    eq(out, "oot", "the suggestion is the REST of the word, not the whole of it");
+
+    // Several candidates share "re", but the shared part is not a prediction of
+    // what was meant. Showing it would put words in the user's mouth and then
+    // take them back on the next keystroke.
+    line_ghost(two, 2, "re", out, sizeof(out));
+    eq(out, "", "no suggestion when two candidates match");
+    line_ghost(three, 3, "re", out, sizeof(out));
+    eq(out, "", "nor when three do");
+
+    line_ghost(one, 0, "reb", out, sizeof(out));
+    eq(out, "", "no candidates, no suggestion");
+
+    line_ghost(one, 1, "reboot", out, sizeof(out));
+    eq(out, "", "a fully typed word suggests nothing further");
+
+    // A candidate that does not actually start with the prefix must not produce
+    // a suggestion built from the wrong string.
+    const char *odd[] = {"different"};
+    line_ghost(odd, 1, "reb", out, sizeof(odd) ? sizeof(out) : 0);
+    eq(out, "", "a non-matching candidate suggests nothing");
+
+    char tiny[4];
+    line_ghost(one, 1, "r", tiny, sizeof(tiny));
+    ck(strlen(tiny) < sizeof(tiny), "a small destination is respected");
+}
+
 int main(void) {
     t_words();
     t_edit();
     t_prefix();
     t_escapes();
     t_loop();
+    t_ghost();
     printf("  lineedit: %d checks, %d failed\n", checks, fails);
     return fails ? 1 : 0;
 }

@@ -33,7 +33,7 @@ struct Command {
     // What it takes to run this. Defaults to LEVEL_USER, so a command is only
     // privileged if someone said so — the opposite default would silently lock
     // out every package command.
-    CmdLevel    level;
+    CmdLevel    level = LEVEL_USER;
 };
 
 // A fixed table: no allocation, and a hard ceiling is the right shape for a

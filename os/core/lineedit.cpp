@@ -68,6 +68,22 @@ uint32_t line_common_prefix(const char *const *cands, uint32_t n, char *out, uin
     return i;
 }
 
+uint32_t line_ghost(const char *const *cands, uint32_t n, const char *prefix,
+                    char *out, uint32_t cap) {
+    out[0] = 0;
+    // One candidate only. Two candidates share a prefix, but the shared part is
+    // not a prediction of what you meant — showing it would be putting words in
+    // the user's mouth and then having them vanish on the next keystroke.
+    if (n != 1 || !cap) return 0;
+    uint32_t plen = (uint32_t)strlen(prefix);
+    if (strncmp(cands[0], prefix, plen) != 0) return 0;
+    const char *rest = cands[0] + plen;
+    uint32_t i = 0;
+    while (rest[i] && i + 1 < cap) { out[i] = rest[i]; i++; }
+    out[i] = 0;
+    return i;
+}
+
 // --- escape decoding --------------------------------------------------------
 //
 // Two forms reach us:
@@ -154,14 +170,26 @@ struct Term {
 // put the cursor back where it belongs. Simpler and more robust than tracking
 // incremental terminal state, and at 115200 a 128-character line is under 12 ms.
 void redraw(const Term &t, const char *prompt, const char *buf,
-            uint32_t len, uint32_t pos) {
+            uint32_t len, uint32_t pos, const char *ghost) {
     t.put('\r');
     t.puts("\033[K");
     t.puts(prompt);
     for (uint32_t i = 0; i < len; i++) t.put(buf[i]);
-    if (pos < len) {                     // walk the cursor back to its column
+
+    // The suggestion, in grey, after the text but before the cursor is put back.
+    // Only when the cursor is at the end: a ghost drawn past text the user is
+    // editing in the middle would sit in the wrong place entirely.
+    uint32_t gn = 0;
+    if (ghost && ghost[0] && pos == len) {
+        t.puts("\033[90m");
+        for (const char *g = ghost; *g; g++) { t.put(*g); gn++; }
+        t.puts("\033[0m");
+    }
+
+    uint32_t back = (len - pos) + gn;
+    if (back) {
         t.puts("\033[");
-        t.num(len - pos);
+        t.num(back);
         t.put('D');
     }
 }
@@ -172,6 +200,32 @@ uint32_t line_edit(const LineEdit *le, char *buf, uint32_t cap) {
     Term t{&le->io};
     uint32_t len = 0, pos = 0;
     int  browse = -1;                    // -1 = the live line; 0.. = history depth
+    char ghost[COMP_LEN] = {0};
+
+    // Work out what would be completed from here. Only at the end of the line
+    // and only with something typed — a suggestion offered against an empty word
+    // would be the first command in the table, which is noise rather than help.
+    auto refresh_ghost = [&]() {
+        ghost[0] = 0;
+        if (!le->complete || pos != len || len == 0) return;
+        uint32_t ws = line_word_start(buf, len, pos);
+        char prefix[COMP_LEN];
+        uint32_t plen = pos - ws;
+        if (plen == 0 || plen >= sizeof(prefix)) return;
+        memcpy(prefix, buf + ws, plen);
+        prefix[plen] = 0;
+
+        static char store[2][COMP_LEN];
+        const char *cands[2];
+        uint32_t n = 0;
+        // Two is enough: the suggestion is only shown when there is exactly one,
+        // so finding a second is the answer and there is no reason to keep going.
+        while (n < 2 && le->complete(le->complete_ctx, prefix, ws, n, store[n], COMP_LEN)) {
+            cands[n] = store[n];
+            n++;
+        }
+        line_ghost(cands, n, prefix, ghost, sizeof(ghost));
+    };
 
     buf[0] = 0;
     t.puts(le->prompt);
@@ -183,6 +237,9 @@ uint32_t line_edit(const LineEdit *le, char *buf, uint32_t cap) {
         bool this_is_tab = (c == '\t');
 
         if (c == '\r' || c == '\n') {
+            // Clear the suggestion before the newline, or the grey text is left
+            // on screen looking like part of what was submitted.
+            if (ghost[0]) { ghost[0] = 0; redraw(t, le->prompt, buf, len, pos, ghost); }
             t.put('\n');
             buf[len] = 0;
             return len;
@@ -207,27 +264,27 @@ uint32_t line_edit(const LineEdit *le, char *buf, uint32_t cap) {
         // cases below if that is ever the common setup.
         if (c == 0x7F) {                             // Backspace: one character
             len = line_delete_back(buf, len, pos, 1, &pos);
-            browse = -1; redraw(t, le->prompt, buf, len, pos);
+            browse = -1; refresh_ghost(); redraw(t, le->prompt, buf, len, pos, ghost);
             continue;
         }
         if (c == 0x08 || c == 0x17) {                // Ctrl+Backspace / Ctrl+W
             uint32_t start = line_word_start(buf, len, pos);
             len = line_delete_back(buf, len, pos, pos - start, &pos);
-            browse = -1; redraw(t, le->prompt, buf, len, pos);
+            browse = -1; refresh_ghost(); redraw(t, le->prompt, buf, len, pos, ghost);
             continue;
         }
         if (c == 0x15) {                             // Ctrl+U: to start of line
             len = line_delete_back(buf, len, pos, pos, &pos);
-            browse = -1; redraw(t, le->prompt, buf, len, pos);
+            browse = -1; refresh_ghost(); redraw(t, le->prompt, buf, len, pos, ghost);
             continue;
         }
         if (c == 0x0B) {                             // Ctrl+K: to end of line
             len = pos; buf[len] = 0;
-            redraw(t, le->prompt, buf, len, pos);
+            refresh_ghost(); redraw(t, le->prompt, buf, len, pos, ghost);
             continue;
         }
-        if (c == 0x01) { pos = 0;   redraw(t, le->prompt, buf, len, pos); continue; }  // Ctrl+A
-        if (c == 0x05) { pos = len; redraw(t, le->prompt, buf, len, pos); continue; }  // Ctrl+E
+        if (c == 0x01) { pos = 0;   refresh_ghost(); redraw(t, le->prompt, buf, len, pos, ghost); continue; }  // Ctrl+A
+        if (c == 0x05) { pos = len; refresh_ghost(); redraw(t, le->prompt, buf, len, pos, ghost); continue; }  // Ctrl+E
 
         if (c == 0x1b) {
             // Collect the sequence until its final byte (@ to ~) or the cap.
@@ -246,9 +303,22 @@ uint32_t line_edit(const LineEdit *le, char *buf, uint32_t cap) {
             int key = line_decode_escape(seq, n);
             switch (key) {
                 case KEY_LEFT:  if (pos) pos--;      break;
-                case KEY_RIGHT: if (pos < len) pos++; break;
+                case KEY_RIGHT:
+                    // At the end of the line with a suggestion showing, right
+                    // takes it — the gesture every shell with this feature uses.
+                    if (pos == len && ghost[0]) {
+                        for (const char *g = ghost; *g && len + 1 < cap; g++)
+                            len = line_insert(buf, len, cap, pos++, *g);
+                    } else if (pos < len) pos++;
+                    break;
                 case KEY_HOME:  pos = 0;             break;
-                case KEY_END:   pos = len;           break;
+                case KEY_END:
+                    if (pos == len && ghost[0]) {
+                        for (const char *g = ghost; *g && len + 1 < cap; g++)
+                            len = line_insert(buf, len, cap, pos++, *g);
+                    }
+                    pos = len;
+                    break;
                 case KEY_WORD_LEFT:  pos = line_word_start(buf, len, pos); break;
                 case KEY_WORD_RIGHT: pos = line_word_end(buf, len, pos);   break;
                 case KEY_DELETE: len = line_delete_at(buf, len, pos); browse = -1; break;
@@ -267,7 +337,7 @@ uint32_t line_edit(const LineEdit *le, char *buf, uint32_t cap) {
                 }
                 default: break;
             }
-            redraw(t, le->prompt, buf, len, pos);
+            refresh_ghost(); redraw(t, le->prompt, buf, len, pos, ghost);
             continue;
         }
 
@@ -303,7 +373,7 @@ uint32_t line_edit(const LineEdit *le, char *buf, uint32_t cap) {
                     len = line_insert(buf, len, cap, pos++, common[i]);
                 if (n == 1 && len + 1 < cap && (pos == len || buf[pos] != ' '))
                     len = line_insert(buf, len, cap, pos++, ' ');
-                redraw(t, le->prompt, buf, len, pos);
+                refresh_ghost(); redraw(t, le->prompt, buf, len, pos, ghost);
             } else {
                 // Nothing more can be added — the prefix is already as far as
                 // the candidates agree. Show them NOW rather than waiting for a
@@ -317,7 +387,7 @@ uint32_t line_edit(const LineEdit *le, char *buf, uint32_t cap) {
                     if ((i % 4) == 3 || i + 1 == n) t.put('\n');
                 }
                 if (n == COMP_MAX) t.puts("  ...\n");
-                redraw(t, le->prompt, buf, len, pos);
+                refresh_ghost(); redraw(t, le->prompt, buf, len, pos, ghost);
             }
             continue;
         }
@@ -328,11 +398,13 @@ uint32_t line_edit(const LineEdit *le, char *buf, uint32_t cap) {
             if (len != before) {
                 pos++;
                 browse = -1;
-                // Appending at the end is the common case and needs no redraw —
-                // echoing the character is enough, and avoids a full line rewrite
-                // on every keystroke.
-                if (pos == len) t.put((char)c);
-                else            redraw(t, le->prompt, buf, len, pos);
+                // A full redraw on every keystroke now, rather than echoing the
+                // one character: the suggestion trails the cursor and has to be
+                // recomputed and redrawn as the word changes. At 115200 a
+                // 128-character line is about 12 ms, which is well under the
+                // gap between keystrokes.
+                refresh_ghost();
+                redraw(t, le->prompt, buf, len, pos, ghost);
             }
         }
     }
