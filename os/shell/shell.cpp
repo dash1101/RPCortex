@@ -43,6 +43,7 @@ void user_register(void);
 void help_register(void);
 void net_register(void);
 void netapps_register(void);
+void fetch_register(void);
 
 // --- line input -------------------------------------------------------------
 //
@@ -51,6 +52,12 @@ void netapps_register(void);
 // the completion candidates are.
 
 static int shell_getch(void *, uint32_t timeout_us) {
+    // Anything intr_check pulled off the wire while a command was running is
+    // real input that arrived early — a pasted block, or someone typing ahead.
+    // It has to come out before anything new, and in order.
+    int stashed = intr_stashed();
+    if (stashed >= 0) return stashed;
+
     int c = getchar_timeout_us(timeout_us);
     if (c == PICO_ERROR_TIMEOUT) {
         if (timeout_us == 0) sleep_ms(2);   // idle poll: do not spin the core
@@ -223,6 +230,12 @@ static int cmd_reg(int argc, char **argv) {
 }
 
 
+// Defined below with the pipeline machinery, since alias expansion happens
+// there; declared here so the registration table can name them.
+static int cmd_alias(int argc, char **argv);
+static int cmd_unalias(int argc, char **argv);
+static void shell_load_aliases(void);
+
 void shell_register_builtins(void) {
     intr_set_poll(shell_poll_byte);
 
@@ -230,6 +243,8 @@ void shell_register_builtins(void) {
         {"run", "run <app.app> [arg]",            cmd_run, nullptr},
         {"put", "put <name> <len>  upload bytes", cmd_put, nullptr},
         {"reg", "reg | reg get K | reg set K V",  cmd_reg, nullptr},
+        {"alias",   "alias name=command",         cmd_alias,   nullptr},
+        {"unalias", "unalias <name>",             cmd_unalias, nullptr},
     };
     for (const auto &c : builtins) cmd_register(&c);
     cmd_alias("exec", "run");     // v1's verb; run explains the difference
@@ -242,9 +257,12 @@ void shell_register_builtins(void) {
     user_register();        // whoami / users / passwd / logout ...
     net_register();         // wifi
     netapps_register();     // ping / nslookup / ntp
+    fetch_register();       // fetch / neofetch
     apps_register();        // apps / unload for resident packages
     pkg_init();             // ensure /pkg exists
     pkg_register();         // install / remove / list
+
+    shell_load_aliases();   // Alias.* from the registry go live before the prompt
 
     if (cmd_refused())
         klog(LOG_WARN, "%u command registration(s) refused - check for a duplicate name",
@@ -282,12 +300,93 @@ uint32_t    shell_stdin_len(void) { return g_stdin_len; }
 // Run one command (no connectors, no pipes, no redirect left in it).
 // Returns its exit status; a missing command is status 1.
 static int run_one(char *seg) {
+    // A user alias maps a name to a whole command line, so it is expanded into
+    // the text BEFORE parsing: `alias ll=ls -l` has to contribute two argv
+    // entries, which a dispatch-time lookup could not do.
+    //
+    // One hop only. An alias naming itself is a configuration mistake, and
+    // following it would need loop detection to be safe.
+    char expanded[192];
+    char first[UALIAS_NAME];
+    const char *sp = strchr(seg, ' ');
+    size_t flen = sp ? (size_t)(sp - seg) : strlen(seg);
+    if (flen < sizeof(first)) {
+        memcpy(first, seg, flen);
+        first[flen] = 0;
+        const char *repl = cmd_ualias_get(first);
+        if (repl) {
+            snprintf(expanded, sizeof(expanded), "%s%s", repl, sp ? sp : "");
+            seg = expanded;
+        }
+    }
+
     char *argv[16];
     int argc = cmdline_split_args(seg, argv, 16);
     if (argc == 0) return 0;
     const Command *c = cmd_resolve(argv[0]);
     if (!c) { out_err("'%s' is not a command or executable file.", argv[0]); return 1; }
     return c->fn(argc, argv);
+}
+
+// alias / unalias. v1's syntax: `alias name=command line`, bare `alias` lists.
+// Persisted as Alias.<name> in the registry, so they survive a reboot the way
+// v1's aliases.cfg did.
+static int cmd_alias(int argc, char **argv) {
+    if (argc < 2) {
+        if (!cmd_ualias_count()) {
+            out_info("No aliases defined. Usage: alias name=command");
+            return 0;
+        }
+        for (uint32_t i = 0; i < cmd_ualias_count(); i++) {
+            const char *nm = cmd_ualias_name_at(i);
+            out_multi("  %s%s%s = %s", C_CYAN, nm, C_RESET, cmd_ualias_get(nm));
+        }
+        return 0;
+    }
+
+    // The whole rest of the line, so `alias ll=ls -l` keeps its argument.
+    char line[192];
+    line[0] = 0;
+    for (int i = 1; i < argc; i++) {
+        if (i > 1) strncat(line, " ", sizeof(line) - strlen(line) - 1);
+        strncat(line, argv[i], sizeof(line) - strlen(line) - 1);
+    }
+
+    char *eq = strchr(line, '=');
+    if (!eq) { out_warn("Usage: alias name=command   (or bare 'alias' to list)"); return 1; }
+    *eq = 0;
+    char *name  = cmdline_trim(line);
+    char *value = cmdline_trim(eq + 1);
+    if (!*name)  { out_warn("Alias name cannot be empty."); return 1; }
+    if (!*value) { out_warn("Alias value cannot be empty."); return 1; }
+    if (cmd_find(name)) { out_warn("Cannot shadow the built-in command '%s'.", name); return 1; }
+
+    if (!cmd_ualias_set(name, value)) { out_err("Could not define '%s'.", name); return 1; }
+    char key[REG_KEY_MAX];
+    snprintf(key, sizeof(key), "Alias.%s", name);
+    reg_set(key, value);
+    out_ok("alias %s = %s", name, value);
+    return 0;
+}
+
+static int cmd_unalias(int argc, char **argv) {
+    if (argc < 2) { out_warn("Usage: unalias <name>"); return 1; }
+    if (!cmd_ualias_remove(argv[1])) { out_warn("No alias named '%s'.", argv[1]); return 1; }
+    char key[REG_KEY_MAX];
+    snprintf(key, sizeof(key), "Alias.%s", argv[1]);
+    reg_set(key, "");
+    out_ok("Alias '%s' removed.", argv[1]);
+    return 0;
+}
+
+// Restore saved aliases at boot from the registry's Alias.* keys.
+static void shell_load_aliases(void) {
+    for (uint32_t i = 0; i < reg_count(); i++) {
+        const char *k = reg_key_at(i);
+        if (strncmp(k, "Alias.", 6) != 0) continue;
+        const char *v = reg_get(k, "");
+        if (v && v[0]) cmd_ualias_set(k + 6, v);
+    }
 }
 
 // Run one segment: its pipeline, then its redirect if it has one.

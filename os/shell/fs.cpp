@@ -240,6 +240,7 @@ static void tree_print(void *ctx, const char *name, bool is_dir, uint32_t) {
 }
 
 static void tree_walk(const char *base, const char *prefix, int depth) {
+    if (intr_check()) return;        // stop descending, not just printing
     CountCtx n{0};
     storage_walk(base, count_cb, &n);
     if (!n.n) return;
@@ -308,6 +309,7 @@ static void du_cb(void *ctx, const char *name, bool is_dir, uint32_t size) {
 // The accumulator is shared across the recursion; only base/depth change, and
 // they are saved and restored so the parent's walk continues correctly.
 static void du_walk(const char *base, int depth, DuCtx *acc) {
+    if (intr_check()) return;
     const char *save_base = acc->base;
     int save_depth = acc->depth;
     acc->base = base; acc->depth = depth;

@@ -68,6 +68,51 @@ const char *cmd_alias_target(const char *name) {
 uint32_t     cmd_alias_count(void)    { return g_alias_count; }
 const Alias *cmd_alias_at(uint32_t i) { return i < g_alias_count ? &g_aliases[i] : nullptr; }
 
+// --- user aliases -----------------------------------------------------------
+
+struct UAlias { char name[UALIAS_NAME]; char value[UALIAS_VALUE]; };
+static UAlias   g_ualias[UALIAS_MAX];
+static uint32_t g_ualias_count;
+
+static int ualias_find(const char *name) {
+    for (uint32_t i = 0; i < g_ualias_count; i++)
+        if (strcmp(g_ualias[i].name, name) == 0) return (int)i;
+    return -1;
+}
+
+bool cmd_ualias_set(const char *name, const char *value) {
+    if (!name || !value || !name[0] || !value[0]) return false;
+    if (strlen(name) >= UALIAS_NAME || strlen(value) >= UALIAS_VALUE) return false;
+    // A real command always keeps its own name. Letting an alias shadow `rm`
+    // would make a destructive command mean something else without warning.
+    if (cmd_find(name)) return false;
+
+    int i = ualias_find(name);
+    if (i < 0) {
+        if (g_ualias_count >= UALIAS_MAX) return false;
+        i = (int)g_ualias_count++;
+        strcpy(g_ualias[i].name, name);
+    }
+    strcpy(g_ualias[i].value, value);
+    return true;
+}
+
+bool cmd_ualias_remove(const char *name) {
+    int i = ualias_find(name);
+    if (i < 0) return false;
+    for (uint32_t j = (uint32_t)i; j + 1 < g_ualias_count; j++) g_ualias[j] = g_ualias[j + 1];
+    g_ualias_count--;
+    return true;
+}
+
+const char *cmd_ualias_get(const char *name) {
+    int i = ualias_find(name);
+    return i < 0 ? nullptr : g_ualias[i].value;
+}
+
+uint32_t    cmd_ualias_count(void)         { return g_ualias_count; }
+const char *cmd_ualias_name_at(uint32_t i) { return i < g_ualias_count ? g_ualias[i].name : nullptr; }
+
 const Command *cmd_resolve(const char *name) {
     const Command *c = cmd_find(name);
     if (c) return c;

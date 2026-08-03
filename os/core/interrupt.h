@@ -35,6 +35,13 @@ void intr_clear(void);
 // leave things in a consistent state; that is the caller's job, not this one's.
 bool intr_check(void);
 
+// Bytes intr_check pulled off the input while scanning for Ctrl+C, in order.
+// The line editor drains these BEFORE reading the real input, so type-ahead and
+// pasted command blocks survive a command running in between. Returns -1 when
+// there is nothing stashed.
+int  intr_stashed(void);
+void intr_stash_clear(void);
+
 // Set by the platform so intr_check can read a byte without blocking. Kept as a
 // seam so the pure core and the host tests do not need the SDK.
 typedef int (*IntrPollFn)(void);      // returns a byte, or -1 if none waiting

@@ -120,6 +120,9 @@ static const char *kMisc[] = {
     "  help [category]      This index, or a category's detail",
     "  help all             Every registered command, including package ones",
     "  history              Recent commands  (up/down arrows recall them)",
+    "  fetch / neofetch     System summary with the logo",
+    "  alias name=command   Define a shortcut  (bare 'alias' lists them)",
+    "  unalias <name>       Remove one",
 };
 
 static const char *kShell[] = {
@@ -152,7 +155,7 @@ static const Category kCategories[] = {
     CAT(kUsers, "users", "User Accounts",
         "whoami  users  mkacct  passwd  usermod  rmuser  logout"),
     CAT(kMisc, "misc", "Misc",
-        "help  history"),
+        "help  history  fetch  alias  unalias"),
     CAT(kShell, "shell", "Shell Syntax",
         "pipes |   chaining && ||   sequencing ;   redirect > >>"),
 };

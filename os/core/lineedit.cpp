@@ -195,6 +195,7 @@ uint32_t line_edit(const LineEdit *le, char *buf, uint32_t cap) {
             t.puts("^C\n");
             len = 0; pos = 0; buf[0] = 0;
             intr_clear();               // consumed here; the next line is clean
+            intr_stash_clear();         // and so is anything typed before it
             t.puts(le->prompt);
             continue;
         }

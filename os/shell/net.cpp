@@ -359,6 +359,8 @@ bool net_available(void) { return true; }
 
 // True when the interface is up AND has an address — "joined" is not the same as
 // "usable", and a command that needs to send a packet cares about the second.
+const char *net_active_ssid(void) { return reg_get("WiFi.Active", "(none)"); }
+
 bool net_is_connected(void) {
     if (!g_radio_up) return false;
     // The address is the thing that matters: "joined" is not "usable", and a
@@ -591,6 +593,7 @@ static int cmd_wifi(int argc, char **argv) {
 void net_autoconnect(void) {}
 bool net_available(void) { return false; }
 bool net_is_connected(void) { return false; }
+const char *net_active_ssid(void) { return "(no radio)"; }
 int  net_setup_scan_and_join(void) { return 1; }
 
 static int cmd_wifi(int, char **) {

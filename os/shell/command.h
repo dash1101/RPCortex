@@ -59,6 +59,25 @@ const char  *cmd_alias_target(const char *name);
 uint32_t     cmd_alias_count(void);
 const Alias *cmd_alias_at(uint32_t i);
 
+// --- user aliases -----------------------------------------------------------
+//
+// Separate from the built-in ones above, and a different thing: a built-in alias
+// is a second NAME for a command, while a user alias maps a name to a whole
+// COMMAND LINE ("alias ll=ls -l"). That is what v1's alias did, and it is why
+// these are expanded into the line before it is parsed rather than resolved at
+// dispatch. They persist to the registry as Alias.<name>.
+#define UALIAS_MAX     16
+#define UALIAS_NAME    16
+#define UALIAS_VALUE   64
+
+// Define or replace. Returns false if the name collides with a real command
+// (shadowing `rm` would be a trap), the table is full, or a field is too long.
+bool        cmd_ualias_set(const char *name, const char *value);
+bool        cmd_ualias_remove(const char *name);
+const char *cmd_ualias_get(const char *name);      // the line, or nullptr
+uint32_t    cmd_ualias_count(void);
+const char *cmd_ualias_name_at(uint32_t i);
+
 // Looks up a real command only. Use cmd_resolve for the dispatch path.
 const Command *cmd_find(const char *name);
 // cmd_find, then one alias hop. One hop, not a chain: an alias to an alias is a

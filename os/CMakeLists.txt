@@ -52,6 +52,7 @@ add_executable(rpcortex_v2
     ${OS_ROOT}/shell/help.cpp
     ${OS_ROOT}/shell/net.cpp
     ${OS_ROOT}/shell/netapps.cpp
+    ${OS_ROOT}/shell/fetch.cpp
     ${OS_ROOT}/shell/shell.cpp
     ${SPIKE}/firmware/loader.cpp
     ${SPIKE}/firmware/storage.cpp
