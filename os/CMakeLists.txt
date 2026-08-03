@@ -176,6 +176,7 @@ endfunction()
 
 rpc_add_app(greet)
 rpc_add_app(stress)
+rpc_add_app(bench)
 
 # --- packages that ship installed -------------------------------------------
 #
@@ -183,6 +184,17 @@ rpc_add_app(stress)
 # boot. That is what keeps them real packages — `pkg remove stress` deletes it
 # like any other, and it stays gone — rather than built-in commands wearing a
 # package's clothes.
+add_custom_command(
+    OUTPUT ${CMAKE_BINARY_DIR}/stock_bench.cpp
+    COMMAND ${CMAKE_COMMAND} -E env python3 ${OS_ROOT}/tools_bin2c.py
+            ${CMAKE_BINARY_DIR}/apps/bench.app
+            ${CMAKE_BINARY_DIR}/stock_bench.cpp stock_bench
+    DEPENDS ${CMAKE_BINARY_DIR}/apps/bench.app ${OS_ROOT}/tools_bin2c.py
+    VERBATIM)
+add_custom_target(stock_bench_src DEPENDS ${CMAKE_BINARY_DIR}/stock_bench.cpp)
+target_sources(rpcortex_v2 PRIVATE ${CMAKE_BINARY_DIR}/stock_bench.cpp)
+add_dependencies(rpcortex_v2 stock_bench_src app_bench)
+
 add_custom_command(
     OUTPUT ${CMAKE_BINARY_DIR}/stock_stress.cpp
     COMMAND ${CMAKE_COMMAND} -E env python3 ${OS_ROOT}/tools_bin2c.py
