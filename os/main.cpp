@@ -13,6 +13,7 @@
 #include "task.h"
 
 void net_autoconnect(void);
+void task_start_core1(void);
 
 int main(void) {
     stdio_init_all();
@@ -31,6 +32,11 @@ int main(void) {
         // here later; for now, say so rather than spin silently.
         klog(LOG_ERROR, "boot failed - recovery shell not yet implemented");
     }
+
+    // Core 1 joins the SAME scheduler — one task table, two cores taking from
+    // it. Started after storage and the registry are up, so nothing it picks up
+    // can race against boot still finishing.
+    task_start_core1();
 
     shell_register_builtins();
     net_autoconnect();       // rejoin a saved network, if one is set to auto

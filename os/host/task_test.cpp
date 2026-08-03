@@ -58,6 +58,12 @@ void task_ctx_switch(void **save_sp, void *to_sp) {
     swapcontext(from, (ucontext_t *)to_sp);
 }
 
+// Single-threaded host: the cross-core guard has nothing to guard. extern "C"
+// because lock.h declares them that way — the device side is paired with
+// assembly, and a mangled definition here would simply not be found.
+extern "C" void lock_hw_enter(void) {}
+extern "C" void lock_hw_exit(void)  {}
+
 static uint32_t g_now;
 uint32_t task_now_ms(void)    { return g_now; }
 uint32_t task_core_count(void){ return 1; }

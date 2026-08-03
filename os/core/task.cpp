@@ -1,4 +1,5 @@
 #include "task.h"
+#include "lock.h"
 
 #include <string.h>
 #include <stdlib.h>
@@ -131,18 +132,26 @@ int task_spawn(const char *name, const char *path, TaskFn fn, void *arg,
     if (stack_bytes < TASK_STACK_MIN) stack_bytes = TASK_STACK_MIN;
     stack_bytes = (stack_bytes + 7u) & ~7u;      // AAPCS wants 8-byte alignment
 
+    // Claim a slot under the guard so two cores cannot take the same one. The
+    // allocation happens after, outside it: malloc can be slow and the guard
+    // masks interrupts.
+    lock_hw_enter();
     Task *t = nullptr;
     for (uint32_t i = 0; i < TASK_MAX; i++)
-        if (g_tasks[i].info.state == TASK_FREE) { t = &g_tasks[i]; break; }
+        if (g_tasks[i].info.state == TASK_FREE) {
+            t = &g_tasks[i];
+            t->info.state = TASK_BLOCKED;      // reserved; not yet runnable
+            break;
+        }
+    lock_hw_exit();
     if (!t) return -1;
 
     void *stack = malloc(stack_bytes);
-    if (!stack) return -1;
+    if (!stack) { t->info.state = TASK_FREE; return -1; }
     paint(stack, stack_bytes);
 
     memset(&t->info, 0, sizeof(t->info));
     t->info.pid        = g_next_pid++;
-    t->info.state      = TASK_READY;
     t->info.affinity   = affinity;
     t->info.stack_size = stack_bytes;
     snprintf(t->info.name, sizeof(t->info.name), "%s", name ? name : "task");
@@ -154,10 +163,24 @@ int task_spawn(const char *name, const char *path, TaskFn fn, void *arg,
     t->sp    = task_ctx_init((uint8_t *)stack + stack_bytes, task_trampoline);
 
     if ((uint32_t)(t - g_tasks) + 1 > g_used) g_used = (uint32_t)(t - g_tasks) + 1;
+    // READY last, and only once everything it needs is in place — the instant
+    // this is set, the other core may pick it up and run it.
+    t->info.state = TASK_READY;
     return t->info.pid;
 }
 
 // The heart of it: park the current task and run the next runnable one.
+//
+// The selection has to be atomic ACROSS CORES. Without that, both cores can run
+// pick() at the same instant, choose the same READY task, and start executing it
+// on two cores at once — one task, one stack, two CPUs. Marking the chosen task
+// RUNNING before releasing the guard is what prevents it, because pick only ever
+// considers READY and SLEEPING.
+//
+// The guard is NOT held across the context switch. It cannot be: the switch
+// leaves on one stack and returns on another, so the matching release would run
+// in a different context from the acquire. Everything that needs protecting is
+// done before then.
 static void reschedule(TaskState park_as) {
     // Nothing to schedule before task_init has run. This is reachable for real:
     // intr_check yields, and it is called from code that also runs during boot,
@@ -166,6 +189,8 @@ static void reschedule(TaskState park_as) {
     if (!g_up) return;
 
     uint32_t core = task_this_core() % MAX_CORES;
+
+    lock_hw_enter();
     Task *me = cur();
 
     if (me) {
@@ -179,29 +204,35 @@ static void reschedule(TaskState park_as) {
     Task *next = pick(core, me ? me->info.pid : 0);
 
     // Nothing else to run. If this task is still runnable, just carry on —
-    // switching to ourselves would be a pointless save/restore. If it is not,
-    // spin until something becomes runnable; there is genuinely nothing else to
-    // do, and on a device that means waiting for a sleep to expire.
+    // switching to ourselves would be a pointless save/restore.
     if (!next) {
         if (me && (me->info.state == TASK_READY || me->info.state == TASK_SLEEPING)) {
             me->info.state = TASK_RUNNING;
             me->entered_ms = task_now_ms();
+            lock_hw_exit();
             return;
         }
-        while (!next) next = pick(core, 0);
+        // Genuinely nothing for this core: every task is running elsewhere, or
+        // asleep and not yet due. Release the guard and let the caller come back
+        // — holding it while waiting would block the other core from ever
+        // finishing the work we are waiting for.
+        lock_hw_exit();
+        return;
     }
 
     if (me && next == me) {
         me->info.state = TASK_RUNNING;
         me->entered_ms = task_now_ms();
+        lock_hw_exit();
         return;
     }
 
-    next->info.state    = TASK_RUNNING;
+    next->info.state    = TASK_RUNNING;   // claims it; no other core will pick it
     next->info.core     = (uint8_t)core;
     next->info.switches++;
     next->entered_ms    = task_now_ms();
     g_current[core]     = next->info.pid;
+    lock_hw_exit();
 
     if (me) task_ctx_switch(&me->sp, next->sp);
     else    task_ctx_switch(&g_sched_sp[core], next->sp);

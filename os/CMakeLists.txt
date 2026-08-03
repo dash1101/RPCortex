@@ -33,6 +33,7 @@ add_executable(rpcortex_v2
     ${OS_ROOT}/core/cmdline.cpp
     ${OS_ROOT}/core/interrupt.cpp
     ${OS_ROOT}/core/task.cpp
+    ${OS_ROOT}/core/lock.cpp
     ${OS_ROOT}/core/lineedit.cpp
     ${OS_ROOT}/core/fmt.cpp
     ${OS_ROOT}/core/pkgindex.cpp
@@ -91,7 +92,7 @@ target_compile_options(rpcortex_v2 PRIVATE
     $<$<COMPILE_LANGUAGE:CXX>:-fno-rtti>
     $<$<COMPILE_LANGUAGE:CXX>:-fno-use-cxa-atexit>)
 
-target_link_libraries(rpcortex_v2 pico_stdlib hardware_flash hardware_sync pico_rand pico_aon_timer)
+target_link_libraries(rpcortex_v2 pico_stdlib hardware_flash hardware_sync pico_rand pico_aon_timer pico_multicore)
 
 # Wireless is per-BOARD, not per-architecture: the CYW43 part is on the W boards
 # only. PICO_CYW43_SUPPORTED comes from the board header, and net.cpp compiles to

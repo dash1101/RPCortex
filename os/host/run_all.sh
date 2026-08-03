@@ -25,6 +25,7 @@ declare -A SRC=(
     [lineedit_test]="$CORE/lineedit.cpp $CORE/interrupt.cpp $CORE/task.cpp host_task_stub.cpp"
     [fmt_test]="$CORE/fmt.cpp"
     [task_test]="$CORE/task.cpp"
+    [lock_test]="$CORE/lock.cpp $CORE/task.cpp"
     [interrupt_test]="$CORE/interrupt.cpp $CORE/task.cpp host_task_stub.cpp"
     [pkgindex_test]="$CORE/pkgindex.cpp"
     [textcore_test]="$CORE/textcore.cpp $CORE/interrupt.cpp $CORE/task.cpp host_task_stub.cpp"

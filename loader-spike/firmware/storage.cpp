@@ -9,6 +9,7 @@
 // migration is promised.
 
 #include "storage.h"
+#include "lock.h"
 
 #include <string.h>
 #include <stdlib.h>
@@ -20,6 +21,18 @@
 #include "hardware/sync.h"
 
 // Last 512 KB of flash. The firmware lives at the start; apps live at the end.
+// One lock for the whole filesystem.
+//
+// littlefs keeps bookkeeping in RAM while a file is open, and two tasks writing
+// at once interleave those updates and corrupt it. This is the thing that made
+// the scheduler cooperative until now: one task at a time inside here, everyone
+// else waits their turn.
+//
+// It is held for a whole OPERATION, not per call — storage_copy streams a file
+// in chunks and must not have another task open something halfway through. The
+// lock is recursive, so an operation built out of other operations still works.
+RpcLock g_fs_lock;
+
 #define FS_SIZE        (512 * 1024)
 #define FS_OFFSET      (PICO_FLASH_SIZE_BYTES - FS_SIZE)
 #define FS_BLOCK_SIZE  FLASH_SECTOR_SIZE          // 4096 — the erase unit
@@ -118,6 +131,7 @@ static void touch(const char *path) {
 }
 
 uint32_t storage_mtime(const char *path) {
+    LockGuard _fs(&g_fs_lock);
     if (!g_mounted) return 0;
     uint32_t t = 0;
     if (lfs_getattr(&g_lfs, path, ATTR_MTIME, &t, sizeof(t)) != (lfs_ssize_t)sizeof(t))
@@ -126,6 +140,7 @@ uint32_t storage_mtime(const char *path) {
 }
 
 bool storage_write_file(const char *name, const uint8_t *data, uint32_t len) {
+    LockGuard _fs(&g_fs_lock);
     if (!g_mounted) return false;
     lfs_file_t f;
     if (lfs_file_open(&g_lfs, &f, name, LFS_O_WRONLY | LFS_O_CREAT | LFS_O_TRUNC) < 0)
@@ -138,6 +153,7 @@ bool storage_write_file(const char *name, const uint8_t *data, uint32_t len) {
 }
 
 bool storage_append_file(const char *name, const uint8_t *data, uint32_t len) {
+    LockGuard _fs(&g_fs_lock);
     if (!g_mounted) return false;
     lfs_file_t f;
     if (lfs_file_open(&g_lfs, &f, name, LFS_O_WRONLY | LFS_O_CREAT | LFS_O_APPEND) < 0)
@@ -150,6 +166,7 @@ bool storage_append_file(const char *name, const uint8_t *data, uint32_t len) {
 }
 
 uint32_t storage_read_file(const char *name, uint8_t *buf, uint32_t cap) {
+    LockGuard _fs(&g_fs_lock);
     if (!g_mounted) return 0;
     lfs_file_t f;
     if (lfs_file_open(&g_lfs, &f, name, LFS_O_RDONLY) < 0) return 0;
@@ -210,22 +227,26 @@ void storage_list(void) {
 }
 
 bool storage_mkdir(const char *path) {
+    LockGuard _fs(&g_fs_lock);
     if (!g_mounted || lfs_mkdir(&g_lfs, path) < 0) return false;
     touch(path);
     return true;
 }
 
 bool storage_remove(const char *path) {
+    LockGuard _fs(&g_fs_lock);
     return g_mounted && lfs_remove(&g_lfs, path) >= 0;
 }
 
 bool storage_rename(const char *from, const char *to) {
+    LockGuard _fs(&g_fs_lock);
     // No touch(): littlefs carries the attributes across, and mv changes a name
     // rather than content — refreshing the timestamp would misreport it.
     return g_mounted && lfs_rename(&g_lfs, from, to) >= 0;
 }
 
 bool storage_stat(const char *path, bool *is_dir, uint32_t *size) {
+    LockGuard _fs(&g_fs_lock);
     if (!g_mounted) return false;
     struct lfs_info info;
     // The root always exists but does not stat on littlefs; report it directly.
@@ -237,6 +258,7 @@ bool storage_stat(const char *path, bool *is_dir, uint32_t *size) {
 }
 
 bool storage_copy(const char *from, const char *to) {
+    LockGuard _fs(&g_fs_lock);
     if (!g_mounted) return false;
     lfs_file_t in, out;
     if (lfs_file_open(&g_lfs, &in, from, LFS_O_RDONLY) < 0) return false;
@@ -261,6 +283,7 @@ bool storage_copy(const char *from, const char *to) {
 }
 
 bool storage_walk(const char *path, StorageWalkFn cb, void *ctx) {
+    LockGuard _fs(&g_fs_lock);
     if (!g_mounted) return false;
     lfs_dir_t dir;
     if (lfs_dir_open(&g_lfs, &dir, path) < 0) return false;
@@ -277,6 +300,7 @@ bool storage_walk(const char *path, StorageWalkFn cb, void *ctx) {
 uint32_t storage_total_bytes(void) { return FS_SIZE; }
 
 uint32_t storage_free_bytes(void) {
+    LockGuard _fs(&g_fs_lock);
     if (!g_mounted) return 0;
     lfs_ssize_t used = lfs_fs_size(&g_lfs);
     if (used < 0) return 0;

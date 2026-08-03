@@ -16,6 +16,7 @@
 #include "registry.h"
 #include "users.h"
 #include "fmt.h"
+#include "task.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -94,7 +95,10 @@ static int cmd_fetch(int, char **) {
     else   add("Uptime", "%um %us", m, (unsigned)(s % 60));
 
     add("Shell",  "rpcsh  -  %u commands", (unsigned)cmd_count());
-    add("CPU",    "%s @ %u MHz", FETCH_CORE, (unsigned)(clock_get_hz(clk_sys) / 1000000));
+    add("CPU",    "%s @ %u MHz  (%u core%s in use)", FETCH_CORE,
+        (unsigned)(clock_get_hz(clk_sys) / 1000000),
+        (unsigned)task_core_count(), task_core_count() == 1 ? "" : "s");
+    add("Tasks",  "%u running", (unsigned)task_count());
 
     uint32_t total = heap_total(), free = heap_free();
     char b[56];

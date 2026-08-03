@@ -5,6 +5,10 @@
 #include "task.h"
 
 extern "C" {
+// Single-threaded host: the cross-core critical section has nothing to guard.
+void lock_hw_enter(void) {}
+void lock_hw_exit(void)  {}
+
 void *task_ctx_init(void *stack_top, TaskEntry) { return stack_top; }
 void  task_ctx_switch(void **, void *) {}
 uint32_t task_now_ms(void)     { return 0; }
