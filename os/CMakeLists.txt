@@ -245,6 +245,8 @@ function(rpc_add_app name)
 endfunction()
 
 rpc_add_app(calc)
+rpc_add_app(dht)
+rpc_add_app(probe)
 rpc_add_app(gpio)
 rpc_add_app(i2cscan)
 rpc_add_app(greet)

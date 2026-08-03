@@ -133,6 +133,9 @@ int      fw_task_self(void);
 int      fw_task_should_stop(void);
 int      fw_task_kill(int pid);
 uint32_t fw_cores(void);
+// Which core this task is on RIGHT NOW. Not stable: a task with no affinity
+// moves between cores, which is the whole reason a package might want to ask.
+uint32_t fw_core_id(void);
 
 // Files. Paths are absolute.
 int      fw_file_write(const char *path, const void *data, uint32_t len);

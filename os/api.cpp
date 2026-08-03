@@ -114,6 +114,8 @@ static bool pin_reserved(unsigned pin) {
 #endif
 }
 
+extern "C" uint32_t fw_core_id(void) { return task_this_core(); }
+
 extern "C" unsigned fw_gpio_count(void) { return NUM_BANK0_GPIOS; }
 
 extern "C" int fw_gpio_usable(unsigned pin) {
@@ -342,6 +344,7 @@ static const ApiSymbol kSymbols[] = {
     SYM(fw_file_read),
     SYM(fw_file_remove),
     SYM(fw_file_exists),
+    SYM(fw_core_id),
     SYM(fw_gpio_count),
     SYM(fw_gpio_usable),
     SYM(fw_gpio_init),
