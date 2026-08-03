@@ -38,6 +38,7 @@ add_executable(rpcortex_v2
     ${OS_ROOT}/core/tui.cpp
     ${OS_ROOT}/core/tuikey.cpp
     ${OS_ROOT}/core/tuilist.cpp
+    ${OS_ROOT}/core/rps.cpp
     ${OS_ROOT}/core/cmdline.cpp
     ${OS_ROOT}/core/interrupt.cpp
     ${OS_ROOT}/core/task.cpp
@@ -67,6 +68,7 @@ add_executable(rpcortex_v2
     ${OS_ROOT}/shell/tuiterm.cpp
     ${OS_ROOT}/shell/settings.cpp
     ${OS_ROOT}/shell/editor.cpp
+    ${OS_ROOT}/shell/rpscmd.cpp
     ${OS_ROOT}/shell/text.cpp
     ${OS_ROOT}/shell/sys.cpp
     ${OS_ROOT}/shell/user.cpp

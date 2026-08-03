@@ -27,6 +27,7 @@ declare -A SRC=(
     [excframe_test]="$CORE/excframe.cpp"
     [tui_test]="$CORE/tui.cpp"
     [tuilist_test]="$CORE/tuilist.cpp $CORE/tui.cpp"
+    [rps_test]="$CORE/rps.cpp"
     [tuikey_test]="$CORE/tuikey.cpp"
     [httpfetch_test]="$CORE/httpfetch.cpp $CORE/httpparse.cpp"
     [cmdline_test]="$CORE/cmdline.cpp"
