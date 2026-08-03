@@ -41,14 +41,28 @@ bool net_is_connected(void);
 #define TMP_PKG    "/os/pkg/.download"
 #define INDEX_MAX  16384
 
-// The architecture this image runs. A package built for the other one loads and
-// then executes instructions the chip does not have, so it is refused up front
-// rather than allowed to fault later with nothing pointing at the cause.
+// The architecture this image runs.
 #if PICO_RP2040
 #define MY_ARCH "armv6m"
 #else
 #define MY_ARCH "armv8m"
 #endif
+
+// Compatibility is one-way, and getting it backwards would be expensive in both
+// directions. ARMv8-M Baseline is a superset of ARMv6-M, so an armv6m package
+// runs correctly on an RP2350 — refusing it would make one binary per package
+// unable to serve both boards for no reason. The reverse is a real fault:
+// armv8m code on an RP2040 executes instructions the chip does not have, so it
+// is refused up front rather than allowed to fault later with nothing pointing
+// at the cause.
+static bool arch_runs_here(const char *arch) {
+    if (!arch || !arch[0]) return true;              // unstated: allow, as v1 did
+    if (!strcmp(arch, MY_ARCH)) return true;
+#if !PICO_RP2040
+    if (!strcmp(arch, "armv6m")) return true;        // baseline runs on v8-M
+#endif
+    return false;
+}
 
 // --- helpers ----------------------------------------------------------------
 
@@ -207,7 +221,7 @@ static int do_info(const char *name) {
     if (e.desc[0])   out_multi("  %s", e.desc);
     if (e.author[0]) out_multi("  Author   %s", e.author);
     if (e.arch[0])   out_multi("  Arch     %s%s", e.arch,
-                               strcmp(e.arch, MY_ARCH) ? "  (not this board)" : "");
+                               arch_runs_here(e.arch) ? "" : "  (not this board)");
     if (e.abi[0])    out_multi("  ABI      %s", e.abi);
     if (e.size)      out_multi("  Size     %lu bytes", (unsigned long)e.size);
     out_multi("  Verified %s", e.sha256[0] ? "yes, SHA-256" : "NO - the index publishes no hash");
@@ -236,7 +250,7 @@ static int do_install(const char *name) {
     // Refuse what cannot run here BEFORE spending a download on it. A package
     // for the other architecture loads happily and then executes instructions
     // this chip does not have.
-    if (e.arch[0] && strcmp(e.arch, MY_ARCH) != 0) {
+    if (!arch_runs_here(e.arch)) {
         out_err("%s is built for %s; this board is %s.", e.name, e.arch, MY_ARCH);
         return 1;
     }
