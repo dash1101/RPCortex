@@ -177,6 +177,19 @@ add_custom_target(stock_cacerts_src DEPENDS ${CMAKE_BINARY_DIR}/stock_cacerts.cp
 target_sources(rpcortex_v2 PRIVATE ${CMAKE_BINARY_DIR}/stock_cacerts.cpp)
 add_dependencies(rpcortex_v2 stock_cacerts_src)
 
+# The USB serial buffers, raised from the SDK's 64 bytes.
+#
+# 64 is fine for typing and far too small for PASTING: a paste arrives as fast
+# as USB can deliver it, and anything past 64 bytes was dropped while the screen
+# was being redrawn. The symptom was pasted text arriving mangled or not at all,
+# which reads as a broken editor rather than a full buffer.
+#
+# 1 KB in each direction costs 2 KB of RAM against 400 KB free, and covers a
+# paste of a whole screenful.
+target_compile_definitions(rpcortex_v2 PRIVATE
+    CFG_TUD_CDC_RX_BUFSIZE=1024
+    CFG_TUD_CDC_TX_BUFSIZE=1024)
+
 pico_enable_stdio_usb(rpcortex_v2 1)
 pico_enable_stdio_uart(rpcortex_v2 0)
 pico_add_extra_outputs(rpcortex_v2)

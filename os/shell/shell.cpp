@@ -225,8 +225,30 @@ static const char *source_suffix(const char *name) {
     return nullptr;
 }
 
+// Does this path end with .rps, case-insensitively?
+static bool is_rps(const char *p) {
+    size_t n = p ? strlen(p) : 0;
+    if (n < 4) return false;
+    const char *e = p + n - 4;
+    return e[0] == '.' &&
+           (e[1] == 'r' || e[1] == 'R') &&
+           (e[2] == 'p' || e[2] == 'P') &&
+           (e[3] == 's' || e[3] == 'S');
+}
+
 static int cmd_run(int argc, char **argv) {
-    if (argc < 2) { out_multi("Usage: run <app.app> [arg]"); return 1; }
+    if (argc < 2) { out_multi("Usage: run <app.app | script.rps> [arg]"); return 1; }
+
+    // v1 let `exec`, `run` and a bare path all start a script, so all three do
+    // here. A .rps is source for an interpreter rather than a loadable image,
+    // and reporting "not an ELF file" for one is technically true and useless.
+    if (is_rps(argv[1])) {
+        char *rerun[3] = { (char *)"script", argv[1], nullptr };
+        const Command *sc = cmd_resolve("script");
+        if (sc && sc->fn) return sc->fn(2, rerun);
+        out_err("The script interpreter is not available.");
+        return 1;
+    }
 
     const char *src = source_suffix(argv[1]);
     if (src) {
@@ -319,7 +341,7 @@ void shell_register_builtins(void) {
     intr_set_poll(shell_poll_byte);
 
     static const Command builtins[] = {
-        {"run", "run <app.app> [arg]",            cmd_run, nullptr},
+        {"run", "run <app.app | script.rps> [arg]", cmd_run, nullptr},
         {"put", "put <name> <len>  upload bytes", cmd_put, nullptr, LEVEL_ADMIN},
         {"reg", "reg | reg get K | reg set K V",  cmd_reg, nullptr, LEVEL_ADMIN},
         {"alias",   "alias name=command",         cmd_alias,   nullptr},
@@ -441,7 +463,19 @@ static int run_one(char *seg) {
     }
 
     const Command *c = cmd_resolve(argv[0]);
-    if (!c) { out_err("'%s' is not a command or executable file.", argv[0]); return 1; }
+    if (!c) {
+        // A bare path to a script runs it, as it did on v1. Checked before the
+        // error so `/os/setup.rps` works the way people already expect.
+        if (is_rps(argv[0])) {
+            const Command *sc = cmd_resolve("script");
+            if (sc && sc->fn) {
+                char *rerun[3] = { (char *)"script", argv[0], nullptr };
+                return sc->fn(2, rerun);
+            }
+        }
+        out_err("'%s' is not a command or executable file.", argv[0]);
+        return 1;
+    }
 
     if (!perms_allows(session_user(), users_is_admin(session_user()), c->level, elevated)) {
         out_err("'%s' needs an admin account.", c->name);

@@ -200,6 +200,7 @@ static int cmd_edit(int argc, char **argv) {
     // Reset per session. A function-static would leave the second `edit` of a
     // boot already armed, so it would quit on the first Ctrl+X and discard.
     int quit_armed = 0;
+    bool last_was_cr = false;      // for collapsing CR LF from a paste
     bool running = true, dirty_screen = true;
     while (running) {
         ed_clamp(e, rows, cols);
@@ -282,7 +283,15 @@ static int cmd_edit(int argc, char **argv) {
                     } else running = false;
                     break;
                 }
-                case '\r': case '\n': ed_newline(e); break;
+                case '\r':
+                    ed_newline(e);
+                    last_was_cr = true;
+                    break;
+                case '\n':
+                    // A paste of Windows text sends CR LF for one line break.
+                    // Without this every pasted line gains a blank one after it.
+                    if (!last_was_cr) ed_newline(e);
+                    break;
                 case 8: case 0x7f:    ed_backspace(e); break;
                 case '\t':
                     for (int i = 0; i < 4; i++) ed_insert(e, ' ');
@@ -302,6 +311,7 @@ static int cmd_edit(int argc, char **argv) {
             // Anything other than the quit key disarms it, so a Ctrl+X now and
             // another minutes later cannot combine into a discard.
             if (ev.key != 24 && ev.key != 3) quit_armed = 0;
+            if (ev.key != '\r') last_was_cr = false;
         }
         if (!busy) task_sleep_ms(5);
     }

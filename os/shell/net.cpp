@@ -23,6 +23,7 @@
 #include "session.h"
 #include "interrupt.h"
 #include "task.h"
+#include "logring.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -278,7 +279,14 @@ static int wifi_scan(void) {
 
 // --- connect / disconnect ---------------------------------------------------
 
-static int wifi_connect(const char *ssid, const char *pw) {
+static int wifi_connect(const char *ssid, const char *pw, bool quiet = false);
+
+// True on success. Wraps the join so the boot path can stay silent about it.
+static bool wifi_connect_quiet(const char *ssid, const char *pw) {
+    return wifi_connect(ssid, pw, /*quiet*/true) == 0;
+}
+
+static int wifi_connect(const char *ssid, const char *pw, bool quiet) {
     if (!radio_up()) return 1;
 
     // No password given: fall back to a saved one before assuming an open
@@ -287,7 +295,7 @@ static int wifi_connect(const char *ssid, const char *pw) {
     if (!pw && saved_get(ssid, saved_pw, sizeof(saved_pw)) && saved_pw[0]) pw = saved_pw;
 
     uint32_t auth = (pw && pw[0]) ? auth_for(ssid) : CYW43_AUTH_OPEN;
-    out_info("Connecting to '%s'...", ssid);
+    if (!quiet) out_info("Connecting to '%s'...", ssid);
 
     // Async, then poll — NOT cyw43_arch_wifi_connect_timeout_ms.
     //
@@ -310,13 +318,15 @@ static int wifi_connect(const char *ssid, const char *pw) {
     }
     if (rc != 0) {
         int st = cyw43_tcpip_link_status(&cyw43_state, CYW43_ITF_STA);
-        out_err("Could not connect to '%s' — %s.", ssid, link_text(st));
+        if (!quiet) out_err("Could not connect to '%s' — %s.", ssid, link_text(st));
         return 1;
     }
     reg_set("WiFi.Active", ssid);
     saved_put(ssid, pw);
-    out_ok("Connected to '%s'.", ssid);
-    if (netif_default) out_multi("  Address: %s", ip4addr_ntoa(netif_ip4_addr(netif_default)));
+    if (!quiet) {
+        out_ok("Connected to '%s'.", ssid);
+        if (netif_default) out_multi("  Address: %s", ip4addr_ntoa(netif_ip4_addr(netif_default)));
+    }
     return 0;
 }
 
@@ -352,7 +362,65 @@ static int wifi_list(void) {
 // that will not let them log in does not care that it is busy being helpful.
 // The network tried is the one last connected to, falling back to the first
 // saved; anything else is a deliberate `wifi connect` away.
+void net_autoconnect_now(void);      // the inline fallback, defined below
+
+// The boot join, run as its own task.
+//
+// Joining a network takes seconds — the radio has to associate, authenticate
+// and complete DHCP, and none of that goes faster for being waited on. Doing it
+// inline meant every boot stared at a blank screen for most of ten seconds
+// before the login prompt appeared.
+//
+// So it runs beside the login instead. Success says nothing: a device that
+// joined the network it was told to join is not news, and the prompt already
+// shows it. Only a failure speaks, because that is the case where someone needs
+// to do something.
+static int autoconnect_task(void *) {
+    char k[REG_KEY_MAX];
+    int slot = -1;
+    const char *last = reg_get("WiFi.Active", "");
+    if (last[0]) slot = saved_find(last);
+    if (slot < 0) {
+        for (int i = 0; i < NET_SAVED; i++) {
+            saved_key(i, "SSID", k, sizeof(k));
+            const char *v = reg_get(k, nullptr);
+            if (v && v[0]) { slot = i; break; }
+        }
+    }
+    if (slot < 0) return 0;
+
+    char ssid[33], pw[REG_VAL_MAX];
+    saved_key(slot, "SSID", k, sizeof(k)); snprintf(ssid, sizeof(ssid), "%s", reg_get(k, ""));
+    saved_key(slot, "PW",   k, sizeof(k)); snprintf(pw, sizeof(pw), "%s", reg_get(k, ""));
+    if (!ssid[0]) return 0;
+
+    if (wifi_connect_quiet(ssid, pw)) {
+        log_addf(LOG_K_OK, "wifi: joined '%s' at boot", ssid);
+        return 0;
+    }
+    // Loud, because this is the case that needs a person.
+    out_warnp("wifi", "Could not join '%s' automatically.", ssid);
+    out_multi("  'wifi connect %s' to retry, or 'wifi auto off' to stop trying.", ssid);
+    log_addf(LOG_K_WARN, "wifi: boot join of '%s' failed", ssid);
+    return 1;
+}
+
 void net_autoconnect(void) {
+    if (strcmp(reg_get("WiFi.Auto", "false"), "true") != 0) return;
+
+    // Spawned, not called. The login prompt appears immediately and the join
+    // finishes underneath it — which is the whole point of having a scheduler.
+    if (task_spawn("wifi-join", "(kernel)", autoconnect_task, nullptr,
+                   TASK_STACK_DEF, AFFINITY_ANY) >= 0) {
+        out_infop("wifi", "Connecting to '%s' in the background...",
+                  reg_get("WiFi.Active", "a saved network"));
+        return;
+    }
+    // No room for a task: fall back to doing it inline rather than not at all.
+    net_autoconnect_now();
+}
+
+void net_autoconnect_now(void) {
     if (strcmp(reg_get("WiFi.Auto", "false"), "true") != 0) return;
 
     char k[REG_KEY_MAX];
@@ -614,6 +682,7 @@ static int cmd_wifi(int argc, char **argv) {
 #else   // no CYW43 part on this board
 
 void net_autoconnect(void) {}
+void net_autoconnect_now(void) {}
 bool net_available(void) { return false; }
 bool net_is_connected(void) { return false; }
 const char *net_active_ssid(void) { return "(no radio)"; }
