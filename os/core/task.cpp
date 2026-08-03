@@ -217,6 +217,32 @@ int task_spawn(const char *name, const char *path, TaskFn fn, void *arg,
             t->info.state = TASK_BLOCKED;      // reserved; not yet runnable
             break;
         }
+
+    // Nothing free. Take back the oldest FINISHED task before giving up.
+    //
+    // A task that has exited keeps its slot so its exit status can still be
+    // read, and the only thing that ever released one was somebody running
+    // `ps`. So a device doing background work simply ran out: twelve slots,
+    // two per run of a diagnostic, and after four runs nothing could spawn
+    // again — with the stacks held too, so it leaked memory on the way.
+    //
+    // Oldest first, by pid, so a status that was just set survives longest and
+    // the reclaimed one is the least likely to still be wanted.
+    if (!t) {
+        Task *oldest = nullptr;
+        for (uint32_t i = 0; i < TASK_MAX; i++) {
+            Task *c = &g_tasks[i];
+            if (c->info.state != TASK_DONE) continue;
+            if (!oldest || c->info.pid < oldest->info.pid) oldest = c;
+        }
+        if (oldest) {
+            if (oldest->stack) { free(oldest->stack); oldest->stack = nullptr; }
+            oldest->info.state = TASK_BLOCKED;   // straight to reserved
+            oldest->live = false;
+            oldest->crit = 0;
+            t = oldest;
+        }
+    }
     lock_hw_exit();
     if (!t) return -1;
 

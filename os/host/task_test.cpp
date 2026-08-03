@@ -284,6 +284,28 @@ int main(void) {
     ck(task_spawn("bad", nullptr, nullptr, nullptr, ST, AFFINITY_ANY) < 0,
        "a null entry point is refused");
 
+    // --- finished tasks must not hold their slots for ever ------------------
+    //
+    // A DONE task keeps its slot so its exit status stays readable, and for a
+    // long time the only thing that ever gave one back was running `ps`. On a
+    // device that meant twelve slots, two per run of a background tool, and
+    // nothing could spawn after the fourth — reported from hardware as "could
+    // not spawn a task", with the stacks leaked as well.
+    //
+    // Far more spawns than there are slots, none of them reaped by hand.
+    {
+        int spawned = 0, refused = 0;
+        for (int i = 0; i < TASK_MAX * 2; i++) {
+            int p = task_spawn("churn", nullptr, task_quick, nullptr, ST, AFFINITY_ANY);
+            if (p < 0) { refused++; continue; }
+            spawned++;
+            for (int k = 0; k < 4; k++) task_yield();   // let it finish
+        }
+        ck(refused == 0, "spawning far past the table size never runs out");
+        ck(spawned == TASK_MAX * 2, "every one of them started");
+    }
+
+
     // Affinity: a CORE1 task must not be picked on core 0, which is what makes
     // a single-core build safe.
     int c1 = task_spawn("c1", nullptr, task_quick, nullptr, ST, AFFINITY_CORE1);
