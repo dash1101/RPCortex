@@ -79,7 +79,6 @@ original escape sequences.
 | `update` / `safeboot` (OTA) | A/B flash slots |
 | `.rps` scripting | a small interpreter — v1's semantics are simple enough to match |
 | `sd` card support | a driver |
-| `diag` `compat` `inputstat` `regreset` `pkgdisable` `pkgenable` | nothing; just work |
 | ESP32-S3 | a port: core/ moves unchanged, the context switch, storage and network layers do not |
 
 ## Different on purpose

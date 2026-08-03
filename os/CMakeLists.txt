@@ -34,6 +34,7 @@ add_executable(rpcortex_v2
     ${OS_ROOT}/core/httpfetch.cpp
     ${OS_ROOT}/core/repoindex.cpp
     ${OS_ROOT}/core/preempt.cpp
+    ${OS_ROOT}/core/excframe.cpp
     ${OS_ROOT}/core/cmdline.cpp
     ${OS_ROOT}/core/interrupt.cpp
     ${OS_ROOT}/core/task.cpp
@@ -59,6 +60,7 @@ add_executable(rpcortex_v2
     ${OS_ROOT}/shell/apps.cpp
     ${OS_ROOT}/shell/pkg.cpp
     ${OS_ROOT}/shell/pkgrepo.cpp
+    ${OS_ROOT}/shell/diag.cpp
     ${OS_ROOT}/shell/text.cpp
     ${OS_ROOT}/shell/sys.cpp
     ${OS_ROOT}/shell/user.cpp

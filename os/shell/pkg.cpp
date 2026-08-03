@@ -108,7 +108,17 @@ static void pkg_list(void) {
 
 // --- boot loading + command ------------------------------------------------
 
+bool pkg_is_disabled(const char *name);    // diag.cpp
+
 static void load_cb(void *, const char *name, const char *) {
+    // A package that crashes at boot can be switched off without removing it,
+    // so the device comes up and the package is still there to look at. The
+    // check is here rather than in the index so the record of what is installed
+    // stays separate from the decision to load it.
+    if (pkg_is_disabled(name)) {
+        out_warnp("pkg", "'%s' is disabled and was not loaded.", name);
+        return;
+    }
     char path[40]; pkg_path(name, path, sizeof(path));
     apps_launch(path, 0, /*quiet*/true);
 }

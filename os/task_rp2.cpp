@@ -4,6 +4,7 @@
 
 #include "task.h"
 #include "preempt.h"
+#include "excframe.h"
 #include "lock.h"
 
 #include <stdint.h>
@@ -167,13 +168,8 @@ extern "C" void task_forced_exit(void) {
 //
 // Bit 24 (Thumb) is preserved rather than assumed: an exception return with it
 // clear faults in a way that looks nothing like its cause.
-#define XPSR_THUMB   (1u << 24)
-#define XPSR_IT_ICI  ((3u << 25) | (0x3fu << 10))
-
-static void redirect_stacked_pc(uint32_t *frame) {
-    frame[6] = (uint32_t)(uintptr_t)&task_forced_exit | 1u;   // PC, Thumb bit set
-    frame[7] = (frame[7] & ~XPSR_IT_ICI) | XPSR_THUMB;        // xPSR
-}
+// The layout, the Thumb bit and the IT clearing all live in core/excframe.cpp
+// and are host-tested there. What is left here is reading two registers.
 
 // Should the task holding this core be terminated where it stands?
 static bool should_force(void) {
@@ -212,9 +208,9 @@ static int64_t preempt_alarm(alarm_id_t, void *) {
         uint32_t exc_return;
         __asm volatile ("mov %0, lr" : "=r"(exc_return));
         uint32_t *frame;
-        if (exc_return & 4u) __asm volatile ("mrs %0, psp" : "=r"(frame));
-        else                 __asm volatile ("mrs %0, msp" : "=r"(frame));
-        redirect_stacked_pc(frame);
+        if (exc_return_used_psp(exc_return)) __asm volatile ("mrs %0, psp" : "=r"(frame));
+        else                                 __asm volatile ("mrs %0, msp" : "=r"(frame));
+        exc_frame_redirect(frame, (uint32_t)(uintptr_t)&task_forced_exit);
     }
     return PREEMPT_TICK_US;    // reschedule this alarm
 }

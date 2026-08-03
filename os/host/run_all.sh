@@ -24,6 +24,7 @@ declare -A SRC=(
     [httpparse_test]="$CORE/httpparse.cpp"
     [repoindex_test]="$CORE/repoindex.cpp"
     [preempt_test]="$CORE/preempt.cpp"
+    [excframe_test]="$CORE/excframe.cpp"
     [httpfetch_test]="$CORE/httpfetch.cpp $CORE/httpparse.cpp"
     [cmdline_test]="$CORE/cmdline.cpp"
     [lineedit_test]="$CORE/lineedit.cpp $CORE/interrupt.cpp $CORE/task.cpp $CORE/blackbox.cpp host_task_stub.cpp"
