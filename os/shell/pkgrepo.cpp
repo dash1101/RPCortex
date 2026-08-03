@@ -48,19 +48,39 @@ bool net_is_connected(void);
 #define MY_ARCH "armv8m"
 #endif
 
-// Compatibility is one-way, and getting it backwards would be expensive in both
-// directions. ARMv8-M Baseline is a superset of ARMv6-M, so an armv6m package
-// runs correctly on an RP2350 — refusing it would make one binary per package
-// unable to serve both boards for no reason. The reverse is a real fault:
-// armv8m code on an RP2040 executes instructions the chip does not have, so it
-// is refused up front rather than allowed to fault later with nothing pointing
-// at the cause.
+// One architecture, or several separated by commas.
+//
+// A package author chooses: build for one board and say so, or build fat and
+// serve every target from one artifact. Both are legitimate, so the field is a
+// LIST — "armv6m" and "armv6m,xtensa,riscv32" are equally valid, and the second
+// is what a fat package publishes.
+//
+// Compatibility within ARM is one-way, and getting it backwards would be
+// expensive in both directions. ARMv8-M Baseline is a superset of ARMv6-M, so
+// an armv6m package runs correctly on an RP2350 — refusing it would stop one
+// binary serving both boards for no reason. The reverse is a real fault: armv8m
+// code on an RP2040 executes instructions the chip does not have, so it is
+// refused up front rather than allowed to fault later with nothing pointing at
+// the cause.
+static bool arch_one_runs_here(const char *a, size_t n) {
+    if (n == strlen(MY_ARCH) && !strncmp(a, MY_ARCH, n)) return true;
+#if !PICO_RP2040
+    if (n == 6 && !strncmp(a, "armv6m", 6)) return true;    // baseline runs on v8-M
+#endif
+    return false;
+}
+
 static bool arch_runs_here(const char *arch) {
     if (!arch || !arch[0]) return true;              // unstated: allow, as v1 did
-    if (!strcmp(arch, MY_ARCH)) return true;
-#if !PICO_RP2040
-    if (!strcmp(arch, "armv6m")) return true;        // baseline runs on v8-M
-#endif
+    for (const char *p = arch; *p; ) {
+        while (*p == ' ') p++;
+        const char *e = strchr(p, ',');
+        size_t n = e ? (size_t)(e - p) : strlen(p);
+        while (n && p[n - 1] == ' ') n--;            // tolerate "a, b"
+        if (n && arch_one_runs_here(p, n)) return true;
+        if (!e) break;
+        p = e + 1;
+    }
     return false;
 }
 
@@ -252,6 +272,7 @@ static int do_install(const char *name) {
     // this chip does not have.
     if (!arch_runs_here(e.arch)) {
         out_err("%s is built for %s; this board is %s.", e.name, e.arch, MY_ARCH);
+        out_multi("  A package can list several architectures, or target one deliberately.");
         return 1;
     }
 
