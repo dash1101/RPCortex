@@ -198,17 +198,43 @@ static int load_one(const char *path) {
     return bad;
 }
 
+// Where build.sh actually puts the apps. It builds per BOARD, so there is no
+// single "build" directory — and there WAS a stale one left from an older
+// layout that this test happily read for hours while reporting success. The
+// first directory that exists wins; they hold identical apps, since every
+// package is built for ARMv6-M so one binary serves both architectures.
+static const char *kBuildDirs[] = {
+    "../build_pico2_w/apps", "../build_pico_w/apps",
+    "../build_pico2/apps",   "../build_pico/apps",
+    "../build/apps",
+};
+static const char *kNames[] = { "greet", "bench", "stress", "tuidemo" };
+
 int main(int argc, char **argv) {
-    static const char *kApps[] = {
-        "../build/apps/greet.app",
-        "../build/apps/bench.app",
-        "../build/apps/stress.app",
-    };
+    static char paths[8][64];
+    static const char *kApps[8];
+    int napps = 0;
+
+    const char *dir = nullptr;
+    for (const char *d : kBuildDirs) {
+        char probe[80];
+        snprintf(probe, sizeof(probe), "%s/greet.app", d);
+        FILE *f = fopen(probe, "rb");
+        if (f) { fclose(f); dir = d; break; }
+    }
+    if (dir) {
+        printf("  from %s\n", dir);
+        for (const char *n : kNames) {
+            snprintf(paths[napps], sizeof(paths[0]), "%s/%s.app", dir, n);
+            kApps[napps] = paths[napps];
+            napps++;
+        }
+    }
     int fails = 0;
     if (argc > 1) {
         for (int i = 1; i < argc; i++) fails += load_one(argv[i]);
     } else {
-        for (const char *a : kApps) fails += load_one(a);
+        for (int i = 0; i < napps; i++) fails += load_one(kApps[i]);
     }
     // Loading nothing is a failure, not a pass. These paths are relative to this
     // directory, so running from anywhere else — or a change to where the build

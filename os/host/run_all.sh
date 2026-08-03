@@ -26,6 +26,7 @@ declare -A SRC=(
     [preempt_test]="$CORE/preempt.cpp"
     [excframe_test]="$CORE/excframe.cpp"
     [tui_test]="$CORE/tui.cpp"
+    [tuilist_test]="$CORE/tuilist.cpp $CORE/tui.cpp"
     [tuikey_test]="$CORE/tuikey.cpp"
     [httpfetch_test]="$CORE/httpfetch.cpp $CORE/httpparse.cpp"
     [cmdline_test]="$CORE/cmdline.cpp"

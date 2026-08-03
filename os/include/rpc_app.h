@@ -23,7 +23,7 @@ extern "C" {
 // MINOR: a symbol added — older-minor apps still run (everything they want is
 //        present); newer-minor apps refused (they may want something absent).
 #define RPC_API_MAJOR 1
-#define RPC_API_MINOR 3
+#define RPC_API_MINOR 4
 
 typedef struct {
     uint32_t magic;          // RPC_APP_MAGIC
@@ -45,6 +45,59 @@ typedef struct {
         RPC_APP_MAGIC, RPC_API_MAJOR, RPC_API_MINOR, appname, ver, 0           \
     }
 #define RPC_APP(appname) RPC_APP_VER(appname, "1.0")
+
+// --- the TUI (API 1.4) ------------------------------------------------------
+//
+// A package draws a full screen the same way the built-in apps do. Everything
+// renders into a grid the firmware owns and only the DIFFERENCE reaches the
+// terminal, so a package that repaints on every keystroke still costs one row
+// of escape sequences rather than two kilobytes.
+//
+// Mouse events arrive through the same poll as keys, already decoded, with
+// coordinates counted from zero.
+
+typedef struct {
+    unsigned char kind;    // 0 none, 1 key, 2 mouse
+    int           key;     // a character, or one of FW_KEY_*
+    unsigned char mouse;   // 0 down, 1 up, 2 drag, 3 wheel up, 4 wheel down
+    unsigned short x, y;   // zero-based cell coordinates
+    unsigned char ctrl, shift, alt;
+} FwTuiEvent;
+
+#define FW_KEY_UP    256
+#define FW_KEY_DOWN  257
+#define FW_KEY_LEFT  258
+#define FW_KEY_RIGHT 259
+#define FW_KEY_HOME  260
+#define FW_KEY_END   261
+#define FW_KEY_PGUP  262
+#define FW_KEY_PGDN  263
+#define FW_KEY_ESC   279
+
+// Enter and leave full-screen mode. ALWAYS pair them: a terminal left with
+// mouse reporting on sends escape sequences to the shell for every click
+// afterwards, which looks like the device typing by itself.
+void fw_tui_begin(void);
+void fw_tui_end(void);
+
+void fw_tui_size(int *w, int *h);
+void fw_tui_clear(void);
+void fw_tui_text(int x, int y, const char *s, unsigned char attr, unsigned char fg);
+void fw_tui_box(int x, int y, int w, int h, const char *title,
+                unsigned char attr, unsigned char fg);
+void fw_tui_fill(int x, int y, int w, int h, char ch,
+                 unsigned char attr, unsigned char fg);
+// Send what changed since the last call.
+void fw_tui_present(void);
+// One event, or 0 when nothing is waiting. Non-blocking, so the caller owns its
+// own frame rate and stays responsive.
+int  fw_tui_poll(FwTuiEvent *out);
+
+#define FW_ATTR_NORMAL  0
+#define FW_ATTR_BOLD    1
+#define FW_ATTR_REVERSE 2
+#define FW_ATTR_DIM     4
+#define FW_ATTR_UNDER   8
 
 // --- exported services (API 1.1) -------------------------------------------
 // Every entry is a permanent compatibility commitment. Adding one is a MINOR

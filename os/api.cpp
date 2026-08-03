@@ -171,6 +171,16 @@ static const ApiSymbol kSymbols[] = {
     SYM(fw_heap_total),
     SYM(fw_heap_largest),
     SYM(fw_progress),
+    // API 1.4 — the TUI.
+    SYM(fw_tui_begin),
+    SYM(fw_tui_end),
+    SYM(fw_tui_size),
+    SYM(fw_tui_clear),
+    SYM(fw_tui_text),
+    SYM(fw_tui_box),
+    SYM(fw_tui_fill),
+    SYM(fw_tui_present),
+    SYM(fw_tui_poll),
 
     // The compiler's runtime. See above: emitted, not written.
     SYM(__aeabi_idiv),
@@ -204,3 +214,65 @@ uint32_t api_lookup(const char *name) {
     return 0;
 }
 uint32_t api_symbol_count(void) { return kSymbolCount; }
+
+// --- the TUI (API 1.4) ------------------------------------------------------
+//
+// A package gets the same drawing surface the built-in apps use. The grid lives
+// here rather than in the package so the diffing renderer has something stable
+// to compare against, and so a package that crashes mid-draw cannot leave the
+// terminal in a state nothing can recover.
+
+#include "tui.h"
+#include "tuiterm.h"
+
+static TuiScreen g_app_screen;
+
+extern "C" void fw_tui_begin(void) {
+    task_alive();
+    tui_resize(&g_app_screen, 80, 24);
+    tuiterm_begin();
+}
+
+extern "C" void fw_tui_end(void) {
+    task_alive();
+    tuiterm_end();
+}
+
+extern "C" void fw_tui_size(int *w, int *h) {
+    if (w) *w = g_app_screen.w;
+    if (h) *h = g_app_screen.h;
+}
+
+extern "C" void fw_tui_clear(void) { task_alive(); tui_clear(&g_app_screen); }
+
+extern "C" void fw_tui_text(int x, int y, const char *s, unsigned char attr, unsigned char fg) {
+    task_alive();
+    tui_text(&g_app_screen, x, y, s, attr, fg);
+}
+
+extern "C" void fw_tui_box(int x, int y, int w, int h, const char *title,
+                           unsigned char attr, unsigned char fg) {
+    task_alive();
+    tui_box(&g_app_screen, x, y, w, h, title, attr, fg);
+}
+
+extern "C" void fw_tui_fill(int x, int y, int w, int h, char ch,
+                            unsigned char attr, unsigned char fg) {
+    task_alive();
+    tui_fill(&g_app_screen, x, y, w, h, ch, attr, fg);
+}
+
+extern "C" void fw_tui_present(void) { task_alive(); tuiterm_present(&g_app_screen); }
+
+extern "C" int fw_tui_poll(FwTuiEvent *out) {
+    task_alive();
+    if (!out) return 0;
+    TuiEvent e;
+    if (!tuiterm_poll(&e)) return 0;
+    out->kind  = e.kind;
+    out->key   = e.key;
+    out->mouse = e.mouse;
+    out->x = e.x; out->y = e.y;
+    out->ctrl = e.ctrl; out->shift = e.shift; out->alt = e.alt;
+    return 1;
+}

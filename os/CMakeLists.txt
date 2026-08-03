@@ -37,6 +37,7 @@ add_executable(rpcortex_v2
     ${OS_ROOT}/core/excframe.cpp
     ${OS_ROOT}/core/tui.cpp
     ${OS_ROOT}/core/tuikey.cpp
+    ${OS_ROOT}/core/tuilist.cpp
     ${OS_ROOT}/core/cmdline.cpp
     ${OS_ROOT}/core/interrupt.cpp
     ${OS_ROOT}/core/task.cpp
@@ -63,6 +64,7 @@ add_executable(rpcortex_v2
     ${OS_ROOT}/shell/pkg.cpp
     ${OS_ROOT}/shell/pkgrepo.cpp
     ${OS_ROOT}/shell/diag.cpp
+    ${OS_ROOT}/shell/tuiterm.cpp
     ${OS_ROOT}/shell/text.cpp
     ${OS_ROOT}/shell/sys.cpp
     ${OS_ROOT}/shell/user.cpp
@@ -186,8 +188,18 @@ pico_add_extra_outputs(rpcortex_v2)
 # category. The relocation types GCC emits are identical for both targets
 # (R_ARM_ABS32, R_ARM_THM_CALL, R_ARM_THM_JUMP24), which is what makes this safe
 # for the loader.
+# -fno-jump-tables is not a tuning choice. GCC compiles a large switch into a
+# jump table on Thumb-1 and calls a libgcc helper (__gnu_thumb1_case_sqi) to
+# index it — a symbol the firmware does not export and should not have to.
+# Exporting compiler internals would make the ABI depend on which compiler built
+# the package; refusing jump tables keeps a package's dependencies to the fw_*
+# surface and nothing else. A branch chain costs a few instructions in code that
+# is waiting on a keypress anyway.
+#
+# Built for cortex-m0plus (ARMv6-M) deliberately: ARMv8-M Baseline is a superset,
+# so one binary serves the RP2040 and RP2350 boards alike.
 set(APP_FLAGS -mthumb -mcpu=cortex-m0plus -Os -std=c++17
-    -fno-exceptions -fno-rtti -fno-common
+    -fno-exceptions -fno-rtti -fno-common -fno-jump-tables
     -fno-use-cxa-atexit -ffunction-sections -fdata-sections -I${OS_ROOT}/include)
 
 function(rpc_add_app name)
@@ -211,6 +223,7 @@ function(rpc_add_app name)
 endfunction()
 
 rpc_add_app(greet)
+rpc_add_app(tuidemo)
 rpc_add_app(stress)
 rpc_add_app(bench)
 
