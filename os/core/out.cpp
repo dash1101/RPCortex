@@ -1,6 +1,31 @@
 #include "out.h"
+#include "lock.h"
 #include "task.h"
 #include "logring.h"
+
+// Output is shared hardware, and stdio is not reentrant.
+//
+// newlib's stdout carries a buffer pointer and a count. Two tasks inside
+// printf at once corrupt them, and the result is a hard fault at an address
+// that is not code — 696672fe in one report, which is ASCII, because it came
+// from a mangled buffer pointer rather than anywhere real.
+//
+// It happened the moment a background WiFi join printed "Scanning..." while
+// the shell was echoing a password. Any background task can print, so the
+// answer belongs here rather than in a rule about who is allowed to.
+//
+// An RpcLock, so a task waiting to print YIELDS instead of blocking the core,
+// and recursive because the tagged helpers below are built from each other.
+//
+// NOT used by the fault handler, which writes bytes directly for exactly this
+// reason: taking a lock while diagnosing a crash is a good way to hang instead
+// of reporting it.
+static RpcLock g_out_lock;
+
+struct OutGuard {
+    OutGuard()  { lock_acquire(&g_out_lock); }
+    ~OutGuard() { lock_release(&g_out_lock); }
+};
 
 #include <stdio.h>
 #include <stdarg.h>
@@ -19,6 +44,7 @@ static void emit(const char *colour, const char *symbol, const char *p,
     // no second format string to drift.
     char msg[LOG_LINE_MAX];
     vsnprintf(msg, sizeof(msg), fmt, ap);
+    OutGuard _o;
 
     printf("%s[%s%s%s]", colour, C_WHITE, symbol, colour);
     if (p) printf(" %s[%s%s%s]", colour, C_WHITE, p, colour);
@@ -108,7 +134,7 @@ uint32_t out_capture_end(void) {
 }
 
 void out_write(const char *data, uint32_t len) {
-    if (!capturing_here()) { fwrite(data, 1, len, stdout); return; }
+    if (!capturing_here()) { OutGuard _o; fwrite(data, 1, len, stdout); return; }
     // Leave a byte for the terminator so the buffer is always a valid C string
     // for whatever reads it next.
     uint32_t room = g_cap_size - 1 - g_cap_len;
@@ -121,9 +147,8 @@ void out_write(const char *data, uint32_t len) {
 void out_multi(const char *fmt, ...) {
     va_list ap; va_start(ap, fmt);
     if (!capturing_here()) {
-        vprintf(fmt, ap);
+        { OutGuard _o; vprintf(fmt, ap); printf("\n"); }
         va_end(ap);
-        printf("\n");
         return;
     }
     // Format straight into the remaining space. vsnprintf returns the length it
@@ -137,9 +162,10 @@ void out_multi(const char *fmt, ...) {
     out_write("\n", 1);
 }
 
-void out_blank(void) { putchar('\n'); }
+void out_blank(void) { OutGuard _o; putchar('\n'); }
 
 void out_prompt(const char *msg) {
+    OutGuard _o;
     printf("%s%s %s••>  %s", C_RESET, msg, C_CYAN, C_RESET);
 }
 
@@ -168,6 +194,7 @@ void out_pad(const char *s, int width, char *dst, int cap) {
 
 void out_flush(void) {
     if (capturing_here()) return;      // a capture is a buffer, not a terminal
+    OutGuard _o;
     fflush(stdout);
 }
 

@@ -324,7 +324,7 @@ static uint32_t auth_for(const char *ssid) {
     return CYW43_AUTH_WPA2_MIXED_PSK;
 }
 
-static int scan_collect(void) {
+static int scan_collect(bool quiet = false) {
     // A scan is a driver operation, so it takes ownership too. Recursive, so a
     // caller that already holds it (autoconnect, which scans then joins) is
     // not blocked by itself.
@@ -333,7 +333,7 @@ static int scan_collect(void) {
     g_scan.n = 0;
     cyw43_wifi_scan_options_t opts;
     memset(&opts, 0, sizeof(opts));
-    out_info("Scanning...");
+    if (!quiet) out_info("Scanning...");
     if (cyw43_wifi_scan(&cyw43_state, &opts, nullptr, scan_cb) != 0) {
         out_err("Could not start a scan.");
         return 1;
@@ -343,7 +343,7 @@ static int scan_collect(void) {
     absolute_time_t deadline = make_timeout_time_ms(15000);
     uint32_t scan_started = task_now_ms();
     while (cyw43_wifi_scan_active(&cyw43_state)) {
-        out_spinner("Scanning", task_now_ms() - scan_started);
+        if (!quiet) out_spinner("Scanning", task_now_ms() - scan_started);
         if (absolute_time_diff_us(get_absolute_time(), deadline) < 0) break;
         if (intr_check()) break;
         // task_sleep_ms, not sleep_ms: a raw sleep parks the core without
@@ -352,8 +352,8 @@ static int scan_collect(void) {
         // set a flag that made every later scan and ping give up instantly.
         task_sleep_ms(20);
     }
-    out_progress_done();
-    if (!g_scan.n) { out_warn("No networks found."); return 1; }
+    if (!quiet) out_progress_done();
+    if (!g_scan.n) { if (!quiet) out_warn("No networks found."); return 1; }
 
     // Strongest first — insertion sort over at most SCAN_MAX entries.
     for (uint32_t i = 1; i < g_scan.n; i++) {
@@ -721,7 +721,7 @@ static int wifi_autoconnect(bool quiet, bool persist) {
     }
 
     if (!quiet) out_info("Scanning for saved networks...");
-    if (scan_collect() != 0) return 1;
+    if (scan_collect(quiet) != 0) return 1;
 
     const char *best = nullptr;
     int16_t best_rssi = -200;

@@ -59,11 +59,15 @@ static void read_field(const char *prompt, char *buf, size_t max, bool secret) {
             task_yield();
             continue;
         }
-        if (c == '\r' || c == '\n') { putchar('\n'); buf[n] = 0; return; }
-        if ((c == 8 || c == 127) && n) { n--; printf("\b \b"); continue; }
+        // out_write, not putchar/printf: it holds the output lock, and a
+        // background task printing into a half-echoed password is what
+        // corrupted stdio and hard faulted.
+        if (c == '\r' || c == '\n') { out_write("\n", 1); buf[n] = 0; return; }
+        if ((c == 8 || c == 127) && n) { n--; out_write("\b \b", 3); continue; }
         if (c >= 32 && c < 127 && n + 1 < max) {
             buf[n++] = (char)c;
-            if (secret) printf("•"); else putchar(c);
+            if (secret) out_write("\xe2\x80\xa2", 3);   // •
+            else        out_write((const char *)&c, 1);
         }
     }
 }
