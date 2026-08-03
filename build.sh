@@ -37,14 +37,34 @@ for arg in "$@"; do
         *)       BOARDS+=("$arg") ;;
     esac
 done
-[ ${#BOARDS[@]} -eq 0 ] && BOARDS=(pico2_w pico_w)
+# Every RP2 board this runs on. The wireless ones and the plain ones: net.cpp
+# compiles to "no radio on this board" stubs without the CYW43 part, so the
+# non-W images are a real build rather than a broken one.
+#
+# ESP32-S3 is NOT here. It is a different architecture with a different SDK —
+# the pure core/ layer moves over unchanged, but the context switch, storage and
+# the network layer all need Xtensa equivalents. Listing it as a target before
+# any of that exists would be a lie in a build script.
+[ ${#BOARDS[@]} -eq 0 ] && BOARDS=(pico2_w pico_w pico2 pico)
 
 mkdir -p out
 for board in "${BOARDS[@]}"; do
     dir="os/build_$board"
     [ "$CLEAN" -eq 1 ] && rm -rf "$dir"
     echo "==> $board"
-    cmake -S os -B "$dir" -DPICO_BOARD="$board" >/dev/null
+    # picotool: the system copy is 2.1.1 and the SDK requires 2.3.0, so a fresh
+    # board directory refuses to configure while an existing one is fine. Point
+    # every board at the copy the first build fetched instead of downloading it
+    # again per board.
+    PT=""
+    for d in os/build_*/_deps/picotool; do
+        [ -x "$d/picotool" ] && PT="$(cd "$d" && pwd)" && break
+    done
+    if [ -n "$PT" ]; then
+        cmake -S os -B "$dir" -DPICO_BOARD="$board" -Dpicotool_DIR="$PT" >/dev/null
+    else
+        cmake -S os -B "$dir" -DPICO_BOARD="$board" >/dev/null
+    fi
     cmake --build "$dir" -j"$(nproc)" >/dev/null
     cp "$dir/rpcortex_v2.uf2" "out/rpcortex-v2-$board.uf2"
     size=$(stat -c%s "out/rpcortex-v2-$board.uf2")

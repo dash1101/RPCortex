@@ -19,6 +19,7 @@
 #include "pico/stdlib.h"
 #include "hardware/flash.h"
 #include "hardware/sync.h"
+#include "pico/flash.h"
 
 // Last 512 KB of flash. The firmware lives at the start; apps live at the end.
 // One lock for the whole filesystem.
@@ -66,24 +67,51 @@ static int fs_read(const struct lfs_config *c, lfs_block_t block,
     return 0;
 }
 
+// Flash writes and the second core.
+//
+// save_and_disable_interrupts is NOT enough once two cores are running. The SDK
+// is explicit that an erase or program is unsafe while the other core executes
+// from flash: XIP is unavailable for the duration, so the other core stalls
+// mid-instruction-fetch and the operation is left half finished. That is a hard
+// lockup AND a corrupted filesystem — recoverable only by erasing the chip,
+// which is exactly the failure the stress test kept producing once core 1 came
+// online.
+//
+// flash_safe_execute parks the other core in RAM first, then runs the operation
+// with interrupts off. On a single-core build it costs nothing.
+struct ProgArgs { uint32_t addr; const uint8_t *data; uint32_t len; };
+struct EraseArgs { uint32_t addr; uint32_t len; };
+
+static void do_prog(void *v) {
+    ProgArgs *a = (ProgArgs *)v;
+    flash_range_program(a->addr, a->data, a->len);
+}
+static void do_erase(void *v) {
+    EraseArgs *a = (EraseArgs *)v;
+    flash_range_erase(a->addr, a->len);
+}
+
+// The fallback matters: flash_safe_execute returns an error rather than acting
+// if the other core has not registered as a lockout victim. Doing the operation
+// anyway would be the original bug; refusing it corrupts nothing and littlefs
+// reports a write error, which is recoverable.
+static int guarded(void (*fn)(void *), void *args) {
+    int rc = flash_safe_execute(fn, args, 2000);
+    if (rc == PICO_OK) return 0;
+    return -1;
+}
+
 static int fs_prog(const struct lfs_config *c, lfs_block_t block,
                    lfs_off_t off, const void *buffer, lfs_size_t size) {
     (void)c;
-    // Writing flash must not race the XIP cache or a second core. Interrupts
-    // off for the duration; the SDK handles the cache.
-    uint32_t ints = save_and_disable_interrupts();
-    flash_range_program(FS_OFFSET + block * FS_BLOCK_SIZE + off,
-                        (const uint8_t *)buffer, size);
-    restore_interrupts(ints);
-    return 0;
+    ProgArgs a{FS_OFFSET + block * FS_BLOCK_SIZE + off, (const uint8_t *)buffer, size};
+    return guarded(do_prog, &a) == 0 ? 0 : LFS_ERR_IO;
 }
 
 static int fs_erase(const struct lfs_config *c, lfs_block_t block) {
     (void)c;
-    uint32_t ints = save_and_disable_interrupts();
-    flash_range_erase(FS_OFFSET + block * FS_BLOCK_SIZE, FS_BLOCK_SIZE);
-    restore_interrupts(ints);
-    return 0;
+    EraseArgs a{FS_OFFSET + block * FS_BLOCK_SIZE, FS_BLOCK_SIZE};
+    return guarded(do_erase, &a) == 0 ? 0 : LFS_ERR_IO;
 }
 
 static int fs_sync(const struct lfs_config *c) { (void)c; return 0; }

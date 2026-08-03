@@ -13,6 +13,7 @@
 #include "lock.h"
 #include "logring.h"
 #include "hardware/watchdog.h"
+#include "pico/flash.h"
 #include "out.h"
 #include <stdio.h>
 
@@ -121,6 +122,11 @@ extern "C" void lock_hw_exit(void) {
 // allows core 1, runs it, and comes back here when that task yields. There is
 // no separate "core 1 task list" — one table, two cores taking from it.
 static void core1_main(void) {
+    // Register with the flash subsystem BEFORE running anything. Without this
+    // flash_safe_execute cannot park this core, and every filesystem write from
+    // core 0 would be refused — or, worse, done anyway.
+    flash_safe_execute_core_init();
+
     while (true) {
         task_yield();
         // Nothing runnable for this core right now. Sleeping briefly rather

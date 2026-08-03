@@ -31,6 +31,12 @@ int main(void) {
     // Become pid 1 before anything else can want to spawn. From here the shell
     // is a task like any other, which is what lets it be listed, and what lets
     // other things run while it waits at the prompt.
+    // Armed before anything else can hang. It was previously started only once
+    // the shell was up, which left the whole boot — including mounting a
+    // possibly-corrupt filesystem — with nothing watching it. A hang there was
+    // permanent.
+    task_watchdog_start();
+
     task_init("shell");
     // Before the banner: anything the boot logs should land in the ring, and a
     // ring that survived a warm reboot holds the reason for it.
@@ -68,7 +74,6 @@ int main(void) {
     // An interactive shell was reached, so this boot succeeded: clear the
     // failure counter and arm the watchdog from here on.
     kboot_succeeded();
-    task_watchdog_start();
 
     shell_run();
     return 0;

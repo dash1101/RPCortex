@@ -6,6 +6,7 @@
 #include "out.h"
 #include "logring.h"
 #include "hardware/watchdog.h"
+#include "task.h"
 #include "registry.h"
 
 #include <stdio.h>
@@ -72,6 +73,15 @@ void kboot_succeeded(void) { watchdog_hw->scratch[4] = 0; }
 bool kboot(void) {
     // stdio + USB are already up (main brought them up so boot messages are
     // visible). Here: mount storage, and report the machine.
+    // Why the device restarted. The single most useful line after a failure,
+    // and it is free: the watchdog hardware remembers whether it was the one
+    // that did it.
+    if (watchdog_caused_reboot()) {
+        klog(LOG_WARN, "Last restart was the WATCHDOG - something stopped responding.");
+        klog(LOG_WARN, "'logdump' has what was happening before it.");
+    }
+
+    task_watchdog_feed();
     kstep("Checking the machine...");
     klog(LOG_INFO, "%s  %u KB RAM, %u KB free", PICO_BOARD,
          heap_total() / 1024, heap_free() / 1024);
@@ -110,6 +120,9 @@ bool kboot(void) {
         force_format = true;
     }
 
+    // Fed at every step: mounting or rebuilding a filesystem can take seconds,
+    // and the scheduler is not running yet to do it automatically.
+    task_watchdog_feed();
     kstep("Mounting storage...");
     if (!storage_init(true) || force_format) {
         if (!force_format) klog(LOG_ERROR, "Storage would not mount.");
@@ -124,6 +137,7 @@ bool kboot(void) {
 
     // Load the registry and accounts from flash. On a first boot both come back
     // empty; the session layer seeds root/guest and writes them.
+    task_watchdog_feed();
     kstep("Reading the registry...");
     persist_load_all();
     klog(LOG_INFO, "%u setting%s, %u account%s",
@@ -149,6 +163,7 @@ bool kboot(void) {
     if (strcmp(reg_get("System.Clock_Set", "false"), "true") != 0)
         out_warnp("POST", "The clock is not set. Use 'date set' or 'ntp sync'.");
 
+    task_watchdog_feed();
     out_okp("POST", "System ready.");
     out_blank();
     return true;
