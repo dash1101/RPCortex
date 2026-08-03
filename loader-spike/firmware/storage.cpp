@@ -246,6 +246,49 @@ bool storage_open_source(const char *name, AppSource *src, void **handle) {
     return true;
 }
 
+// The name is kept so the mtime can be stamped at close, the same as the
+// whole-file writers do.
+struct SinkHandle { lfs_file_t f; char name[64]; bool ok; };
+
+void *storage_open_sink(const char *name) {
+    LockGuard _fs(&g_fs_lock);
+    if (!g_mounted) return nullptr;
+    SinkHandle *h = (SinkHandle *)malloc(sizeof(SinkHandle));
+    if (!h) return nullptr;
+    snprintf(h->name, sizeof(h->name), "%s", name);
+    h->ok = true;
+    if (lfs_file_open(&g_lfs, &h->f, name, LFS_O_WRONLY | LFS_O_CREAT | LFS_O_TRUNC) < 0) {
+        free(h);
+        return nullptr;
+    }
+    return h;
+}
+
+bool storage_sink_write(void *handle, const uint8_t *data, uint32_t len) {
+    if (!handle) return false;
+    SinkHandle *h = (SinkHandle *)handle;
+    LockGuard _fs(&g_fs_lock);
+    if (!g_mounted) { h->ok = false; return false; }
+    lfs_ssize_t n = lfs_file_write(&g_lfs, &h->f, data, len);
+    if (n != (lfs_ssize_t)len) { h->ok = false; return false; }
+    return true;
+}
+
+bool storage_close_sink(void *handle) {
+    if (!handle) return false;
+    SinkHandle *h = (SinkHandle *)handle;
+    bool ok;
+    {
+        LockGuard _fs(&g_fs_lock);
+        // The close is where littlefs actually commits, so its result matters
+        // as much as any write's — a download that filled the disk fails here.
+        ok = g_mounted && lfs_file_close(&g_lfs, &h->f) >= 0 && h->ok;
+    }
+    if (ok) touch(h->name);
+    free(h);
+    return ok;
+}
+
 void storage_close_source(void *handle) {
     if (!handle) return;
     FileHandle *h = (FileHandle *)handle;

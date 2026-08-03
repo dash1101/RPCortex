@@ -21,6 +21,16 @@ bool     storage_append_file(const char *name, const uint8_t *data, uint32_t len
 uint32_t storage_read_file(const char *name, uint8_t *buf, uint32_t cap);
 bool     storage_open_source(const char *name, AppSource *src, void **handle);
 void     storage_close_source(void *handle);
+
+// Streaming WRITE, the mirror of storage_open_source. A download arrives a
+// segment at a time and must never be held in RAM whole, and reopening the file
+// per segment would commit littlefs metadata hundreds of times for one package
+// — slow, and needless flash wear. The handle keeps the file open; the
+// filesystem lock is taken per write rather than held across the transfer, so a
+// slow download does not block every other task for its duration.
+void    *storage_open_sink(const char *name);          // truncating create
+bool     storage_sink_write(void *handle, const uint8_t *data, uint32_t len);
+bool     storage_close_sink(void *handle);             // false if the tail failed
 void     storage_list(void);
 
 // VFS operations for the shell's filesystem commands. Paths are absolute

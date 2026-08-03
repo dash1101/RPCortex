@@ -45,6 +45,7 @@ void sys_register(void);
 void user_register(void);
 void help_register(void);
 void net_register(void);
+void http_register(void);
 void netapps_register(void);
 void fetch_register(void);
 void ps_register(void);
@@ -336,6 +337,7 @@ void shell_register_builtins(void) {
     user_register();        // whoami / users / passwd / logout ...
     net_register();         // wifi
     netapps_register();     // ping / nslookup / ntp
+    http_register();        // wget
     fetch_register();       // fetch / neofetch
     ps_register();          // ps / kill — the task manager
     log_register();         // logdump

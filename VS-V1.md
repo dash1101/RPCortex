@@ -73,8 +73,8 @@ original escape sequences.
 
 | What | Needs |
 |---|---|
-| `pkg install <name>` from a repo, `search`, `info`, `upgrade` | an HTTPS client (mbedtls) |
-| `wget` `curl` `runurl` | the same |
+| `pkg install <name>` from a repo, `search`, `info`, `upgrade` | TLS on top of the HTTP client below |
+| `curl` `runurl` | the same |
 | `edit` / `nano` / `vi` | a TUI layer |
 | `settings` panel | the same TUI layer |
 | `update` / `safeboot` (OTA) | A/B flash slots |
@@ -103,6 +103,10 @@ could reflash. The equivalent here is handing USB back to the boot ROM.
 
 - **`wifi`, `ping`, `ntp` are unproven on hardware.** They build and the lwIP
   locking is right by construction, but none has been run against a real network.
+- **`wget` is new and DEVICE-UNCONFIRMED.** The half that decides what happens —
+  redirects, size caps, truncation, a full filesystem — is host-tested against
+  both a fake transport and a real `python3 -m http.server`. The lwIP socket
+  layer under it has never run on hardware. It is deliberately the small half.
 
 ## Why no package command ever ran
 
