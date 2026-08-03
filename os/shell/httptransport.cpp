@@ -90,8 +90,7 @@ struct TcpConn {
     // bigger and hoping. It also removes a copy, and lets flow control be done
     // properly: bytes are acknowledged as the reader CONSUMES them, so the
     // window reflects what has actually been dealt with.
-    struct pbuf *rx;
-    uint16_t     rx_off;         // bytes of `rx` already handed to the reader
+    struct pbuf *rx;             // consumed bytes are freed off the front
     volatile bool connected;
     volatile bool closed;        // peer sent FIN
     volatile bool failed;
@@ -107,8 +106,7 @@ struct TcpConn {
 };
 
 static uint16_t rx_available(const TcpConn *c) {
-    if (!c->rx) return 0;
-    return (uint16_t)(c->rx->tot_len - c->rx_off);
+    return c->rx ? c->rx->tot_len : 0;
 }
 
 // --- lwIP callbacks (background context) ------------------------------------
@@ -353,17 +351,23 @@ static int lw_recv(void *ctx, uint8_t *buf, uint32_t cap) {
     cyw43_arch_lwip_begin();
     uint16_t avail = rx_available(c);
     uint16_t n = (uint16_t)(cap < avail ? cap : avail);
-    n = pbuf_copy_partial(c->rx, buf, n, c->rx_off);
-    c->rx_off = (uint16_t)(c->rx_off + n);
+    n = pbuf_copy_partial(c->rx, buf, n, 0);
 
-    // Free the chain once it is fully read. Doing it per-pbuf would need the
-    // chain taken apart; waiting until it is empty is simpler and bounded,
-    // because the window below only opens for what has been consumed.
-    if (c->rx_off >= c->rx->tot_len) {
-        pbuf_free(c->rx);
-        c->rx = nullptr;
-        c->rx_off = 0;
-    }
+    // Free what has been read, NOW, rather than when the whole chain is done.
+    //
+    // Waiting until the chain emptied looked simpler and could not work: more
+    // data keeps arriving and being appended, so tot_len grows as fast as the
+    // reader advances and the end is never reached. Nothing is freed, the pbuf
+    // pool runs dry, and the driver has nowhere to put the next packet — the
+    // transfer stops a few hundred bytes in.
+    //
+    // That is why a 1 KB manifest downloaded fine and a 694 KB image stalled at
+    // 921 bytes: a small transfer finishes before the pool matters.
+    //
+    // pbuf_free_header drops n bytes from the front and frees each pbuf as it
+    // is fully consumed, returning the new head. So an offset is no longer
+    // needed at all.
+    c->rx = pbuf_free_header(c->rx, n);
 
     // NOW acknowledge, so the peer may send that much more. This is the flow
     // control the ring version got wrong by acknowledging on arrival.
@@ -376,7 +380,7 @@ static int lw_recv(void *ctx, uint8_t *buf, uint32_t cap) {
 static void lw_close(void *ctx) {
     TcpConn *c = (TcpConn *)ctx;
     cyw43_arch_lwip_begin();
-    if (c->rx) { pbuf_free(c->rx); c->rx = nullptr; c->rx_off = 0; }
+    if (c->rx) { pbuf_free(c->rx); c->rx = nullptr; }
     if (c->pcb) {
         altcp_arg(c->pcb, nullptr);
         altcp_recv(c->pcb, nullptr);
