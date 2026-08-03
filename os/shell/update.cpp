@@ -38,6 +38,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <initializer_list>
 
 #include "pico/stdlib.h"
 #include "hardware/flash.h"
@@ -185,27 +186,39 @@ static void __not_in_flash_func(apply_staged)(uint32_t stage_off, uint32_t len,
                                               uint8_t *buf) {
     uint32_t total = (len + FLASH_SECTOR_SIZE - 1) & ~(FLASH_SECTOR_SIZE - 1);
 
-    // Erase the whole target first, then program it. One erase rather than 174
-    // saves the per-call overhead, and the device is equally unbootable either
-    // way — the window is the same, it is just shorter.
+    // Interrupts stay off for the WHOLE copy, not per operation.
+    //
+    // This is the difference between working and a dead device. The vector
+    // table lives in flash at offset 0 — the first thing erased — so from the
+    // moment the erase begins there is nowhere for an interrupt to go. It
+    // vectors into erased flash, faults, and the fault handler has been erased
+    // too. The result is a hard lockup with no output and a half-written image,
+    // which is exactly what pulling the plug then leaves behind.
+    //
+    // Re-enabling them between sectors, as this did before, meant the first
+    // timer tick after the erase killed it every time.
+    //
+    // Several seconds with interrupts off drops the USB connection. That is
+    // expected and harmless: the reboot below brings it back.
     uint32_t ints = save_and_disable_interrupts();
+
     flash_range_erase(0, total);
-    restore_interrupts(ints);
 
     uint32_t done = 0;
     while (done < total) {
-        // Read with XIP working. The staging slot is not being erased, so this
-        // is a plain read of flash that is still intact.
+        // Reading the staging slot still works: it is not being erased, and the
+        // SDK keeps a RAM copy of boot2 so XIP is restored after each
+        // operation. That RAM copy was populated by staging, before any of
+        // this — which is the only reason reading flash here is possible at all.
         const uint8_t *src = (const uint8_t *)(XIP_BASE + stage_off + done);
         for (uint32_t i = 0; i < FLASH_SECTOR_SIZE; i++)
             buf[i] = (done + i < len) ? src[i] : 0xff;
 
-        ints = save_and_disable_interrupts();
         flash_range_program(done, buf, FLASH_SECTOR_SIZE);
-        restore_interrupts(ints);
-
         done += FLASH_SECTOR_SIZE;
     }
+
+    restore_interrupts(ints);
 }
 
 // --- the command ------------------------------------------------------------
@@ -352,6 +365,42 @@ bool update_apply_file(const char *path, const char *to_version) {
         out_err("The staged copy does not match the download. Nothing written.");
         return false;
     }
+    // One last sanity check on what is actually in the staging slot, because
+    // the next thing that happens cannot be undone.
+    //
+    // A Cortex-M image begins with an initial stack pointer and a reset vector:
+    // the stack must point into SRAM, the entry point into flash. Anything else
+    // is not firmware for this chip, and writing it leaves a board only BOOTSEL
+    // can recover.
+    //
+    // WHERE that pair sits differs by chip, which is worth stating because
+    // checking only one place rejects half the boards. An RP2040 image begins
+    // with the 256-byte second-stage bootloader and its vector table follows at
+    // 0x100; an RP2350 image starts with the table. Both are accepted, and a
+    // real image for either was checked against this before it shipped.
+    {
+        const uint8_t *base = (const uint8_t *)(XIP_BASE + storage_stage_offset());
+        bool sane = false;
+        uint32_t sp = 0, entry = 0;
+        for (uint32_t off : {0u, 0x100u}) {
+            const uint32_t *v = (const uint32_t *)(base + off);
+            if (v[0] >= 0x20000000u && v[0] < 0x20090000u &&
+                v[1] >= 0x10000000u && v[1] < 0x10200000u) {
+                sane = true;
+                sp = v[0]; entry = v[1];
+                break;
+            }
+            if (!sp) { sp = v[0]; entry = v[1]; }
+        }
+        if (!sane) {
+            free(fbuf);
+            out_err("The staged image does not look like firmware for this board.");
+            out_multi("  stack %08lx  entry %08lx", (unsigned long)sp, (unsigned long)entry);
+            out_multi("  Nothing was written.");
+            return false;
+        }
+    }
+
     out_ok("Staged and verified.");
 
     // A note to the NEXT boot, written before anything is erased.
