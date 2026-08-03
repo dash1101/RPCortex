@@ -35,6 +35,7 @@ declare -A SRC=(
     [history_test]="$CORE/history.cpp"
     [core_test]="$CORE/sha256.cpp $CORE/registry.cpp $CORE/users.cpp $CORE/lock.cpp $CORE/task.cpp $CORE/blackbox.cpp host_task_stub.cpp"
     [out_test]="$CORE/out.cpp $CORE/lock.cpp $CORE/task.cpp $CORE/blackbox.cpp $CORE/logring.cpp host_task_stub.cpp"
+    [realapp_test]="$SPIKE/loader.cpp"
     [os_test]="$SHELL_DIR/command.cpp $CORE/lock.cpp $CORE/task.cpp $CORE/blackbox.cpp host_task_stub.cpp $SPIKE/loader.cpp"
     [apps_test]="$SHELL_DIR/command.cpp $SHELL_DIR/apps.cpp $CORE/out.cpp $CORE/lock.cpp $CORE/task.cpp $CORE/blackbox.cpp $CORE/logring.cpp host_task_stub.cpp $SPIKE/loader.cpp"
 )

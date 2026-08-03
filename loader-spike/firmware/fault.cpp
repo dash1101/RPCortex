@@ -23,6 +23,8 @@ struct FaultFrame {
     uint32_t r0, r1, r2, r3, r12, lr, pc, psr;
 };
 
+extern "C" const char *apps_locate(uint32_t addr, uint32_t *offset, bool *in_veneer);
+
 void fault_report(FaultFrame *f, const char *kind) {
     // RECORD FIRST, print second.
     //
@@ -32,7 +34,16 @@ void fault_report(FaultFrame *f, const char *kind) {
     // clear is the only way the report survives to be read, and it has to happen
     // before anything that might itself fault.
     char note[40];
-    const char *who = g_current_app ? (const char *)g_current_app : "firmware";
+
+    // Turn the PC into "package+offset" when it lands inside a loaded package.
+    // The absolute address changes every boot because the image goes wherever
+    // malloc puts it; an offset can be looked up in the .app with objdump and
+    // names the exact instruction.
+    uint32_t off = 0;
+    bool in_veneer = false;
+    const char *pkg = apps_locate(f->pc, &off, &in_veneer);
+    const char *who = pkg ? pkg
+                          : (g_current_app ? (const char *)g_current_app : "firmware");
     // Hand-built rather than snprintf: this is a fault handler, and calling into
     // stdio here is exactly the sort of thing that faults again.
     int n = 0;
@@ -40,11 +51,18 @@ void fault_report(FaultFrame *f, const char *kind) {
     while (*k && n < 12) note[n++] = *k++;
     note[n++] = ' '; note[n++] = 'i'; note[n++] = 'n'; note[n++] = ' ';
     while (*who && n < 30) note[n++] = *who++;
-    note[n++] = ' '; note[n++] = 'p'; note[n++] = 'c'; note[n++] = '=';
+    // "+0x1a2" when it is inside a package, the raw address when it is not.
+    uint32_t show = pkg ? off : f->pc;
+    if (pkg) { note[n++] = in_veneer ? '~' : '+'; }
+    else     { note[n++] = ' '; note[n++] = 'p'; note[n++] = 'c'; note[n++] = '='; }
+    bool started = false;
     for (int shift = 28; shift >= 0 && n < 39; shift -= 4) {
-        uint32_t nib = (f->pc >> shift) & 0xF;
+        uint32_t nib = (show >> shift) & 0xF;
+        if (!nib && !started && shift) continue;      // trim leading zeros
+        started = true;
         note[n++] = (char)(nib < 10 ? '0' + nib : 'a' + nib - 10);
     }
+    if (!started && n < 39) note[n++] = '0';
     note[n] = 0;
     bb_note_phase(note);
 
@@ -69,6 +87,11 @@ void fault_report(FaultFrame *f, const char *kind) {
 // linkage in C++, so the inline asm below cannot see it and the link fails on a
 // symbol that is plainly right there in the same file.
 extern const char fault_kind_hard[];
+
+// A '~' before the offset marks a veneer rather than the package's own code —
+// which would point at the loader's trampolines instead of anything the package
+// author wrote.
+extern "C" const char *apps_locate(uint32_t addr, uint32_t *offset, bool *in_veneer);
 
 // Pick the stack the exception came from (MSP or PSP) out of EXC_RETURN, then
 // hand the frame to the C reporter. Naked so the prologue cannot disturb it.

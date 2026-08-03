@@ -105,6 +105,29 @@ int apps_launch(const char *file, int arg, bool quiet) {
     return ret;
 }
 
+// Find the package a raw address belongs to. A fault report giving only an
+// absolute SRAM address is nearly useless — the image lands wherever malloc put
+// it, so the number differs every boot. An offset into a named package can be
+// looked up directly in the .app.
+extern "C" const char *apps_locate(uint32_t addr, uint32_t *offset, bool *in_veneer) {
+    for (int i = 0; i < APPS_MAX; i++) {
+        if (!g_used[i]) continue;
+        uint32_t base = (uint32_t)(uintptr_t)g_apps[i].image;
+        if (addr >= base && addr < base + g_apps[i].image_size) {
+            if (offset)    *offset = addr - base;
+            if (in_veneer) *in_veneer = false;
+            return g_apps[i].header.name;
+        }
+        uint32_t vbase = (uint32_t)(uintptr_t)g_apps[i].veneers;
+        if (addr >= vbase && addr < vbase + g_apps[i].veneer_size) {
+            if (offset)    *offset = addr - vbase;
+            if (in_veneer) *in_veneer = true;
+            return g_apps[i].header.name;
+        }
+    }
+    return nullptr;
+}
+
 static int cmd_apps(int, char **) {
     int n = 0;
     for (int i = 0; i < APPS_MAX; i++) {

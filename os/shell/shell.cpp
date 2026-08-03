@@ -453,8 +453,13 @@ static int run_one(char *seg) {
     if (c->owner) {
         snprintf(phase, sizeof(phase), "calling package '%s'", c->name);
         bb_note_phase(phase);
+        // Name the package for the duration of the CALL too. It was only set
+        // around app_main, so a fault in a registered command reported
+        // "in firmware" — which is exactly backwards.
+        g_current_app = c->name;
     }
     int rc = c->fn(argc, argv);
+    g_current_app = nullptr;
     if (c->owner) {
         snprintf(phase, sizeof(phase), "'%s' returned", c->name);
         bb_note_phase(phase);
