@@ -17,6 +17,14 @@ static BB_NOINIT BlackBox g_bb;
 static BlackBox g_prev;
 static bool     g_have_prev;
 
+// Clearing the task name is what marks it: the reporters all key off that
+// field, so a run that ends on purpose leaves nothing for them to find.
+void bb_note_clean_exit(void) {
+    g_bb.task[0] = 0;
+    g_bb.cmd[0]  = 0;
+    g_bb.phase[0] = 0;
+}
+
 void bb_init(void) {
     if (g_bb.magic == BB_MAGIC) {
         g_prev = g_bb;

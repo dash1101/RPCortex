@@ -11,6 +11,7 @@
 
 #include "command.h"
 #include "out.h"
+#include "blackbox.h"
 #include "kernel.h"
 #include "storage.h"
 #include "session.h"
@@ -321,6 +322,7 @@ static int cmd_pulse(int argc, char **argv) {
 // Shared, because more than one command ends in a restart and the core-1 reset
 // above it is the sort of detail a second copy would quietly omit.
 void sys_reboot(void) {
+    bb_note_clean_exit();        // on purpose, so the next boot does not report it
     sleep_ms(120);
     multicore_reset_core1();     // as above: do not reset around a live core 1
     watchdog_reboot(0, 0, 0);

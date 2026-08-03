@@ -62,6 +62,13 @@ const BlackBox *bb_previous(void);
 // snapshots whatever the last run left, then resets for this one.
 void bb_init(void);
 
+// Mark this run as ending on purpose. A deliberate reboot leaves exactly the
+// same trace as a crash — the last thing the device was doing, frozen in memory
+// the reset does not clear — so without this every `reboot` reported itself as
+// an unclean shutdown. A crash detector that cries wolf on every restart is how
+// a real crash gets scrolled past.
+void bb_note_clean_exit(void);
+
 // How long the running task has gone without yielding. The number the graded
 // watchdog acts on.
 uint32_t bb_stall_ms(uint32_t now_ms);
