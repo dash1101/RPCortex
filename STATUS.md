@@ -47,7 +47,8 @@ firmware-writer touches is already in RAM) and `check-stackswitch.py` (every
 stack switch releases the stack limit before it moves SP, and privilege is only
 ever dropped in the veneer-pool gate).
 
-**Footprint** — 926 KB on RP2350, 971 KB on RP2040, of a 1024 KB slot. Most of
+**Footprint** — 961 KB on RP2350, 1007 KB on RP2040, of a 1024 KB slot. The
+RP2040 build is over it and not shippable as it stands. Most of
 the jump from ~290 KB is the CYW43 firmware blob (225 KB) plus lwIP. Task #72
 holds the notes for getting it back down; `./build.sh --no-dev-packages` already
 takes 23 KB off by leaving out bench, probe and stress.
@@ -75,8 +76,13 @@ core 1 99% of the time and changes core once in 2000 yields.
 
 The OS boots, logs in, runs a shell that reads like Vela, joins a network,
 installs packages over HTTPS from its own repository, updates itself, and runs
-those packages in a hardware sandbox they cannot reach out of. It does all of
-that on the RP2040 as well, which is the board v1 had to drop.
+those packages in a hardware sandbox they cannot reach out of.
+
+That is on RP2350. **The RP2040 boards build and link but cannot currently have
+a filesystem at all** — the firmware reserve is 2 MB and those boards hold 2 MB
+in total, so littlefs is left with zero blocks. It went unnoticed because every
+hardware test this year has been on a Pico 2 W. #81 has the numbers and the
+options; until it is settled the honest claim for an original Pico is v1.0.
 
 This is the base the Nova D1 gets ported onto.
 
@@ -121,8 +127,9 @@ This is the base the Nova D1 gets ported onto.
   MEANT can only ever handle the cases it was taught, and honouring one meant
   reaching into littlefs from inside the USB stack, which deadlocked against
   the console.
-- **The site oversells all of this** (#73). v2 is early alpha; v1 is still what
-  anyone should be running.
+- ~~The site oversells all of this (#73)~~ — done. The landing page now names
+  v1.0 as the release to run and v2 as early alpha, and the two wrong hero
+  statistics are corrected.
 - **Missing v1 commands** — `watch`, `edit`/`nano`, `task`/`service`/`startup`,
   `alias`/`unalias` at runtime, `wget`/`curl`. `edit` is a TUI, not an afternoon.
 - **Nova D1 in C++** — Tier 3, the big one.
