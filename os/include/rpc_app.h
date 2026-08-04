@@ -23,7 +23,7 @@ extern "C" {
 // MINOR: a symbol added — older-minor apps still run (everything they want is
 //        present); newer-minor apps refused (they may want something absent).
 #define RPC_API_MAJOR 1
-#define RPC_API_MINOR 11
+#define RPC_API_MINOR 12
 
 typedef struct {
     uint32_t magic;          // RPC_APP_MAGIC
@@ -208,6 +208,28 @@ uint32_t fw_clock_hz(void);
 
 uint32_t fw_micros(void);
 void     fw_busy_wait_us(uint32_t us);
+
+// --- power ------------------------------------------------------------------
+//
+// Added at 1.12, and unlike everything else here it STOPS THE MACHINE. Every
+// task stops, the USB console drops and comes back as a new connection, and the
+// system clock does not advance while the device is out — so a task deadline
+// set before a sleep does not mean what it did.
+//
+// Refused rather than obeyed when the request makes no sense: a sleep with
+// neither a duration nor a wake pin would never end, which is not a sleep.
+//
+// `wake_pin` of -1 means "time only". `ms` of 0 with a pin means "until the pin
+// changes, however long that takes".
+int fw_power_sleep(unsigned ms, int wake_pin, int wake_high);
+
+// Deeper: more clocks stopped, more saved, longer to come back. Same rules.
+int fw_power_dormant(unsigned ms, int wake_pin, int wake_high);
+
+// The shortest sleep this board will honour, in milliseconds. Differs by chip —
+// two seconds on RP2040, ten milliseconds on RP2350 — so a package that sleeps
+// on a schedule has to ask rather than pick a number.
+unsigned fw_power_min_sleep_ms(void);
 
 // --- drawing ----------------------------------------------------------------
 //

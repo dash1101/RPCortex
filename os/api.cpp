@@ -244,6 +244,19 @@ extern "C" void fw_busy_wait_us(uint32_t us) {
     task_alive();
 }
 
+// --- power ------------------------------------------------------------------
+
+int power_sleep(unsigned ms, int wake_pin, int wake_high, bool dormant);
+unsigned power_min_sleep_ms(void);
+
+extern "C" int fw_power_sleep(unsigned ms, int pin, int high) {
+    return power_sleep(ms, pin, high, /*dormant*/false);
+}
+extern "C" int fw_power_dormant(unsigned ms, int pin, int high) {
+    return power_sleep(ms, pin, high, /*dormant*/true);
+}
+extern "C" unsigned fw_power_min_sleep_ms(void) { return power_min_sleep_ms(); }
+
 // --- drawing ----------------------------------------------------------------
 //
 // FwFrameBuf and FrameBuf are the same three fields in the same order, so the
@@ -882,6 +895,9 @@ static const ApiSymbol kSymbols[] = {
     SYM(fw_file_remove),
     SYM(fw_file_exists),
     SYM(fw_core_id),
+    SYM(fw_power_sleep),
+    SYM(fw_power_dormant),
+    SYM(fw_power_min_sleep_ms),
     SYM(fw_fb_bytes),
     SYM(fw_fb_fill),
     SYM(fw_fb_pixel),

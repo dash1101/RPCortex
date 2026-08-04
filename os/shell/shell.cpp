@@ -45,6 +45,7 @@ void sys_register(void);
 void user_register(void);
 void help_register(void);
 void net_register(void);
+void power_register(void);
 void http_register(void);
 void net_autoconnect_report(void);
 void diag_register(void);
@@ -370,6 +371,7 @@ void shell_register_builtins(void) {
     user_register();        // whoami / users / passwd / logout ...
     net_register();         // wifi, net, radio
     session_register();     // autonomy
+    power_register();       // sleep
     netapps_register();     // ping / nslookup / ntp
     http_register();        // wget
     fetch_register();       // fetch / neofetch
