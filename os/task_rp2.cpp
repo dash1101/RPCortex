@@ -246,6 +246,48 @@ uint32_t task_main_stack_headroom(void) {
     return sp > floor ? sp - floor : 0;
 }
 
+// The high-water mark of the boot stack, by the same fill-pattern trick every
+// spawned stack uses.
+//
+// This one was never measured, and it is the one that matters most. The boot
+// stack is 4 KB in SCRATCH_Y and cannot be made larger, the whole boot sequence
+// runs on it, and __sbprintf alone wants 1128 bytes of that. Below it sits
+// core 1's stack — __StackBottom and __StackOneTop are the same address — so an
+// overflow here does not land in spare memory, it lands in the other
+// processor's frames.
+//
+// It also decides whether arming a hardware guard at __StackBottom is safe. A
+// guard is only ever as good as the headroom above it: set one on a stack that
+// was already running close to the edge and the result is not protection, it is
+// a device that faults during boot. So the number is measured and printed
+// rather than assumed, and `mpu` is where to read it.
+#define MAIN_STACK_PAINT 0xA5A5A5A5u
+
+void task_main_stack_paint(void) {
+    uint32_t sp;
+    __asm volatile ("mov %0, sp" : "=r" (sp));
+    uint32_t floor = (uint32_t)(uintptr_t)&__StackBottom;
+    // Stop well short of the current frame. This runs from main, so everything
+    // below sp is fair game — but the margin costs nothing and painting over a
+    // live frame would not be recoverable.
+    if (sp < floor + 64) return;
+    uint32_t *p = (uint32_t *)(uintptr_t)floor;
+    uint32_t words = (sp - 64 - floor) / 4;
+    for (uint32_t i = 0; i < words; i++) p[i] = MAIN_STACK_PAINT;
+}
+
+uint32_t task_main_stack_used(void) {
+    const uint32_t *p = (const uint32_t *)(uintptr_t)&__StackBottom;
+    uint32_t words = task_main_stack_size() / 4;
+    uint32_t untouched = 0;
+    while (untouched < words && p[untouched] == MAIN_STACK_PAINT) untouched++;
+    // Zero means the paint never ran, not that the whole stack is in use — the
+    // difference matters, because reporting a full stack on a healthy device is
+    // the kind of diagnostic that invents a problem.
+    if (untouched == 0) return 0;
+    return task_main_stack_size() - untouched * 4;
+}
+
 void task_stack_overflow(const char *name, uint32_t size) {
     // Interrupts stay on: this needs USB to deliver the message, and the damage
     // is already done so there is nothing left to protect.

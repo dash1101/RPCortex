@@ -73,6 +73,15 @@ bool pkg_install_file(const char *file, bool quiet) {
     app_unload(&probe);      // validated; the live copy is loaded below
 
     // A reinstall/upgrade: drop the running copy before overwriting its file.
+    // Not while something is executing it, though — the file on flash is only
+    // half of a resident package, and replacing it under a task that is parked
+    // inside the copy in RAM leaves the two permanently disagreeing.
+    int busy = apps_busy_pid(name);
+    if (busy >= 0) {
+        out_errp("pkg", "'%s' is running right now (task %d).", name, busy);
+        out_multi("  Let it finish, or stop it with 'kill %d', then try again.", busy);
+        return false;
+    }
     apps_unload(name);
 
     char dst[40]; pkg_path(name, dst, sizeof(dst));
@@ -97,6 +106,13 @@ bool pkg_install_file(const char *file, bool quiet) {
 static bool pkg_remove(const char *name) {
     char path[40]; pkg_path(name, path, sizeof(path));
     bool known = storage_stat(path, nullptr, nullptr);
+    int busy = apps_busy_pid(name);
+    if (busy >= 0) {
+        out_errp("pkg", "'%s' is running right now (task %d).", name, busy);
+        out_multi("  Removing it would free code that task is about to return");
+        out_multi("  into. Let it finish, or stop it with 'kill %d'.", busy);
+        return false;
+    }
     apps_unload(name);                 // stop it and free it if resident
     storage_remove(path);
     index_remove(name);

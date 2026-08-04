@@ -268,6 +268,16 @@ uint32_t task_main_stack_headroom(void);
 // Total size of that stack, from the linker.
 uint32_t task_main_stack_size(void);
 
+// Fill the unused part of the main stack with a pattern, so how deep the boot
+// sequence actually went can be counted afterwards. Called once, from main,
+// before anything else runs. Nothing else may call it: it writes over memory
+// that is only unused because the caller is main.
+void task_main_stack_paint(void);
+// How much of the main stack has been touched since. Zero if it was never
+// painted, which is not the same as "all of it" and must not be reported as
+// such.
+uint32_t task_main_stack_used(void);
+
 // --- hardware memory protection ---------------------------------------------
 
 // Point this core's hardware stack guard at the stack it is now running on.
@@ -321,6 +331,22 @@ void task_app_mem_clear(void);
 // only correct while that stays true, and it would fail by leaving the OUTER
 // package running with no protection at all. Returns false if there was none.
 bool task_app_mem_get(TaskAppMem *out);
+
+// The pid of a task, other than this one, that is currently inside the package
+// whose code starts at `text` — or -1 if none is.
+//
+// Asked before a package is unloaded. A task can be parked in the middle of a
+// package's command while something else removes that package: the shell yields
+// on every ABI call the package makes, and a background job can run `unload` in
+// the meantime. Freeing the image then leaves the parked task about to resume
+// into code that has been handed back to the heap, and — since the protection
+// description is held per task — about to mark a reused block read-only, so the
+// next allocation out of it faults in something unrelated.
+//
+// Finished tasks are ignored. They never resume, so what they were holding
+// cannot matter, and counting them would make a package permanently unremovable
+// after any command that ended by exiting its task.
+int task_app_mem_holder(const void *text);
 
 // The platform half of the two above: program the hardware for whatever the
 // resuming task holds. Null means "no package is running here".

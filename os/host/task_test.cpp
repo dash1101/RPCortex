@@ -105,6 +105,8 @@ void task_watchdog_start(void) {}
 void task_watchdog_feed(void)  {}
 uint32_t task_main_stack_headroom(void) { return 1024 * 1024; }
 uint32_t task_main_stack_size(void)     { return 1024 * 1024; }
+void task_main_stack_paint(void) {}
+uint32_t task_main_stack_used(void)     { return 0; }
 void task_stack_overflow(const char *, uint32_t) {
     fprintf(stderr, "  *** task_stack_overflow called on the host ***\n");
     abort();
@@ -189,6 +191,26 @@ static int task_withoutpkg(void *) {
         task_yield();
     }
     return 0;
+}
+
+// A task that takes a package and stays parked inside it, the way the shell
+// does while a package command waits on anything at all.
+static volatile bool g_parked_release;
+static int task_parked_in_pkg(void *) {
+    TaskAppMem mem = { &g_fake_text, 32, &g_fake_data, 32, &g_fake_veneer, 32 };
+    task_app_mem_set(&mem);
+    while (!g_parked_release) task_yield();
+    task_app_mem_clear();
+    return 0;
+}
+
+// And one that ends WITHOUT giving the package back, which is what a package
+// command that exits its own task does. The slot stays DONE so the exit status
+// can be read, and it stays DONE holding a package it will never return to.
+static int task_ends_holding(void *) {
+    TaskAppMem mem = { &g_fake_text, 32, nullptr, 0, nullptr, 0 };
+    task_app_mem_set(&mem);
+    return 3;
 }
 
 static char g_log[256];
@@ -399,6 +421,59 @@ int main(void) {
        "a task with no package sees no regions, even though another task has some");
     ck(g_appmem_seen_self == &g_fake_text,
        "and the package's own task gets its regions back after every yield");
+
+    // --- who is inside a package right now -----------------------------------
+    //
+    // A package's command yields on every ABI call it makes, so a task can be
+    // parked in the middle of one indefinitely — and something else can remove
+    // that package meanwhile. Freeing it there hands the heap back memory the
+    // parked task is about to return into, and because the protection
+    // description is held per task, that task will then mark a REUSED block
+    // read-only when it resumes: the next allocation out of it faults, in code
+    // that did nothing wrong.
+    //
+    // So unloading asks first. This is the question it asks.
+    g_parked_release = false;
+    int p = task_spawn("parked", nullptr, task_parked_in_pkg, nullptr, ST, AFFINITY_ANY);
+    ck(p > 0, "a task that parks inside a package");
+    task_yield();                                   // let it take the package
+
+    ck(task_app_mem_holder(&g_fake_text) == p,
+       "a parked task inside a package is found by name of its code");
+    ck(task_app_mem_holder(&g_fake_data) < 0,
+       "and only by its code, not by any address it happens to hold");
+    ck(task_app_mem_holder(nullptr) < 0, "nothing holds nothing");
+
+    // The caller is excluded. A task asking whether it may unload something is
+    // not blocked by its own use of it — which is what a package unloading
+    // itself at the end of app_main does.
+    {
+        TaskAppMem mine = { &g_fake_veneer, 32, nullptr, 0, nullptr, 0 };
+        task_app_mem_set(&mine);
+        ck(task_app_mem_holder(&g_fake_veneer) < 0,
+           "a task does not count as blocking itself");
+        task_app_mem_clear();
+    }
+
+    g_parked_release = true;
+    for (int i = 0; i < 4; i++) task_yield();
+    ck(task_find(p) && task_find(p)->state == TASK_DONE, "the parked task finishes");
+    ck(task_app_mem_holder(&g_fake_text) < 0,
+       "and stops blocking once it has, so a package never becomes unremovable");
+
+    // A task that ended WITHOUT handing the package back keeps its slot, so its
+    // exit status stays readable — and it keeps whatever it was holding with
+    // it. It can never resume, so it cannot be harmed by the package going
+    // away; counting it would make that package unremovable for the rest of the
+    // boot, and the only way out would be a reboot.
+    int held = task_spawn("exiter", nullptr, task_ends_holding, nullptr, ST, AFFINITY_ANY);
+    ck(q > 0, "a task that exits still holding a package");
+    for (int i = 0; i < 3; i++) task_yield();
+    ck(task_find(held) && task_find(held)->state == TASK_DONE, "it finished");
+    ck(task_find(held)->exit_code == 3, "with its status kept, which is why the slot stays");
+    ck(task_app_mem_holder(&g_fake_text) < 0,
+       "but a finished task does not block the package it never gave back");
+    task_reap(held);
 
     // --- guards -------------------------------------------------------------
     ck(!task_kill(1), "pid 1 cannot be killed");

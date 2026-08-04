@@ -89,6 +89,18 @@ LoadedApp *apps_store(const LoadedApp *app) {
 bool apps_unload(const char *name) {
     LoadedApp *a = find(name);
     if (!a) return false;
+    // Nobody may be INSIDE it.
+    //
+    // A task parks on every ABI call a package makes, so the shell can sit
+    // halfway through a package's command indefinitely while something else —
+    // a background job running `unload`, a second session — removes it. Freeing
+    // the image there leaves that task about to resume into code the heap has
+    // taken back, and it will hand the same address to the next malloc.
+    //
+    // Refusing is the whole fix, and it is a better answer than unloading
+    // carefully would be: the package's code is genuinely still executing, and
+    // no amount of tidying up the protection registers makes it safe to free.
+    if (task_app_mem_holder(a->image) >= 0) return false;
     // Order matters: drop the commands FIRST (while the code they point into is
     // still mapped), then free the image. The reverse would leave the registry
     // holding function pointers into freed memory for the moment between.
@@ -96,6 +108,11 @@ bool apps_unload(const char *name) {
     app_unload(a);
     for (int i = 0; i < APPS_MAX; i++) if (&g_apps[i] == a) { g_used[i] = false; break; }
     return true;
+}
+
+int apps_busy_pid(const char *name) {
+    LoadedApp *a = find(name);
+    return a ? task_app_mem_holder(a->image) : -1;
 }
 
 int apps_launch(const char *file, int arg, bool quiet) {
@@ -216,6 +233,16 @@ static int cmd_apps(int, char **) {
 
 static int cmd_unload(int argc, char **argv) {
     if (argc < 2) { out_multi("Usage: unload <package>"); return 1; }
+    // Two ways to fail, and they need different answers. "Not loaded" is a typo;
+    // "in use" is a package another task is executing right now, and saying it
+    // was not loaded would send someone looking for a name that is right there
+    // in `apps`.
+    int busy = apps_busy_pid(argv[1]);
+    if (busy >= 0) {
+        out_err("'%s' is running right now (task %d).", argv[1], busy);
+        out_multi("  Let it finish, or stop it with 'kill %d'.", busy);
+        return 1;
+    }
     if (!apps_unload(argv[1])) { out_err("Not loaded: %s", argv[1]); return 1; }
     out_ok("Unloaded %s.", argv[1]);
     return 0;

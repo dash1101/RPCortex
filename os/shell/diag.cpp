@@ -475,6 +475,31 @@ static int cmd_mpu(int, char **) {
                   rc.app_active ? "   (a package is running)" : "");
     }
     out_blank();
+
+    // The boot stack, which is the one a guard could actually hurt.
+    //
+    // It is 4 KB and fixed, the whole boot sequence runs on it, and directly
+    // below it is core 1's stack. A guard on a stack that was already running
+    // close to the edge does not protect a device, it stops one booting — so
+    // the depth is measured and shown rather than assumed comfortable.
+    uint32_t used = task_main_stack_used();
+    uint32_t size = task_main_stack_size();
+    if (!used) {
+        out_multi("    boot stack        : %u bytes, depth not measured", (unsigned)size);
+    } else {
+        unsigned pct = size ? (unsigned)(used * 100 / size) : 0;
+        out_multi("    boot stack        : %u of %u bytes at its deepest  (%u%%)%s",
+                  (unsigned)used, (unsigned)size, pct,
+                  pct >= 75 ? "   <- tight" : "");
+        if (pct >= 75) {
+            out_blank();
+            out_warn("The boot sequence is close to the end of its stack.");
+            out_multi("  Below it is core 1's stack, so overrunning it corrupts the");
+            out_multi("  other processor. The guard will catch that now, but it will");
+            out_multi("  catch it by refusing to boot.");
+        }
+    }
+    out_blank();
     out_multi("  A task that runs past the end of its stack now faults at the");
     out_multi("  instruction that did it, rather than corrupting whatever the");
     out_multi("  heap put below it and being blamed on something else later.");

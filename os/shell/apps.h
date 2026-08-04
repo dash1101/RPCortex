@@ -37,8 +37,17 @@ bool app_enter_owner(const void *owner, TaskAppMem *saved, bool *had_saved);
 LoadedApp *apps_store(const LoadedApp *app);
 
 // Unload a resident package by name: remove its commands, free its image, free
-// the slot. Returns false if no such package is loaded.
+// the slot. Returns false if no such package is loaded, and ALSO if a task is
+// currently executing it — ask apps_busy_pid to tell the two apart.
 bool apps_unload(const char *name);
+
+// The pid of a task sitting inside this package right now, or -1.
+//
+// A package's command yields on every ABI call it makes, so the shell can be
+// parked in the middle of one indefinitely while something else removes the
+// package. Freeing it there hands the heap back memory a task is about to
+// return into.
+int apps_busy_pid(const char *name);
 
 // Load an app file, run its app_main, and either keep it resident (if it
 // registered commands) or unload it. The one place the load-run-resident flow

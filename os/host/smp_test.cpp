@@ -124,6 +124,8 @@ void task_watchdog_start(void) {}
 void task_watchdog_feed(void)  {}
 uint32_t task_main_stack_headroom(void) { return 1024 * 1024; }
 uint32_t task_main_stack_size(void)     { return 1024 * 1024; }
+void task_main_stack_paint(void) {}
+uint32_t task_main_stack_used(void)     { return 0; }
 void task_stack_overflow(const char *n, uint32_t) {
     fprintf(stderr, "  *** stack overflow reported for '%s' ***\n", n ? n : "?");
     abort();

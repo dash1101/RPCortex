@@ -80,6 +80,12 @@ static int shell_task(void *) {
 }
 
 int main(void) {
+    // Before anything: mark the unused part of this stack, so how deep the boot
+    // sequence really goes can be counted rather than guessed. It is 4 KB, it
+    // cannot be made larger, and directly below it is core 1's stack — so an
+    // overflow here corrupts the other processor rather than landing in spare
+    // memory. `mpu` prints the number.
+    task_main_stack_paint();
     stdio_init_all();
     for (int i = 0; i < 300 && !stdio_usb_connected(); i++) sleep_ms(10);
     sleep_ms(150);

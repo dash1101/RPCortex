@@ -786,6 +786,18 @@ void task_app_mem_set(const TaskAppMem *mem) {
     task_app_mem_apply(&t->app_mem);
 }
 
+int task_app_mem_holder(const void *text) {
+    if (!text) return -1;
+    Task *me = cur();
+    for (uint32_t i = 0; i < TASK_MAX; i++) {
+        Task *t = &g_tasks[i];
+        if (t == me) continue;
+        if (t->info.state == TASK_FREE || t->info.state == TASK_DONE) continue;
+        if (t->app_mem_set && t->app_mem.text == text) return t->info.pid;
+    }
+    return -1;
+}
+
 bool task_app_mem_get(TaskAppMem *out) {
     Task *t = cur();
     if (!t || !t->app_mem_set) return false;
