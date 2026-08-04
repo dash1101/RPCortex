@@ -46,6 +46,7 @@ void user_register(void);
 void help_register(void);
 void net_register(void);
 void power_register(void);
+void bt_register(void);
 void http_register(void);
 void net_autoconnect_report(void);
 void diag_register(void);
@@ -372,6 +373,7 @@ void shell_register_builtins(void) {
     net_register();         // wifi, net, radio
     session_register();     // autonomy
     power_register();       // sleep
+    bt_register();          // bluetooth
     netapps_register();     // ping / nslookup / ntp
     http_register();        // wget
     fetch_register();       // fetch / neofetch

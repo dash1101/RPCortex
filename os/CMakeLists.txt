@@ -42,6 +42,8 @@ add_executable(rpcortex_v2
     ${OS_ROOT}/core/cmdline.cpp
     ${OS_ROOT}/core/interrupt.cpp
     ${OS_ROOT}/shell/power.cpp
+    ${OS_ROOT}/shell/bt.cpp
+    ${OS_ROOT}/core/btname.cpp
     ${OS_ROOT}/core/powerpolicy.cpp
     ${OS_ROOT}/core/framebuf.cpp
     ${OS_ROOT}/core/task.cpp
@@ -155,6 +157,14 @@ target_link_libraries(rpcortex_v2 pico_stdlib hardware_flash hardware_sync pico_
 # whole driver. The define has to be passed explicitly.
 if(PICO_CYW43_SUPPORTED)
     target_link_libraries(rpcortex_v2 pico_cyw43_arch_lwip_threadsafe_background)
+    # Bluetooth. Both radios are the same chip, which is what makes this
+    # possible at all — and Classic is the capability MicroPython could not
+    # reach, so a media player is a v2 thing and was never a v1 one.
+    target_link_libraries(rpcortex_v2
+        pico_btstack_ble
+        pico_btstack_classic
+        pico_btstack_cyw43
+        pico_btstack_run_loop_async_context)
     target_compile_definitions(rpcortex_v2 PRIVATE RPC_HAS_WIFI=1)
 
     # TLS, for the package repo. GitHub serves over HTTPS only, so without this
