@@ -24,10 +24,13 @@
 #include "hardware/gpio.h"
 #include "hardware/pio.h"
 #include "hardware/spi.h"
+#include "hardware/pwm.h"
+#include "hardware/uart.h"
 #include "pico/rand.h"
 #include "pico/unique_id.h"
 #include "pico/aon_timer.h"
 #include "sha256.h"
+#include "framebuf.h"
 #include <time.h>
 #include "hardware/clocks.h"
 
@@ -239,6 +242,147 @@ extern "C" void fw_busy_wait_us(uint32_t us) {
     if (us > 20000) us = 20000;
     busy_wait_us(us);
     task_alive();
+}
+
+// --- drawing ----------------------------------------------------------------
+//
+// FwFrameBuf and FrameBuf are the same three fields in the same order, so the
+// cast is free and core/framebuf.cpp stays free of anything ABI-shaped. Checked
+// at compile time rather than assumed.
+static_assert(sizeof(FwFrameBuf) == sizeof(FrameBuf), "framebuffer layouts must match");
+
+extern "C" int fw_fb_bytes(int w, int h) { return fb_bytes(w, h); }
+extern "C" void fw_fb_fill(FwFrameBuf *f, int c) { task_alive(); fb_fill((FrameBuf *)f, c); }
+extern "C" void fw_fb_pixel(FwFrameBuf *f, int x, int y, int c) { fb_pixel((FrameBuf *)f, x, y, c); }
+extern "C" int  fw_fb_get(const FwFrameBuf *f, int x, int y) { return fb_get((const FrameBuf *)f, x, y); }
+extern "C" void fw_fb_hline(FwFrameBuf *f, int x, int y, int n, int c) { fb_hline((FrameBuf *)f, x, y, n, c); }
+extern "C" void fw_fb_vline(FwFrameBuf *f, int x, int y, int n, int c) { fb_vline((FrameBuf *)f, x, y, n, c); }
+extern "C" void fw_fb_line(FwFrameBuf *f, int x0, int y0, int x1, int y1, int c) {
+    fb_line((FrameBuf *)f, x0, y0, x1, y1, c);
+}
+extern "C" void fw_fb_rect(FwFrameBuf *f, int x, int y, int w, int h, int c, int fi) {
+    task_alive(); fb_rect((FrameBuf *)f, x, y, w, h, c, fi);
+}
+extern "C" void fw_fb_text(FwFrameBuf *f, const char *s, int x, int y, int c) {
+    task_alive(); fb_text((FrameBuf *)f, s, x, y, c);
+}
+extern "C" int  fw_fb_text_width(const char *s) { return fb_text_width(s); }
+extern "C" void fw_fb_blit(FwFrameBuf *d, const FwFrameBuf *s, int x, int y, int t) {
+    task_alive(); fb_blit((FrameBuf *)d, (const FrameBuf *)s, x, y, t);
+}
+extern "C" void fw_fb_scroll(FwFrameBuf *f, int dx, int dy) {
+    task_alive(); fb_scroll((FrameBuf *)f, dx, dy);
+}
+
+// --- PWM --------------------------------------------------------------------
+
+extern "C" int fw_pwm_init(unsigned pin, unsigned freq_hz) {
+    if (!fw_gpio_usable(pin) || freq_hz == 0) return -1;
+    task_alive();
+
+    // Pick the smallest divider that lets the wrap count stay under 16 bits,
+    // because a bigger wrap is finer duty resolution. At 125 MHz a 1 kHz tone
+    // wants a divider of about 2 and a wrap near 62500.
+    uint32_t clk = clock_get_hz(clk_sys);
+    uint32_t div16 = (uint32_t)((((uint64_t)clk * 16) / freq_hz) / 65536) + 1;
+    if (div16 < 16)  div16 = 16;          // 1.0 in 12.4 fixed point
+    if (div16 > 255 * 16) div16 = 255 * 16;
+
+    uint32_t wrap = (uint32_t)(((uint64_t)clk * 16) / div16 / freq_hz) - 1;
+    if (wrap > 65535) wrap = 65535;
+    if (wrap < 1)     wrap = 1;
+
+    uint slice = pwm_gpio_to_slice_num(pin);
+    gpio_set_function(pin, GPIO_FUNC_PWM);
+    pwm_config c = pwm_get_default_config();
+    pwm_config_set_clkdiv_int_frac(&c, (uint8_t)(div16 / 16), (uint8_t)(div16 % 16));
+    pwm_config_set_wrap(&c, (uint16_t)wrap);
+    pwm_init(slice, &c, true);
+    pwm_set_gpio_level(pin, 0);           // start silent, not at whatever was there
+
+    return (int)(((uint64_t)clk * 16) / div16 / (wrap + 1));
+}
+
+extern "C" int fw_pwm_duty(unsigned pin, unsigned permille) {
+    if (!fw_gpio_usable(pin)) return -1;
+    if (permille > 1000) permille = 1000;
+    uint slice = pwm_gpio_to_slice_num(pin);
+    uint32_t wrap = pwm_hw->slice[slice].top;
+    pwm_set_gpio_level(pin, (uint16_t)(((uint64_t)wrap + 1) * permille / 1000));
+    return 0;
+}
+
+extern "C" int fw_pwm_stop(unsigned pin) {
+    if (!fw_gpio_usable(pin)) return -1;
+    pwm_set_gpio_level(pin, 0);
+    pwm_set_enabled(pwm_gpio_to_slice_num(pin), false);
+    // Back to a plain input, so a stopped buzzer is not a pin still driving.
+    gpio_set_function(pin, GPIO_FUNC_SIO);
+    gpio_set_dir(pin, false);
+    return 0;
+}
+
+// --- UART -------------------------------------------------------------------
+
+static uart_inst_t *uart_of(unsigned bus) {
+    if (bus == 0) return uart0;
+    if (bus == 1) return uart1;
+    return nullptr;
+}
+static bool g_uart_ready[2];
+
+extern "C" int fw_uart_init(unsigned bus, unsigned tx, unsigned rx, unsigned baud) {
+    uart_inst_t *u = uart_of(bus);
+    if (!u) return -1;
+    if (!fw_gpio_usable(tx) || !fw_gpio_usable(rx)) return -1;
+    if (baud == 0) baud = 115200;
+    task_alive();
+    int actual = (int)uart_init(u, baud);
+    gpio_set_function(tx, GPIO_FUNC_UART);
+    gpio_set_function(rx, GPIO_FUNC_UART);
+    g_uart_ready[bus] = true;
+    return actual;
+}
+
+extern "C" int fw_uart_write(unsigned bus, const void *data, unsigned len) {
+    uart_inst_t *u = uart_of(bus);
+    if (!u || !g_uart_ready[bus] || !data) return -1;
+    task_alive();
+    uart_write_blocking(u, (const uint8_t *)data, len);
+    return (int)len;
+}
+
+extern "C" int fw_uart_available(unsigned bus) {
+    uart_inst_t *u = uart_of(bus);
+    if (!u || !g_uart_ready[bus]) return -1;
+    return uart_is_readable(u) ? 1 : 0;
+}
+
+// Returns what arrived rather than insisting on the full length. A framed
+// protocol asks for its header, then for the body the header describes, and
+// neither request should hang the device when the other end goes quiet.
+extern "C" int fw_uart_read(unsigned bus, void *buf, unsigned len, unsigned timeout_ms) {
+    uart_inst_t *u = uart_of(bus);
+    if (!u || !g_uart_ready[bus] || !buf) return -1;
+    uint8_t *p = (uint8_t *)buf;
+    unsigned got = 0;
+    uint32_t start = to_ms_since_boot(get_absolute_time());
+    while (got < len) {
+        if (uart_is_readable(u)) { p[got++] = uart_getc(u); continue; }
+        if (to_ms_since_boot(get_absolute_time()) - start >= timeout_ms) break;
+        // Yield rather than spin: waiting on a serial line is exactly the sort
+        // of wait the rest of the device should be allowed to work through.
+        task_yield();
+    }
+    return (int)got;
+}
+
+extern "C" int fw_uart_deinit(unsigned bus) {
+    uart_inst_t *u = uart_of(bus);
+    if (!u || !g_uart_ready[bus]) return -1;
+    uart_deinit(u);
+    g_uart_ready[bus] = false;
+    return 0;
 }
 
 // --- system -----------------------------------------------------------------
@@ -738,6 +882,26 @@ static const ApiSymbol kSymbols[] = {
     SYM(fw_file_remove),
     SYM(fw_file_exists),
     SYM(fw_core_id),
+    SYM(fw_fb_bytes),
+    SYM(fw_fb_fill),
+    SYM(fw_fb_pixel),
+    SYM(fw_fb_get),
+    SYM(fw_fb_hline),
+    SYM(fw_fb_vline),
+    SYM(fw_fb_line),
+    SYM(fw_fb_rect),
+    SYM(fw_fb_text),
+    SYM(fw_fb_text_width),
+    SYM(fw_fb_blit),
+    SYM(fw_fb_scroll),
+    SYM(fw_pwm_init),
+    SYM(fw_pwm_duty),
+    SYM(fw_pwm_stop),
+    SYM(fw_uart_init),
+    SYM(fw_uart_write),
+    SYM(fw_uart_read),
+    SYM(fw_uart_available),
+    SYM(fw_uart_deinit),
     SYM(fw_random),
     SYM(fw_random_bytes),
     SYM(fw_unique_id),

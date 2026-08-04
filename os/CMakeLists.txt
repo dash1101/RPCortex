@@ -41,6 +41,7 @@ add_executable(rpcortex_v2
     ${OS_ROOT}/core/rps.cpp
     ${OS_ROOT}/core/cmdline.cpp
     ${OS_ROOT}/core/interrupt.cpp
+    ${OS_ROOT}/core/framebuf.cpp
     ${OS_ROOT}/core/task.cpp
     ${OS_ROOT}/core/lock.cpp
     ${OS_ROOT}/core/logring.cpp
@@ -136,7 +137,7 @@ target_compile_options(rpcortex_v2 PRIVATE
 
 # hardware_adc / hardware_i2c: the package ABI exposes both, so the firmware
 # has to carry them even when nothing in the OS itself uses a pin.
-target_link_libraries(rpcortex_v2 pico_stdlib hardware_flash hardware_sync pico_rand pico_aon_timer pico_multicore pico_flash hardware_adc hardware_i2c hardware_gpio hardware_pio hardware_spi)
+target_link_libraries(rpcortex_v2 pico_stdlib hardware_flash hardware_sync pico_rand pico_aon_timer pico_multicore pico_flash hardware_adc hardware_i2c hardware_gpio hardware_pio hardware_spi hardware_pwm hardware_uart)
 
 # Wireless is per-BOARD, not per-architecture: the CYW43 part is on the W boards
 # only. PICO_CYW43_SUPPORTED comes from the board header, and net.cpp compiles to

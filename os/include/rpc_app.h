@@ -23,7 +23,7 @@ extern "C" {
 // MINOR: a symbol added — older-minor apps still run (everything they want is
 //        present); newer-minor apps refused (they may want something absent).
 #define RPC_API_MAJOR 1
-#define RPC_API_MINOR 10
+#define RPC_API_MINOR 11
 
 typedef struct {
     uint32_t magic;          // RPC_APP_MAGIC
@@ -208,6 +208,71 @@ uint32_t fw_clock_hz(void);
 
 uint32_t fw_micros(void);
 void     fw_busy_wait_us(uint32_t us);
+
+// --- drawing ----------------------------------------------------------------
+//
+// A 1-bit framebuffer, for the panels a device like this actually carries. The
+// TUI layer above is text on a terminal; this is pixels in a buffer, and the
+// two do not overlap.
+//
+// MONO_VLSB — one byte is eight VERTICAL pixels, page-major — which is what the
+// SH1106, SSD1306 and SSD1309 all want, so a finished buffer goes to the panel
+// as one I2C or SPI write with no repacking.
+//
+// The package owns the memory. fw_fb_bytes says how much a given size needs;
+// where it comes from is the package's business, and that keeps allocation
+// lifetime out of the ABI entirely.
+struct FwFrameBuf {
+    unsigned char *buf;
+    int            w;
+    int            h;
+};
+
+int  fw_fb_bytes(int w, int h);
+void fw_fb_fill(struct FwFrameBuf *f, int colour);
+void fw_fb_pixel(struct FwFrameBuf *f, int x, int y, int colour);
+int  fw_fb_get(const struct FwFrameBuf *f, int x, int y);
+void fw_fb_hline(struct FwFrameBuf *f, int x, int y, int len, int colour);
+void fw_fb_vline(struct FwFrameBuf *f, int x, int y, int len, int colour);
+void fw_fb_line(struct FwFrameBuf *f, int x0, int y0, int x1, int y1, int colour);
+void fw_fb_rect(struct FwFrameBuf *f, int x, int y, int w, int h, int colour, int filled);
+void fw_fb_text(struct FwFrameBuf *f, const char *s, int x, int y, int colour);
+int  fw_fb_text_width(const char *s);
+// `transparent` names a colour to skip, or -1 to copy every pixel — the
+// difference between stamping an icon over a background and punching a hole.
+void fw_fb_blit(struct FwFrameBuf *dst, const struct FwFrameBuf *src,
+                int x, int y, int transparent);
+void fw_fb_scroll(struct FwFrameBuf *f, int dx, int dy);
+
+// --- PWM --------------------------------------------------------------------
+//
+// Backlights, buzzers, servos, motor speed. Duty is per MILLE rather than a
+// float or a raw count: 0-1000 covers every real use to a tenth of a percent,
+// reads the same on both chips, and keeps floating point out of the ABI where
+// the calling convention differs between them.
+//
+// The pin decides the slice, so two pins on the same slice share a frequency —
+// that is the hardware, not a limitation of this. fw_pwm_init reports the
+// frequency actually achieved, which will differ from the one asked for
+// because the divider is not infinitely fine.
+int fw_pwm_init(unsigned pin, unsigned freq_hz);     // returns the real frequency
+int fw_pwm_duty(unsigned pin, unsigned permille);    // 0-1000
+int fw_pwm_stop(unsigned pin);
+
+// --- UART -------------------------------------------------------------------
+//
+// Both are free: this OS puts its console on USB, so neither UART is spoken for.
+// That is what makes the ESP32-C5 link possible without giving up a serial
+// terminal.
+//
+// The read is the interesting one. It waits up to `timeout_ms` for as much as
+// was asked for and returns what it got, so a caller can ask for a fixed-length
+// frame without hanging if the other end stops talking mid-frame.
+int fw_uart_init(unsigned bus, unsigned tx, unsigned rx, unsigned baud);
+int fw_uart_write(unsigned bus, const void *data, unsigned len);
+int fw_uart_read(unsigned bus, void *buf, unsigned len, unsigned timeout_ms);
+int fw_uart_available(unsigned bus);                 // bytes waiting, or -1
+int fw_uart_deinit(unsigned bus);
 
 // --- system -----------------------------------------------------------------
 //
