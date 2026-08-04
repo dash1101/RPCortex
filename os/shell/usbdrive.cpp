@@ -16,8 +16,12 @@
 #include "path.h"
 #include "storage.h"
 
+#include "interrupt.h"
+
 #include <stdio.h>
 #include <string.h>
+
+#include "pico/stdlib.h"
 
 #if CFG_TUD_MSC
 bool usbmsc_enabled(void);
@@ -106,6 +110,103 @@ static const char *basename_of(const char *path) {
     return slash ? slash + 1 : path;
 }
 
+// --- download mode ----------------------------------------------------------
+//
+// The drive appears, the shell waits, and files are taken as they land. It ends
+// when told to.
+//
+// This replaced a background scan that ran on a timer, and the reasons are worth
+// keeping. The scan lived on the usb task, whose stack could not hold the FAT12
+// call chain — three nested 512-byte sector buffers — plus its own listing
+// array. It overflowed, hard-faulted, and the watchdog restarted the board, in a
+// loop. Raising the stack would have stopped the crash without fixing the
+// actual problem: work nobody asked for, at a moment nobody chose, on the one
+// task that must never stall.
+//
+// Doing it in the foreground is better on every count. It runs on the shell
+// task, which has the stack for it. It runs when someone wants it to. Failures
+// are visible rather than inferred from a reboot. And the drive is only exposed
+// while somebody is standing there watching it, which is what the whole
+// off-by-default posture was for.
+
+uint32_t usbmsc_import_all(bool *refused);
+bool usbmsc_settled(void);
+
+static int cmd_download(int argc, char **argv) {
+    (void)argc; (void)argv;
+#if !CFG_TUD_MSC
+    out_err("This build has no USB drive support.");
+    return 1;
+#else
+    int was = usbmsc_mode();
+    usbmsc_set_mode(1);                       // on, for as long as this lasts
+    if (!usbdrv_ready()) {
+        usbmsc_set_mode(was);
+        out_err("The transfer area could not be prepared.");
+        return 1;
+    }
+
+    out_blank();
+    out_multi("  %s%sDOWNLOAD MODE%s", C_BOLD, C_CYAN, C_RESET);
+    out_multi("  A drive named RPCORTEX is on this computer. Drop files onto it.");
+    out_multi("  %sThey are copied into /usb as they arrive. Press any key when done.%s",
+              C_GRAY, C_RESET);
+    out_blank();
+
+    // A spinner rather than a progress bar: there is no total to measure
+    // against, because the host never says how much it intends to send.
+    static const char *kSpin = "|/-\\";
+    uint32_t frame = 0, taken = 0;
+    bool refused = false, quit = false;
+
+    while (!quit) {
+        // A finished copy shows up as the host going quiet, which is the only
+        // signal MSC offers short of a cache flush that not every host sends.
+        if (usbmsc_settled()) {
+            bool r = false;
+            uint32_t n = usbmsc_import_all(&r);
+            taken += n;
+            refused = refused || r;
+            if (n) {
+                out_progress_done();
+                out_ok("Took %u file%s into /usb", (unsigned)n, n == 1 ? "" : "s");
+            }
+            if (r) out_warn("Out of room -- the drive is now write protected.");
+        }
+
+        printf("\r  %c  waiting for files   %u taken   ",
+               kSpin[frame++ & 3], (unsigned)taken);
+        fflush(stdout);
+
+        // Any key ends it, which is what the banner promised. Ctrl+C too, since
+        // that is what fingers do.
+        for (int i = 0; i < 10 && !quit; i++) {
+            int c = getchar_timeout_us(20000);
+            if (c != PICO_ERROR_TIMEOUT) quit = true;
+        }
+        if (intr_check()) quit = true;
+    }
+
+    // One last sweep, for anything that landed while the key was being pressed.
+    bool r = false;
+    taken += usbmsc_import_all(&r);
+    refused = refused || r;
+
+    out_progress_done();
+    printf("\r                                          \r");
+    usbmsc_set_mode(was);
+
+    out_blank();
+    if (taken) out_ok("%u file%s in /usb", (unsigned)taken, taken == 1 ? "" : "s");
+    else       out_multi("  %sNothing arrived.%s", C_GRAY, C_RESET);
+    if (refused)
+        out_warn("Something did not fit. Free space with 'rm' and try again.");
+    out_multi("  %sThe drive is %s again.%s", C_GRAY,
+              was == 0 ? "hidden" : was == 1 ? "on" : "automatic", C_RESET);
+    return 0;
+#endif
+}
+
 static int cmd_usb(int argc, char **argv) {
     const char *sub = argc >= 2 ? argv[1] : "ls";
 
@@ -147,6 +248,7 @@ static int cmd_usb(int argc, char **argv) {
         return 1;
     }
 
+    if (strcmp(sub, "download") == 0) return cmd_download(0, nullptr);
     if (strcmp(sub, "ls") == 0 || strcmp(sub, "status") == 0) return cmd_usb_ls();
 
     if (strcmp(sub, "get") == 0) {
@@ -215,8 +317,8 @@ static int cmd_usb(int argc, char **argv) {
         return 0;
     }
 
-    out_err("Usage: usb [ls | get <name> [dest] | put <path> [name] | rm <name> | "
-            "format yes | on | off | auto]");
+    out_err("Usage: usb [ls | download | get <name> [dest] | put <path> [name] | "
+            "rm <name> | format yes | on | off | auto]");
     return 1;
 }
 #else
@@ -228,6 +330,10 @@ static int cmd_usb(int argc, char **argv) {
 #endif
 
 void usbdrive_register(void) {
+    static const Command d{"download",
+        "download  -- show the drive and take what lands on it", cmd_download, nullptr};
+    cmd_register(&d);
+
     static const Command c{"usb",
         "usb [ls | get <name> [dest] | put <path> [name] | rm <name> | format yes | on | off | auto]",
         cmd_usb, nullptr};

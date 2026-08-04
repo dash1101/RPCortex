@@ -377,14 +377,24 @@ static uint32_t g_last_write_ms;
 static bool     g_import_pending;
 #define IMPORT_SETTLE_MS 1500
 
-static void import_scan(void) {
-    Scan s;
+// Take everything on the drive into the filesystem. Returns how many arrived,
+// and sets `refused` when something did not fit.
+//
+// Runs on the SHELL task, from download mode — not in the background on the usb
+// task. It was in the background, and it hard-faulted: the usb task's stack
+// could not hold this array plus the FAT12 call chain underneath it, and the
+// device rebooted in a loop. Beyond the stack, a scan that runs on a timer is a
+// scan nobody asked for, at a moment nobody chose.
+uint32_t usbmsc_import_all(bool *refused) {
+    if (refused) *refused = false;
+    static Scan s;                 // 1.6 KB: static, not a stack frame
     s.n = 0;
     {
         LockGuard _lk(&g_usb_lock);
-        if (!ensure_volume()) return;
+        if (!ensure_volume()) return 0;
         f12_list(&g_vol, scan_cb, &s);
     }
+    uint32_t took = 0;
 
     storage_mkdir(USB_INBOX);          // harmless when it is already there
     bool any_refused = false;
@@ -402,7 +412,8 @@ static void import_scan(void) {
         // recovered from without erasing it.
         if (s.item[i].size + 16384 > storage_free_bytes()) { any_refused = true; continue; }
 
-        if (!usbdrv_import(s.item[i].name, dest)) any_refused = true;
+        if (usbdrv_import(s.item[i].name, dest)) took++;
+        else any_refused = true;
     }
 
     // Write protection goes on when something could not be taken, and comes off
@@ -410,6 +421,8 @@ static void import_scan(void) {
     // the next scan notices. A latch that needed clearing by hand would be one
     // more thing to remember at the exact moment of being annoyed.
     g_full = any_refused;
+    if (refused) *refused = any_refused;
+    return took;
 }
 
 // --- servicing --------------------------------------------------------------
@@ -435,15 +448,16 @@ extern "C" void usbmsc_service(void) {
         lock_release(&g_usb_lock);
     }
 
-    // Then take anything the host left, once it has stopped writing. The delay
-    // is the whole mechanism: MSC has no "the copy is finished" event beyond a
-    // cache flush, and not every host sends one, so quiet is the only reliable
-    // signal that a file is whole.
-    if (g_import_pending &&
-        task_now_ms() - g_last_write_ms > IMPORT_SETTLE_MS) {
-        g_import_pending = false;
-        import_scan();
-    }
+}
+
+// Whether the host has written since this was last asked, and has since gone
+// quiet. Download mode uses it to notice a finished copy without polling the
+// filesystem, and clears it by asking.
+bool usbmsc_settled(void) {
+    if (!g_import_pending) return false;
+    if (task_now_ms() - g_last_write_ms < IMPORT_SETTLE_MS) return false;
+    g_import_pending = false;
+    return true;
 }
 
 // --- the MSC callbacks ------------------------------------------------------

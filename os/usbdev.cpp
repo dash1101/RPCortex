@@ -81,11 +81,22 @@ static int usb_task(void *) {
 }
 
 void usb_task_start(void) {
-    // TASK_STACK_MIN is enough for stdio_flush and the CDC path, but not for
-    // what the mass-storage callbacks do underneath it: a read walks littlefs,
-    // which is the deepest call chain this task will ever make.
+    // Not TASK_STACK_DEF, and the difference is a crash rather than a tuning
+    // preference.
+    //
+    // The FAT12 code keeps a 512-byte sector buffer at three nesting levels —
+    // the file read, the table lookup underneath it, and the directory scan
+    // beside that — so a single call from here is already most of 3 KB before
+    // anything else is counted. A background import scan on top of that
+    // overflowed the stack and hard-faulted the task, repeatedly, which is what
+    // took the whole device down: MSPLIM catches it, but catching it still
+    // means the watchdog restarting the board.
+    //
+    // The scan has since moved to the shell task where it belongs, but this
+    // task still runs the whole device stack and every mass-storage callback,
+    // and 3 KB was never enough headroom for that.
     if (task_spawn("usb", "(kernel)", usb_task, nullptr,
-                   TASK_STACK_DEF, AFFINITY_CORE0) < 0) {
+                   TASK_STACK_SHELL, AFFINITY_CORE0) < 0) {
         printf("  could not start the USB task -- the console will stall\n");
     }
 }
