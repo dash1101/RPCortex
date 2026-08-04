@@ -60,6 +60,18 @@ static bool      g_ready;
 // The filesystem revision the current view describes.
 static uint32_t  g_built_generation;
 
+// A change the host has not been told about yet.
+//
+// Dropping the view is not by itself enough to make a host look again: it
+// caches, and it only discards that cache when it sees the medium go away and
+// come back. The first version invalidated and rebuilt within two statements of
+// each other, so the not-ready state existed for microseconds and no host ever
+// observed it — which is why a file made from the shell still did not appear.
+//
+// This flag holds the volume not-ready until a poll has actually collected the
+// news, and then lets the rebuild happen.
+static bool      g_media_changed;
+
 // The first cluster not backed by an existing file: where free space begins.
 //
 // This one number is what lets a write be classified without interpreting the
@@ -149,6 +161,9 @@ static void add_entry(void *vctx, const char *name, bool is_dir, uint32_t size) 
     memcpy(n->fat.name, shortname, 11);
     n->fat.case_flags = case_flags;
     snprintf(n->name, sizeof(n->name), "%s", name);
+    // The real name, for the long-name entries. It points into this same node,
+    // so it lives exactly as long as the table does.
+    n->fat.lname = n->name;
     n->fat.parent = ctx->parent;
     n->fat.is_dir = is_dir ? 1 : 0;
     n->fat.size   = is_dir ? 0 : size;           // FAT stores 0 for a directory
@@ -186,7 +201,14 @@ static bool node_path(uint32_t idx, char *out, uint32_t cap) {
 static FatNode g_packed[MSC_MAX_NODES];
 
 static const FatNode *packed_nodes(void) {
-    for (uint32_t i = 0; i < g_count; i++) g_packed[i] = g_nodes[i].fat;
+    for (uint32_t i = 0; i < g_count; i++) {
+        g_packed[i] = g_nodes[i].fat;
+        // The copy carries a POINTER to the name, so it has to be re-aimed at
+        // the node that owns it. Copying the struct alone would leave it aimed
+        // at whatever the source node held, which is the same place today and
+        // would not be if these two tables ever diverged.
+        g_packed[i].lname = g_nodes[i].name;
+    }
     return g_packed;
 }
 
@@ -368,10 +390,15 @@ extern "C" void usbmsc_service(void) {
         // Not in the middle of serving a file. Pulling the medium out from
         // under a copy in progress would fail it, and the change can wait for
         // the few milliseconds until the copy finishes.
-        if (g_src_node < 0 && !g_in.active) msc_invalidate();
+        if (g_src_node < 0 && !g_in.active) {
+            msc_invalidate();
+            g_media_changed = true;
+        }
     }
 
-    ensure_ready();
+    // Nothing is rebuilt while the news is outstanding. Rebuilding here is what
+    // closed the window before the host could see it.
+    if (!g_media_changed) ensure_ready();
 }
 
 // --- the toggle -------------------------------------------------------------
@@ -449,11 +476,27 @@ void usbmsc_report(bool verbose) {
 
 bool tud_msc_start_stop_cb(uint8_t lun, uint8_t power_condition, bool start, bool load_eject) {
     (void)lun; (void)power_condition;
-    if (load_eject && !start) msc_invalidate();     // the host ejected the volume
+    if (load_eject && !start) {
+        drop_commit();          // an eject is also "I have finished writing"
+        msc_invalidate();
+    }
     return true;
 }
 
 bool tud_msc_test_unit_ready_cb(uint8_t lun) {
+    if (g_media_changed) {
+        // Report the change exactly once, then let the next poll rebuild and
+        // succeed. "Not ready to ready change, medium may have changed" is the
+        // sense every operating system reacts to by discarding what it had
+        // cached and reading the volume again — there is no way to say "this
+        // sector changed", but this says "look again", which is enough.
+        //
+        // TinyUSB only supplies its own sense when the callback left one unset,
+        // so this survives rather than being replaced by "medium not present".
+        g_media_changed = false;
+        tud_msc_set_sense(lun, SCSI_SENSE_UNIT_ATTENTION, 0x28, 0x00);
+        return false;
+    }
     (void)lun;
     return ensure_ready();
 }
@@ -577,6 +620,8 @@ static void drop_abort(void) {
 // writes durable.
 static void drop_commit(void) {
     if (!g_in.active) return;
+    // No name ever arrived, so there is nothing to call the file. That is a
+    // host that wrote data and then changed its mind, and the bytes go with it.
     if (g_in.failed || !g_in.name[0]) { drop_abort(); return; }
 
     void *sink = g_in.sink;
@@ -609,25 +654,51 @@ static void drop_commit(void) {
     msc_invalidate();
 }
 
-// Start collecting a file the host has just declared.
-static void drop_begin(const char *name, uint32_t first_cluster, uint32_t size) {
+// Start collecting a file, from whichever half of it arrived first.
+//
+// The order is not ours to choose. Windows writes the DATA before the
+// directory entry that names it, and the first version of this only started
+// collecting when a name appeared — so every data sector arrived with nothing
+// to catch it and was dropped, and the entry that followed described a file
+// whose contents had already been thrown away.
+//
+// So a drop can begin from either end: from a cluster, with the name filled in
+// later, or from a name, with the data expected next.
+static void drop_start(uint32_t first_cluster) {
     if (g_in.active) drop_commit();      // a second file: the first one is done
 
     memset(&g_in, 0, sizeof(g_in));
-    // Host bookkeeping is refused by name. Windows and macOS both create
-    // several of these within seconds of mounting, and none of it was asked
-    // for. The write is still accepted so the host sees no error; it simply
-    // does not land anywhere.
-    if (fat_is_host_metadata(name)) return;
-
     g_in.active = true;
     g_in.first_cluster = first_cluster;
     g_in.next_cluster = first_cluster;
-    g_in.size = size;
-    snprintf(g_in.name, sizeof(g_in.name), "%s", name);
     storage_remove(MSC_DROP_TEMP);
     g_in.sink = storage_open_sink(MSC_DROP_TEMP);
     if (!g_in.sink) g_in.failed = true;
+}
+
+// Attach the name and length a directory entry supplies.
+static void drop_name(const char *name, uint32_t first_cluster, uint32_t size) {
+    // Host bookkeeping is refused by name. Windows and macOS both create
+    // several of these within seconds of mounting, and none of it was asked
+    // for. The writes are still accepted so the host sees no error; they simply
+    // do not land anywhere.
+    if (fat_is_host_metadata(name)) {
+        if (g_in.active && g_in.first_cluster == first_cluster) drop_abort();
+        return;
+    }
+
+    // Already collecting the data this entry describes: fill in the rest.
+    if (g_in.active && g_in.first_cluster == first_cluster) {
+        snprintf(g_in.name, sizeof(g_in.name), "%s", name);
+        if (size) g_in.size = size;
+        return;
+    }
+
+    // A name for something else. Whatever was in flight is finished, and this
+    // one starts with its data still to come.
+    drop_start(first_cluster);
+    snprintf(g_in.name, sizeof(g_in.name), "%s", name);
+    g_in.size = size;
 }
 
 // The long name, if the host wrote one.
@@ -667,9 +738,19 @@ static void lfn_collect(const uint8_t *e) {
 // A sector of root directory entries the host has written.
 static void root_write(uint32_t sector, const uint8_t *buf) {
     const uint32_t per = FAT_SECTOR_SIZE / FAT_DIRENT_SIZE;
-    // Entry 0 is the volume label and 1..n-1 are the files already here, so
-    // anything at or below that is a change to something existing.
-    uint32_t existing = g_count;      // label + (g_count - 1) children
+
+    // How many entry slots the root directory is already using: the volume
+    // label, plus however many each of the root's OWN children needs.
+    //
+    // g_count was used here and is the size of the WHOLE TREE — every file in
+    // every subdirectory. On a device with five things in the root and sixteen
+    // nodes in total, that declared slots 6 through 15 occupied when they were
+    // free, which is exactly where a host writes the entry for a new file. The
+    // write was refused, the name was never learned, and nothing was ever
+    // committed: files could be dragged in and simply did not arrive.
+    uint32_t existing = 1;
+    for (uint32_t i = 1; i < g_count; i++)
+        if (g_nodes[i].fat.parent == 0) existing += fat_entries_for(&g_nodes[i].fat);
 
     for (uint32_t s = 0; s < per; s++) {
         uint32_t idx = sector * per + s;
@@ -716,14 +797,21 @@ static void root_write(uint32_t sector, const uint8_t *buf) {
         uint32_t size  = (uint32_t)e[28] | ((uint32_t)e[29] << 8) |
                          ((uint32_t)e[30] << 16) | ((uint32_t)e[31] << 24);
 
-        // The entry is commonly written twice: once when the file is created,
-        // with a length of zero, and again with the real one once the data has
-        // gone out. So a second sighting updates rather than restarts.
-        if (g_in.active && g_in.first_cluster == first && first != 0) {
-            if (size) g_in.size = size;
+        // A file with no clusters at all has no data coming, so there is
+        // nothing to collect and it can simply be created.
+        if (first == 0) {
+            if (!fat_is_host_metadata(name)) {
+                char dest[MSC_NAME_MAX + 2];
+                snprintf(dest, sizeof(dest), "/%s", name);
+                storage_write_file(dest, nullptr, 0);
+            }
             continue;
         }
-        drop_begin(name, first, size);
+
+        // The entry is commonly written twice: once when the file is created,
+        // with a length of zero, and again with the real one once the data has
+        // gone out. drop_name treats the second sighting as an update.
+        drop_name(name, first, size);
     }
 }
 
@@ -747,7 +835,11 @@ int32_t tud_msc_write10_cb(uint8_t lun, uint32_t lba, uint32_t offset,
         // than failed: the volume already says those files are read-only, and
         // stalling the endpoint would make the host mark the whole drive bad.
         if (idx < g_first_free) break;
-        if (!g_in.active || g_in.failed || !g_in.sink) break;
+        // Data for a file whose name has not arrived yet. Start collecting it
+        // now and let the directory entry name it later — that is the order
+        // Windows actually uses.
+        if (!g_in.active) drop_start(idx);
+        if (g_in.failed || !g_in.sink) break;
         if (idx != g_in.next_cluster) {
             // Out of order. The sink appends, so the bytes would land at the
             // wrong offset — and a file that is silently wrong is worse than

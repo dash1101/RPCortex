@@ -294,11 +294,88 @@ void fat_dirent_dot(uint8_t e[FAT_DIRENT_SIZE], bool dotdot,
                dotdot ? parent_cluster : self_cluster, 0, mtime, 0);
 }
 
-static uint32_t child_count(const FatNode *nodes, uint32_t count, uint32_t idx) {
+// Rebuild the displayable name from the 8.3 form and the case bits — exactly
+// what a host without long-name support would show.
+static void render_83(const char name[11], uint8_t case_flags, char out[13]) {
+    int o = 0;
+    bool lb = (case_flags & FAT_CASE_BASE_LOWER) != 0;
+    bool le = (case_flags & FAT_CASE_EXT_LOWER) != 0;
+    for (int i = 0; i < 8 && name[i] != ' '; i++) {
+        char c = name[i];
+        if (lb && c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+        out[o++] = c;
+    }
+    if (name[8] != ' ') {
+        out[o++] = '.';
+        for (int i = 8; i < 11 && name[i] != ' '; i++) {
+            char c = name[i];
+            if (le && c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+            out[o++] = c;
+        }
+    }
+    out[o] = 0;
+}
+
+bool fat_name_fits_83(const char *name) {
+    if (!name || !*name) return true;
+    char sn[11], shown[13];
+    uint8_t flags = 0;
+    if (!fat_shortname(name, sn, &flags)) return false;
+    render_83(sn, flags, shown);
+    return strcmp(shown, name) == 0;
+}
+
+// Thirteen UTF-16 code units per long-name entry.
+#define LFN_CHARS 13
+
+uint32_t fat_entries_for(const FatNode *n) {
+    if (!n || !n->lname || fat_name_fits_83(n->lname)) return 1;
+    uint32_t len = (uint32_t)strlen(n->lname);
+    return 1 + (len + LFN_CHARS - 1) / LFN_CHARS;
+}
+
+// How many entry slots a directory's children occupy in total.
+static uint32_t child_entries(const FatNode *nodes, uint32_t count, uint32_t idx) {
     uint32_t c = 0;
     for (uint32_t i = 1; i < count; i++)
-        if (i != idx && nodes[i].parent == idx) c++;
+        if (i != idx && nodes[i].parent == idx) c += fat_entries_for(&nodes[i]);
     return c;
+}
+
+// The checksum a long-name entry carries, computed over the 8.3 name it
+// belongs to. It is what ties the two together: a host that finds a mismatch
+// discards the long name and falls back to the short one.
+static uint8_t lfn_checksum(const char name[11]) {
+    uint8_t sum = 0;
+    for (int i = 0; i < 11; i++)
+        sum = (uint8_t)(((sum & 1) << 7) + (sum >> 1) + (uint8_t)name[i]);
+    return sum;
+}
+
+// One long-name entry. `seq` is 1-based and counts from the START of the name;
+// entries are written to disk in reverse, so the highest sequence comes first
+// and carries the "last" marker.
+static void fat_lfn_entry(uint8_t e[FAT_DIRENT_SIZE], const char *lname,
+                          uint32_t seq, bool last, const char name83[11]) {
+    memset(e, 0, FAT_DIRENT_SIZE);
+    e[0]  = (uint8_t)(seq | (last ? 0x40 : 0));
+    e[11] = 0x0F;                       // the attribute combination that means "long name"
+    e[12] = 0;
+    e[13] = lfn_checksum(name83);
+    e[26] = 0; e[27] = 0;               // no cluster: this is not a file
+
+    static const uint8_t off[LFN_CHARS] = {1,3,5,7,9,14,16,18,20,22,24,28,30};
+    uint32_t len = (uint32_t)strlen(lname);
+    uint32_t base = (seq - 1) * LFN_CHARS;
+    for (uint32_t i = 0; i < LFN_CHARS; i++) {
+        uint32_t idx = base + i;
+        uint16_t c;
+        if (idx < len)       c = (uint8_t)lname[idx];   // ASCII widened to UTF-16
+        else if (idx == len) c = 0x0000;                // the terminator, if it fits
+        else                 c = 0xFFFF;                // and padding after it
+        e[off[i]]     = (uint8_t)(c & 0xFF);
+        e[off[i] + 1] = (uint8_t)(c >> 8);
+    }
 }
 
 uint32_t fat_layout(FatNode *nodes, uint32_t count, uint32_t max_clusters) {
@@ -314,7 +391,9 @@ uint32_t fat_layout(FatNode *nodes, uint32_t count, uint32_t max_clusters) {
     for (uint32_t i = 1; i < count; i++) {
         FatNode *f = &nodes[i];
         uint32_t bytes = f->is_dir
-            ? (2 + child_count(nodes, count, i)) * FAT_DIRENT_SIZE   // "." and ".." first
+            // "." and ".." first, then however many entries the children need
+            // — which is more than one apiece for anything with a long name.
+            ? (2 * FAT_DIRENT_SIZE) + child_entries(nodes, count, i) * FAT_DIRENT_SIZE
             : f->size;
         uint32_t clusters = (bytes + FAT_SECTOR_SIZE - 1) / FAT_SECTOR_SIZE;
 
@@ -366,18 +445,34 @@ void fat_dir_sector(const FatNode *nodes, uint32_t count, uint32_t dir_idx,
             continue;
         }
 
-        // The (e - lead)'th child. Scanned rather than indexed: children are not
-        // contiguous in the table, and a second structure to make them so is
+        // Which child owns entry `e`, and which of ITS entries this is.
+        //
+        // No longer one slot per child: a long name is a run of entries ending
+        // with the 8.3 one. Scanned rather than indexed, because children are
+        // not contiguous in the table and a second structure to make them so is
         // one more thing that can disagree with this one.
-        uint32_t want = e - lead, seen = 0;
+        uint32_t want = e - lead, slot_base = 0;
         const FatNode *child = nullptr;
+        uint32_t need = 0;
         for (uint32_t i = 1; i < count; i++) {
             if (i == dir_idx || nodes[i].parent != dir_idx) continue;
-            if (seen++ == want) { child = &nodes[i]; break; }
+            need = fat_entries_for(&nodes[i]);
+            if (want < slot_base + need) { child = &nodes[i]; break; }
+            slot_base += need;
         }
         // Past the last entry. The rest of the sector stays zeroed, and a zero
         // first byte is what tells the host the directory ends here.
         if (!child) return;
+
+        uint32_t within = want - slot_base;
+        if (within + 1 < need) {
+            // A long-name entry. They are stored in reverse, so the first one
+            // on disk carries the highest sequence number and the end marker.
+            uint32_t lfn_total = need - 1;
+            uint32_t seq = lfn_total - within;
+            fat_lfn_entry(slot, child->lname, seq, within == 0, child->name);
+            continue;
+        }
 
         // Everything already on the device is read-only. The write path accepts
         // new files and nothing else, and saying so in the attribute byte is

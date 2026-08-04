@@ -128,6 +128,16 @@ struct FatNode {
     // the alternative is showing a name that is not the file's.
     uint8_t  case_flags;
     char     name[11];       // 8.3, space padded, no dot — the on-disk form
+
+    // The real name, when 8.3 cannot hold it. Borrowed, not owned: it has to
+    // outlive the node, which for the caller is the same table.
+    //
+    // Eight-point-three is not merely shouty, it is lossy in a way that breaks
+    // files. Three characters of extension turns repo.json into REPO.JSO, and a
+    // file copied off under that name is not the file. The format's answer is a
+    // run of extra directory entries carrying the name in UTF-16 ahead of the
+    // real one, which every host has understood since Windows 95.
+    const char *lname;
 };
 
 // The case bits, as they sit in byte 12 of a directory entry.
@@ -152,6 +162,18 @@ void fat_dirent(uint8_t e[FAT_DIRENT_SIZE], const char name[11], uint8_t attr,
 
 // Which node owns a cluster, or -1 for none.
 int32_t fat_node_for_cluster(const FatNode *nodes, uint32_t count, uint32_t cluster);
+
+// How many directory entries a node needs: the 8.3 one, plus any long-name
+// entries in front of it.
+//
+// Thirteen characters per long-name entry, and none at all when the 8.3 form
+// reproduces the name exactly — which is decided by reconstructing it and
+// comparing, rather than by a rule about lengths that would have to stay in
+// step with fat_shortname.
+uint32_t fat_entries_for(const FatNode *n);
+
+// Whether the 8.3 form, with its case bits applied, IS the name.
+bool fat_name_fits_83(const char *name);
 
 // Give every node a contiguous run of clusters.
 //

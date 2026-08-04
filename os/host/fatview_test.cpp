@@ -219,6 +219,103 @@ int main(void) {
     ck(e[12] == (FAT_CASE_BASE_LOWER | FAT_CASE_EXT_LOWER),
        "and land in byte 12 of the entry, where the host reads them");
 
+    // --- long names ---------------------------------------------------------
+    //
+    // Tested here by inspecting the bytes, because fsck.fat does not check all
+    // of this. It catches a run written in the wrong order and a wrong
+    // attribute byte, but a wrong checksum and a missing end-of-name marker
+    // pass it — and both of those make a host quietly fall back to the 8.3
+    // name, which is the exact failure long names exist to prevent.
+    {
+        FatNode t[3];
+        memset(t, 0, sizeof(t));
+        t[0].is_dir = 1; t[0].parent = FAT_NO_PARENT;          // the root
+        memcpy(t[1].name, "REPO    JSO", 11);
+        t[1].lname = "repo.json"; t[1].parent = 0; t[1].size = 3152; t[1].first_cluster = 2;
+        t[1].clusters = 7;
+        memcpy(t[2].name, "NOTES   TXT", 11);
+        t[2].lname = "notes.txt"; t[2].parent = 0; t[2].size = 10; t[2].first_cluster = 9;
+        t[2].clusters = 1;
+
+        ck(fat_entries_for(&t[1]) == 2, "a long name adds one entry ahead of the 8.3 one");
+        ck(fat_entries_for(&t[2]) == 1, "a name that fits 8.3 adds none");
+
+        uint8_t sec[FAT_SECTOR_SIZE];
+        fat_dir_sector(t, 3, 0, 0, "RPCORTEX", sec);
+
+        const uint8_t *label = sec;
+        const uint8_t *lfn   = sec + FAT_DIRENT_SIZE;
+        const uint8_t *short_ = sec + 2 * FAT_DIRENT_SIZE;
+
+        ck(label[11] == FAT_ATTR_VOLUME_ID, "the label still comes first");
+        ck(lfn[11] == 0x0F, "the long-name entry carries the long-name attribute");
+        ck((lfn[0] & 0x40) != 0, "and is marked as the end of the name");
+        ck((lfn[0] & 0x1F) == 1, "with sequence one, since the name needs only one");
+        ck(memcmp(short_, "REPO    JSO", 11) == 0, "the 8.3 entry follows it");
+        ck(rd16(lfn + 26) == 0, "a long-name entry names no cluster");
+
+        // The characters, UTF-16, in the three runs the format scatters them
+        // across. Getting the offsets wrong is the classic mistake and shows up
+        // as a name with holes in it.
+        ck(lfn[1] == 'r' && lfn[3] == 'e' && lfn[5] == 'p' && lfn[7] == 'o',
+           "the first run holds the first characters");
+        ck(lfn[9] == '.' && lfn[14] == 'j' && lfn[16] == 's',
+           "and the second run continues without a gap");
+        // "repo.json" is nine characters, so slots 0..8 hold the name, slot 9
+        // holds the terminator, and everything past that is padding.
+        ck(rd16(lfn + 18) == 'o' && rd16(lfn + 20) == 'n',
+           "the last characters of the name are where they belong");
+        ck(rd16(lfn + 22) == 0x0000, "the name is terminated one slot past its end");
+        ck(rd16(lfn + 24) == 0xFFFF, "and padded after that");
+
+        // The checksum ties the long name to the 8.3 entry behind it. A host
+        // that finds a mismatch throws the long name away, so a wrong one is
+        // invisible except that the file is back to being called REPO.JSO.
+        // Computed here from the published formula rather than by calling the
+        // implementation, so a transcription error in either is a disagreement.
+        uint8_t expect = 0;
+        for (int i = 0; i < 11; i++)
+            expect = (uint8_t)(((expect & 1) ? 0x80 : 0) + (expect >> 1) + (uint8_t)short_[i]);
+        ck(lfn[13] == expect, "the checksum is the one the host will compute");
+
+        // Two files must not share a checksum derived from different names.
+        // A constant would pass every check above.
+        uint8_t other = 0;
+        for (int i = 0; i < 11; i++)
+            other = (uint8_t)(((other & 1) ? 0x80 : 0) + (other >> 1) + (uint8_t)"NOTES   TXT"[i]);
+        ck(other != expect, "and is derived from the name, not fixed");
+    }
+
+    // A name needing two entries, where the reversed ordering matters.
+    {
+        FatNode t[2];
+        memset(t, 0, sizeof(t));
+        t[0].is_dir = 1; t[0].parent = FAT_NO_PARENT;
+        memcpy(t[1].name, "MEASUR~1TXT", 11);
+        t[1].lname = "measurements-2026.txt";     // 21 characters: two entries
+        t[1].parent = 0; t[1].first_cluster = 2; t[1].clusters = 2; t[1].size = 900;
+
+        ck(fat_entries_for(&t[1]) == 3, "twenty-one characters need two long-name entries");
+
+        uint8_t sec[FAT_SECTOR_SIZE];
+        fat_dir_sector(t, 2, 0, 0, "RPCORTEX", sec);
+        const uint8_t *first  = sec + FAT_DIRENT_SIZE;
+        const uint8_t *second = sec + 2 * FAT_DIRENT_SIZE;
+
+        // Stored in REVERSE: the run begins with the highest sequence number,
+        // which is also the one carrying the end marker.
+        ck((first[0] & 0x1F) == 2 && (first[0] & 0x40),
+           "the run starts with the LAST piece of the name");
+        ck((second[0] & 0x1F) == 1 && !(second[0] & 0x40),
+           "and ends with the first piece");
+        ck(first[13] == second[13], "both pieces carry the same checksum");
+        // Piece one holds characters 1-13, piece two the rest.
+        ck(second[1] == 'm' && second[3] == 'e' && second[5] == 'a',
+           "the first piece holds the start of the name");
+        ck(first[1] == '2' && first[3] == '0',
+           "and the second picks up at the fourteenth character");
+    }
+
     // --- host metadata ------------------------------------------------------
     ck(fat_is_host_metadata("System Volume Information"), "Windows' own directory is known");
     ck(fat_is_host_metadata("SYSTEM VOLUME INFORMATION"), "case does not matter");

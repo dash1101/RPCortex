@@ -33,6 +33,9 @@ static void ck(bool c, const char *w) {
 static FatNode nodes[64];
 static uint32_t node_count;
 
+static void add_long(const char *n83, const char *lname, bool is_dir,
+                     uint32_t size, uint16_t parent);
+
 static void add(const char *n83, bool is_dir, uint32_t size, uint16_t parent) {
     FatNode *f = &nodes[node_count++];
     memset(f, 0, sizeof(*f));
@@ -41,6 +44,12 @@ static void add(const char *n83, bool is_dir, uint32_t size, uint16_t parent) {
     f->size = size;
     f->parent = parent;
     f->mtime = 1785801600u;      // 2026-08-04, so the date fields are not all zero
+}
+
+static void add_long(const char *n83, const char *lname, bool is_dir,
+                     uint32_t size, uint16_t parent) {
+    add(n83, is_dir, size, parent);
+    nodes[node_count - 1].lname = lname;
 }
 
 int main(void) {
@@ -64,6 +73,17 @@ int main(void) {
     add("BENCH   APP", false, 7000, 2);
     add("CALC    APP", false, 5000, 2);
 
+    // A name 8.3 cannot hold. Three characters of extension turns repo.json
+    // into REPO.JSO, and a file copied off under that name is not the file, so
+    // this is a correctness case rather than a cosmetic one.
+    uint16_t longfile = (uint16_t)node_count;
+    add_long("REPO    JSO", "repo.json", false, 3152, 0);
+    // And one long enough to need more than a single long-name entry, since
+    // thirteen characters is where the second one begins and the ordering of
+    // the run is the part that is easy to get backwards.
+    uint16_t longer = (uint16_t)node_count;
+    add_long("MEASURE~TXT", "measurements-2026.txt", false, 900, 0);
+
     // A directory with more children than fit in one cluster.
     //
     // Sixteen entries fill a 512-byte sector, and "." and ".." take two of
@@ -84,6 +104,15 @@ int main(void) {
         snprintf(n, sizeof(n), "FILE%02d  DAT", i);
         add(n, false, 100 + i, many);
     }
+
+    ck(fat_entries_for(&nodes[longfile]) == 2,
+       "a nine-character name needs one long-name entry ahead of the 8.3 one");
+    ck(fat_entries_for(&nodes[longer]) == 3,
+       "and a twenty-one character name needs two");
+    ck(fat_entries_for(&nodes[3]) == 1,
+       "while a name 8.3 holds exactly needs none");
+    ck(fat_name_fits_83("readme.txt") && !fat_name_fits_83("repo.json"),
+       "which is decided by whether the 8.3 form IS the name");
 
     uint32_t used = fat_layout(nodes, node_count, g.real_clusters);
     ck(nodes[many].clusters == 2,
