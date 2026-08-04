@@ -45,6 +45,7 @@ add_executable(rpcortex_v2
     ${OS_ROOT}/shell/bt.cpp
     ${OS_ROOT}/shell/btaudio.cpp
     ${OS_ROOT}/core/pcmring.cpp
+    ${OS_ROOT}/core/wav.cpp
     ${OS_ROOT}/core/btname.cpp
     ${OS_ROOT}/core/powerpolicy.cpp
     ${OS_ROOT}/core/framebuf.cpp
@@ -167,7 +168,7 @@ if(PICO_CYW43_SUPPORTED)
         pico_btstack_classic
         pico_btstack_cyw43
         pico_btstack_run_loop_async_context
-        pico_btstack_sbc_decoder)
+        pico_btstack_sbc_encoder)
     target_compile_definitions(rpcortex_v2 PRIVATE RPC_HAS_WIFI=1)
 
     # TLS, for the package repo. GitHub serves over HTTPS only, so without this
