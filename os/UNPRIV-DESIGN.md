@@ -135,3 +135,25 @@ grouping stops being an optimization and becomes a prerequisite.
 - **`fw_malloc` returns OS heap**, which a sandboxed package cannot touch. It
   needs a per-package arena (region 5). Only `bench` and `stress` allocate at
   all, so a small bump allocator is enough to start.
+
+---
+
+## What is left, after the mechanism was built
+
+**Measure the supervisor call.** Nothing above the mechanism should be designed
+until the round trip has been timed on a board. `bench` is the vehicle: it is a
+package, it is already timed, and it now runs sandboxed on RP2350 and privileged
+on RP2040 — so running it on both is the measurement, and it needs no new code.
+`calc` is the second half of it, because every `double` operation is an
+`__aeabi_*` and every one of those is now a supervisor call.
+
+**Two allocations per call into package code.** `app_run` and `app_run_owner`
+take a 3 KB stack and a 2 KB arena from the heap for the duration and give them
+back after. That is churn on a device where fragmentation is a documented
+hard-stop, and `gpio list` now does it every time. Worth measuring with
+`meminfo` after a few dozen package commands, and worth holding the pair per
+task rather than per call if it shows.
+
+**Pointer checking at the ABI boundary,** still. Without it a package can hand
+the privileged OS an address of its choosing and have it written to. `TT` is the
+instruction for it, and the table of which arguments are pointers is the work.
