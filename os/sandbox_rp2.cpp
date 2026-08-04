@@ -190,18 +190,18 @@ extern "C" void sandbox_svc(uint32_t *frame, uint32_t which) {
 // --- entering package code ---------------------------------------------------
 
 int sandbox_enter(void *fn, int arg0, void *arg1, void *stack_top,
-                  uint32_t return_gate, uint32_t exit_gate) {
+                  uint32_t return_gate, uint32_t enter_gate, uint32_t exit_gate) {
     SandboxState *s = state_of_current();
-    if (!s || !fn || !stack_top || !return_gate || !exit_gate) return -1;
+    if (!s || !fn || !stack_top || !return_gate || !enter_gate || !exit_gate) return -1;
     s->return_gate = return_gate;
     s->package_lr  = 0;
     s->depth       = 1;
-    // return_gate serves both directions: it is `msr CONTROL, r2 ; isb ; bx r3`
-    // and it lives where the package may execute, which is the only place the
-    // drop can happen. Coming in it branches to app_main; going out, back into
-    // the package after an ABI call.
+    // Two gates, both in the package's veneer pool because that is the only
+    // memory a package may execute once privilege is gone. They differ in where
+    // they end up: the enter gate branches to app_main and leaves LR holding
+    // the exit gate, the return gate branches to LR.
     int ret = app_call_unpriv(fn, arg0, arg1, stack_top, exit_gate,
-                              &s->kernel_sp, return_gate);
+                              &s->kernel_sp, enter_gate);
     // The shim let go of the stack limit to stand on the package's stack. This
     // task is back on its own now, so the guard describes it again.
     task_rearm_protection();
@@ -234,7 +234,7 @@ void sandbox_counts(uint32_t *calls, uint32_t *refused) {
     if (calls) *calls = 0;
     if (refused) *refused = 0;
 }
-int sandbox_enter(void *, int, void *, void *, uint32_t, uint32_t) { return -1; }
+int sandbox_enter(void *, int, void *, void *, uint32_t, uint32_t, uint32_t) { return -1; }
 bool sandbox_in_package(void) { return false; }
 void sandbox_release_for_kill(void) {}
 void sandbox_forget(int) {}

@@ -23,7 +23,7 @@ bool sandbox_supported(void);
 // -1 if the sandbox could not be set up, which is a refusal to run the package
 // rather than a decision to run it unprotected.
 int sandbox_enter(void *fn, int arg0, void *arg1, void *stack_top,
-                  uint32_t return_gate, uint32_t exit_gate);
+                  uint32_t return_gate, uint32_t enter_gate, uint32_t exit_gate);
 
 // Whether THIS task is currently inside package code.
 bool sandbox_in_package(void);

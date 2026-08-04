@@ -364,33 +364,54 @@ static int load_svc(const char *path) {
 
     // The two fixed gates come first and at known offsets, because the shim
     // that enters package code has to be able to name them.
-    if (app.veneer_gates != 32) {
-        printf("       FAIL sandboxed: the gates are %u bytes, not 32\n", app.veneer_gates);
+    if (app.veneer_gates != 48) {
+        printf("       FAIL sandboxed: the gates are %u bytes, not 48\n", app.veneer_gates);
         bad = 1;
     }
-    if (h[0] != 0xf382 || h[1] != 0x8814) {
-        printf("       FAIL sandboxed: the return gate does not start with msr CONTROL, r2\n");
+    // Both privilege gates take the new CONTROL value in r12 and NOTHING in
+    // r0-r3. A function may return a value in any of those, and
+    // __aeabi_uldivmod returns its remainder in r2 and r3 — so a gate that
+    // used one as scratch would corrupt every 64-bit division a package does,
+    // which is not a crash, it is wrong answers.
+    const uint16_t *ret = (const uint16_t *)(v + 0);
+    const uint16_t *ent = (const uint16_t *)(v + 16);
+    const uint16_t *ext = (const uint16_t *)(v + 32);
+    if (ret[0] != 0xf38c || ret[1] != 0x8814 ||
+        ret[2] != 0xf3bf || ret[3] != 0x8f6f || ret[4] != 0x4770) {
+        printf("       FAIL sandboxed: the return gate is not "
+               "msr CONTROL,r12 / isb / bx lr\n");
         bad = 1;
     }
-    if (h[2] != 0xf3bf || h[3] != 0x8f6f || h[4] != 0x4718) {
-        printf("       FAIL sandboxed: the return gate is not isb then bx r3\n");
+    if (ent[0] != 0xf38c || ent[1] != 0x8814 ||
+        ent[2] != 0xf3bf || ent[3] != 0x8f6f || ent[4] != 0x4718) {
+        printf("       FAIL sandboxed: the enter gate is not "
+               "msr CONTROL,r12 / isb / bx r3\n");
         bad = 1;
     }
-    if (((const uint16_t *)(v + 16))[0] != 0xdf01) {
+    if (ext[0] != 0xdf01) {
         printf("       FAIL sandboxed: the exit gate is not svc #1\n");
+        bad = 1;
+    }
+    // The two must not be the same gate. Entering has to leave LR holding
+    // somewhere for app_main to return to, so it cannot also carry the
+    // destination there.
+    if (ret[4] == ent[4]) {
+        printf("       FAIL sandboxed: both gates end the same way\n");
         bad = 1;
     }
     // The gates carry a literal that is not a usable index, so that even a
     // reuse scan starting in the wrong place cannot hand one out as the veneer
     // for a real function.
     if (*(const uint32_t *)(v + 12) != 0xFFFFFFFFu ||
-        *(const uint32_t *)(v + 16 + 12) != 0xFFFFFFFFu) {
+        *(const uint32_t *)(v + 16 + 12) != 0xFFFFFFFFu ||
+        *(const uint32_t *)(v + 32 + 12) != 0xFFFFFFFFu) {
         printf("       FAIL sandboxed: a gate carries a literal that could pass "
                "for an ABI index\n");
         bad = 1;
     }
     if (app_return_gate(&app) != ((uint32_t)(uintptr_t)v | 1u) ||
-        app_exit_gate(&app)   != (((uint32_t)(uintptr_t)v + 16) | 1u)) {
+        app_enter_gate(&app)  != (((uint32_t)(uintptr_t)v + 16) | 1u) ||
+        app_exit_gate(&app)   != (((uint32_t)(uintptr_t)v + 32) | 1u)) {
         printf("       FAIL sandboxed: the gate addresses do not match where they were written\n");
         bad = 1;
     }
@@ -429,7 +450,7 @@ static int load_svc(const char *path) {
         bad = 1;
     }
     printf("  ok   %-12s sandboxed: %d gate(s) + %d supervisor call(s)\n",
-           name, 2, calls);
+           name, 3, calls);
     return bad;
 }
 

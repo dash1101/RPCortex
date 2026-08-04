@@ -179,10 +179,11 @@ const char *load_result_str(LoadResult r) {
 //   slot 1, the exit gate:  svc #1
 //     Handed to a package as its return address. When app_main or a registered
 //     command returns, it lands here and the supervisor takes the OS back.
-#define VENEER_GATE_BYTES   32     // slots 0 and 1, in SVC mode only
-#define VENEER_NOT_AN_INDEX 0xFFFFFFFFu
+#define VENEER_GATE_BYTES   48     // three slots, in SVC mode only
 #define VENEER_GATE_RETURN  0
-#define VENEER_GATE_EXIT    16
+#define VENEER_GATE_ENTER   16
+#define VENEER_GATE_EXIT    32
+#define VENEER_NOT_AN_INDEX 0xFFFFFFFFu
 
 static LoaderVeneerMode g_veneer_mode = LOADER_VENEER_DIRECT;
 
@@ -194,25 +195,39 @@ LoaderVeneerMode loader_veneer_mode(void) { return g_veneer_mode; }
 static void veneer_write_gates(LoadedApp *app) {
     uint8_t *base = (uint8_t *)app->veneers;
 
+    // Both privilege gates carry the new CONTROL value in r12 and nothing else,
+    // which is the whole reason there are two of them. r0-r3 must survive
+    // untouched: a function may return a value in any of them, and
+    // __aeabi_uldivmod returns its remainder in r2 and r3 specifically. Using
+    // one of those as scratch made every digit of a 64-bit division come back
+    // wrong — visible as `calc 2 ^ 3 ^ 2` printing '===' instead of 512, with
+    // the fractional part, which needs no such helper, perfectly correct.
+    //
+    // They differ only in where they go afterwards, and that is why one gate
+    // cannot serve both: entering, LR has to be left holding the exit gate so
+    // that app_main's own return lands somewhere useful, so the destination
+    // travels in r3. Returning, LR is dead and carries the destination itself.
     uint16_t *r = (uint16_t *)(base + VENEER_GATE_RETURN);
-    r[0] = 0xf382; r[1] = 0x8814;   // msr CONTROL, r2
+    r[0] = 0xf38c; r[1] = 0x8814;   // msr CONTROL, r12
     r[2] = 0xf3bf; r[3] = 0x8f6f;   // isb sy
-    r[4] = 0x4718;                  // bx  r3
-    r[5] = 0xbe00;                  // bkpt: unreachable, and loud if it is not
-    // Not zero. The reuse scan below matches on this word, and zero is a
-    // perfectly ordinary ABI index — a gate carrying it would be handed out as
-    // the veneer for symbol 0, and calling that function would drop privilege
-    // into nowhere. The scan also starts past the gates; this is the half that
-    // does not depend on remembering to.
+    r[4] = 0x4770;                  // bx  lr   - back into the package
+    r[5] = 0xbe00;
     *(uint32_t *)(base + VENEER_GATE_RETURN + VENEER_LITERAL) = VENEER_NOT_AN_INDEX;
 
-    uint16_t *e = (uint16_t *)(base + VENEER_GATE_EXIT);
-    e[0] = 0xdf01;                  // svc #1  - the package has returned
-    e[1] = 0xe7fe;                  // b . : the handler redirects, so this is
-    e[2] = 0xe7fe;                  //       only reached if it did not
-    e[3] = 0xe7fe;
-    e[4] = 0xe7fe;
-    e[5] = 0xe7fe;
+    uint16_t *e = (uint16_t *)(base + VENEER_GATE_ENTER);
+    e[0] = 0xf38c; e[1] = 0x8814;   // msr CONTROL, r12
+    e[2] = 0xf3bf; e[3] = 0x8f6f;   // isb sy
+    e[4] = 0x4718;                  // bx  r3   - into app_main, LR = exit gate
+    e[5] = 0xbe00;
+    *(uint32_t *)(base + VENEER_GATE_ENTER + VENEER_LITERAL) = VENEER_NOT_AN_INDEX;
+
+    uint16_t *x = (uint16_t *)(base + VENEER_GATE_EXIT);
+    x[0] = 0xdf01;                  // svc #1  - the package has returned
+    x[1] = 0xe7fe;                  // b . : the handler redirects, so this is
+    x[2] = 0xe7fe;                  //       only reached if it did not
+    x[3] = 0xe7fe;
+    x[4] = 0xe7fe;
+    x[5] = 0xe7fe;
     *(uint32_t *)(base + VENEER_GATE_EXIT + VENEER_LITERAL) = VENEER_NOT_AN_INDEX;
 
     app->veneers_used  = VENEER_GATE_BYTES;
@@ -665,6 +680,11 @@ LoadResult app_load(const AppSource &src, LoadedApp *out) {
 uint32_t app_return_gate(const LoadedApp *app) {
     if (!app || !app->veneer_gates) return 0;
     return ((uint32_t)(uintptr_t)app->veneers + VENEER_GATE_RETURN) | 1u;
+}
+
+uint32_t app_enter_gate(const LoadedApp *app) {
+    if (!app || !app->veneer_gates) return 0;
+    return ((uint32_t)(uintptr_t)app->veneers + VENEER_GATE_ENTER) | 1u;
 }
 
 uint32_t app_exit_gate(const LoadedApp *app) {

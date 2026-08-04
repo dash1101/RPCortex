@@ -99,14 +99,13 @@ app_call_unpriv:
 
     mov     r0, r1                  // the package's two arguments
     mov     r1, r2
-    mov     r3, r8                  // what the gate will branch to
-    mov     r12, r7                 // ...and the gate itself
-    mov     lr, r6                  // return to the exit gate, not to here
-    mrs     r2, control
-    orr     r2, r2, #1              // nPRIV, for the gate to write. Read-modify-
+    mov     r3, r8                  // the gate branches here: app_main
+    mov     lr, r6                  // ...and this is where app_main returns to
+    mrs     r12, control
+    orr     r12, r12, #1            // nPRIV, for the gate to write. Read-modify-
                                     // write: CONTROL also carries SPSEL and
                                     // FPCA, and this build has an FPU.
-    bx      r12                     // -> the gate, still privileged
+    bx      r7                      // -> the enter gate, still privileged
 
 // Where `svc #1` sends the exception return once the package is done.
 // Privileged again by then, still on the package's stack, with r0 holding what
@@ -143,15 +142,29 @@ app_call_unpriv_tail:
     .type   sandbox_syscall_return, %function
     .thumb_func
 sandbox_syscall_return:
-    push    {r0, r1, r4, lr}        // four words: the return value, and alignment
+    // r0-r3 all belong to the caller and none of them may be touched.
+    //
+    // A function may return a value in any of r0-r3, and __aeabi_uldivmod
+    // returns its remainder in r2 and r3 specifically — so using either as
+    // scratch corrupts every 64-bit division a package performs. That showed up
+    // as `calc 2 ^ 3 ^ 2` printing '===' where the digits should be, with the
+    // fractional part, which needs no such helper, exactly right.
+    //
+    // The way out therefore carries nothing in r0-r3: the new CONTROL value
+    // travels in r12, the address to resume at in LR, and the gate itself is
+    // reached by writing it over the saved LR slot and popping straight into
+    // PC. That is also why there are two gates rather than one — this one ends
+    // `bx lr`, the entry gate ends `bx r3`, because entering has to leave LR
+    // holding somewhere for app_main to return to.
+    push    {r0, r1, r2, r3, r4, lr}    // six words: 8-byte aligned
     bl      sandbox_return_gate
-    mov     r12, r0                 // where to jump
+    mov     r4, r0                      // where privilege is given back
     bl      sandbox_finish_call
-    mov     r3, r0                  // where the package resumes
-    pop     {r0, r1, r4, lr}
-    mrs     r2, control
-    orr     r2, r2, #1              // the value the gate is about to write
-    bx      r12
+    mov     lr, r0                      // where the package resumes
+    mrs     r12, control
+    orr     r12, r12, #1                // the value the gate is about to write
+    str     r4, [sp, #20]               // over the saved LR: the pop branches there
+    pop     {r0, r1, r2, r3, r4, pc}
     .size   sandbox_syscall_return, . - sandbox_syscall_return
 
 #endif  // !__ARM_ARCH_6M__

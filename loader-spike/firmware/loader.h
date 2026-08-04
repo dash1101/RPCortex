@@ -96,6 +96,7 @@ LoaderVeneerMode loader_veneer_mode(void);
 // the instruction which gives privilege back has to be one the package is
 // allowed to execute, and flash is not.
 uint32_t app_return_gate(const LoadedApp *app);
+uint32_t app_enter_gate(const LoadedApp *app);
 uint32_t app_exit_gate(const LoadedApp *app);
 
 // Where the loader gets memory. Pluggable for one concrete reason: the host

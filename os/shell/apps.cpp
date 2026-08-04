@@ -211,7 +211,8 @@ int app_run(const LoadedApp *app, int (*fn)(int), int arg) {
     if (boxed) {
         ret = sandbox_enter((void *)fn, arg, nullptr,
                             (uint8_t *)sa.stack + m.stack_size,
-                            app_return_gate(app), app_exit_gate(app));
+                            app_return_gate(app), app_enter_gate(app),
+                            app_exit_gate(app));
     } else {
         ret = fn(arg);
     }
@@ -252,7 +253,8 @@ bool app_run_owner(const void *owner, int (*fn)(int, char **), int argc,
             } else {
                 *ret = sandbox_enter((void *)fn, argc, boxed_argv,
                                      (uint8_t *)sa.stack + top,
-                                     app_return_gate(a), app_exit_gate(a));
+                                     app_return_gate(a), app_enter_gate(a),
+                                     app_exit_gate(a));
             }
         } else {
             *ret = fn(argc, argv);
