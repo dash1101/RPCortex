@@ -23,7 +23,8 @@ shell that reads like RPCortex Vela on the same terminal.
 | **network** | DNS, ICMP, SNTP — none of them needs TLS | ping nslookup ntp |
 | **packages** | install / remove / list, boot-load, unload | pkg run apps unload put |
 | **updates** | OTA over HTTPS, staged and verified, with a rollback slot | update |
-| **memory protection** | hardware stack guard on every task; on RP2350 a package runs unprivileged, on a stack and a heap of its own, reaching nothing else | mpu |
+| **memory protection** | hardware stack guard on every task; on RP2350 a package runs unprivileged, on a stack and a heap of its own, and every pointer it hands the firmware is range-checked against those | mpu |
+| **transfer area** | a real FAT12 volume over USB, off by default; `download` opens it and takes what lands into /usb | usb download |
 | **shell** | full line editing, tab completion, pipes, `&&` / `\|\|` / `;`, `>` / `>>`, quoting | help |
 
 Roughly 50 commands plus ~30 aliases (`ll`, `dir`, `more`, `del`, `free`, `gc`,
@@ -34,7 +35,7 @@ An installed package's commands go live at boot; an app registers commands via
 the ABI (the `greet` app demonstrates it). That is the package system the Nova
 D1 will sit inside.
 
-**Tests** — 44 host suites, all green under ASan/UBSan: `os/host/run_all.sh`.
+**Tests** — 46 host suites, all green under ASan/UBSan: `os/host/run_all.sh`.
 One of them, `fatimage_test`, is not a test of this code against its author's
 reading of a specification — it synthesises a whole FAT volume and hands it to
 `fsck.fat`, because a filesystem this device only ever writes and never reads
@@ -88,14 +89,6 @@ This is the base the Nova D1 gets ported onto.
 
 ## Not done
 
-- **Pointer checking at the ABI boundary.** Packages DO run unprivileged on
-  RP2350 now, on a stack and a heap of their own, and every call into the
-  firmware is a supervisor call. What is missing is checking the pointers a
-  package passes across: it can still ask the privileged OS to read into an
-  address of its choosing. That is a deliberate attack rather than a bug, and
-  the stated worry has been somebody else's package having a bug — but it is
-  the honest limit of what the sandbox stops. ARMv8-M's `TT` instruction is the
-  tool; the work is a table of which arguments are pointers.
 - **Package sandboxing is RP2350 only.** ARMv6-M regions are power-of-two sized
   and aligned to their own size, so the five a package needs would cost more RAM
   than an RP2040 has. There it runs packages privileged, as every build did
@@ -105,10 +98,9 @@ This is the base the Nova D1 gets ported onto.
   device where fragmentation has been a hard-stop before, and holding the pair
   per task instead is the obvious answer if it shows. Notes in
   `os/UNPRIV-DESIGN.md`.
-- **The supervisor call has never been costed.** `bench` runs sandboxed and
-  scores in the millions, so it is not costing anything that matters at that
-  level, but there is no cycles-per-call figure — and that number is what would
-  decide whether a timing-critical package ever needs an exemption.
+- **The supervisor call is measured but the figure has never been read.**
+  `probe` times 20,000 calls against an empty loop and reports nanoseconds and
+  cycles; nobody has run it on a board yet.
 - **`meminfo`'s fragmentation figure is DEVICE-UNCONFIRMED.** `heap_free()`
   reports the arena minus live allocations, which is honest rather than a
   high-water mark, and `largest_block()` probes with real `malloc` calls — but
