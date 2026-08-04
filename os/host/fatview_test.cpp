@@ -152,7 +152,7 @@ int main(void) {
 
     // --- directory entries --------------------------------------------------
     uint8_t e[FAT_DIRENT_SIZE];
-    fat_dirent(e, "HELLO   TXT", FAT_ATTR_READ_ONLY, 2, 1200, 0);
+    fat_dirent(e, "HELLO   TXT", FAT_ATTR_READ_ONLY, 2, 1200, 0, 0);
     ck(memcmp(e, "HELLO   TXT", 11) == 0, "the name occupies the first eleven bytes");
     ck(e[11] == FAT_ATTR_READ_ONLY, "the attribute byte follows it");
     ck(rd16(e + 26) == 2, "the first cluster is where the host will look");
@@ -173,22 +173,51 @@ int main(void) {
 
     // --- short names --------------------------------------------------------
     char n[11];
-    ck(fat_shortname("hello.txt", n) && memcmp(n, "HELLO   TXT", 11) == 0,
+    uint8_t cf = 0;
+    ck(fat_shortname("hello.txt", n, nullptr) && memcmp(n, "HELLO   TXT", 11) == 0,
        "a plain name is upper-cased and padded");
-    ck(fat_shortname("a.b", n) && memcmp(n, "A       B  ", 11) == 0,
+    ck(fat_shortname("a.b", n, nullptr) && memcmp(n, "A       B  ", 11) == 0,
        "a short name pads both halves");
-    ck(fat_shortname("noext", n) && memcmp(n, "NOEXT      ", 11) == 0,
+    ck(fat_shortname("noext", n, nullptr) && memcmp(n, "NOEXT      ", 11) == 0,
        "a name with no extension leaves it blank");
-    ck(fat_shortname("archive.tar.gz", n) && memcmp(n + 8, "GZ ", 3) == 0,
+    ck(fat_shortname("archive.tar.gz", n, nullptr) && memcmp(n + 8, "GZ ", 3) == 0,
        "the extension comes from the LAST dot, not the first");
-    ck(fat_shortname("averylongname.text", n) && memcmp(n, "AVERYLON", 8) == 0,
+    ck(fat_shortname("averylongname.text", n, nullptr) && memcmp(n, "AVERYLON", 8) == 0,
        "an over-long base is truncated to eight");
     ck(memcmp(n + 8, "TEX", 3) == 0, "and an over-long extension to three");
-    ck(!fat_shortname(".hidden", n), "a leading dot has no 8.3 form and is refused");
-    ck(!fat_shortname("", n), "and neither does an empty name");
-    ck(!fat_shortname("...", n), "nor one that is nothing but dots");
-    ck(fat_shortname("a+b=c.txt", n) && memcmp(n, "ABC     TXT", 11) == 0,
+    ck(!fat_shortname(".hidden", n, nullptr), "a leading dot has no 8.3 form and is refused");
+    ck(!fat_shortname("", n, nullptr), "and neither does an empty name");
+    ck(!fat_shortname("...", n, nullptr), "nor one that is nothing but dots");
+    ck(fat_shortname("a+b=c.txt", n, nullptr) && memcmp(n, "ABC     TXT", 11) == 0,
        "characters the format forbids are dropped rather than passed through");
+
+    // --- the case bits ------------------------------------------------------
+    //
+    // The stored name is always upper case, so without these every file on the
+    // drive appears shouted. They are the only way to say otherwise short of
+    // long filename entries.
+    ck(fat_shortname("ca.pem", n, &cf) &&
+       (cf & FAT_CASE_BASE_LOWER) && (cf & FAT_CASE_EXT_LOWER),
+       "an all-lower-case name is marked lower case in both halves");
+    ck(fat_shortname("CA.PEM", n, &cf) && cf == 0,
+       "an all-upper-case name is marked in neither");
+    ck(fat_shortname("ca.PEM", n, &cf) &&
+       (cf & FAT_CASE_BASE_LOWER) && !(cf & FAT_CASE_EXT_LOWER),
+       "the two halves are decided independently");
+    // Mixed case within one half has no representation at all, and guessing
+    // would show a name that is not the file's.
+    ck(fat_shortname("ReadMe.txt", n, &cf) && !(cf & FAT_CASE_BASE_LOWER),
+       "a mixed-case half is left shouted rather than guessed at");
+    ck(fat_shortname("readme.TxT", n, &cf) && !(cf & FAT_CASE_EXT_LOWER),
+       "including when it is the extension that is mixed");
+    ck(fat_shortname("stress.app", n, &cf) && (cf & FAT_CASE_BASE_LOWER),
+       "digits and letters together still count as lower case");
+
+    // And the flags have to reach the directory entry, which is byte 12.
+    fat_shortname("ca.pem", n, &cf);
+    fat_dirent(e, n, FAT_ATTR_ARCHIVE, 8, 4890, 0, cf);
+    ck(e[12] == (FAT_CASE_BASE_LOWER | FAT_CASE_EXT_LOWER),
+       "and land in byte 12 of the entry, where the host reads them");
 
     // --- host metadata ------------------------------------------------------
     ck(fat_is_host_metadata("System Volume Information"), "Windows' own directory is known");

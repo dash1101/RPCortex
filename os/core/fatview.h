@@ -116,8 +116,23 @@ struct FatNode {
     uint32_t mtime;          // Unix epoch; 0 if unknown
     uint16_t parent;         // index into the node table, or FAT_NO_PARENT for root
     uint8_t  is_dir;
+    // Which halves of the name were lower case before 8.3 shouted them.
+    //
+    // The stored name is upper case because the format says so, and a host
+    // renders exactly what it is given — which is why every file appears in
+    // capitals. Two bits in the directory entry, set by Windows NT and honoured
+    // by everything since, say "display this half lower case". It costs one
+    // byte and turns CA.PEM back into ca.pem.
+    //
+    // It cannot express mixed case; a name like ReadMe stays shouted, because
+    // the alternative is showing a name that is not the file's.
+    uint8_t  case_flags;
     char     name[11];       // 8.3, space padded, no dot — the on-disk form
 };
+
+// The case bits, as they sit in byte 12 of a directory entry.
+#define FAT_CASE_BASE_LOWER 0x08
+#define FAT_CASE_EXT_LOWER  0x10
 
 #define FAT_NO_PARENT 0xFFFF
 
@@ -132,7 +147,8 @@ void fat_fat_sector(const FatGeom *g, uint32_t fat_sector,
 
 // Encode one 32-byte directory entry.
 void fat_dirent(uint8_t e[FAT_DIRENT_SIZE], const char name[11], uint8_t attr,
-                uint32_t first_cluster, uint32_t size, uint32_t mtime);
+                uint32_t first_cluster, uint32_t size, uint32_t mtime,
+                uint8_t case_flags);
 
 // Which node owns a cluster, or -1 for none.
 int32_t fat_node_for_cluster(const FatNode *nodes, uint32_t count, uint32_t cluster);
@@ -182,7 +198,7 @@ void fat_dirent_dot(uint8_t e[FAT_DIRENT_SIZE], bool dotdot,
 // nothing by the character rules. A caller that wants such files visible has to
 // generate a name rather than pass one through, because there is no encoding of
 // "keep the long name" that does not involve long filename entries.
-bool fat_shortname(const char *name, char out[11]);
+bool fat_shortname(const char *name, char out[11], uint8_t *case_flags);
 
 // Whether a name is one a desktop operating system creates for its own
 // bookkeeping the moment it mounts a volume.

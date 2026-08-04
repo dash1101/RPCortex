@@ -82,6 +82,21 @@ RpcLock g_fs_lock;
 static lfs_t  g_lfs;
 static bool   g_mounted;
 
+// Every change to the filesystem moves this on by one.
+//
+// A cached view of the filesystem cannot otherwise tell that what it describes
+// has changed. The USB drive builds such a view and would keep serving it -- a
+// file created from the shell simply would not be there -- so it compares this
+// instead of trying to notice for itself.
+static uint32_t g_generation;
+
+uint32_t storage_generation(void) { return g_generation; }
+
+// Called by every operation below that changes anything. Deliberately one
+// place: the failure mode of a missed call is a stale view with nothing to
+// indicate it.
+static void bump(void) { g_generation++; }
+
 static int fs_read(const struct lfs_config *c, lfs_block_t block,
                    lfs_off_t off, void *buffer, lfs_size_t size) {
     (void)c;
@@ -217,6 +232,7 @@ bool storage_write_file(const char *name, const uint8_t *data, uint32_t len) {
     lfs_file_close(&g_lfs, &f);
     if (n != (lfs_ssize_t)len) return false;
     touch(name);
+    bump();
     return true;
 }
 
@@ -230,6 +246,7 @@ bool storage_append_file(const char *name, const uint8_t *data, uint32_t len) {
     lfs_file_close(&g_lfs, &f);
     if (n != (lfs_ssize_t)len) return false;
     touch(name);
+    bump();
     return true;
 }
 
@@ -342,7 +359,7 @@ bool storage_close_sink(void *handle) {
         // as much as any write's — a download that filled the disk fails here.
         ok = g_mounted && lfs_file_close(&g_lfs, &h->f) >= 0 && h->ok;
     }
-    if (ok) touch(h->name);
+    if (ok) { touch(h->name); bump(); }
     free(h);
     return ok;
 }
@@ -374,19 +391,36 @@ bool storage_mkdir(const char *path) {
     LockGuard _fs(&g_fs_lock);
     if (!g_mounted || lfs_mkdir(&g_lfs, path) < 0) return false;
     touch(path);
+    bump();
     return true;
 }
 
 bool storage_remove(const char *path) {
     LockGuard _fs(&g_fs_lock);
-    return g_mounted && lfs_remove(&g_lfs, path) >= 0;
+    if (!g_mounted || lfs_remove(&g_lfs, path) < 0) return false;
+    bump();
+    return true;
 }
 
 bool storage_rename(const char *from, const char *to) {
     LockGuard _fs(&g_fs_lock);
     // No touch(): littlefs carries the attributes across, and mv changes a name
     // rather than content — refreshing the timestamp would misreport it.
-    return g_mounted && lfs_rename(&g_lfs, from, to) >= 0;
+    if (!g_mounted || lfs_rename(&g_lfs, from, to) < 0) return false;
+    bump();
+    return true;
+}
+
+bool storage_truncate(const char *path, uint32_t size) {
+    LockGuard _fs(&g_fs_lock);
+    if (!g_mounted) return false;
+    lfs_file_t f;
+    if (lfs_file_open(&g_lfs, &f, path, LFS_O_WRONLY) < 0) return false;
+    bool ok = lfs_file_truncate(&g_lfs, &f, size) >= 0;
+    // The close commits, so its result matters as much as the truncate's.
+    if (lfs_file_close(&g_lfs, &f) < 0) ok = false;
+    if (ok) { touch(path); bump(); }
+    return ok;
 }
 
 bool storage_stat(const char *path, bool *is_dir, uint32_t *size) {
@@ -422,7 +456,7 @@ bool storage_copy(const char *from, const char *to) {
     lfs_file_close(&g_lfs, &out);
     // The copy is a new file, so it gets NOW rather than the source's time —
     // matching cp without -p, which is what people expect from a bare copy.
-    if (ok) touch(to);
+    if (ok) { touch(to); bump(); }
     return ok;
 }
 
@@ -453,6 +487,7 @@ bool storage_format_and_mount(void) {
     if (lfs_format(&g_lfs, &g_cfg_live) < 0) return false;
     if (lfs_mount(&g_lfs, &g_cfg_live) < 0)  return false;
     g_mounted = true;
+    bump();
     return true;
 }
 

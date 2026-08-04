@@ -47,6 +47,21 @@ bool     storage_walk(const char *path, StorageWalkFn cb, void *ctx);
 uint32_t storage_free_bytes(void);
 uint32_t storage_total_bytes(void);   // the whole filesystem partition, for df
 
+// Shorten a file to `size` bytes. Fails if the file is absent or shorter.
+//
+// Needed because a drive arrives in whole 512-byte sectors while a file ends
+// wherever it ends: the last sector of a dropped file is padded, and the real
+// length is only known from a directory entry that may arrive after the data.
+bool     storage_truncate(const char *path, uint32_t size);
+
+// Bumped by every operation that changes the filesystem.
+//
+// Something presenting a cached VIEW of the filesystem — the USB drive
+// synthesises one — has no other way to notice that the thing it is describing
+// moved underneath it. Comparing this against the value held when the view was
+// built is cheap and cannot miss a change, which polling for one can.
+uint32_t storage_generation(void);
+
 // Flash the firmware occupies, and the region reserved for it. The filesystem
 // starts at the reserve, so the first must stay below the second or an update
 // would overwrite the start of the filesystem.

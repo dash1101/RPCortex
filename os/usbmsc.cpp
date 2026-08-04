@@ -57,6 +57,23 @@ static MscNode  *g_nodes;
 static uint32_t  g_count;
 static bool      g_ready;
 
+// The filesystem revision the current view describes.
+static uint32_t  g_built_generation;
+
+// The first cluster not backed by an existing file: where free space begins.
+//
+// This one number is what lets a write be classified without interpreting the
+// filesystem. At or past it is a new file; below it is a change to something
+// that already exists, which is refused.
+static uint32_t  g_first_free = FAT_FIRST_DATA_CLUSTER;
+
+// Where the tail of a dropped file waits until it is known to be complete.
+//
+// A real file rather than memory: a drop is then bounded by free flash rather
+// than by free heap, and the heap on this device could not hold a firmware
+// image or a sound file. littlefs is doing what it is good at.
+#define MSC_DROP_TEMP "/tmp/.usbdrop"
+
 // Whether the drive is offered at all.
 //
 // Plugging a device into a machine should not hand that machine every file on
@@ -82,6 +99,24 @@ static AppSource g_src;
 static void     *g_src_handle;
 static int32_t   g_src_node = -1;
 
+static void drop_commit(void);
+static void msc_invalidate(void);
+
+// A file arriving from the host. Declared here because the service loop has to
+// know whether one is in flight before it drops the view.
+struct Incoming {
+    bool     active;
+    bool     failed;
+    char     name[MSC_NAME_MAX];
+    uint32_t first_cluster;    // the first new cluster this file was given
+    uint32_t next_cluster;     // the one expected next, to notice gaps
+    uint32_t size;             // from the directory entry; 0 until it arrives
+    uint32_t written;
+    void    *sink;
+};
+
+static Incoming g_in;
+
 static void src_close(void) {
     if (g_src_handle) storage_close_source(g_src_handle);
     g_src_handle = nullptr;
@@ -106,11 +141,13 @@ static void add_entry(void *vctx, const char *name, bool is_dir, uint32_t size) 
     if (strlen(name) >= MSC_NAME_MAX) return;   // no room to keep the real name
 
     char shortname[11];
-    if (!fat_shortname(name, shortname)) return;  // no 8.3 form: not showable
+    uint8_t case_flags = 0;
+    if (!fat_shortname(name, shortname, &case_flags)) return;  // no 8.3 form: not showable
 
     MscNode *n = &g_nodes[g_count++];
     memset(n, 0, sizeof(*n));
     memcpy(n->fat.name, shortname, 11);
+    n->fat.case_flags = case_flags;
     snprintf(n->name, sizeof(n->name), "%s", name);
     n->fat.parent = ctx->parent;
     n->fat.is_dir = is_dir ? 1 : 0;
@@ -160,6 +197,9 @@ static bool msc_build(void) {
         if (!g_nodes) return false;
     }
     src_close();
+    // A drop that was never finished leaves its temporary behind. Clearing it
+    // here keeps it out of the listing and out of the space accounting.
+    storage_remove(MSC_DROP_TEMP);
 
     // Node 0 is the root. It occupies no cluster — FAT16 gives the root
     // directory a fixed region of its own, which is why its entries are built
@@ -206,8 +246,17 @@ static bool msc_build(void) {
     // itself is fatview's, so the empty-file and out-of-room cases are decided
     // in the one place that has tests for them.
     packed_nodes();
-    fat_layout(g_packed, g_count, g_geom.real_clusters);
+    uint32_t used = fat_layout(g_packed, g_count, g_geom.real_clusters);
     for (uint32_t i = 0; i < g_count; i++) g_nodes[i].fat = g_packed[i];
+
+    // Free space begins after everything that exists. This one number is what
+    // lets a write be classified without interpreting the filesystem: at or
+    // past it is a new file, below it is a change to an existing one.
+    g_first_free = FAT_FIRST_DATA_CLUSTER + used;
+
+    // What the filesystem looked like when this was built, so a later change
+    // can be noticed rather than served stale.
+    g_built_generation = storage_generation();
     return true;
 }
 
@@ -300,7 +349,29 @@ extern "C" void tud_umount_cb(void) { msc_invalidate(); }
 extern "C" void usbmsc_service(void) {
     // Only once a host has actually configured the device. Before that there is
     // no drive to describe and no reason to spend the walk or the memory.
-    if (tud_mounted()) ensure_ready();
+    if (!tud_mounted()) return;
+
+    // Notice when the filesystem has moved on underneath the view.
+    //
+    // A file created from the shell simply was not on the drive: the view is
+    // built once and the host caches what it is told, so neither side had any
+    // reason to look again. The filesystem now counts its own changes, so this
+    // is an equality test rather than a guess, and it cannot miss one.
+    //
+    // Dropping the view is the whole mechanism. The next poll reports the
+    // medium absent, the one after that reports it present again, and a host
+    // treats that exactly as it treats a card being swapped: it throws away
+    // everything it had cached and reads the volume afresh. There is no way to
+    // tell a host "this sector changed", but there is a well-worn way to tell
+    // it "this is a different disk".
+    if (g_ready && storage_generation() != g_built_generation) {
+        // Not in the middle of serving a file. Pulling the medium out from
+        // under a copy in progress would fail it, and the change can wait for
+        // the few milliseconds until the copy finishes.
+        if (g_src_node < 0 && !g_in.active) msc_invalidate();
+    }
+
+    ensure_ready();
 }
 
 // --- the toggle -------------------------------------------------------------
@@ -393,12 +464,12 @@ void tud_msc_capacity_cb(uint8_t lun, uint32_t *block_count, uint16_t *block_siz
     *block_count = ensure_ready() ? g_geom.total_sectors : 0;
 }
 
-// Read-only for now: the write path is the next pass. Saying so here is what
-// makes a host refuse a copy in its own interface, rather than accept one and
-// discover later that nothing was kept.
 bool tud_msc_is_writable_cb(uint8_t lun) {
     (void)lun;
-    return false;
+    // Writable as a volume. Every EXISTING file still carries the read-only
+    // attribute, so a host declines to change one in its own interface rather
+    // than issuing writes this code has to refuse after the fact.
+    return g_enabled && g_ready;
 }
 
 int32_t tud_msc_read10_cb(uint8_t lun, uint32_t lba, uint32_t offset,
@@ -473,26 +544,251 @@ int32_t tud_msc_read10_cb(uint8_t lun, uint32_t lba, uint32_t offset,
     return (int32_t)n;
 }
 
+// --- writes -----------------------------------------------------------------
+//
+// One case is recognised: a new file appearing. That is not a subset of FAT
+// chosen for convenience, it is the only mutation that can be identified from
+// raw sector writes without implementing the filesystem — a delete, a rename
+// and an edit in place all arrive as writes over regions describing existing
+// files, and telling them apart means tracking what every byte of the volume
+// meant before the write.
+//
+// What makes the one case identifiable is WHERE the write lands. Everything
+// already on the device was laid out contiguously from cluster 2, so free space
+// is one run starting at a cluster this code chose. A write at or past it is
+// new data. A write below it is a change to something that exists, and is
+// refused. The same for directory entries: slots past the last real one are
+// free, slots at or below it are not.
+//
+// So the boundary is arithmetic rather than interpretation, which is the only
+// reason this is safe to do at all.
+
+static void drop_abort(void) {
+    if (g_in.sink) storage_close_sink(g_in.sink);
+    memset(&g_in, 0, sizeof(g_in));
+    storage_remove(MSC_DROP_TEMP);
+}
+
+// Finish the file the host has been writing.
+//
+// Called when the host says it is done — a cache synchronise, or an eject.
+// There is no other signal: MSC has no notion of a file, so "the copy has
+// finished" has to come from the one command a host issues when it wants its
+// writes durable.
+static void drop_commit(void) {
+    if (!g_in.active) return;
+    if (g_in.failed || !g_in.name[0]) { drop_abort(); return; }
+
+    void *sink = g_in.sink;
+    g_in.sink = nullptr;
+    bool ok = sink ? storage_close_sink(sink) : true;
+
+    // The directory entry carries the real length; the data arrived in whole
+    // sectors, so the last one is padded. Without the trim every dropped file
+    // would be rounded up to a multiple of 512 and anything that checks a
+    // length — a package, an image, a checksum — would reject it.
+    uint32_t want = g_in.size;
+    if (ok && want < g_in.written) ok = storage_truncate(MSC_DROP_TEMP, want);
+
+    char dest[MSC_NAME_MAX + 2];
+    snprintf(dest, sizeof(dest), "/%s", g_in.name);
+
+    if (ok) {
+        // Replacing an existing file is a rename over it, which littlefs does
+        // atomically. Dropping a file that is already there is the one way to
+        // overwrite one, and it is deliberate: the host asked to create it.
+        storage_remove(dest);
+        ok = storage_rename(MSC_DROP_TEMP, dest);
+    }
+    if (!ok) storage_remove(MSC_DROP_TEMP);
+
+    memset(&g_in, 0, sizeof(g_in));
+    // The view no longer matches the filesystem. Rebuilding immediately would
+    // pull the ground out from under a host mid-transfer, so it is invalidated
+    // and rebuilt at the next mount — same as any other change.
+    msc_invalidate();
+}
+
+// Start collecting a file the host has just declared.
+static void drop_begin(const char *name, uint32_t first_cluster, uint32_t size) {
+    if (g_in.active) drop_commit();      // a second file: the first one is done
+
+    memset(&g_in, 0, sizeof(g_in));
+    // Host bookkeeping is refused by name. Windows and macOS both create
+    // several of these within seconds of mounting, and none of it was asked
+    // for. The write is still accepted so the host sees no error; it simply
+    // does not land anywhere.
+    if (fat_is_host_metadata(name)) return;
+
+    g_in.active = true;
+    g_in.first_cluster = first_cluster;
+    g_in.next_cluster = first_cluster;
+    g_in.size = size;
+    snprintf(g_in.name, sizeof(g_in.name), "%s", name);
+    storage_remove(MSC_DROP_TEMP);
+    g_in.sink = storage_open_sink(MSC_DROP_TEMP);
+    if (!g_in.sink) g_in.failed = true;
+}
+
+// The long name, if the host wrote one.
+//
+// A host creating "readings.json" writes the 8.3 form REPO.JSO — three
+// characters of extension is all it has — preceded by long-name entries
+// carrying the real thing. Reading those is what keeps a dropped file's name
+// intact, and for anything with a four-letter extension it is the difference
+// between a working file and a broken one.
+static char g_lfn[MSC_NAME_MAX];
+static bool g_lfn_valid;
+
+static void lfn_collect(const uint8_t *e) {
+    // Sequence number in the low bits; bit 6 marks the LAST entry, which is
+    // written first because they are stored in reverse.
+    uint32_t seq = e[0] & 0x1F;
+    if (seq == 0 || seq > 4) { g_lfn_valid = false; return; }   // more than we keep
+    if (e[0] & 0x40) { memset(g_lfn, 0, sizeof(g_lfn)); g_lfn_valid = true; }
+    if (!g_lfn_valid) return;
+
+    // Thirteen UTF-16 code units per entry, in three runs.
+    static const uint8_t off[13] = {1,3,5,7,9,14,16,18,20,22,24,28,30};
+    uint32_t base = (seq - 1) * 13;
+    for (int i = 0; i < 13; i++) {
+        uint32_t idx = base + (uint32_t)i;
+        if (idx >= sizeof(g_lfn) - 1) { g_lfn_valid = false; return; }
+        uint16_t c = (uint16_t)(e[off[i]] | (e[off[i] + 1] << 8));
+        if (c == 0xFFFF) continue;                 // padding
+        // Anything outside ASCII has no place in a name this device will later
+        // have to type at a shell prompt, so the long name is abandoned and the
+        // 8.3 form is used instead.
+        if (c > 0x7F) { g_lfn_valid = false; return; }
+        g_lfn[idx] = (char)c;
+    }
+}
+
+// A sector of root directory entries the host has written.
+static void root_write(uint32_t sector, const uint8_t *buf) {
+    const uint32_t per = FAT_SECTOR_SIZE / FAT_DIRENT_SIZE;
+    // Entry 0 is the volume label and 1..n-1 are the files already here, so
+    // anything at or below that is a change to something existing.
+    uint32_t existing = g_count;      // label + (g_count - 1) children
+
+    for (uint32_t s = 0; s < per; s++) {
+        uint32_t idx = sector * per + s;
+        const uint8_t *e = buf + s * FAT_DIRENT_SIZE;
+        if (idx < existing) continue;             // not free space: refuse silently
+        if (e[0] == 0x00 || e[0] == 0xE5) continue;   // free or deleted
+
+        uint8_t attr = e[11];
+        if ((attr & 0x0F) == 0x0F) { lfn_collect(e); continue; }
+        if (attr & (FAT_ATTR_VOLUME_ID | FAT_ATTR_DIRECTORY)) {
+            // A new directory is not something this can accept: its contents
+            // would arrive as writes to a cluster with no file behind them.
+            g_lfn_valid = false;
+            continue;
+        }
+
+        char name[MSC_NAME_MAX];
+        if (g_lfn_valid && g_lfn[0]) {
+            snprintf(name, sizeof(name), "%s", g_lfn);
+        } else {
+            // Rebuild "NAME.EXT" from the padded on-disk form, honouring the
+            // case bits the host set so a dropped file keeps its own case.
+            int o = 0;
+            bool lower_base = (e[12] & FAT_CASE_BASE_LOWER) != 0;
+            bool lower_ext  = (e[12] & FAT_CASE_EXT_LOWER) != 0;
+            for (int k = 0; k < 8 && e[k] != ' '; k++) {
+                char c = (char)e[k];
+                if (lower_base && c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+                name[o++] = c;
+            }
+            if (e[8] != ' ') {
+                name[o++] = '.';
+                for (int k = 8; k < 11 && e[k] != ' '; k++) {
+                    char c = (char)e[k];
+                    if (lower_ext && c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+                    name[o++] = c;
+                }
+            }
+            name[o] = 0;
+        }
+        g_lfn_valid = false;
+
+        uint32_t first = (uint32_t)(e[26] | (e[27] << 8));
+        uint32_t size  = (uint32_t)e[28] | ((uint32_t)e[29] << 8) |
+                         ((uint32_t)e[30] << 16) | ((uint32_t)e[31] << 24);
+
+        // The entry is commonly written twice: once when the file is created,
+        // with a length of zero, and again with the real one once the data has
+        // gone out. So a second sighting updates rather than restarts.
+        if (g_in.active && g_in.first_cluster == first && first != 0) {
+            if (size) g_in.size = size;
+            continue;
+        }
+        drop_begin(name, first, size);
+    }
+}
+
 int32_t tud_msc_write10_cb(uint8_t lun, uint32_t lba, uint32_t offset,
                            uint8_t *buffer, uint32_t bufsize) {
-    (void)lun; (void)lba; (void)offset; (void)buffer;
-    // Accepted and discarded, deliberately.
-    //
-    // The volume reports itself read-only, so a host that respects that never
-    // reaches here. One that writes anyway gets a success it can act on rather
-    // than a stalled endpoint, which is what turns a refused copy into a drive
-    // the host marks as failed.
+    (void)lun;
+    if (!g_enabled || !g_ready) return -1;
+    // A partial sector cannot be interpreted: both halves of this read whole
+    // 32-byte entries and whole clusters. The endpoint buffer is a full sector,
+    // so this does not happen; refusing is cheaper than a wrong guess.
+    if (offset != 0 || bufsize < FAT_SECTOR_SIZE) return (int32_t)bufsize;
+
+    uint32_t idx, sic;
+    switch (fat_region(&g_geom, lba, &idx, &sic)) {
+    case FAT_RGN_ROOT:
+        root_write(idx, buffer);
+        break;
+
+    case FAT_RGN_DATA:
+        // Below free space is an existing file. Accepted and dropped rather
+        // than failed: the volume already says those files are read-only, and
+        // stalling the endpoint would make the host mark the whole drive bad.
+        if (idx < g_first_free) break;
+        if (!g_in.active || g_in.failed || !g_in.sink) break;
+        if (idx != g_in.next_cluster) {
+            // Out of order. The sink appends, so the bytes would land at the
+            // wrong offset — and a file that is silently wrong is worse than
+            // one that did not arrive.
+            g_in.failed = true;
+            break;
+        }
+        if (!storage_sink_write(g_in.sink, buffer, FAT_SECTOR_SIZE)) g_in.failed = true;
+        g_in.written += FAT_SECTOR_SIZE;
+        g_in.next_cluster++;
+        break;
+
+    case FAT_RGN_FAT:
+    case FAT_RGN_BOOT:
+        // The host's own allocation bookkeeping. It is rebuilt from the
+        // filesystem every time the volume is presented, so there is nothing
+        // here worth keeping.
+        break;
+
+    default:
+        return -1;
+    }
     return (int32_t)bufsize;
 }
 
 int32_t tud_msc_scsi_cb(uint8_t lun, uint8_t const scsi_cmd[16],
                         void *buffer, uint16_t bufsize) {
-    (void)lun; (void)buffer; (void)bufsize;
+    (void)buffer; (void)bufsize;
     switch (scsi_cmd[0]) {
     case SCSI_CMD_PREVENT_ALLOW_MEDIUM_REMOVAL:
         // Nothing to lock: there is no medium to eject. Answering rather than
         // failing keeps the host from treating the device as broken.
         return 0;
+
+    case 0x35:   // SYNCHRONIZE CACHE (10), which TinyUSB does not name
+    case 0x91:   // SYNCHRONIZE CACHE (16)
+        // The only "the copy has finished" signal MSC has. Hosts issue it at
+        // the end of a write and again on eject.
+        drop_commit();
+        return 0;
+
     default:
         tud_msc_set_sense(lun, SCSI_SENSE_ILLEGAL_REQUEST, 0x20, 0x00);
         return -1;

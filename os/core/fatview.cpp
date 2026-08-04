@@ -252,10 +252,12 @@ void fat_time_encode(uint32_t epoch, uint16_t *date, uint16_t *time) {
 }
 
 void fat_dirent(uint8_t e[FAT_DIRENT_SIZE], const char name[11], uint8_t attr,
-                uint32_t first_cluster, uint32_t size, uint32_t mtime) {
+                uint32_t first_cluster, uint32_t size, uint32_t mtime,
+                uint8_t case_flags) {
     memset(e, 0, FAT_DIRENT_SIZE);
     memcpy(e, name, 11);
     e[11] = attr;
+    e[12] = case_flags;        // the NT case bits: which halves to show lower case
 
     uint16_t d, t;
     fat_time_encode(mtime, &d, &t);
@@ -274,8 +276,9 @@ void fat_dirent_label(uint8_t e[FAT_DIRENT_SIZE], const char *label) {
     char name[11];
     memset(name, ' ', sizeof(name));
     for (int i = 0; i < 11 && label && label[i]; i++) name[i] = label[i];
-    // No cluster and no size: the label is a name and nothing else.
-    fat_dirent(e, name, FAT_ATTR_VOLUME_ID, 0, 0, 0);
+    // No cluster and no size: the label is a name and nothing else. The label
+    // is never case-folded — it is shown exactly as given.
+    fat_dirent(e, name, FAT_ATTR_VOLUME_ID, 0, 0, 0, 0);
 }
 
 void fat_dirent_dot(uint8_t e[FAT_DIRENT_SIZE], bool dotdot,
@@ -288,7 +291,7 @@ void fat_dirent_dot(uint8_t e[FAT_DIRENT_SIZE], bool dotdot,
     // ".." names the root as cluster 0, which is the one place the format uses
     // a cluster number that is not a real cluster.
     fat_dirent(e, name, FAT_ATTR_DIRECTORY,
-               dotdot ? parent_cluster : self_cluster, 0, mtime);
+               dotdot ? parent_cluster : self_cluster, 0, mtime, 0);
 }
 
 static uint32_t child_count(const FatNode *nodes, uint32_t count, uint32_t idx) {
@@ -383,7 +386,7 @@ void fat_dir_sector(const FatNode *nodes, uint32_t count, uint32_t dir_idx,
         uint8_t attr = child->is_dir ? FAT_ATTR_DIRECTORY
                                      : (uint8_t)(FAT_ATTR_READ_ONLY | FAT_ATTR_ARCHIVE);
         fat_dirent(slot, child->name, attr, child->first_cluster,
-                   child->size, child->mtime);
+                   child->size, child->mtime, child->case_flags);
     }
 }
 
@@ -393,8 +396,9 @@ static bool illegal_83(char c) {
     return strchr("\"*+,./:;<=>?[\\]|", c) != nullptr;
 }
 
-bool fat_shortname(const char *name, char out[11]) {
+bool fat_shortname(const char *name, char out[11], uint8_t *case_flags) {
     memset(out, ' ', 11);
+    if (case_flags) *case_flags = 0;
     if (!name || !*name) return false;
 
     // A leading dot means a name that is all extension, which 8.3 cannot
@@ -409,11 +413,18 @@ bool fat_shortname(const char *name, char out[11]) {
     int base_len = dot ? (int)(dot - name) : (int)strlen(name);
     if (base_len <= 0) return false;
 
+    // Each half is foldable only if it holds no upper-case letter at all.
+    // Mixed case has no representation, and showing one half of a name in the
+    // wrong case is worse than showing all of it shouted.
+    bool base_upper = false, base_lower = false;
+    bool ext_upper = false, ext_lower = false;
+
     int o = 0;
     for (int i = 0; i < base_len && o < 8; i++) {
         char c = name[i];
         if (illegal_83(c)) continue;
-        if (c >= 'a' && c <= 'z') c = (char)(c - 'a' + 'A');
+        if (c >= 'a' && c <= 'z') { base_lower = true; c = (char)(c - 'a' + 'A'); }
+        else if (c >= 'A' && c <= 'Z') base_upper = true;
         out[o++] = c;
     }
     if (o == 0) return false;   // nothing survived the character rules
@@ -423,9 +434,17 @@ bool fat_shortname(const char *name, char out[11]) {
         for (const char *p = dot + 1; *p && e < 3; p++) {
             char c = *p;
             if (illegal_83(c)) continue;
-            if (c >= 'a' && c <= 'z') c = (char)(c - 'a' + 'A');
+            if (c >= 'a' && c <= 'z') { ext_lower = true; c = (char)(c - 'a' + 'A'); }
+            else if (c >= 'A' && c <= 'Z') ext_upper = true;
             out[8 + e++] = c;
         }
+    }
+
+    if (case_flags) {
+        uint8_t f = 0;
+        if (base_lower && !base_upper) f |= FAT_CASE_BASE_LOWER;
+        if (ext_lower  && !ext_upper)  f |= FAT_CASE_EXT_LOWER;
+        *case_flags = f;
     }
 
     // 0xE5 in the first byte marks a deleted entry, so a name that genuinely
