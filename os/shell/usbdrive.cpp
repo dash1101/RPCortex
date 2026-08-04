@@ -132,6 +132,11 @@ static const char *basename_of(const char *path) {
 uint32_t usbmsc_import_all(bool *refused);
 bool usbmsc_settled(void);
 
+struct Counter { uint32_t n; };
+static void count_cb(void *ctx, const F12Entry *e) {
+    if (!e->is_dir) ((Counter *)ctx)->n++;
+}
+
 static int cmd_download(int argc, char **argv) {
     (void)argc; (void)argv;
 #if !CFG_TUD_MSC
@@ -149,33 +154,39 @@ static int cmd_download(int argc, char **argv) {
     out_blank();
     out_multi("  %s%sDOWNLOAD MODE%s", C_BOLD, C_CYAN, C_RESET);
     out_multi("  A drive named RPCORTEX is on this computer. Drop files onto it.");
-    out_multi("  %sThey are copied into /usb as they arrive. Press any key when done.%s",
+    out_multi("  %sPress any key when you are done, and they will be copied into /usb.%s",
               C_GRAY, C_RESET);
     out_blank();
 
-    // A spinner rather than a progress bar: there is no total to measure
-    // against, because the host never says how much it intends to send.
+    // NOTHING is copied while the mode is running. Only at the end.
+    //
+    // Importing as files arrived seemed friendlier and was wrong. Making a
+    // document in Explorer is three operations — create, rename, edit — and a
+    // scan that ran between them took the file under its first name, then took
+    // it again under its second. Two files on the device where the host shows
+    // one, and the first is a name nobody chose.
+    //
+    // Waiting until the end collapses all of that: whatever the drive holds
+    // when the mode closes is what gets taken, however many times the host
+    // changed its mind on the way there. The count below is what is ON the
+    // drive, which is honest about the state without acting on it.
     static const char *kSpin = "|/-\\";
-    uint32_t frame = 0, taken = 0;
-    bool refused = false, quit = false;
+    uint32_t frame = 0, on_drive = 0;
+    bool refused = false, quit = false, counted = false;
 
     while (!quit) {
-        // A finished copy shows up as the host going quiet, which is the only
-        // signal MSC offers short of a cache flush that not every host sends.
-        if (usbmsc_settled()) {
-            bool r = false;
-            uint32_t n = usbmsc_import_all(&r);
-            taken += n;
-            refused = refused || r;
-            if (n) {
-                out_progress_done();
-                out_ok("Took %u file%s into /usb", (unsigned)n, n == 1 ? "" : "s");
-            }
-            if (r) out_warn("Out of room -- the drive is now write protected.");
+        // Recount when the host goes quiet, which is the only moment it can
+        // have changed. Polling the directory every frame would be work for
+        // nothing.
+        if (usbmsc_settled() || !counted) {
+            Counter c{0};
+            usbdrv_list(count_cb, &c);
+            on_drive = c.n;
+            counted = true;
         }
 
-        printf("\r  %c  waiting for files   %u taken   ",
-               kSpin[frame++ & 3], (unsigned)taken);
+        printf("\r  %c  drive open   %u file%s waiting   ",
+               kSpin[frame++ & 3], (unsigned)on_drive, on_drive == 1 ? "" : "s");
         fflush(stdout);
 
         // Any key ends it, which is what the banner promised. Ctrl+C too, since
@@ -187,9 +198,17 @@ static int cmd_download(int argc, char **argv) {
         if (intr_check()) quit = true;
     }
 
-    // One last sweep, for anything that landed while the key was being pressed.
+    // Let a copy in flight finish before reading it. A key pressed mid-transfer
+    // would otherwise take half a file.
+    printf("\r  ...  finishing                          ");
+    fflush(stdout);
+    for (int i = 0; i < 40; i++) {
+        if (usbmsc_settled()) break;
+        sleep_ms(50);
+    }
+
     bool r = false;
-    taken += usbmsc_import_all(&r);
+    uint32_t taken = usbmsc_import_all(&r);
     refused = refused || r;
 
     out_progress_done();
@@ -197,8 +216,18 @@ static int cmd_download(int argc, char **argv) {
     usbmsc_set_mode(was);
 
     out_blank();
-    if (taken) out_ok("%u file%s in /usb", (unsigned)taken, taken == 1 ? "" : "s");
-    else       out_multi("  %sNothing arrived.%s", C_GRAY, C_RESET);
+    if (taken) {
+        out_ok("%u file%s copied into /usb", (unsigned)taken, taken == 1 ? "" : "s");
+        // The drive keeps its copy. Saying so beats leaving someone to discover
+        // that a megabyte is slowly filling with things they already have.
+        out_multi("  %sThe drive still holds them too -- 'usb format yes' empties it.%s",
+                  C_GRAY, C_RESET);
+    } else if (on_drive) {
+        out_multi("  %sNothing new -- /usb already has what is on the drive.%s",
+                  C_GRAY, C_RESET);
+    } else {
+        out_multi("  %sNothing arrived.%s", C_GRAY, C_RESET);
+    }
     if (refused)
         out_warn("Something did not fit. Free space with 'rm' and try again.");
     out_multi("  %sThe drive is %s again.%s", C_GRAY,
