@@ -34,7 +34,7 @@ An installed package's commands go live at boot; an app registers commands via
 the ABI (the `greet` app demonstrates it). That is the package system the Nova
 D1 will sit inside.
 
-**Tests** — 42 host suites, all green under ASan/UBSan: `os/host/run_all.sh`.
+**Tests** — 44 host suites, all green under ASan/UBSan: `os/host/run_all.sh`.
 One of them, `fatimage_test`, is not a test of this code against its author's
 reading of a specification — it synthesises a whole FAT volume and hands it to
 `fsck.fat`, because a filesystem this device only ever writes and never reads
@@ -109,12 +109,18 @@ This is the base the Nova D1 gets ported onto.
   the two have never been compared over a long uptime. If they disagree, a
   healthy device reports high fragmentation, which is exactly the "diagnostic
   that invents a problem" failure v1 hit.
-- **Drag-and-drop file transfer** (#69) — **half done.** The device presents its
-  whole filesystem as a FAT16 volume over USB alongside the console, so
-  everything on it is visible and copyable off. Getting a file ON still means
-  `put` over the console or `pkg install` over the network: the volume reports
-  itself read-only, and the write path is the next pass. The synthesised
-  geometry is checked against `fsck.fat`, which reads a generated volume clean.
+- **Drag-and-drop file transfer** (#69) — **built, untested on hardware.** The
+  device presents a 1 MB transfer area over USB alongside the console: a real
+  FAT12 volume in its own flash region, which the host owns outright and may
+  create, edit, rename and delete in. `usb get` and `usb put` move files between
+  it and the filesystem. `usb off` withholds it.
+
+  It replaced a view synthesised over littlefs, which was built, shipped and
+  abandoned — the reasoning is in `os/USBMSC-DESIGN.md` and is worth reading
+  before anyone proposes it again. In short: inferring what a raw sector write
+  MEANT can only ever handle the cases it was taught, and honouring one meant
+  reaching into littlefs from inside the USB stack, which deadlocked against
+  the console.
 - **The site oversells all of this** (#73). v2 is early alpha; v1 is still what
   anyone should be running.
 - **Missing v1 commands** — `watch`, `edit`/`nano`, `task`/`service`/`startup`,
