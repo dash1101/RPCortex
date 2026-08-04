@@ -197,6 +197,46 @@ on every synthesised entry is what makes a refused edit show up as the host
 declining in its own interface, rather than as a write this code silently
 discards.
 
+## The drive is enumerated three seconds before the filesystem is mounted
+
+Worth its own heading because the first build hit it, and because the symptom
+carried no information at all.
+
+`main` brings up stdio and then waits up to three seconds for a host, driving
+the device stack so enumeration can complete. `kboot` — which is where
+`storage_init` mounts littlefs — runs *after* that. So a device plugged in at
+power-on is fully enumerated, and answering SCSI commands, while it still has no
+filesystem.
+
+Nothing in the first version noticed. `storage_total_bytes()` is a compile-time
+constant, so the geometry came out correct; `storage_walk("/")` returned false
+because nothing was mounted, and added no entries; and `msc_build()` reported
+success anyway, because the only failure it recognised was a failed allocation.
+The result — a valid, correctly sized, entirely empty volume — was then cached
+as ready for the rest of the run.
+
+What the host showed: a drive that mounts cleanly, reports the right size, is
+write-protected as intended, and contains nothing. What the device showed: no
+error, anywhere.
+
+Two things fix it, and both are needed:
+
+- **Not ready until the filesystem is mounted.** `storage_stat("/")` is the
+  probe, since it returns false when nothing is mounted. Reporting not-ready is
+  also what the host wants: the MSC layer answers "medium not present", TinyUSB
+  advertises the device as removable, and every operating system polls
+  removable media rather than giving up on it.
+- **An unreadable root is a failure, not an empty drive.** They produce an
+  identical node table, so the two have to be told apart where the difference
+  is still known — at the walk.
+
+The general lesson is the one worth keeping: **a synthesised view has no error
+path of its own.** Anything that goes wrong while building it is indistinguishable
+from a device that genuinely has nothing on it, so every step that can fail has
+to say so at the point of failure. `usbdrive status` exists for the same reason
+— it prints the table, which is the only way to tell "empty" from "broken"
+without a rebuild.
+
 ## Hazards worth writing down now
 
 - **The host caches.** An OS that has mounted a FAT volume will not re-read

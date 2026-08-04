@@ -17,6 +17,8 @@
 
 #include "fatview.h"
 #include "lock.h"
+#include "out.h"
+#include "registry.h"
 #include "storage.h"
 #include "task.h"
 
@@ -54,6 +56,22 @@ static FatGeom   g_geom;
 static MscNode  *g_nodes;
 static uint32_t  g_count;
 static bool      g_ready;
+
+// Whether the drive is offered at all.
+//
+// Plugging a device into a machine should not hand that machine every file on
+// it. This device is meant to be carried around and plugged into things, and a
+// filesystem holding saved networks, account hashes and captured data is not
+// something to expose by reflex.
+//
+// Off means the medium is reported absent: the interface still exists, so the
+// console is unaffected and no re-enumeration is needed, but no sector is ever
+// served. That is enough to keep the data in — a host cannot read what the
+// device will not answer — and it is the same thing an empty card reader looks
+// like, which is a state every operating system already handles.
+static bool      g_enabled = true;
+
+#define MSC_REG_KEY "USB.Drive"
 
 // One open file, kept between reads.
 //
@@ -165,7 +183,16 @@ static bool msc_build(void) {
             continue;                            // too deep to name: skip it
         }
         WalkCtx ctx{(uint16_t)i, false};
-        storage_walk(path, add_entry, &ctx);
+        bool walked = storage_walk(path, add_entry, &ctx);
+
+        // A root that cannot be read is a failure, not an empty drive.
+        //
+        // These two look identical in the table — no entries either way — and
+        // treating them the same is what let a view built before the filesystem
+        // was mounted be cached as a perfectly good empty volume. A
+        // subdirectory that will not open is different: it is one unreadable
+        // folder on an otherwise fine drive, so the walk carries on.
+        if (i == 0 && !walked) return false;
     }
 
     // Timestamps before the layout, because reading one needs the node's path
@@ -203,6 +230,26 @@ void tud_msc_inquiry_cb(uint8_t lun, uint8_t vendor_id[8], uint8_t product_id[16
 // gives up on before it ever asks again.
 static bool ensure_ready(void) {
     if (g_ready) return true;
+    if (!g_enabled) return false;
+
+    // The filesystem has to be mounted before there is anything to describe,
+    // and during boot it is not.
+    //
+    // A host attached at power-on enumerates while main is still in its wait
+    // loop, which is three seconds before kboot mounts anything, and it starts
+    // asking for sectors immediately. storage_total_bytes() is a compile-time
+    // constant, so the geometry came out fine; the walk found nothing because
+    // nothing was mounted; and the result — a valid, correctly sized, entirely
+    // empty volume — was then cached as ready for the rest of the run. The
+    // drive appeared, mounted, and showed no files, with nothing anywhere
+    // reporting an error.
+    //
+    // Reporting not-ready instead is both honest and what the host wants: the
+    // MSC layer answers with "medium not present", which is a condition every
+    // operating system retries rather than gives up on.
+    bool is_dir = false;
+    if (!storage_stat("/", &is_dir, nullptr)) return false;
+
     // The lock covers the geometry as well as the walk. How much the filesystem
     // can hold is read from it, so it is as much a filesystem question as the
     // listing is, and splitting them leaves a window where the two disagree.
@@ -254,6 +301,79 @@ extern "C" void usbmsc_service(void) {
     // Only once a host has actually configured the device. Before that there is
     // no drive to describe and no reason to spend the walk or the memory.
     if (tud_mounted()) ensure_ready();
+}
+
+// --- the toggle -------------------------------------------------------------
+
+bool usbmsc_enabled(void) { return g_enabled; }
+
+void usbmsc_set_enabled(bool on) {
+    if (on == g_enabled) return;
+    g_enabled = on;
+    // Drop the view either way. Turning it off must not leave a built tree
+    // behind, and turning it on must not present one built before whatever the
+    // filesystem looked like at the time.
+    msc_invalidate();
+    reg_set(MSC_REG_KEY, on ? "on" : "off");
+}
+
+// Read the saved setting at boot. A device that was told to keep its files to
+// itself should still be doing that after a reboot.
+void usbmsc_init(void) {
+    const char *v = reg_get(MSC_REG_KEY, "on");
+    g_enabled = !(v && (v[0] == 'o' || v[0] == 'O') && (v[1] == 'f' || v[1] == 'F'));
+}
+
+// What the device thinks it is showing.
+//
+// This exists because the failure that shipped in the first build — a view
+// built before the filesystem was mounted, cached as a valid empty volume —
+// looked identical from the host to a device with no files on it, and there was
+// no way to tell them apart without a rebuild. One command that prints the
+// table settles it.
+void usbmsc_report(bool verbose) {
+    out_multi("  Drive        : %s", g_enabled ? "on" : "off");
+    out_multi("  View         : %s", g_ready ? "built" : "not built");
+    if (!g_ready) {
+        if (!g_enabled)
+            out_multi("  %s(turned off -- 'usbdrive on' to offer it)%s", C_GRAY, C_RESET);
+        else
+            out_multi("  %s(no host has mounted it yet)%s", C_GRAY, C_RESET);
+        return;
+    }
+
+    out_multi("  Volume       : %u KB in %u sectors",
+              (unsigned)(g_geom.total_sectors / 2), (unsigned)g_geom.total_sectors);
+    out_multi("  Clusters     : %u real, %u claimed%s",
+              (unsigned)g_geom.real_clusters, (unsigned)g_geom.data_clusters,
+              g_geom.data_clusters > g_geom.real_clusters
+                  ? "  (the difference is marked bad, to clear the FAT16 floor)" : "");
+    out_multi("  Showing      : %u entr%s of %u",
+              (unsigned)(g_count - 1), g_count == 2 ? "y" : "ies", MSC_MAX_NODES - 1);
+
+    if (g_count <= 1) {
+        out_warn("Nothing to show. The filesystem was empty, or unreadable, when "
+                 "the view was built.");
+        return;
+    }
+    if (!verbose) return;
+
+    char path[192];
+    for (uint32_t i = 1; i < g_count; i++) {
+        const FatNode *f = &g_nodes[i].fat;
+        if (!node_path(i, path, sizeof(path))) snprintf(path, sizeof(path), "(unnameable)");
+        char eight_three[13];
+        int o = 0;
+        for (int k = 0; k < 8 && f->name[k] != ' '; k++) eight_three[o++] = f->name[k];
+        if (f->name[8] != ' ') {
+            eight_three[o++] = '.';
+            for (int k = 8; k < 11 && f->name[k] != ' '; k++) eight_three[o++] = f->name[k];
+        }
+        eight_three[o] = 0;
+        out_multi("   %-12s %-5s %6u B  cluster %-5u %s", eight_three,
+                  f->is_dir ? "DIR" : "FILE", (unsigned)f->size,
+                  (unsigned)f->first_cluster, path);
+    }
 }
 
 bool tud_msc_start_stop_cb(uint8_t lun, uint8_t power_condition, bool start, bool load_eject) {

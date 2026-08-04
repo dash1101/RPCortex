@@ -97,6 +97,7 @@ add_executable(rpcortex_v2
     ${OS_ROOT}/shell/fetch.cpp
     ${OS_ROOT}/shell/ps.cpp
     ${OS_ROOT}/shell/logcmd.cpp
+    ${OS_ROOT}/shell/usbdrive.cpp
     ${OS_ROOT}/shell/stock.cpp
     ${OS_ROOT}/shell/jobs.cpp
     ${OS_ROOT}/shell/fsinit.cpp

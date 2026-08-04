@@ -32,6 +32,11 @@
 void net_autoconnect(void);
 void task_start_core1(void);
 extern "C" void usb_task_start(void);
+#if CFG_TUD_MSC
+void usbmsc_init(void);
+#else
+static inline void usbmsc_init(void) {}
+#endif
 void stock_install_once(void);
 void update_report_boot(void);
 void fs_layout_check(bool verbose);
@@ -174,6 +179,10 @@ int main(void) {
     // exactly why this survived so long.
     flash_safe_execute_core_init();
     task_start_core1();
+    // After kboot, because the setting comes out of the registry and the
+    // registry comes off the filesystem. A device told to keep its files to
+    // itself has to still be doing that after a reboot.
+    usbmsc_init();
     // Before the shell, so USB is being serviced by the time there is a prompt
     // to type at. It is what drives tud_task() from here on.
     usb_task_start();

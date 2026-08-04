@@ -60,6 +60,7 @@ void netapps_register(void);
 void fetch_register(void);
 void ps_register(void);
 void log_register(void);
+void usbdrive_register(void);
 void stock_register(void);
 void stock_install_once(void);
 void jobs_register(void);
@@ -381,6 +382,7 @@ void shell_register_builtins(void) {
     fetch_register();       // fetch / neofetch
     ps_register();          // ps / kill — the task manager
     log_register();         // logdump
+    usbdrive_register();    // usbdrive — offer the filesystem over USB, or do not
     jobs_register();        // startup / task / service / watch
     fsinit_register();      // fscheck
     diag_register();        // diag / compat / inputstat / regreset / pkgdisable / pkgenable
