@@ -200,6 +200,9 @@ static int cmd_pkg(int argc, char **argv) {
     out_multi("  pkg remove <name>       uninstall");
     out_multi("  pkg list                what is installed");
     out_multi("  pkg repo [add|remove]   which repositories to use");
+    // `stock` is its own command, not a pkg subcommand — but `pkg stock` is
+    // what anyone looking for it types first, so say where it went.
+    out_multi("  stock                   restore a package built into the firmware");
     out_multi("  pkg certs [install]     trusted roots for HTTPS");
     return 1;
 }

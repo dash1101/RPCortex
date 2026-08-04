@@ -5,7 +5,7 @@
 // it and it stays deleted, which is the whole difference between shipping a
 // package and shipping a built-in command that calls itself one.
 //
-// `pkg stock` puts them back, since the copy in flash never goes anywhere.
+// `stock` puts them back, since the copy in flash never goes anywhere.
 
 #include "pkg.h"
 #include "command.h"
@@ -123,10 +123,22 @@ extern "C" const unsigned int  stock_index_len;
 // newer than the one compiled in, and putting the shipped copy back after a
 // firmware update would silently undo it.
 bool stock_install_index(void) {
+    // The shipped CATALOGUE — what `pkg search` can offer before the device has
+    // ever reached the network — belongs in the repository cache, next to
+    // anything `pkg update` downloads later.
+    //
+    // It used to be written to /os/pkg/index.cfg, which is the list of what is
+    // INSTALLED. Two unrelated things, one filename. On a device that already
+    // had packages the write was skipped and nothing showed; on a fresh install
+    // the catalogue got there first and became the installed list. After that
+    // `pkg list` printed the catalogue as raw JSON, nothing loaded at boot
+    // because none of it parses as an installed entry, and every package that
+    // had been installed was simply gone. All of that from one path.
+    const char *cache = "/os/pkg/repo.json";
     bool is_dir = false; uint32_t size = 0;
-    if (storage_stat("/os/pkg/index.cfg", &is_dir, &size) && size > 0) return true;
-    if (!storage_write_file("/os/pkg/index.cfg", stock_index_data, stock_index_len)) {
-        log_add(LOG_K_WARN, "pkg: shipped index could not be written");
+    if (storage_stat(cache, &is_dir, &size) && size > 0) return true;
+    if (!storage_write_file(cache, stock_index_data, stock_index_len)) {
+        log_add(LOG_K_WARN, "pkg: shipped catalogue could not be written");
         return false;
     }
     log_addf(LOG_K_OK, "pkg: installed the shipped catalogue (%u bytes)",
@@ -155,8 +167,41 @@ bool stock_install_cacerts(bool force) {
 
 static void install_cacerts(void) { stock_install_cacerts(false); }
 
+// Undo the damage on a device that already booted the broken version.
+//
+// The installed list is `name version` a line at a time. A file that begins
+// with a brace is the shipped catalogue, written there by the bug above — and
+// leaving it means every package stays invisible and every reinstall appends to
+// something nothing can read. Moving it aside is safe: what is actually
+// installed is the set of .app files in /pkg, and stock_install_once is about
+// to put the built-in ones back.
+static void repair_installed_index(void) {
+    uint8_t first = 0;
+    bool is_dir = false; uint32_t size = 0;
+    if (!storage_stat("/os/pkg/index.cfg", &is_dir, &size) || size == 0) return;
+    if (storage_read_file("/os/pkg/index.cfg", &first, 1) != 1) return;
+    if (first != '{' && first != '[') return;          // an ordinary list
+
+    storage_remove("/os/pkg/index.cfg");
+    log_add(LOG_K_WARN, "pkg: the installed list held a catalogue; discarded it");
+    out_warnp("pkg", "The installed-package list was holding a repository "
+                     "catalogue, and has been cleared.");
+    out_multi("  Built-in packages are being restored. Anything else will need");
+    out_multi("  'pkg install' again — the files are still there, only the list");
+    out_multi("  of them was wrong.");
+    // Whatever the registry thinks was placed, it no longer is as far as the
+    // list is concerned. Forget it so the built-ins are written back.
+    reg_set("System.Stock", "");
+    for (unsigned i = 0; i < N_STOCK; i++) {
+        char key[REG_KEY_MAX];
+        snprintf(key, sizeof(key), "Stock.%s_len", kStock[i].name);
+        reg_set(key, "");
+    }
+}
+
 void stock_install_once(void) {
     install_cacerts();
+    repair_installed_index();
     stock_install_index();
     for (unsigned i = 0; i < N_STOCK; i++) {
         bool is_update = false;
@@ -190,7 +235,7 @@ static int cmd_stock(int argc, char **argv) {
         if (stock_place(kStock[i], /*quiet*/false)) done++;
     }
     if (!done) {
-        out_warn("Nothing to restore. 'pkg stock list' shows what is built in.");
+        out_warn("Nothing to restore. 'stock list' shows what is built in.");
         return 1;
     }
     return 0;
