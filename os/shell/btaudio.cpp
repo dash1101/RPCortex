@@ -86,7 +86,27 @@ static uint32_t g_underruns;
 static uint32_t g_volume = 80;
 
 static uint8_t g_sdp_a2dp[150];
-static uint8_t g_media_codec[4];
+// What this device tells a speaker it can send.
+//
+// Four bytes, and all-zero means "nothing", which is what these were: a
+// zero-filled array advertises no sample rate and no channel mode, and a
+// speaker offered that has nothing to accept. The stream would have been
+// refused before a single sample moved.
+//
+//   [0]  sample rates in the top nibble, channel modes in the bottom
+//   [1]  block length, subbands, bit allocation
+//   [2]  minimum bitpool
+//   [3]  maximum bitpool — quality against bandwidth
+static uint8_t g_media_codec[4] = {
+    // 44.1 kHz and 48 kHz; mono, dual, stereo and joint stereo.
+    (0x20 | 0x10) | (0x08 | 0x04 | 0x02 | 0x01),
+    // Every block length and both subband counts, both allocation methods.
+    // Offering everything lets the speaker pick, which is the point of the
+    // negotiation — narrowing it here would only rule out speakers.
+    0xFF,
+    2,      // minimum bitpool the specification allows
+    53,     // the usual maximum for 44.1 kHz stereo
+};
 static avdtp_stream_endpoint_t *g_endpoint;
 
 // --- feeding the ring -------------------------------------------------------
@@ -229,6 +249,18 @@ static bool source_ready(void) {
     if (!bt_stack_up()) return false;
 
     pcm_ring_init(&g_ring, g_pcm, PCM_RING_SAMPLES);
+
+    // The encoder, configured before anything asks it for a frame. Without
+    // this it has no sample rate, no channel mode and no bitpool, and what it
+    // produces is not SBC.
+    g_sbc = btstack_sbc_encoder_bluedroid_init_instance(&g_sbc_state);
+    g_sbc->configure(&g_sbc_state, SBC_MODE_STANDARD,
+                     16,                        // blocks
+                     8,                         // subbands
+                     SBC_ALLOCATION_METHOD_LOUDNESS,
+                     44100,
+                     53,                        // bitpool
+                     SBC_CHANNEL_MODE_JOINT_STEREO);
 
     a2dp_source_init();
     a2dp_source_register_packet_handler(&a2dp_handler);
