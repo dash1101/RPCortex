@@ -63,9 +63,39 @@ A host that mounts the partition raw sees an unformatted drive. The two ways:
   and far less clever; the cost is that the drive shows only what has been
   dropped, not what is on the device.
 
-The user chose the synthesised view. Worth re-confirming with the write side
-laid out, because that is where the work is: a read-only synthesised view is an
-afternoon, and read-write is a filesystem driver.
+Settled: the synthesised view for reads, with writes limited to new files. See
+below.
+
+## The shape agreed
+
+Show everything, accept only new files. That is not a compromise between the two
+options above — it is most of what was wanted, at a fraction of the risk.
+
+**Reads: the whole tree, synthesised.** Walk littlefs from the root and build a
+FAT16 boot sector, FAT and directory from it. File data is served straight
+through `lfs_file_read` when the host asks for the cluster it was told about.
+Everything on the device is visible and copyable. Subdirectories are directory
+entries pointing at more synthesised directory clusters; the same walk produces
+them. If an SD card is ever mounted at `/SD` it is one more subtree in the same
+walk and needs no separate thought — though nothing mounts one today, so that is
+a prerequisite rather than a feature.
+
+**Writes: only "a new file appeared".** The host creating a file writes three
+things — a 32-byte directory entry, a chain in the FAT, and the data clusters.
+Those can be recognised without implementing FAT semantics: buffer the cluster
+writes, read the name and length out of the directory entry, and once the host
+has stopped, hand the assembled bytes to `lfs_file_write`. This is the shape
+CircuitPython and similar firmwares use.
+
+**Everything else is refused.** Deleting, renaming, editing in place and
+overwriting all arrive as sector writes over regions that describe existing
+files, and honouring them is the filesystem driver this is avoiding. The volume
+presents existing files read-only and says so, rather than accepting a change
+and losing it.
+
+That boundary is the whole design. It has to be enforced by WHERE a write lands
+— inside the region describing existing files, or in free space — not by
+guessing what the host meant.
 
 ## Hazards worth writing down now
 
