@@ -97,6 +97,54 @@ static void probe_timing(void) {
 
 // --- hardware ---------------------------------------------------------------
 
+// What a call into the firmware costs.
+//
+// On RP2350 a package runs unprivileged, so every fw_* call is a supervisor
+// call: an SVC through a veneer, a handler, a privilege change, and the same
+// again on the way back. That is not free, and until now nobody knew what it
+// cost — `bench` scores in the millions so it plainly is not costing anything
+// that matters at that scale, but "not much" is not a number, and the number is
+// what decides whether a package that has to bit-bang a protocol ever needs an
+// exemption.
+//
+// Measured against the cheapest call there is. fw_micros does almost nothing
+// but read a register, so what is left after subtracting the loop is the
+// boundary itself rather than the work behind it.
+static void probe_syscall(void) {
+    fw_printf("SYSCALL\n");
+
+    const uint32_t N = 20000;
+    volatile uint32_t sink = 0;
+
+    // The empty loop first, so its own cost can be taken back out. Volatile so
+    // the compiler cannot decide the whole thing is pointless.
+    uint32_t t0 = fw_micros();
+    for (uint32_t i = 0; i < N; i++) sink += i;
+    uint32_t empty = fw_micros() - t0;
+
+    t0 = fw_micros();
+    for (uint32_t i = 0; i < N; i++) sink += fw_micros();
+    uint32_t called = fw_micros() - t0;
+
+    if (called <= empty) {
+        fw_printf("  per call            too fast to measure this way\n");
+        return;
+    }
+    uint32_t net_ns = (uint32_t)(((uint64_t)(called - empty) * 1000u) / N);
+    fw_printf("  %u calls            %u us total, %u us loop overhead\n",
+              (unsigned)N, (unsigned)called, (unsigned)empty);
+    fw_printf("  per call            ~%u ns\n", (unsigned)net_ns);
+
+    // At 150 MHz a cycle is about 6.7 ns. Reporting cycles as well as
+    // nanoseconds is what makes the figure comparable against the datasheet
+    // rather than against a clock speed someone has to remember.
+    fw_printf("  at %u MHz           ~%u cycles\n",
+              (unsigned)(fw_clock_hz() / 1000000u),
+              (unsigned)(((uint64_t)net_ns * fw_clock_hz()) / 1000000000ull));
+    fw_printf("  (whether this went through the sandbox is what 'mpu' reports)\n");
+    fw_printf("\n");
+}
+
 static void probe_hardware(void) {
     fw_printf("HARDWARE\n");
     fw_printf("  gpio count          %u\n", fw_gpio_count());
@@ -210,6 +258,7 @@ static int probe_cmd(int argc, char **argv) {
 
     probe_cores();
     probe_timing();
+    probe_syscall();
     probe_hardware();
     probe_jitter();
     probe_memory();
