@@ -57,6 +57,9 @@ static unsigned g_n_aps;
 static char     g_url[128];
 static char     g_body[2048];
 static unsigned g_body_len;
+static uint32_t g_rand_state = 0x12345678u;
+static bool     g_time_set;
+static FwTime   g_time;
 static bool        g_i2c_up[2];
 static bool        g_spi_up[2];
 
@@ -69,6 +72,7 @@ void fake_reset(void) {
     memset(g_pio, 0, sizeof(g_pio));
     memset(g_i2c_up, 0, sizeof(g_i2c_up));
     memset(g_spi_up, 0, sizeof(g_spi_up));
+    g_time_set = false; g_rand_state = 0x12345678u;
     g_net_up = false; g_n_aps = 0; g_url[0] = 0; g_body_len = 0;
     g_out_len = 0; g_out[0] = 0;
     g_now_ns = 1000000ull;
@@ -117,6 +121,14 @@ void fake_net_up(const char *ssid, const char *ip) {
     snprintf(g_net_ip,   sizeof(g_net_ip),   "%s", ip   ? ip   : "192.168.1.50");
 }
 void fake_net_down(void) { g_net_up = false; }
+
+void fake_time_set(int y, int mo, int d, int h, int mi, int sec) {
+    g_time.year = y; g_time.month = mo; g_time.day = d;
+    g_time.hour = h; g_time.minute = mi; g_time.second = sec;
+    g_time.weekday = 0;
+    g_time_set = true;
+}
+void fake_time_unset(void) { g_time_set = false; }
 
 void fake_net_add_ap(const char *ssid, int rssi, int channel, int secured) {
     if (g_n_aps >= 16) return;
@@ -396,6 +408,47 @@ int  fw_pio_put(int h, unsigned long v, unsigned) {
 int fw_pio_get(int h, unsigned long *out, unsigned) {
     if (h < 0 || h >= 12 || !g_pio[h].used || !out) return -1;
     return 0;
+}
+
+// --- system -----------------------------------------------------------------
+//
+// The random source is a fixed sequence, deliberately. A test asserting on a
+// random number is testing nothing; what a test CAN assert is that a package
+// asked for the right amount and filled the right buffer, and a repeatable
+// sequence makes that checkable.
+
+unsigned long fw_random(void) {
+    g_rand_state = g_rand_state * 1103515245u + 12345u;
+    return g_rand_state;
+}
+
+void fw_random_bytes(void *buf, unsigned len) {
+    unsigned char *p = (unsigned char *)buf;
+    while (len--) *p++ = (unsigned char)(fw_random() >> 16);
+}
+
+int fw_unique_id(char *out, unsigned cap) {
+    if (!out || cap < 17) return -1;
+    int n = snprintf(out, cap, "e661234567890abc");
+    return n < 0 ? -1 : n;
+}
+
+void fw_sha256(const void *data, unsigned len, unsigned char *out) {
+    // Not the real thing: a package test wants to know the call was made with
+    // the right bytes, not to re-verify SHA-256, which core_test already does.
+    unsigned char acc = 0;
+    const unsigned char *p = (const unsigned char *)data;
+    for (unsigned i = 0; i < len; i++) acc = (unsigned char)(acc * 31 + p[i]);
+    for (int i = 0; i < 32; i++) out[i] = (unsigned char)(acc + i);
+}
+
+void fw_reboot(void) { /* a test that reboots the host would be a poor test */ }
+
+int fw_time_get(FwTime *out) {
+    if (!out) return 0;
+    if (!g_time_set) { memset(out, 0, sizeof(*out)); return 0; }
+    *out = g_time;
+    return 1;
 }
 
 // --- network ----------------------------------------------------------------

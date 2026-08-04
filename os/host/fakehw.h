@@ -69,6 +69,11 @@ void fake_net_down(void);
 void fake_net_add_ap(const char *ssid, int rssi, int channel, int secured);
 void fake_http_serve(const char *url, const char *body);
 
+// The wall clock a package sees. Unset by default, which is the state a device
+// that has not reached a time server is actually in.
+void fake_time_set(int y, int mo, int d, int h, int mi, int sec);
+void fake_time_unset(void);
+
 // The fake clock, in microseconds. Advances on its own during busy waits so a
 // package that polls a deadline makes progress.
 uint32_t fake_now_us(void);

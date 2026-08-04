@@ -305,6 +305,55 @@ int main(void) {
         ck(got == 8, "a fetch into a small buffer fills it and stops");
     }
 
+    // --- the system calls ---------------------------------------------------
+    {
+        fake_reset();
+
+        char id[24];
+        ck(fw_unique_id(id, sizeof(id)) == 16, "the board id is sixteen hex characters");
+        ck(strlen(id) == 16, "and the string matches that length");
+        char tiny[8];
+        ck(fw_unique_id(tiny, sizeof(tiny)) < 0,
+           "a buffer too small for it is refused, not half filled");
+
+        // The clock is unset until something sets it, and the call has to SAY
+        // so rather than handing back a plausible-looking date. A package that
+        // timestamps a log with an unchecked reading writes 1970 and means it.
+        FwTime t;
+        ck(fw_time_get(&t) == 0, "an unset clock reports itself unset");
+        ck(t.year == 0, "and zeroes the result rather than leaving it undefined");
+
+        fake_time_set(2026, 8, 3, 14, 30, 5);
+        ck(fw_time_get(&t) == 1, "a set clock reports itself set");
+        ck(t.year == 2026 && t.month == 8 && t.day == 3, "with the right date");
+        ck(t.hour == 14 && t.minute == 30, "and the right time");
+
+        // Random: what is checkable is that it fills what it was asked to fill
+        // and does not run past it. Asserting on the values would be asserting
+        // on the fake.
+        unsigned char buf[16];
+        memset(buf, 0xAA, sizeof(buf));
+        fw_random_bytes(buf, 8);
+        ck(buf[8] == 0xAA && buf[15] == 0xAA, "random fills exactly what it was given");
+        int changed = 0;
+        for (int i = 0; i < 8; i++) if (buf[i] != 0xAA) changed++;
+        ck(changed > 0, "and actually wrote something");
+
+        // An odd length has to work: the implementation does whole words first
+        // and the remainder is exactly where an off-by-one would live.
+        memset(buf, 0xAA, sizeof(buf));
+        fw_random_bytes(buf, 5);
+        ck(buf[5] == 0xAA, "a length that is not a whole number of words stops in place");
+
+        unsigned char dg[32];
+        fw_sha256("abc", 3, dg);
+        unsigned char dg2[32];
+        fw_sha256("abc", 3, dg2);
+        ck(memcmp(dg, dg2, 32) == 0, "the same input hashes the same way twice");
+        fw_sha256("abd", 3, dg2);
+        ck(memcmp(dg, dg2, 32) != 0, "a different input does not");
+    }
+
     printf("\n  %d checks, %d failed\n", checks, fails);
     return fails ? 1 : 0;
 }

@@ -24,6 +24,11 @@
 #include "hardware/gpio.h"
 #include "hardware/pio.h"
 #include "hardware/spi.h"
+#include "pico/rand.h"
+#include "pico/unique_id.h"
+#include "pico/aon_timer.h"
+#include "sha256.h"
+#include <time.h>
 #include "hardware/clocks.h"
 
 // The app currently being run, so a command it registers can be tagged with an
@@ -234,6 +239,71 @@ extern "C" void fw_busy_wait_us(uint32_t us) {
     if (us > 20000) us = 20000;
     busy_wait_us(us);
     task_alive();
+}
+
+// --- system -----------------------------------------------------------------
+
+extern "C" unsigned long fw_random(void) { return (unsigned long)get_rand_32(); }
+
+extern "C" void fw_random_bytes(void *buf, unsigned len) {
+    if (!buf) return;
+    unsigned char *p = (unsigned char *)buf;
+    // A word at a time, because the generator produces 32 bits per call and
+    // asking four times for four bytes is four times the work.
+    while (len >= 4) {
+        uint32_t v = get_rand_32();
+        p[0] = (unsigned char)v; p[1] = (unsigned char)(v >> 8);
+        p[2] = (unsigned char)(v >> 16); p[3] = (unsigned char)(v >> 24);
+        p += 4; len -= 4;
+    }
+    if (len) {
+        uint32_t v = get_rand_32();
+        while (len--) { *p++ = (unsigned char)v; v >>= 8; }
+    }
+}
+
+extern "C" int fw_unique_id(char *out, unsigned cap) {
+    if (!out || cap < 17) return -1;
+    pico_unique_board_id_t id;
+    pico_get_unique_board_id(&id);
+    static const char *H = "0123456789abcdef";
+    unsigned k = 0;
+    for (unsigned i = 0; i < PICO_UNIQUE_BOARD_ID_SIZE_BYTES && k + 2 < cap; i++) {
+        out[k++] = H[id.id[i] >> 4];
+        out[k++] = H[id.id[i] & 15];
+    }
+    out[k] = 0;
+    return (int)k;
+}
+
+extern "C" void fw_sha256(const void *data, unsigned len, unsigned char *out) {
+    if (!data || !out) return;
+    task_alive();
+    sha256(data, len, out);
+}
+
+void sys_reboot(void);
+extern "C" void fw_reboot(void) { sys_reboot(); }
+
+extern "C" int fw_time_get(struct FwTime *out) {
+    if (!out) return 0;
+    struct tm t;
+    if (!aon_timer_get_time_calendar(&t)) {
+        // Never set. Zeroed rather than left as whatever was on the stack, so a
+        // package that ignores the return value gets an obviously wrong date
+        // instead of a plausible one.
+        out->year = out->month = out->day = 0;
+        out->hour = out->minute = out->second = out->weekday = 0;
+        return 0;
+    }
+    out->year    = t.tm_year + 1900;
+    out->month   = t.tm_mon + 1;
+    out->day     = t.tm_mday;
+    out->hour    = t.tm_hour;
+    out->minute  = t.tm_min;
+    out->second  = t.tm_sec;
+    out->weekday = t.tm_wday;
+    return 1;
 }
 
 // --- network ----------------------------------------------------------------
@@ -668,6 +738,12 @@ static const ApiSymbol kSymbols[] = {
     SYM(fw_file_remove),
     SYM(fw_file_exists),
     SYM(fw_core_id),
+    SYM(fw_random),
+    SYM(fw_random_bytes),
+    SYM(fw_unique_id),
+    SYM(fw_sha256),
+    SYM(fw_reboot),
+    SYM(fw_time_get),
     SYM(fw_net_connected),
     SYM(fw_net_ssid),
     SYM(fw_net_ip),

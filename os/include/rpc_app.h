@@ -23,7 +23,7 @@ extern "C" {
 // MINOR: a symbol added — older-minor apps still run (everything they want is
 //        present); newer-minor apps refused (they may want something absent).
 #define RPC_API_MAJOR 1
-#define RPC_API_MINOR 9
+#define RPC_API_MINOR 10
 
 typedef struct {
     uint32_t magic;          // RPC_APP_MAGIC
@@ -208,6 +208,42 @@ uint32_t fw_clock_hz(void);
 
 uint32_t fw_micros(void);
 void     fw_busy_wait_us(uint32_t us);
+
+// --- system -----------------------------------------------------------------
+//
+// Added at 1.10. Every one of these was already in the OS and simply had no
+// door: the Nova D1 audit found urandom, hashlib, unique_id, reset and the
+// clock all used and none of them reachable.
+
+// Hardware random. Not a PRNG — this is the ring-oscillator entropy source the
+// chip provides, so it is fit for a key or a nonce as well as for a game.
+unsigned long fw_random(void);
+void          fw_random_bytes(void *buf, unsigned len);
+
+// This board's unique identity, as lowercase hex. Sixteen characters plus a
+// terminator. Stable across reboots and reflashes — it comes from the flash
+// part, not from anything the OS stores.
+int fw_unique_id(char *out, unsigned cap);
+
+// SHA-256 of one buffer. `out` takes 32 bytes.
+void fw_sha256(const void *data, unsigned len, unsigned char *out);
+
+// Restart the device. Does not return.
+void fw_reboot(void);
+
+// The wall clock. Zero-filled and 0 returned when it has never been set, which
+// is the normal state on a device that has not seen a time server — so a
+// package must check rather than assume the year is sensible.
+struct FwTime {
+    int year;      // 2026, not 126
+    int month;     // 1-12
+    int day;       // 1-31
+    int hour;      // 0-23
+    int minute;
+    int second;
+    int weekday;   // 0 = Sunday
+};
+int fw_time_get(struct FwTime *out);
 
 // --- network ----------------------------------------------------------------
 //
