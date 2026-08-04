@@ -22,7 +22,8 @@ shell that reads like RPCortex Vela on the same terminal.
 | **wireless** | cyw43 + lwIP, saved networks, autoconnect | wifi scan/connect/add/autoconnect/list/forget/auto |
 | **network** | DNS, ICMP, SNTP — none of them needs TLS | ping nslookup ntp |
 | **packages** | install / remove / list, boot-load, unload | pkg run apps unload put |
-| **memory protection** | hardware stack guard on every task; a package's code is read-only and its data non-executable while it runs | mpu |
+| **updates** | OTA over HTTPS, staged and verified, with a rollback slot | update |
+| **memory protection** | hardware stack guard on every task; on RP2350 a package runs unprivileged, on a stack and a heap of its own, reaching nothing else | mpu |
 | **shell** | full line editing, tab completion, pipes, `&&` / `\|\|` / `;`, `>` / `>>`, quoting | help |
 
 Roughly 50 commands plus ~30 aliases (`ll`, `dir`, `more`, `del`, `free`, `gc`,
@@ -33,69 +34,85 @@ An installed package's commands go live at boot; an app registers commands via
 the ABI (the `greet` app demonstrates it). That is the package system the Nova
 D1 will sit inside.
 
-**Tests** — 9 host suites, all green under ASan/UBSan: `os/host/run_all.sh`.
-core · path · pkgindex · textcore · history · apps · loader · **out** (the
-output layer's escape sequences, byte for byte against v1) · **cmdline** (41
-checks on the pipeline/quote/redirect parser).
+**Tests** — 40 host suites, all green under ASan/UBSan: `os/host/run_all.sh`.
+Every check is confirmed to fail when the thing it covers is broken; `TESTING.md`
+says what is proven there and, more usefully, what is not. Two checks run against
+the built image rather than the source, because the bugs they cover are invisible
+in both the source and the host tests: `check-flashsafe.py` (everything the
+firmware-writer touches is already in RAM) and `check-stackswitch.py` (every
+stack switch releases the stack limit before it moves SP, and privilege is only
+ever dropped in the veneer-pool gate).
 
-**Footprint** — 878 KB `.uf2` on RP2350, 901 KB on RP2040. The jump from ~290 KB
-is the CYW43 firmware blob (225 KB) plus lwIP, which only started compiling in
-once the board-detection bug was fixed. Both sit comfortably inside their flash
-alongside the 512 KB filesystem, and the RP2040 is the board v1 had to drop.
+**Footprint** — 926 KB on RP2350, 971 KB on RP2040, of a 1024 KB slot. Most of
+the jump from ~290 KB is the CYW43 firmware blob (225 KB) plus lwIP. Task #72
+holds the notes for getting it back down; `./build.sh --no-dev-packages` already
+takes 23 KB off by leaving out bench, probe and stress.
+
+**Run on hardware** — yes, on a Pico 2 W and a Pico 2, and that is where the
+interesting bugs came from. Three of them could not have been caught here at all:
+
+  * writing SP below MSPLIM is itself a fault, so a context switch has to
+    release the stack limit before it moves SP — there is no MSPLIM on a host
+  * the instruction after `msr CONTROL` runs unprivileged, so it cannot be in
+    flash — both directions across the privilege boundary end in the package's
+    own veneer pool
+  * `flash_safe_execute` refuses immediately if the other core never registered
+    as a lockout victim, and only core 1 had — so every filesystem write from a
+    background task failed, while everything the OS itself writes runs on core 0
+    and always worked
+
+`stress` passes 25 checks on device: two cores, kill-at-next-yield, a sleeping
+task waking on time while the shell keeps running, three concurrent filesystem
+writers with no corruption, and an allocator that never hands the same block to
+two callers. `probe` measures what a host cannot — an unpinned task lives on
+core 1 99% of the time and changes core once in 2000 yields.
 
 ## What that means
 
-Tiers 1 and 2 of the plan are done, plus the console parity and wireless that
-make it feel like the same OS. This is the base the Nova D1 gets ported onto.
+The OS boots, logs in, runs a shell that reads like Vela, joins a network,
+installs packages over HTTPS from its own repository, updates itself, and runs
+those packages in a hardware sandbox they cannot reach out of. It does all of
+that on the RP2040 as well, which is the board v1 had to drop.
+
+This is the base the Nova D1 gets ported onto.
 
 ## Not done
 
-- **Packages still run with the OS's own privileges.** The memory protection
-  above stops a package writing to its own code, executing its own data, or
-  running off the end of a stack — the bugs. It does not stop a package that
-  wants to reach OS memory, because it is not running unprivileged, and it
-  cannot until a package has a stack of its own. Today `app_main` and every
-  command a package registers run on the SHELL's stack, which holds the shell's
-  saved return addresses into privileged firmware; a package able to write to
-  that stack can direct the OS wherever it likes, so unprivileged mode there
-  would be no isolation at all with extra cycles. The rest of what it needs:
-  a gateway so ABI calls can raise privilege, an arena of its own for
-  `fw_malloc`, and pointer checking at the ABI boundary so a package cannot use
-  the OS as a deputy.
-- **Package code protection is RP2350 only.** ARMv6-M regions are power-of-two
-  sized and aligned to their own size, so a 5 KB package would need an 8 KB
-  region on an 8 KB boundary and the allocation to match — more RAM than the
-  RP2040 has to spare. Stack guards work on both; they are 32 bytes, which is
-  the minimum region on either.
-
-- **Not run on hardware.** All host-tested, both `.uf2`s build, nothing flashed.
-  First hardware step: BOOTSEL, copy `out/rpcortex-v2-pico2_w.uf2` onto the
-  RPI-RP2 drive, walk the first-run prompts, then `put greet.app <len>` +
-  `pkg install greet.app`.
-- **Wireless works** — confirmed on a Pico 2 W. The board-detection bug is fixed:
-  PICO_CYW43_SUPPORTED is a CMake variable that never reaches the preprocessor,
-  so the C++ side had been compiling the "no hardware" stub while CMake linked
-  the whole driver.
-- **ping / nslookup / ntp are DEVICE-UNCONFIRMED.** They build and the lwIP
-  locking is right by construction, but none has been run against a real network.
+- **Pointer checking at the ABI boundary.** Packages DO run unprivileged on
+  RP2350 now, on a stack and a heap of their own, and every call into the
+  firmware is a supervisor call. What is missing is checking the pointers a
+  package passes across: it can still ask the privileged OS to read into an
+  address of its choosing. That is a deliberate attack rather than a bug, and
+  the stated worry has been somebody else's package having a bug — but it is
+  the honest limit of what the sandbox stops. ARMv8-M's `TT` instruction is the
+  tool; the work is a table of which arguments are pointers.
+- **Package sandboxing is RP2350 only.** ARMv6-M regions are power-of-two sized
+  and aligned to their own size, so the five a package needs would cost more RAM
+  than an RP2040 has. There it runs packages privileged, as every build did
+  before, and `mpu` says which a board is doing. Stack guards work on both.
+- **A stack and a heap are allocated per call into package code** — 3 KB and
+  12 KB, taken and given back around every package command. That is churn on a
+  device where fragmentation has been a hard-stop before, and holding the pair
+  per task instead is the obvious answer if it shows. Notes in
+  `os/UNPRIV-DESIGN.md`.
+- **The supervisor call has never been costed.** `bench` runs sandboxed and
+  scores in the millions, so it is not costing anything that matters at that
+  level, but there is no cycles-per-call figure — and that number is what would
+  decide whether a timing-critical package ever needs an exemption.
 - **`meminfo`'s fragmentation figure is DEVICE-UNCONFIRMED.** `heap_free()`
-  reports the arena minus live allocations (`mallinfo().uordblks`), which is
-  honest rather than a high-water mark, and `largest_block()` probes with real
-  `malloc` calls — but the two have never been compared on a running board. If
-  they disagree, a healthy device will report high fragmentation, which is
-  exactly the "diagnostic that invents a problem" failure v1 hit and the reason
-  its probe cap had to be raised. Check this against a fresh boot first.
-- **No OTA / update command.** Flashing is drag-and-drop `.uf2` for now.
-- **Missing v1 commands** — `watch`, `edit`/`nano`, `script`, `task`/`service`/
-  `startup`, `safeboot`, `diag`/`fscheck`/`logdump`, `alias`/`unalias` at
-  runtime, `wget`/`curl`. `edit` is a TUI, not an afternoon.
-- **The package FETCHER is not built yet.** The repository side is done —
-  `repo-v2/` in RPCortex-repo, with an index generated from each package's own
-  header — but `pkg` cannot download from it. That needs an HTTPS client, since
-  GitHub raw and rpc.novalabs.app are both TLS-only: mbedtls (the SDK vendors
-  it; the submodule is not fetched) plus a decision about how much RAM one TLS
-  session may hold. v1's entire contiguous-memory problem started exactly there,
-  so it is worth doing deliberately rather than quickly.
+  reports the arena minus live allocations, which is honest rather than a
+  high-water mark, and `largest_block()` probes with real `malloc` calls — but
+  the two have never been compared over a long uptime. If they disagree, a
+  healthy device reports high fragmentation, which is exactly the "diagnostic
+  that invents a problem" failure v1 hit.
+- **Drag-and-drop file transfer** (#69). Getting a file onto the device means
+  `put` over the console or `pkg install` over the network. The plan is USB mass
+  storage with a FAT16 view synthesised over littlefs, since littlefs is not FAT
+  and presenting the partition raw shows an unformatted drive.
+- **The site oversells all of this** (#73). v2 is early alpha; v1 is still what
+  anyone should be running.
+- **Missing v1 commands** — `watch`, `edit`/`nano`, `task`/`service`/`startup`,
+  `alias`/`unalias` at runtime, `wget`/`curl`. `edit` is a TUI, not an afternoon.
 - **Nova D1 in C++** — Tier 3, the big one.
 - **A MicroPython port for running .py apps** — wanted, deferred. Worth knowing
   before it starts: embedding MicroPython puts its GC-managed heap alongside
