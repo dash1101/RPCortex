@@ -67,7 +67,18 @@ static void describe(const LoadedApp *a, TaskAppMem *m) {
 // here. That is why it is sized like any other task's stack and not like a
 // scratch buffer.
 #define PKG_STACK_BYTES  TASK_STACK_DEF
-#define PKG_ARENA_BYTES  2048
+// Sized from what a package actually asks for, not from what felt tidy.
+//
+// 2 KB was a guess and `stress` broke it immediately: it allocates 24 blocks of
+// 256 bytes to check that the allocator never hands the same block to two
+// callers, which is 6 KB, and it got seven of them. A package that cannot
+// allocate is a package that does not work, and the sandbox is not a reason for
+// it to have less memory than it had before.
+//
+// Held for the duration of one call into package code and given back after —
+// see the note in UNPRIV-DESIGN.md about whether that churn should become a
+// per-task allocation instead.
+#define PKG_ARENA_BYTES  8192
 
 struct SandboxAlloc {
     void  *stack_raw;

@@ -71,7 +71,15 @@ extern "C" void *fw_malloc(size_t n) {
     bb_note_phase("entered fw_malloc");
     task_alive();
     Arena *a = task_arena();
-    if (a) return arena_alloc(a, (uint32_t)n);
+    if (a) {
+        void *p = arena_alloc(a, (uint32_t)n);
+        // Say so. A sandboxed package allocates from a block of its own, and
+        // running that block out looks exactly like the OS being out of memory
+        // — except `meminfo` will cheerfully report hundreds of kilobytes free.
+        if (!p) klog(LOG_WARN, "a package ran out of its own heap asking for %u bytes",
+                     (unsigned)n);
+        return p;
+    }
     return malloc(n);
 }
 extern "C" void fw_free(void *p) {

@@ -23,7 +23,7 @@
 
 #include "rpc_app.h"
 
-RPC_APP_VER("stress", "1.0");
+RPC_APP_VER("stress", "1.1");
 
 // --- reporting --------------------------------------------------------------
 
@@ -118,6 +118,8 @@ static volatile int g_fs_done;
 // storage_copy (440 bytes) over littlefs's own frames, and printf alone is
 // 1128 — the original size overflowed, wrote through into littlefs's cache, and
 // that corruption reached flash and left a board that would not boot.
+static volatile int g_fs_wr, g_fs_short, g_fs_bad, g_fs_rm;
+
 static int fs_worker(void *arg) {
     int idx = (int)(long)arg;
     char path[32];
@@ -133,15 +135,20 @@ static int fs_worker(void *arg) {
         for (int i = 0; i < 14; i++) path[i] = pre[i];
         path[8] = (char)('0' + idx);
 
-        if (!fw_file_write(path, buf, (uint32_t)n)) { g_fs_errors++; continue; }
+        // Counted separately, because "data came back wrong" covers four very
+        // different faults and only one of them is corruption. A write that was
+        // refused, a read that came up short, bytes that differ, and a file
+        // that would not delete each point somewhere else entirely — and one
+        // number for all four says only that something is wrong.
+        if (!fw_file_write(path, buf, (uint32_t)n)) { g_fs_errors++; g_fs_wr++; continue; }
 
         char back[96];
         uint32_t got = fw_file_read(path, back, sizeof(back));
-        if (got != (uint32_t)n) { g_fs_errors++; continue; }
+        if (got != (uint32_t)n) { g_fs_errors++; g_fs_short++; continue; }
         for (int i = 0; i < n; i++)
-            if (back[i] != buf[i]) { g_fs_errors++; break; }
+            if (back[i] != buf[i]) { g_fs_errors++; g_fs_bad++; break; }
 
-        if (!fw_file_remove(path)) g_fs_errors++;
+        if (!fw_file_remove(path)) { g_fs_errors++; g_fs_rm++; }
         fw_task_yield();
     }
     g_fs_done++;
@@ -167,6 +174,7 @@ static void test_files(void) {
     // Now three tasks at once. Without the filesystem lock this is what
     // corrupts littlefs, so a clean run here is the lock doing its job.
     g_fs_errors = g_fs_done = 0;
+    g_fs_wr = g_fs_short = g_fs_bad = g_fs_rm = 0;
     step("files: spawn 3 concurrent writers");
     for (long i = 0; i < 3; i++) fw_task_spawn("stress_fs", fs_worker, (void *)i, 4096);
     step("files: waiting for the writers");
@@ -174,6 +182,10 @@ static void test_files(void) {
     step("files: writers finished");
 
     check(g_fs_done == 3, "three tasks finished their file work", 0);
+    if (g_fs_errors) {
+        fw_printf("      refused writes %d, short reads %d, wrong bytes %d, "
+                  "failed deletes %d\n", g_fs_wr, g_fs_short, g_fs_bad, g_fs_rm);
+    }
     check(g_fs_errors == 0, "no corruption with three writers at once",
           g_fs_errors ? "data came back wrong" : 0);
     fw_printf("      %d write/read/verify/delete cycles across 3 tasks\n", 3 * FS_ROUNDS);
