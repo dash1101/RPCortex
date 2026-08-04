@@ -24,6 +24,10 @@ set(LFS_DIR   ${OS_ROOT}/../littlefs)
 add_executable(rpcortex_v2
     ${OS_ROOT}/main.cpp
     ${OS_ROOT}/api.cpp
+    ${OS_ROOT}/usb_descriptors.c
+    ${OS_ROOT}/usbdev.cpp
+    ${OS_ROOT}/usbmsc.cpp
+    ${OS_ROOT}/core/fatview.cpp
     ${OS_ROOT}/platform_rp2.cpp
     ${OS_ROOT}/panic.cpp
     ${OS_ROOT}/task_rp2.cpp
@@ -229,6 +233,39 @@ add_dependencies(rpcortex_v2 stock_cacerts_src)
 target_compile_definitions(rpcortex_v2 PRIVATE
     CFG_TUD_CDC_RX_BUFSIZE=1024
     CFG_TUD_CDC_TX_BUFSIZE=1024)
+
+# --- the composite USB device -----------------------------------------------
+#
+# The console is not the only thing on the bus any more: there is a drive too,
+# and a vendor interface picotool uses to reboot the board into BOOTSEL. That
+# needs a descriptor set the SDK cannot generate, so its own is compiled out and
+# usb_descriptors.c supplies one. Everything else in pico_stdio_usb stays.
+#
+# This is a documented switch, not a workaround: the SDK guards its descriptor
+# file with exactly this flag, for exactly this case.
+target_compile_definitions(rpcortex_v2 PRIVATE PICO_STDIO_USB_USE_DEFAULT_DESCRIPTORS=0)
+
+# Where tud_task() runs. The whole reasoning is in os/usbdev.cpp; the short
+# version is that mass-storage callbacks cannot run in interrupt context — they
+# need the filesystem lock, which yields — and the MSC interface offers no
+# deferral that does not spin inside the interrupt it is trying to escape. So
+# the background task goes away and the `usb` task drives the device stack from
+# thread context instead.
+#
+# Turning this back on without moving the MSC callbacks somewhere else is a
+# hang, not a performance change.
+target_compile_definitions(rpcortex_v2 PRIVATE PICO_STDIO_USB_ENABLE_IRQ_BACKGROUND_TASK=0)
+
+# The drive itself. msc_device.c is compiled into the TinyUSB device library
+# unconditionally and its body is guarded by this, so turning the class on is a
+# definition rather than a source change.
+#
+# The endpoint buffer is a whole sector: below that, TinyUSB calls the read and
+# write callbacks with a partial sector and an offset, and every one of them
+# becomes a separate trip through littlefs for part of a block.
+target_compile_definitions(rpcortex_v2 PRIVATE
+    CFG_TUD_MSC=1
+    CFG_TUD_MSC_EP_BUFSIZE=512)
 
 pico_enable_stdio_usb(rpcortex_v2 1)
 pico_enable_stdio_uart(rpcortex_v2 0)

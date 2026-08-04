@@ -31,6 +31,7 @@
 
 void net_autoconnect(void);
 void task_start_core1(void);
+extern "C" void usb_task_start(void);
 void stock_install_once(void);
 void update_report_boot(void);
 void fs_layout_check(bool verbose);
@@ -90,7 +91,21 @@ int main(void) {
     // memory. `mpu` prints the number.
     task_main_stack_paint();
     stdio_init_all();
-    for (int i = 0; i < 300 && !stdio_usb_connected(); i++) sleep_ms(10);
+    // stdio_flush() inside the wait, not just sleep.
+    //
+    // The device stack is no longer serviced from an interrupt — see usbdev.cpp
+    // for why it had to move — so something has to call tud_task() during boot
+    // or the device never enumerates. Of the stdio paths that reach it, this is
+    // the only one that works before a host is attached: out_chars and in_chars
+    // both check stdio_usb_connected() first, which cannot become true until
+    // enumeration has happened, so relying on them is a standoff neither side
+    // breaks. out_flush calls tud_task() unconditionally, and stdio_flush() is
+    // the way in.
+    //
+    // Three seconds of this is enough to enumerate; after it the printf traffic
+    // through the rest of boot keeps the stack turning, and the usb task takes
+    // over once the scheduler is up.
+    for (int i = 0; i < 300 && !stdio_usb_connected(); i++) { stdio_flush(); sleep_ms(10); }
     sleep_ms(150);
 
     // bb_init FIRST. It lives in memory that survives a reset, so until it has
@@ -159,6 +174,9 @@ int main(void) {
     // exactly why this survived so long.
     flash_safe_execute_core_init();
     task_start_core1();
+    // Before the shell, so USB is being serviced by the time there is a prompt
+    // to type at. It is what drives tud_task() from here on.
+    usb_task_start();
     shell_register_builtins();
 
     if (task_spawn("shell", "(kernel)", shell_task, nullptr,
