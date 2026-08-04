@@ -386,3 +386,42 @@ device's filesystem. Moving a file between them is `usb get` or `usb put`.
   the same core it never runs. The retry is bounded; past the limit the
   operation fails and the host tries again later. A failed read is recoverable
   and a hung one is not.
+
+## Off by default, and the inbox
+
+Two changes after the first working version, both from using it.
+
+**The drive is off unless asked for.** `usb on` offers it, `usb off` withholds
+it, `usb auto` offers it whenever a host has actually configured the device and
+withholds it on a charger or a battery. The setting persists. Off is the default
+because plugging a device into a machine should not hand that machine a
+filesystem by reflex, and the person doing the plugging is not always the person
+who owns it. Being honest about `auto`: on a board that lives plugged into a
+computer it is on nearly all the time, and the distinction it draws is narrow.
+
+**Anything dropped on the drive is copied into `/usb`.** A file sitting in the
+transfer area was not much use — the area is FAT and everything else on the
+device is littlefs, so nothing else could read it. Now a scan runs on the usb
+task once the host has been quiet for a second and a half, and copies what it
+finds into `/usb`, where `cat`, `pkg`, the editor and every other command can
+reach it.
+
+Copied rather than moved. A file that vanished from the drive the moment it
+finished transferring would look like a failure, and the host has it cached as
+present anyway. Nothing is imported twice: a name already in `/usb` at the same
+size is left alone, which makes the scan idempotent — it has to be, because it
+runs on a timer rather than on an event. MSC has no "the copy has finished"
+signal beyond a cache flush and not every host sends one, so quiet is the only
+reliable indication that a file is whole.
+
+**When the filesystem is full the drive goes read-only.** The transfer area has
+its own free space and the host respects it, but a file is only useful once it
+has been copied off, and the filesystem can run out first. Accepting a write
+that has nowhere to go is worse than refusing it, because the host believes the
+file arrived. So a failed import sets write protection, and it clears by itself
+on the next scan once something has been deleted — a latch needing to be cleared
+by hand would be one more thing to remember at exactly the wrong moment.
+
+Refused per command as well as through `tud_msc_is_writable_cb`: hosts read that
+flag when they mount the volume and do not necessarily look again, so a device
+that fills up mid-session would otherwise keep accepting files it cannot keep.

@@ -21,7 +21,9 @@
 
 #if CFG_TUD_MSC
 bool usbmsc_enabled(void);
-void usbmsc_set_enabled(bool on);
+void usbmsc_set_mode(int mode);
+int  usbmsc_mode(void);
+bool usbmsc_full(void);
 bool usbdrv_ready(void);
 bool usbdrv_list(F12WalkFn cb, void *ctx);
 bool usbdrv_find(const char *name, F12Entry *out);
@@ -82,7 +84,19 @@ static int cmd_usb_ls(void) {
     char t[12], fr[12];
     fmt_size(total, t, sizeof(t));
     fmt_size(freeb, fr, sizeof(fr));
-    out_multi("  %s%s free of %s%s", C_GRAY, fr, t, C_RESET);
+
+    static const char *kMode[] = { "off", "on", "on when plugged into a computer" };
+    int m = usbmsc_mode();
+    out_multi("  %s%s free of %s  ·  drive is %s%s", C_GRAY, fr, t,
+              kMode[m < 0 || m > 2 ? 0 : m], C_RESET);
+
+    // Files land in /usb by themselves; saying where is more use than leaving
+    // someone to find out.
+    out_multi("  %sAnything dropped here is copied to /usb, where the rest of the "
+              "OS can read it.%s", C_GRAY, C_RESET);
+    if (usbmsc_full())
+        out_warn("The device is out of room, so the drive is write protected until "
+                 "something is deleted.");
     return 0;
 }
 
@@ -96,22 +110,37 @@ static int cmd_usb(int argc, char **argv) {
     const char *sub = argc >= 2 ? argv[1] : "ls";
 
     if (strcmp(sub, "on") == 0) {
-        usbmsc_set_enabled(true);
+        usbmsc_set_mode(1);
         out_ok("The drive is on.");
-        out_multi("  %sUnplug and replug for the host to pick it up.%s", C_GRAY, C_RESET);
+        out_multi("  %sIt should appear within a second or two; unplug and replug "
+                  "if the host does not notice.%s", C_GRAY, C_RESET);
         return 0;
     }
     if (strcmp(sub, "off") == 0) {
-        usbmsc_set_enabled(false);
+        usbmsc_set_mode(0);
         out_ok("The drive is off. Nothing on it will be served over USB.");
         out_multi("  %sThe host may keep showing a drive until it is unplugged; it "
                   "is empty and stays empty. The console is unaffected.%s", C_GRAY, C_RESET);
         return 0;
     }
+    if (strcmp(sub, "auto") == 0) {
+        usbmsc_set_mode(2);
+        out_ok("The drive will appear whenever this is plugged into a computer.");
+        out_multi("  %sAnd stay hidden on a charger or a battery, where there is "
+                  "nobody to show it to.%s", C_GRAY, C_RESET);
+        return 0;
+    }
 
     if (!usbmsc_enabled()) {
-        out_err("The drive is off. 'usb on' to turn it back on.");
-        return 1;
+        // The commands below still work when the drive is not being offered —
+        // the transfer area is on the device either way, and being able to
+        // empty it without exposing it first is the point.
+        if (strcmp(sub, "ls") != 0 && strcmp(sub, "status") != 0 &&
+            strcmp(sub, "get") != 0 && strcmp(sub, "rm") != 0 &&
+            strcmp(sub, "format") != 0) {
+            out_err("The drive is off. 'usb on' to offer it, or 'usb auto'.");
+            return 1;
+        }
     }
     if (!usbdrv_ready()) {
         out_err("The transfer area could not be prepared.");
@@ -187,7 +216,7 @@ static int cmd_usb(int argc, char **argv) {
     }
 
     out_err("Usage: usb [ls | get <name> [dest] | put <path> [name] | rm <name> | "
-            "format yes | on | off]");
+            "format yes | on | off | auto]");
     return 1;
 }
 #else
@@ -200,7 +229,7 @@ static int cmd_usb(int argc, char **argv) {
 
 void usbdrive_register(void) {
     static const Command c{"usb",
-        "usb [ls | get <name> [dest] | put <path> [name] | rm <name> | format yes | on | off]",
+        "usb [ls | get <name> [dest] | put <path> [name] | rm <name> | format yes | on | off | auto]",
         cmd_usb, nullptr};
     cmd_register(&c);
     cmd_alias("usbdrive", "usb");

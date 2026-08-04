@@ -26,7 +26,7 @@
 #include <stdio.h>
 #include <string.h>
 
-static const char *kDirs[] = { "/os", "/os/pkg", "/etc", "/home", "/tmp" };
+static const char *kDirs[] = { "/os", "/os/pkg", "/etc", "/home", "/tmp", "/usb" };
 #define N_DIRS (sizeof(kDirs) / sizeof(kDirs[0]))
 
 // Make a directory if it is not already there. Returns true if it had to be
