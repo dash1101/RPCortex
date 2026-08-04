@@ -27,6 +27,7 @@
 #include "mpu.h"
 #include "loader.h"
 #include "sandbox.h"
+#include "pico/flash.h"
 
 void net_autoconnect(void);
 void task_start_core1(void);
@@ -143,6 +144,20 @@ int main(void) {
     fs_layout_check(/*verbose*/false);
     fs_accounts_check();
 
+    // Core 0 registers as a flash lockout victim before core 1 exists.
+    //
+    // flash_safe_execute parks the OTHER core before touching flash, and it
+    // refuses outright — immediately, not after its timeout — if that core
+    // never registered. Only core 1 did, so a filesystem write issued FROM
+    // core 1 had no victim to park and failed on the spot. Since an unpinned
+    // task lives on core 1 about 99% of the time, that is nearly every write a
+    // background task makes: `stress` reported eleven refused writes out of
+    // eighteen, with the wrong bytes and failed deletes that follow from a file
+    // that was never written.
+    //
+    // Boot-time writes always worked, because those run on core 0, which is
+    // exactly why this survived so long.
+    flash_safe_execute_core_init();
     task_start_core1();
     shell_register_builtins();
 

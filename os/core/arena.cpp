@@ -83,6 +83,8 @@ void arena_free(Arena *a, void *p) {
     }
 }
 
+uint32_t arena_size(const Arena *a) { return a ? a->size : 0; }
+
 uint32_t arena_used(const Arena *a) {
     if (!a || !a->size) return 0;
     uint32_t used = 0;

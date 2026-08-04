@@ -76,8 +76,13 @@ extern "C" void *fw_malloc(size_t n) {
         // Say so. A sandboxed package allocates from a block of its own, and
         // running that block out looks exactly like the OS being out of memory
         // — except `meminfo` will cheerfully report hundreds of kilobytes free.
-        if (!p) klog(LOG_WARN, "a package ran out of its own heap asking for %u bytes",
-                     (unsigned)n);
+        // Only when the request was plausible. A package deliberately asking
+        // for 112 MB to check that failure is handled cleanly — which `stress`
+        // does — is not a device running out of memory, and reporting it as one
+        // trains people to ignore the message that matters.
+        if (!p && n <= arena_size(a))
+            klog(LOG_WARN, "a package ran out of its own heap asking for %u bytes",
+                 (unsigned)n);
         return p;
     }
     return malloc(n);

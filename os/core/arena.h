@@ -21,6 +21,9 @@ void *arena_alloc(Arena *a, uint32_t n);
 void arena_free(Arena *a, void *p);
 
 uint32_t arena_used(const Arena *a);
+// How big it is at all — so a request that could never have fitted can be told
+// apart from one that merely arrived too late.
+uint32_t arena_size(const Arena *a);
 uint32_t arena_largest(const Arena *a);
 
 #endif  // RPC_ARENA_H

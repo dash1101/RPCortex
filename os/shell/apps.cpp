@@ -78,7 +78,11 @@ static void describe(const LoadedApp *a, TaskAppMem *m) {
 // Held for the duration of one call into package code and given back after —
 // see the note in UNPRIV-DESIGN.md about whether that churn should become a
 // per-task allocation instead.
-#define PKG_ARENA_BYTES  8192
+// Bigger than the largest single request a package is expected to make, not
+// equal to it: every block carries a header, so an arena of exactly N bytes
+// cannot serve a request for N. `bench` asks for 8192 and was refused by an
+// 8192-byte arena.
+#define PKG_ARENA_BYTES  12288
 
 struct SandboxAlloc {
     void  *stack_raw;
