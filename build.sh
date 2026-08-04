@@ -85,6 +85,14 @@ for board in "${BOARDS[@]}"; do
     python3 "$(dirname "$0")/tools/check-flashsafe.py" \
         "$dir/rpcortex_v2.elf" arm-none-eabi-nm arm-none-eabi-objdump || exit 1
 
+    # And that every stack switch lets go of the stack limit before it moves SP.
+    # On ARMv8-M, writing SP below MSPLIM is itself an overflow — it hard-faults
+    # on the switch instruction, on the first switch into the shell, and the
+    # device boot-loops with no shell left to report from. There is no MSPLIM on
+    # a host, so no scheduler test can see it.
+    python3 "$(dirname "$0")/tools/check-stackswitch.py" \
+        "$dir/rpcortex_v2.elf" || exit 1
+
     # The raw image too, for OTA. A .uf2 wraps every 256 bytes in a 512-byte
     # block with a header, which is right for the boot ROM's drag-and-drop and
     # pure overhead for an update that writes flash directly.

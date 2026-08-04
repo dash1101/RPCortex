@@ -176,7 +176,11 @@ int sandbox_enter(void *fn, int arg0, void *arg1, void *stack_top,
     s->return_gate = return_gate;
     s->package_lr  = 0;
     s->depth       = 1;
-    return app_call_unpriv(fn, arg0, arg1, stack_top, exit_gate, &s->kernel_sp);
+    int ret = app_call_unpriv(fn, arg0, arg1, stack_top, exit_gate, &s->kernel_sp);
+    // The shim let go of the stack limit to stand on the package's stack. This
+    // task is back on its own now, so the guard describes it again.
+    task_rearm_protection();
+    return ret;
 }
 
 bool sandbox_in_package(void) {

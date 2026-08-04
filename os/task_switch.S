@@ -67,6 +67,22 @@ task_ctx_switch:
     movs    r3, #0
     strb    r3, [r2]
 1:
+    // Let go of the stack limit BEFORE standing on a different stack.
+    //
+    // On ARMv8-M, writing a value below MSPLIM into SP is itself a stack
+    // overflow — the check is on the write, not on a later push. Every task's
+    // stack comes from the heap in main SRAM while the boot stack sits high in
+    // SCRATCH_Y, so the very first switch out of the boot context moves SP
+    // tens of kilobytes below the limit that was protecting it, and faults on
+    // this instruction rather than anywhere near a real overflow.
+    //
+    // The guard is re-armed for the incoming context immediately after the
+    // switch returns, in arm_protection. The few instructions in between — the
+    // pop, the return, the call — run unguarded, which is the price and is
+    // unavoidable: there is no ordering of "change SP" and "change the limit"
+    // that leaves neither of them momentarily describing the other's stack.
+    movs    r3, #0
+    msr     msplim, r3
     mov     sp, r1
     pop     {r4-r11, pc}
 #endif

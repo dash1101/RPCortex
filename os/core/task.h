@@ -321,6 +321,13 @@ void task_stack_guard_set(const void *bottom, uint32_t size);
 // the table is full.
 void task_slot_recycled(int slot);
 
+// Put this task's protection back after something has stood on another stack.
+//
+// The context switch releases the stack limit before moving SP, because writing
+// SP below the limit is itself an overflow on ARMv8-M — so anything else that
+// swaps stacks has to release it too, and then say when it is safe again.
+void task_rearm_protection(void);
+
 // The memory a loaded package occupies, described for the protection hardware.
 //
 // Two blocks, because they want opposite permissions: code must be executable

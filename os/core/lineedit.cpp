@@ -262,17 +262,23 @@ uint32_t line_edit(const LineEdit *le, char *buf, uint32_t cap) {
             continue;
         }
 
-        // PuTTY sends 0x7F for Backspace and 0x08 for Ctrl+Backspace, which is
-        // the OPPOSITE of most Linux terminals. PuTTY is how this device is
-        // actually used, so that mapping wins — on a terminal that sends 0x08
-        // for plain Backspace, backspace will delete a word. Change the two
-        // cases below if that is ever the common setup.
-        if (c == 0x7F) {                             // Backspace: one character
+        // Both bytes mean Backspace, and both delete ONE character.
+        //
+        // Terminals do not agree about which one they send: PuTTY uses 0x7F for
+        // Backspace and 0x08 for Ctrl+Backspace, most Linux terminals do the
+        // reverse, and some send 0x08 for a plain Backspace with no way to tell.
+        // Treating 0x08 as delete-a-word therefore meant that on some terminals
+        // an ordinary Backspace ate a whole word, which is not a preference to
+        // be configured — it is the key not doing what it says.
+        //
+        // Ctrl+W still deletes a word. It is unambiguous and every terminal
+        // sends the same byte for it.
+        if (c == 0x7F || c == 0x08) {                // Backspace: one character
             len = line_delete_back(buf, len, pos, 1, &pos);
             browse = -1; refresh_ghost(); redraw(t, le->prompt, buf, len, pos, ghost);
             continue;
         }
-        if (c == 0x08 || c == 0x17) {                // Ctrl+Backspace / Ctrl+W
+        if (c == 0x17) {                             // Ctrl+W: back one word
             uint32_t start = line_word_start(buf, len, pos);
             len = line_delete_back(buf, len, pos, pos - start, &pos);
             browse = -1; refresh_ghost(); redraw(t, le->prompt, buf, len, pos, ghost);

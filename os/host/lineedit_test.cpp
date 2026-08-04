@@ -244,12 +244,27 @@ static void t_loop(void) {
     drive("abcd\x7f\r", b, sizeof(b));
     eq(b, "abc", "backspace deletes one character");
 
-    // 0x08 is Ctrl+Backspace on PuTTY: a whole word.
+    // 0x08 is ALSO Backspace, and also deletes one character.
+    //
+    // Terminals do not agree about which byte Backspace sends: PuTTY uses 0x7F
+    // and treats 0x08 as Ctrl+Backspace, most Linux terminals do the reverse,
+    // and some send 0x08 for a plain Backspace with no way to tell them apart.
+    // While 0x08 meant delete-a-word, an ordinary Backspace ate a whole word on
+    // some terminals — which is not a preference to configure, it is the key
+    // not doing what it says.
     drive("one two\x08\r", b, sizeof(b));
-    eq(b, "one ", "ctrl+backspace deletes a word");
+    eq(b, "one tw", "0x08 is backspace too, and deletes one character");
 
     drive("one two three\x08\x08\r", b, sizeof(b));
-    eq(b, "one ", "two word-deletes remove two words");
+    eq(b, "one two thr", "twice over, still one character each");
+
+    // Ctrl+W keeps the word delete. Every terminal sends 0x17 for it and none
+    // sends it for anything else, so it is the one that can mean this safely.
+    drive("one two\x17\r", b, sizeof(b));
+    eq(b, "one ", "ctrl+W deletes a word");
+
+    drive("one two three\x17\x17\r", b, sizeof(b));
+    eq(b, "one ", "and twice removes two");
 
     // Delete key removes forward.
     drive("abc\033[D\033[3~\r", b, sizeof(b));

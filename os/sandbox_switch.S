@@ -73,6 +73,13 @@ app_call_unpriv:
     str     r5, [r4]
     ldr     r6, [sp, #40]           // the exit gate
 
+    // The same stack-limit release the context switch needs, for the same
+    // reason: the package's stack is a different heap block and may be below
+    // the limit that is currently protecting the task's. The package is not
+    // left unguarded — MPU region 4 covers its stack exactly, so running off
+    // the end lands outside every region it owns and faults there instead.
+    mov     r7, #0
+    msr     msplim, r7
     mov     sp, r3                  // stand on the package's stack
     mov     r12, r0
     mov     r0, r1                  // the package's two arguments
@@ -98,6 +105,8 @@ app_call_unpriv:
 app_call_unpriv_tail:
     mov     r4, r0                  // the package's exit code
     bl      sandbox_kernel_sp
+    mov     r5, #0
+    msr     msplim, r5              // released before SP moves; see above
     mov     sp, r0                  // back onto the firmware's stack
     mov     r0, r4
     pop     {r3, r4-r11, pc}

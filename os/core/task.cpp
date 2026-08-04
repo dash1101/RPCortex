@@ -739,6 +739,8 @@ int task_self(void) {
     return t ? t->info.pid : -1;
 }
 
+void task_rearm_protection(void) { arm_protection(cur()); }
+
 int task_slot_index(void) {
     Task *t = cur();
     return t ? (int)(t - g_tasks) : -1;
