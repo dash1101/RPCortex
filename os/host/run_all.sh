@@ -39,6 +39,7 @@ declare -A SRC=(
     [smp_test]="$CORE/task.cpp $CORE/blackbox.cpp"
     [calc_test]=""
     [pio_test]=""
+    [pcmring_test]="$CORE/pcmring.cpp"
     [btname_test]="$CORE/btname.cpp"
     [power_test]="$CORE/powerpolicy.cpp"
     [framebuf_test]="$CORE/framebuf.cpp"

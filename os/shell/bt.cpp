@@ -167,6 +167,10 @@ static bool bt_up(void) {
     return true;
 }
 
+// Exposed so the audio sink can require the stack without duplicating any of
+// bringing it up.
+bool bt_stack_up(void) { return bt_up(); }
+
 // --- commands ---------------------------------------------------------------
 
 static void print_seen(void) {
