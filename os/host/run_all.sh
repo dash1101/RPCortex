@@ -28,6 +28,7 @@ declare -A SRC=(
     [arena_test]="$CORE/arena.cpp"
     [fatview_test]="$CORE/fatview.cpp"
     [fatimage_test]="$CORE/fatview.cpp"
+    [fat12_test]="$CORE/fat12.cpp $CORE/fatview.cpp"
     [excframe_test]="$CORE/excframe.cpp"
     [tui_test]="$CORE/tui.cpp"
     [tuilist_test]="$CORE/tuilist.cpp $CORE/tui.cpp"

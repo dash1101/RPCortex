@@ -552,6 +552,43 @@ uint32_t storage_stage_file(const char *path, StorageProgressFn cb, void *ctx) {
 
 uint32_t storage_reserve_bytes(void) { return RPC_FW_RESERVE; }
 
+// --- the USB transfer area --------------------------------------------------
+//
+// The staging slot, borrowed. It sits between the firmware and the filesystem
+// and is untouched except during an update, so a transfer area can live there
+// without moving littlefs — which matters more than it sounds, because moving
+// where the filesystem starts means every device loses its files once.
+//
+// The cost is that the two cannot both exist: staging an update writes a
+// firmware image over whatever the host left here. `update` clears the area
+// first rather than letting the two interleave, since an image half-overwritten
+// by a file drop is the one failure that does not end with a working board.
+uint32_t storage_usb_offset(void) { return RPC_STAGE_OFF; }
+uint32_t storage_usb_bytes(void)  { return RPC_FW_SLOT; }
+
+bool storage_usb_read(uint32_t off, void *buf, uint32_t len) {
+    if (off + len > storage_usb_bytes()) return false;
+    // XIP: flash is memory-mapped for reading, so this is a memcpy and costs
+    // nothing worth avoiding. No lock either — nothing else writes this region
+    // except the block writer below, which runs on the same task.
+    memcpy(buf, (const uint8_t *)(XIP_BASE + RPC_STAGE_OFF + off), len);
+    return true;
+}
+
+bool storage_usb_write_block(uint32_t off, const uint8_t *block4k) {
+    if (off % STORAGE_USB_BLOCK || off + STORAGE_USB_BLOCK > storage_usb_bytes())
+        return false;
+    // Deliberately NOT under g_fs_lock. This region is not littlefs, and taking
+    // that lock here is what would put the filesystem lock inside the USB
+    // stack's — the inversion that livelocked the device when writes went
+    // through littlefs. Nothing shares this region, so there is nothing to
+    // serialise against.
+    EraseArgs ea{RPC_STAGE_OFF + off, STORAGE_USB_BLOCK};
+    if (guarded(do_erase, &ea) != 0) return false;
+    ProgArgs pa{RPC_STAGE_OFF + off, block4k, STORAGE_USB_BLOCK};
+    return guarded(do_prog, &pa) == 0;
+}
+
 uint32_t storage_free_bytes(void) {
     LockGuard _fs(&g_fs_lock);
     if (!g_mounted) return 0;

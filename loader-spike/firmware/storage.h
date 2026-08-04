@@ -68,6 +68,27 @@ uint32_t storage_generation(void);
 uint32_t storage_firmware_bytes(void);
 uint32_t storage_reserve_bytes(void);
 
+// --- the USB transfer area --------------------------------------------------
+//
+// A real FAT12 volume in its own flash region, NOT a view synthesised over
+// littlefs. That distinction is the whole point: the host owns it outright and
+// may create, edit, rename and delete in it exactly as it would on a memory
+// card, because nothing here has to interpret what a sector write meant. The
+// device reads it with a small FAT12 reader when it wants what is there.
+//
+// It shares the region an update is staged into. Both are scratch space and
+// neither survives the other, which is why `update` clears it deliberately
+// rather than writing over a volume the host may still have mounted.
+uint32_t storage_usb_offset(void);
+uint32_t storage_usb_bytes(void);
+
+// Raw access to that region. Reads are memory-mapped, so they cost nothing;
+// writes take a whole 4 KB erase block, because that is the unit flash erases
+// in and a smaller write would mean reading, erasing and rewriting anyway.
+bool     storage_usb_read(uint32_t off, void *buf, uint32_t len);
+bool     storage_usb_write_block(uint32_t off, const uint8_t *block4k);
+#define  STORAGE_USB_BLOCK 4096
+
 // The firmware slot, and where an update is staged before it is applied.
 //
 // They exist because source and destination are one flash chip: an update reads

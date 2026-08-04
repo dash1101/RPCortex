@@ -299,3 +299,90 @@ Streaming is the answer, because the buffered version's limit is low enough to
 be hit by the first genuinely useful thing anyone drags across. Whichever ships
 first, the limit goes in the documentation rather than being discovered when a
 1 MB drop fails.
+
+---
+
+# The rewrite: a real volume, not a view of one
+
+Everything above describes synthesising a FAT view over littlefs. That approach
+was built, shipped to hardware, and abandoned. What follows is why, because the
+reasoning is the useful part and the failures were not obvious in advance.
+
+## What went wrong, in order
+
+Each of these was found on a device, and none of them showed up as an error.
+
+1. **Files dropped from the host never arrived.** The count of occupied root
+   directory slots used the size of the whole node table rather than the root's
+   own children, so the free slots a host writes a new entry into were declared
+   occupied. Separately, Windows writes a file's data BEFORE the entry naming
+   it, and collection only began when a name appeared — so the data was
+   discarded and the entry then described contents already thrown away.
+2. **Changes made on the device never reached the host.** The view was
+   invalidated and rebuilt two statements apart, so the not-ready state no host
+   could miss lasted microseconds and every host missed it.
+3. **Edits never stuck, in either direction.** By design: an edit arrives as a
+   write over a region describing an existing file, which the view had to refuse
+   because it could not tell an edit from a rename from a deletion.
+4. **A three kilobyte copy locked the device up.** Honouring a write meant
+   calling littlefs from inside the USB stack, which put the filesystem lock
+   inside the console's mutex. The shell prints while holding the filesystem
+   lock. Two orders, one core, no way out.
+
+## Why they were not really four problems
+
+A synthesised view has to infer intent from raw sector writes. A host never says
+"create this file" — it writes clusters, table entries and a directory entry, in
+whatever order it likes, and something underneath has to work out what was
+meant. That can only ever recognise the cases it was taught, so anything else
+gets refused, and refusing is indistinguishable from a bug to whoever is
+watching. Meanwhile every case it DOES honour has to reach the real filesystem
+from inside the USB stack, which is where the deadlock lives.
+
+The desynchronisation was not a bug to be fixed either. There were two copies of
+the truth — littlefs, and whatever the host had cached — and no way to tell the
+host that a sector it already read had changed.
+
+## What replaced it
+
+A real FAT12 volume in its own flash region, owned by the host.
+
+Nothing interprets anything: a sector write is a sector write. Creating,
+renaming, editing and deleting all work because the host is doing them to a
+filesystem rather than to a description of one. There is one copy of the data
+and both sides read the same bytes, so there is nothing to fall out of step. And
+because the region is not littlefs, the MSC path never takes the filesystem
+lock, which removes the deadlock by construction rather than by care.
+
+The cost is real and worth stating: the host sees a transfer area, not the
+device's filesystem. Moving a file between them is `usb get` or `usb put`.
+
+## The details that decided the shape
+
+- **The region is the firmware staging slot.** It is the only megabyte on the
+  chip not already spoken for, and using it means littlefs does not move —
+  which matters because moving where the filesystem starts costs every existing
+  device its files. The price is that staging an update overwrites the area, so
+  `update` gives it up deliberately and says so rather than letting a firmware
+  image and a file drop interleave.
+- **FAT12, not FAT16.** The format is decided by the cluster count and the
+  boundary is exact: under 4085 clusters a volume IS FAT12. A megabyte at
+  512-byte clusters is about 2033, so there is no choice, and the padding trick
+  the synthesised view used to stay above the line is not available at this
+  size. Twelve-bit entries pack two into three bytes, half of them straddling a
+  byte boundary and one in every 341 straddling a sector boundary.
+- **A 4 KB write-back cache.** Flash erases in 4 KB blocks and a host writes in
+  512-byte sectors. The flush happens on the usb task BEFORE it enters the
+  device stack, not inside a callback, so an erase never happens with the
+  console's mutex held.
+- **Nothing prints while holding the drive's lock.** The console path takes the
+  stdio mutex, the usb task holds that mutex while servicing the device stack,
+  and the drive's lock is taken on both sides of it. This is the same shape as
+  the deadlock that was just removed, one level down, and the only defence is
+  the discipline: gather under the lock, print after.
+- **The callbacks give up rather than spin.** Returning zero asks TinyUSB to
+  call back, but tud_task loops until its queue is empty, so the retry happens
+  inside the same call without yielding — and if the lock holder is a task on
+  the same core it never runs. The retry is bounded; past the limit the
+  operation fails and the host tries again later. A failed read is recoverable
+  and a hung one is not.

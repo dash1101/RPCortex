@@ -335,6 +335,12 @@ static int do_install(bool force) {
 // Without it, staging 696 KB is around 174 erase-and-program cycles with
 // nothing yielding: several seconds against an 8 second watchdog, which
 // rebooted the device in the middle of the copy every time.
+#if CFG_TUD_MSC
+bool usbdrv_release_for_update(void);
+#else
+static inline bool usbdrv_release_for_update(void) { return false; }
+#endif
+
 static void stage_progress(void *, uint32_t done, uint32_t total) {
     out_progress("Staging", done, total);
     task_alive();
@@ -356,6 +362,20 @@ bool update_apply_file(const char *path, const char *to_version) {
                 (unsigned long)(size / 1024),
                 (unsigned long)(storage_fw_slot_bytes() / 1024));
         return false;
+    }
+
+    // The staging slot is also the USB transfer area, and an image written over
+    // a volume the host may still have mounted is the worst of both: a corrupt
+    // filesystem AND a corrupt firmware image, with the update believing it
+    // succeeded. So the area is given up deliberately, once, and the drive is
+    // taken away from the host first.
+    //
+    // Not a warning to be dismissed — anything on the drive is gone, and
+    // whoever put it there should be told rather than discovering it later.
+    if (usbdrv_release_for_update()) {
+        out_warn("The USB drive shares this space and has been cleared.");
+        out_multi("  %sUnplug and replug after the update to get it back.%s",
+                  C_GRAY, C_RESET);
     }
 
     out_info("Staging %lu KB...", (unsigned long)(size / 1024));

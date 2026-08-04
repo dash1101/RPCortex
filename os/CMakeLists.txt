@@ -28,6 +28,7 @@ add_executable(rpcortex_v2
     ${OS_ROOT}/usbdev.cpp
     ${OS_ROOT}/usbmsc.cpp
     ${OS_ROOT}/core/fatview.cpp
+    ${OS_ROOT}/core/fat12.cpp
     ${OS_ROOT}/platform_rp2.cpp
     ${OS_ROOT}/panic.cpp
     ${OS_ROOT}/task_rp2.cpp
