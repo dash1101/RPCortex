@@ -107,6 +107,67 @@ static void sandbox_release(SandboxAlloc *sa) {
     memset(sa, 0, sizeof(*sa));
 }
 
+// Copy an argument vector into the package's own memory.
+//
+// A registered command is called with (argc, argv), and argv points into the
+// SHELL's memory — its line buffer and the pointer array beside it. A sandboxed
+// package cannot read that. Not "should not": the regions describe its own five
+// blocks and unprivileged code gets no default memory map, so the first look at
+// argv[1] is a data access violation inside the package, at whatever line
+// happens to touch it first.
+//
+// That is why `bench` and `stress` ran and `calc 2 ^ 3 ^ 2` did not — the two
+// that were given no arguments never read the vector.
+//
+// So the vector is rebuilt at the top of the package's own stack: the strings
+// first, growing down, then the array of pointers to them. The package's stack
+// top moves below all of it, which is also what keeps it from being overwritten
+// the moment the package pushes a frame.
+//
+// Returns the new argv, or null if the arguments do not fit — a command with
+// more text than its stack can hold is refused rather than truncated, because
+// a package acting on half its arguments is worse than one that did not run.
+#define PKG_ARGV_MAX      32
+#define PKG_ARGV_RESERVE  512      // never eat more than this of the stack
+
+static char **marshal_argv(void *stack_base, uint32_t *stack_top_inout,
+                           int argc, char **argv) {
+    if (argc < 0 || argc > PKG_ARGV_MAX) return nullptr;
+    uint8_t *floor = (uint8_t *)stack_base + *stack_top_inout - PKG_ARGV_RESERVE;
+    uint8_t *p = (uint8_t *)stack_base + *stack_top_inout;
+
+    char *copied[PKG_ARGV_MAX];
+    for (int i = argc - 1; i >= 0; i--) {
+        uint32_t n = argv[i] ? (uint32_t)strlen(argv[i]) + 1u : 1u;
+        if ((uint32_t)(p - floor) < n) return nullptr;
+        p -= n;
+        if (argv[i]) memcpy(p, argv[i], n);
+        else         p[0] = 0;
+        copied[i] = (char *)p;
+    }
+
+    // The pointer array, below the strings and eight-byte aligned so the stack
+    // that starts under it is aligned too.
+    p = (uint8_t *)((uintptr_t)p & ~(uintptr_t)7);
+    uint32_t need = (uint32_t)(argc + 1) * sizeof(char *);
+    if ((uint32_t)(p - floor) < need) return nullptr;
+    p -= need;
+    p = (uint8_t *)((uintptr_t)p & ~(uintptr_t)7);
+    char **out = (char **)p;
+    for (int i = 0; i < argc; i++) out[i] = copied[i];
+    out[argc] = nullptr;
+
+    *stack_top_inout = (uint32_t)(p - (uint8_t *)stack_base);
+    return out;
+}
+
+// Reachable from the host test, which is the only place the boundary arithmetic
+// above can be exercised — on a board it either works or produces a fault
+// somewhere inside a package.
+char **marshal_argv_for_test(void *base, uint32_t *top, int argc, char **argv) {
+    return marshal_argv(base, top, argc, argv);
+}
+
 void app_enter(const LoadedApp *app, TaskAppMem *saved, bool *had_saved) {
     *had_saved = task_app_mem_get(saved);
     if (!app) return;
@@ -182,9 +243,17 @@ bool app_run_owner(const void *owner, int (*fn)(int, char **), int argc,
         task_app_mem_set(&m);
         if (boxed) task_arena_set(&sa.arena);
         if (boxed) {
-            *ret = sandbox_enter((void *)fn, argc, argv,
-                                 (uint8_t *)sa.stack + m.stack_size,
-                                 app_return_gate(a), app_exit_gate(a));
+            uint32_t top = m.stack_size;
+            char **boxed_argv = marshal_argv(sa.stack, &top, argc, argv);
+            if (!boxed_argv) {
+                out_errp("apps", "'%s' was given more arguments than its stack "
+                                 "can hold.", a->header.name);
+                *ret = 1;
+            } else {
+                *ret = sandbox_enter((void *)fn, argc, boxed_argv,
+                                     (uint8_t *)sa.stack + top,
+                                     app_return_gate(a), app_exit_gate(a));
+            }
         } else {
             *ret = fn(argc, argv);
         }

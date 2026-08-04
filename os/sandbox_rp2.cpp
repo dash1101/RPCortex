@@ -154,13 +154,33 @@ extern "C" void sandbox_svc(uint32_t *frame, uint32_t which) {
     uint32_t target = api_addr_at(index);
     uint32_t saved = 0;
 
+    // Not every caller is sandboxed, and the ones that are not must not be sent
+    // home through the gate.
+    //
+    // A package can spawn a task, and that task runs the package's code — which
+    // contains supervisor-call veneers, because that is the only kind the
+    // loader built — but it never went through sandbox_enter, so it has no
+    // return gate and no saved return address. Sending it to
+    // sandbox_syscall_return anyway meant reading two zeroes and branching to
+    // address zero: `INVSTATE no Thumb bit`, pc=0, in a task whose own stack
+    // had not been touched. Reported from a board twice, from stress and probe,
+    // both of which spawn helpers.
+    //
+    // Such a task is already privileged, so there is nothing to raise and
+    // nothing to hand back. Leave the stacked LR exactly as the package set it
+    // and the firmware function returns straight to the caller.
+    bool boxed = s && s->depth;
+
     if (exc_frame_enter_firmware(frame, target,
-                                 (uint32_t)(uintptr_t)&sandbox_syscall_return,
+                                 boxed ? (uint32_t)(uintptr_t)&sandbox_syscall_return
+                                       : frame[EXC_LR_WORD],
                                  &saved) != SYSCALL_OK) {
         g_refused++;
         return;                    // nothing written: it faults where it asked
     }
-    if (s) s->package_lr = saved;
+    if (!boxed) return;            // privileged already; no gate, no CONTROL
+
+    s->package_lr = saved;
     // Privileged from the exception return until sandbox_syscall_return hands
     // it back. The firmware function runs on the package's stack, which is why
     // that stack is sized like any other task's rather than like a scratch area.

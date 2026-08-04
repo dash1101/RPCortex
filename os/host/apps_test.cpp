@@ -57,6 +57,61 @@ static LoadedApp make_app(const char *name) {
     return a;
 }
 
+// The argument vector a sandboxed package is given.
+//
+// argv points into the SHELL's memory, which a sandboxed package cannot read at
+// all — so it is rebuilt inside the package's own stack before it runs. This
+// checks the rebuilt copy says the same thing and lands entirely inside the
+// block, because the two ways to get it wrong are a package acting on truncated
+// arguments and a package writing over the stack it is about to use.
+extern char **marshal_argv_for_test(void *base, uint32_t *top, int argc, char **argv);
+
+static void check_argv(void) {
+    static uint8_t stack[3072];
+    char a0[] = "calc", a1[] = "2", a2[] = "^", a3[] = "3";
+    char *argv[] = { a0, a1, a2, a3 };
+
+    // Filled with something that is not zero, so the terminator has to be
+    // WRITTEN rather than merely inherited from a blank page.
+    memset(stack, 0xAA, sizeof(stack));
+    uint32_t top = sizeof(stack);
+    char **out = marshal_argv_for_test(stack, &top, 4, argv);
+    ck(out != nullptr, "an ordinary argument vector is copied");
+    if (out) {
+        ck(strcmp(out[0], "calc") == 0 && strcmp(out[3], "3") == 0,
+           "and says the same thing");
+        ck(out[4] == nullptr, "with the vector terminated");
+        // Everything must be INSIDE the package's stack. A copy that reached
+        // outside it would be memory the package still cannot read, which is
+        // the bug this exists to fix.
+        bool inside = (uint8_t *)out >= stack && (uint8_t *)out < stack + sizeof(stack);
+        for (int i = 0; i < 4; i++)
+            if ((uint8_t *)out[i] < stack || (uint8_t *)out[i] >= stack + sizeof(stack))
+                inside = false;
+        ck(inside, "and every part of it is inside the package's own stack");
+        // The stack top must move BELOW the copy, or the first push overwrites
+        // the arguments the package is about to read.
+        ck(top <= (uint32_t)((uint8_t *)out - stack),
+           "and the stack now starts below it, not on top of it");
+        ck((top & 7u) == 0, "eight-byte aligned, as a stack pointer must be");
+    }
+
+    // Arguments too big to fit are refused rather than truncated: a package
+    // acting on half of what it was given is worse than one that did not run.
+    static char big[4096];
+    memset(big, 'x', sizeof(big) - 1);
+    big[sizeof(big) - 1] = 0;
+    char *huge[] = { a0, big };
+    top = sizeof(stack);
+    ck(marshal_argv_for_test(stack, &top, 2, huge) == nullptr,
+       "arguments that do not fit are refused, not cut short");
+    ck(top == sizeof(stack), "and a refusal does not move the stack top");
+
+    top = sizeof(stack);
+    ck(marshal_argv_for_test(stack, &top, 0, nullptr) != nullptr,
+       "no arguments at all is still a valid vector");
+}
+
 int main(void) {
     loader_set_allocator(malloc, free);
 
@@ -102,6 +157,8 @@ int main(void) {
     }
     ck(stored <= 16, "the resident table is capped, not unbounded");
     ck(stored == 16, "and holds exactly its capacity");
+
+    check_argv();
 
     printf("\n%d/%d passed\n", checks - fails, checks);
     return fails ? 1 : 0;
