@@ -157,3 +157,68 @@ task rather than per call if it shows.
 **Pointer checking at the ABI boundary,** still. Without it a package can hand
 the privileged OS an address of its choosing and have it written to. `TT` is the
 instruction for it, and the table of which arguments are pointers is the work.
+
+## Pointer checking at the ABI boundary
+
+The last hole, and the one that made "a package cannot reach the rest of the
+system" not quite true.
+
+A sandboxed package cannot touch the OS's memory — the protection unit stops
+it. But it could ASK the OS to, and the OS did as it was told. `fw_file_read(path,
+buf, cap)` wrote `cap` bytes wherever `buf` pointed, and that write happened in
+privileged code, where the protection unit does not apply. Every pointer
+argument in the ABI was a way to read or write anything on the machine, from
+inside the sandbox, without breaking out of it.
+
+That is the difference between a sandbox that stops a package having a bug and
+one that stops a package being hostile. The stated worry was always the first,
+but the second is what the claim implied.
+
+**Every pointer is now range-checked against the five regions the package was
+given** — the same base and size figures the protection unit was programmed
+from, so the two cannot disagree about what a package owns. 40 of the 101 ABI
+entry points take a pointer; all of them check.
+
+Not the `TT` instruction, which is what ARMv8-M provides for this. Three
+reasons, in order of weight: reaching it from C needs the security extension
+enabled, its result encoding is easy to decode wrongly in a way that fails
+*open*, and ARMv6-M has no equivalent — so the RP2040 build would need the
+arithmetic version anyway. One rule that works on both parts and can be tested
+on a host is worth more than a hardware feature on one of them.
+
+### What the checks refuse
+
+- A buffer that starts or ends outside the package.
+- A length that would wrap the address space. `p + len` overflows, and an
+  overflowed comparison says yes to exactly the pointer that should be refused,
+  so the arithmetic never computes `p + len`.
+- A write aimed at the package's own code or veneer pool: those are readable,
+  never writable.
+- A string with no terminator inside the region holding it. The terminator is
+  data the package controls, so it cannot be trusted to arrive — the scan stops
+  at the region end rather than following it into whatever is next.
+- A framebuffer whose `buf` does not hold `w * h` worth of pixels. This is the
+  ABI's only nested pointer, and the size is recomputed rather than trusted.
+
+A refusal fails the call rather than killing the package: the access does not
+happen, which is the whole requirement, and a package that gets an error back
+can report it. Terminating a task from inside a supervisor call is a larger and
+more delicate thing to get right for no additional safety.
+
+`mpu` reports the count. One refusal is a bug in a package; a stream of them is
+a package doing it on purpose.
+
+### What is still unchecked
+
+**`fw_printf`'s arguments.** The format string is checked. What a `%s` inside it
+points at is not: by then the arguments are on the stack in a form that cannot
+be walked without parsing the format — which means a second implementation of
+printf, and a second thing to get wrong. It is the one pointer the ABI still
+follows without looking.
+
+**Pointers the firmware keeps.** `rpc_register_command` is handed a name and a
+help string that live in the package's code, and it stores them. They are
+checked when passed, and they stay valid as long as the package is loaded — but
+nothing rechecks them at use, so unloading a package while its commands are
+still registered would leave them dangling. That is an existing lifetime
+question rather than a new one, and it is not what this pass was about.

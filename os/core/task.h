@@ -357,6 +357,10 @@ struct TaskAppMem {
 // describing heap that had been freed and handed out again. The first write
 // into the reused block would then fault in code that had done nothing wrong.
 void task_app_mem_set(const TaskAppMem *mem);
+
+// The regions of the package the calling task is inside, or null when it is not
+// inside a SANDBOXED one. What the ABI's pointer checks are tested against.
+const TaskAppMem *task_app_mem_current(void);
 void task_app_mem_clear(void);
 
 // The heap the running task's package allocates from, or null when it is not in

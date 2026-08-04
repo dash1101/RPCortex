@@ -10,6 +10,7 @@
 #include "kernel.h"
 #include "command.h"
 #include "task.h"
+#include "ptrcheck.h"
 #include "storage.h"
 #include "logring.h"
 #include "blackbox.h"
@@ -50,6 +51,41 @@ extern "C" void api_set_current_app(void *owner) { g_current_owner = owner; }
 // package nothing to provide. Without it, code that legitimately runs for a
 // while without yielding is indistinguishable from a hang, and gets rebooted for
 // doing its job.
+// --- checking what a package points at --------------------------------------
+//
+// A sandboxed package cannot touch the OS's memory. It can ASK the OS to, and
+// until these existed the OS did as it was told: every pointer argument below
+// was a way to read or write anything on the machine from inside the sandbox,
+// because the firmware dereferences them while privileged and the protection
+// unit does not apply to privileged code.
+//
+// So each of them is checked against the five regions the package was actually
+// given. Failing the check refuses the call rather than terminating the
+// package: the read or write does not happen, which is the whole requirement,
+// and a package that gets a failure back can report it. Killing the task from
+// inside a supervisor call would be a larger and more delicate thing to get
+// right for no extra safety.
+//
+// The refusals are counted and `mpu` prints the total. One is a bug in a
+// package. A stream of them is a package doing it deliberately.
+#define PKG_MEM() task_app_mem_current()
+
+static inline bool ok_r(const void *p, uint32_t n) {
+    if (ptr_ok(PKG_MEM(), p, n, PTR_READ)) return true;
+    ptr_note_refusal();
+    return false;
+}
+static inline bool ok_w(void *p, uint32_t n) {
+    if (ptr_ok(PKG_MEM(), p, n, PTR_WRITE)) return true;
+    ptr_note_refusal();
+    return false;
+}
+static inline bool ok_s(const char *s) {
+    if (ptr_str_ok(PKG_MEM(), s, nullptr)) return true;
+    ptr_note_refusal();
+    return false;
+}
+
 extern "C" int fw_printf(const char *fmt, ...) {
     // Reaching here at all proves the call from package code into the firmware
     // works — the veneer, the relocation and the symbol lookup. If a crash
@@ -57,6 +93,12 @@ extern "C" int fw_printf(const char *fmt, ...) {
     // in getting here, not in anything the package does.
     bb_note_phase("entered fw_printf");
     task_alive();
+    // The format string only. What a %s in it points at cannot be checked from
+    // here — the arguments are already on the stack in a form this cannot walk
+    // without parsing the format itself, which is a second implementation of
+    // printf and a second thing to get wrong. Noted in UNPRIV-DESIGN.md as the
+    // one pointer the ABI still follows unchecked.
+    if (!ok_s(fmt)) return -1;
     va_list ap; va_start(ap, fmt);
     int n = vprintf(fmt, ap); va_end(ap);
     return n;
@@ -95,6 +137,7 @@ extern "C" void fw_free(void *p) {
 }
 
 extern "C" void fw_log(int level, const char *msg) {
+    if (!ok_s(msg)) return;
     LogLevel l = (level == 2) ? LOG_ERROR : (level == 1) ? LOG_WARN : LOG_INFO;
     klog(l, "%s", msg ? msg : "");
 }
@@ -113,6 +156,7 @@ extern "C" int rpc_register_command(const char *name, const char *help,
 // as a MINOR bump, so every existing package still loads.
 
 extern "C" int fw_task_spawn(const char *name, TaskFn fn, void *arg, uint32_t stack) {
+    if (!ok_s(name)) return -1;
     // A package's task is AFFINITY_ANY, so it uses the second core when there is
     // one and the first when there is not. A package should never have to know.
     return task_spawn(name, "(package)", fn, arg,
@@ -126,15 +170,24 @@ extern "C" int  fw_task_kill(int pid)          { return task_kill(pid) ? 1 : 0; 
 extern "C" uint32_t fw_cores(void)             { return task_core_count(); }
 
 extern "C" int fw_file_write(const char *path, const void *data, uint32_t len) {
+    if (!ok_s(path) || !ok_r(data, len)) return 0;
     task_alive();
     return storage_write_file(path, (const uint8_t *)data, len) ? 1 : 0;
 }
 extern "C" uint32_t fw_file_read(const char *path, void *buf, uint32_t cap) {
     task_alive();
+    if (!ok_s(path) || !ok_w(buf, cap)) return 0;
     return storage_read_file(path, (uint8_t *)buf, cap);
 }
-extern "C" int fw_file_remove(const char *path) { task_alive(); return storage_remove(path) ? 1 : 0; }
-extern "C" int fw_file_exists(const char *path) { return storage_stat(path, nullptr, nullptr) ? 1 : 0; }
+extern "C" int fw_file_remove(const char *path) {
+    task_alive();
+    if (!ok_s(path)) return 0;
+    return storage_remove(path) ? 1 : 0;
+}
+extern "C" int fw_file_exists(const char *path) {
+    if (!ok_s(path)) return 0;
+    return storage_stat(path, nullptr, nullptr) ? 1 : 0;
+}
 
 // --- hardware ---------------------------------------------------------------
 //
@@ -237,6 +290,7 @@ extern "C" int fw_i2c_init(unsigned bus, unsigned sda, unsigned scl, unsigned ba
 
 extern "C" int fw_i2c_write(unsigned bus, unsigned addr, const void *data,
                             unsigned len, int nostop) {
+    if (!ok_r(data, len)) return -1;
     i2c_inst_t *i = i2c_of(bus);
     if (!i || !g_i2c_ready[bus] || addr > 0x7f) return -1;
     task_alive();
@@ -248,6 +302,7 @@ extern "C" int fw_i2c_read(unsigned bus, unsigned addr, void *buf,
     i2c_inst_t *i = i2c_of(bus);
     if (!i || !g_i2c_ready[bus] || addr > 0x7f) return -1;
     task_alive();
+    if (!ok_w(buf, len)) return -1;
     return i2c_read_blocking(i, (uint8_t)addr, (uint8_t *)buf, len, nostop != 0);
 }
 
@@ -294,26 +349,57 @@ extern "C" unsigned fw_power_min_sleep_ms(void) { return power_min_sleep_ms(); }
 // at compile time rather than assumed.
 static_assert(sizeof(FwFrameBuf) == sizeof(FrameBuf), "framebuffer layouts must match");
 
+
+// A framebuffer is a struct in the package's memory that POINTS AT more of it.
+//
+// Checking the struct is not enough: the firmware follows f->buf and writes
+// however many bytes the width and height say. So both are checked, and the
+// size is recomputed here from w and h rather than trusted — a package that
+// says 8x8 and points at four bytes would otherwise have the firmware write
+// sixty past the end of its own buffer.
+//
+// This is the only nested pointer in the ABI. Everything else that crosses is
+// flat, which is worth keeping: each level of indirection is another thing to
+// remember to check, and forgetting one is silent.
+static bool ok_fb(const FwFrameBuf *f, bool write) {
+    if (!ok_r(f, sizeof(FwFrameBuf))) return false;
+    if (f->w <= 0 || f->h <= 0) return false;
+    int need = fb_bytes(f->w, f->h);
+    if (need <= 0) return false;
+    return write ? ok_w(f->buf, (uint32_t)need) : ok_r(f->buf, (uint32_t)need);
+}
+
 extern "C" int fw_fb_bytes(int w, int h) { return fb_bytes(w, h); }
-extern "C" void fw_fb_fill(FwFrameBuf *f, int c) { task_alive(); fb_fill((FrameBuf *)f, c); }
-extern "C" void fw_fb_pixel(FwFrameBuf *f, int x, int y, int c) { fb_pixel((FrameBuf *)f, x, y, c); }
-extern "C" int  fw_fb_get(const FwFrameBuf *f, int x, int y) { return fb_get((const FrameBuf *)f, x, y); }
-extern "C" void fw_fb_hline(FwFrameBuf *f, int x, int y, int n, int c) { fb_hline((FrameBuf *)f, x, y, n, c); }
-extern "C" void fw_fb_vline(FwFrameBuf *f, int x, int y, int n, int c) { fb_vline((FrameBuf *)f, x, y, n, c); }
+extern "C" void fw_fb_fill(FwFrameBuf *f, int c) {
+    if (!ok_fb(f, true)) return; task_alive(); fb_fill((FrameBuf *)f, c); }
+extern "C" void fw_fb_pixel(FwFrameBuf *f, int x, int y, int c) {
+    if (!ok_fb(f, true)) return; fb_pixel((FrameBuf *)f, x, y, c); }
+extern "C" int  fw_fb_get(const FwFrameBuf *f, int x, int y) {
+    if (!ok_fb(f, false)) return 0; return fb_get((const FrameBuf *)f, x, y); }
+extern "C" void fw_fb_hline(FwFrameBuf *f, int x, int y, int n, int c) {
+    if (!ok_fb(f, true)) return; fb_hline((FrameBuf *)f, x, y, n, c); }
+extern "C" void fw_fb_vline(FwFrameBuf *f, int x, int y, int n, int c) {
+    if (!ok_fb(f, true)) return; fb_vline((FrameBuf *)f, x, y, n, c); }
 extern "C" void fw_fb_line(FwFrameBuf *f, int x0, int y0, int x1, int y1, int c) {
+    if (!ok_fb(f, true)) return;
     fb_line((FrameBuf *)f, x0, y0, x1, y1, c);
 }
 extern "C" void fw_fb_rect(FwFrameBuf *f, int x, int y, int w, int h, int c, int fi) {
+    if (!ok_fb(f, true)) return;
     task_alive(); fb_rect((FrameBuf *)f, x, y, w, h, c, fi);
 }
 extern "C" void fw_fb_text(FwFrameBuf *f, const char *s, int x, int y, int c) {
+    if (!ok_fb(f, true) || !ok_s(s)) return;
     task_alive(); fb_text((FrameBuf *)f, s, x, y, c);
 }
-extern "C" int  fw_fb_text_width(const char *s) { return fb_text_width(s); }
+extern "C" int  fw_fb_text_width(const char *s) {
+    if (!ok_s(s)) return 0; return fb_text_width(s); }
 extern "C" void fw_fb_blit(FwFrameBuf *d, const FwFrameBuf *s, int x, int y, int t) {
+    if (!ok_fb(d, true) || !ok_fb(s, false)) return;
     task_alive(); fb_blit((FrameBuf *)d, (const FrameBuf *)s, x, y, t);
 }
 extern "C" void fw_fb_scroll(FwFrameBuf *f, int dx, int dy) {
+    if (!ok_fb(f, true)) return;
     task_alive(); fb_scroll((FrameBuf *)f, dx, dy);
 }
 
@@ -388,6 +474,7 @@ extern "C" int fw_uart_init(unsigned bus, unsigned tx, unsigned rx, unsigned bau
 }
 
 extern "C" int fw_uart_write(unsigned bus, const void *data, unsigned len) {
+    if (!ok_r(data, len)) return -1;
     uart_inst_t *u = uart_of(bus);
     if (!u || !g_uart_ready[bus] || !data) return -1;
     task_alive();
@@ -405,6 +492,7 @@ extern "C" int fw_uart_available(unsigned bus) {
 // protocol asks for its header, then for the body the header describes, and
 // neither request should hang the device when the other end goes quiet.
 extern "C" int fw_uart_read(unsigned bus, void *buf, unsigned len, unsigned timeout_ms) {
+    if (!ok_w(buf, len)) return -1;
     uart_inst_t *u = uart_of(bus);
     if (!u || !g_uart_ready[bus] || !buf) return -1;
     uint8_t *p = (uint8_t *)buf;
@@ -433,6 +521,7 @@ extern "C" int fw_uart_deinit(unsigned bus) {
 extern "C" unsigned long fw_random(void) { return (unsigned long)get_rand_32(); }
 
 extern "C" void fw_random_bytes(void *buf, unsigned len) {
+    if (!ok_w(buf, len)) return;
     if (!buf) return;
     unsigned char *p = (unsigned char *)buf;
     // A word at a time, because the generator produces 32 bits per call and
@@ -450,6 +539,7 @@ extern "C" void fw_random_bytes(void *buf, unsigned len) {
 }
 
 extern "C" int fw_unique_id(char *out, unsigned cap) {
+    if (!ok_w(out, cap)) return -1;
     if (!out || cap < 17) return -1;
     pico_unique_board_id_t id;
     pico_get_unique_board_id(&id);
@@ -464,6 +554,7 @@ extern "C" int fw_unique_id(char *out, unsigned cap) {
 }
 
 extern "C" void fw_sha256(const void *data, unsigned len, unsigned char *out) {
+    if (!ok_r(data, len) || !ok_w(out, 32)) return;
     if (!data || !out) return;
     task_alive();
     sha256(data, len, out);
@@ -473,6 +564,7 @@ void sys_reboot(void);
 extern "C" void fw_reboot(void) { sys_reboot(); }
 
 extern "C" int fw_time_get(struct FwTime *out) {
+    if (!ok_w(out, sizeof(struct FwTime))) return -1;
     if (!out) return 0;
     struct tm t;
     if (!aon_timer_get_time_calendar(&t)) {
@@ -509,22 +601,28 @@ int net_pkg_http_download(const char *url, const char *path);
 bool net_is_connected(void);
 
 extern "C" int fw_net_connected(void) { return net_is_connected() ? 1 : 0; }
-extern "C" int fw_net_ssid(char *out, unsigned cap) { return net_pkg_ssid(out, cap); }
-extern "C" int fw_net_ip(char *out, unsigned cap)   { return net_pkg_ip(out, cap); }
+extern "C" int fw_net_ssid(char *out, unsigned cap) {
+    if (!ok_w(out, cap)) return -1; return net_pkg_ssid(out, cap); }
+extern "C" int fw_net_ip(char *out, unsigned cap)   {
+    if (!ok_w(out, cap)) return -1; return net_pkg_ip(out, cap); }
 
 extern "C" int fw_net_scan(FwNetAp *out, unsigned max) {
+    if (!ok_w(out, max * sizeof(FwNetAp))) return -1;
     task_alive();
     return net_pkg_scan(out, max);
 }
 extern "C" int fw_net_resolve(const char *host, char *out, unsigned cap) {
+    if (!ok_s(host) || !ok_w(out, cap)) return -1;
     task_alive();
     return net_pkg_resolve(host, out, cap);
 }
 extern "C" int fw_http_get(const char *url, void *buf, unsigned cap) {
+    if (!ok_s(url) || !ok_w(buf, cap)) return -1;
     task_alive();
     return net_pkg_http_get(url, buf, cap);
 }
 extern "C" int fw_http_download(const char *url, const char *path) {
+    if (!ok_s(url) || !ok_s(path)) return -1;
     task_alive();
     return net_pkg_http_download(url, path);
 }
@@ -564,6 +662,7 @@ extern "C" int fw_spi_set_baud(unsigned bus, unsigned baud) {
 }
 
 extern "C" int fw_spi_write(unsigned bus, const void *data, unsigned len) {
+    if (!ok_r(data, len)) return -1;
     spi_inst_t *s = spi_of(bus);
     if (!s || !g_spi_ready[bus] || !data) return -1;
     task_alive();
@@ -571,6 +670,7 @@ extern "C" int fw_spi_write(unsigned bus, const void *data, unsigned len) {
 }
 
 extern "C" int fw_spi_read(unsigned bus, void *buf, unsigned len, unsigned char tx_fill) {
+    if (!ok_w(buf, len)) return -1;
     spi_inst_t *s = spi_of(bus);
     if (!s || !g_spi_ready[bus] || !buf) return -1;
     task_alive();
@@ -578,6 +678,7 @@ extern "C" int fw_spi_read(unsigned bus, void *buf, unsigned len, unsigned char 
 }
 
 extern "C" int fw_spi_transfer(unsigned bus, const void *tx, void *rx, unsigned len) {
+    if (!ok_r(tx, len) || !ok_w(rx, len)) return -1;
     spi_inst_t *s = spi_of(bus);
     if (!s || !g_spi_ready[bus] || !tx || !rx) return -1;
     task_alive();
@@ -800,6 +901,7 @@ extern "C" int fw_pio_put(int h, unsigned long value, unsigned timeout_us) {
 }
 
 extern "C" int fw_pio_get(int h, unsigned long *out, unsigned timeout_us) {
+    if (!ok_w(out, sizeof(unsigned long))) return -1;
     PioSlot *s = pio_slot(h);
     if (!s || !out) return -1;
     uint32_t start = time_us_32();
@@ -818,7 +920,8 @@ extern "C" uint32_t fw_heap_total(void) { return heap_total(); }
 // USB buffer when the device stops is never delivered, which is why a crash
 // report can name the command but not the line. This is recorded in memory the
 // reset does not clear, so the last checkpoint reached IS the failing step.
-extern "C" void fw_progress(const char *what) { task_alive(); bb_note_phase(what); }
+extern "C" void fw_progress(const char *what) {
+    if (!ok_s(what)) return; task_alive(); bb_note_phase(what); }
 
 // The biggest single allocation available right now, found by probing. Free
 // bytes do not predict whether the next allocation succeeds; this does.
@@ -1137,6 +1240,7 @@ extern "C" void fw_tui_end(void) {
 }
 
 extern "C" void fw_tui_size(int *w, int *h) {
+    if (!ok_w(w, sizeof(int)) || !ok_w(h, sizeof(int))) return;
     if (w) *w = g_app_screen ? g_app_screen->w : 0;
     if (h) *h = g_app_screen ? g_app_screen->h : 0;
 }
@@ -1144,6 +1248,7 @@ extern "C" void fw_tui_size(int *w, int *h) {
 extern "C" void fw_tui_clear(void) { task_alive(); if (g_app_screen) tui_clear(g_app_screen); }
 
 extern "C" void fw_tui_text(int x, int y, const char *s, unsigned char attr, unsigned char fg) {
+    if (!ok_s(s)) return;
     task_alive();
     if (g_app_screen) tui_text(g_app_screen, x, y, s, attr, fg);
 }
@@ -1173,6 +1278,7 @@ extern "C" int fw_tui_refresh(void) {
 }
 
 extern "C" int fw_tui_poll(FwTuiEvent *out) {
+    if (!ok_w(out, sizeof(FwTuiEvent))) return 0;
     task_alive();
     if (!out) return 0;
     TuiEvent e;

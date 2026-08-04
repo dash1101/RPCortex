@@ -30,6 +30,7 @@ declare -A SRC=(
     [fatimage_test]="$CORE/fatview.cpp"
     [fat12_test]="$CORE/fat12.cpp $CORE/fatview.cpp"
     [blockcache_test]="$CORE/blockcache.cpp"
+    [ptrcheck_test]="$CORE/ptrcheck.cpp $CORE/task.cpp $CORE/blackbox.cpp host_task_stub.cpp"
     [excframe_test]="$CORE/excframe.cpp"
     [tui_test]="$CORE/tui.cpp"
     [tuilist_test]="$CORE/tuilist.cpp $CORE/tui.cpp"
@@ -76,7 +77,7 @@ declare -A FLAGS=( [smp_test]="-pthread" )
 # aligned about half the time, and freeing a pointer it did not issue aborts on
 # the spot. task_spawn does exactly that alignment for the stack guard, so the
 # uninstrumented run is the one that can catch it.
-PLAIN="task_test"
+PLAIN="task_test ptrcheck_test"
 
 pass=0; fail=0
 for t in "${!SRC[@]}"; do

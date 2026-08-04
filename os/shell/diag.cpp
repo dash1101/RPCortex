@@ -25,6 +25,7 @@
 #include "blackbox.h"
 #include "mpu.h"
 #include "sandbox.h"
+#include "ptrcheck.h"
 #include "perms.h"
 #include "users.h"
 #include "session.h"
@@ -474,6 +475,20 @@ static int cmd_mpu(int, char **) {
         if (refused)
             out_warn("  %lu were refused — a package named a function index that "
                      "does not exist.", (unsigned long)refused);
+
+        // Pointers, which is a different refusal and a more interesting one.
+        //
+        // A bad function index means a corrupted veneer pool. A bad POINTER
+        // means the package asked the firmware to read or write memory outside
+        // itself — which the protection unit would have stopped had the package
+        // done it directly, and which the firmware would once have done on its
+        // behalf without looking.
+        out_multi("    Pointer checks    : every buffer and string a package "
+                  "passes is range-checked");
+        uint32_t bad = ptr_refusals();
+        if (bad)
+            out_warn("  %lu call%s refused for pointing outside the package.",
+                     (unsigned long)bad, bad == 1 ? " was" : "s were");
     }
     out_blank();
 

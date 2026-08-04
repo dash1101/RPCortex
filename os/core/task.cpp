@@ -793,6 +793,22 @@ bool task_reap(int pid) {
 
 // --- package memory ---------------------------------------------------------
 
+// The regions of the package the CALLING task is inside, or null when it is not
+// inside one.
+//
+// Null for the shell, for a driver, for any OS task — and also for a package
+// running privileged on ARMv6-M, where there is no sandbox to check against and
+// the package could reach the memory directly anyway. In both cases the pointer
+// check has nothing to enforce and says so by returning null.
+const TaskAppMem *task_app_mem_current(void) {
+    Task *t = cur();
+    if (!t || !t->app_mem_set) return nullptr;
+    // A package with no stack region of its own is one running privileged. The
+    // loader leaves those two zero for exactly that case.
+    if (!t->app_mem.stack_size) return nullptr;
+    return &t->app_mem;
+}
+
 void task_app_mem_set(const TaskAppMem *mem) {
     Task *t = cur();
     if (!t || !mem) return;
