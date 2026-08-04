@@ -194,23 +194,83 @@ void tud_msc_inquiry_cb(uint8_t lun, uint8_t vendor_id[8], uint8_t product_id[16
     memcpy(product_rev, "2.0 ", 4);
 }
 
+// Build the view if it is not built.
+//
+// Every callback that needs the volume to exist goes through here rather than
+// relying on the host to ask whether the unit is ready first. Nothing in SCSI
+// guarantees that order — TinyUSB answers READ_CAPACITY without consulting the
+// ready callback at all — and a capacity of zero blocks is a drive the host
+// gives up on before it ever asks again.
+static bool ensure_ready(void) {
+    if (g_ready) return true;
+    // The lock covers the geometry as well as the walk. How much the filesystem
+    // can hold is read from it, so it is as much a filesystem question as the
+    // listing is, and splitting them leaves a window where the two disagree.
+    LockGuard _fs(&g_fs_lock);
+    if (g_ready) return true;                       // built while waiting for the lock
+    if (!fat_geom_init(&g_geom, storage_total_bytes())) return false;
+    if (!msc_build()) return false;
+    g_ready = true;
+    return true;
+}
+
+// The view is rebuilt at mount, and only at mount.
+//
+// It cannot be rebuilt while the host is using it. A rebuild reassigns every
+// cluster from scratch, so a directory listing the host cached moments earlier
+// would now name clusters belonging to a different file, and it would read the
+// wrong bytes with nothing to indicate anything went wrong. Re-reading the boot
+// sector looks like a fresh mount and is not: hosts re-probe volumes mid-copy.
+//
+// So the triggers are the two that genuinely mean the host has let go — the bus
+// going away, and an explicit eject. Files the shell creates in between appear
+// on the next mount, which is the honest behaviour and matches what the caching
+// makes possible anyway.
+static void msc_invalidate(void) { g_ready = false; }
+
+extern "C" void tud_umount_cb(void) { msc_invalidate(); }
+
+// Build the view from the usb task, before it enters the device stack.
+//
+// This is about lock ordering, not about being early.
+//
+// The shell takes the filesystem lock and then prints while still holding it —
+// ls does exactly that, printing each entry from inside storage_walk — so its
+// order is filesystem lock, then the stdio mutex. A callback reached through
+// tud_task() is inside the stdio mutex already and takes the filesystem lock
+// second, which is the opposite order and therefore a deadlock whenever the two
+// overlap. It resolves only when the SDK's stdio mutex times out after a
+// second, and it resolves by throwing away the console output that was waiting.
+//
+// The tree walk is by far the longest time that lock is held, so doing it here
+// — on the usb task, outside tud_task, holding no stdio mutex — takes the
+// dominant window out of the inversion entirely. What remains inside the device
+// stack is a single sector read, which on this filesystem is a memcpy out of
+// memory-mapped flash.
+//
+// The rest of the exposure is real but small, and it is written down in
+// USBMSC-DESIGN.md rather than papered over here.
+extern "C" void usbmsc_service(void) {
+    // Only once a host has actually configured the device. Before that there is
+    // no drive to describe and no reason to spend the walk or the memory.
+    if (tud_mounted()) ensure_ready();
+}
+
+bool tud_msc_start_stop_cb(uint8_t lun, uint8_t power_condition, bool start, bool load_eject) {
+    (void)lun; (void)power_condition;
+    if (load_eject && !start) msc_invalidate();     // the host ejected the volume
+    return true;
+}
+
 bool tud_msc_test_unit_ready_cb(uint8_t lun) {
     (void)lun;
-    if (!g_ready) {
-        // Geometry first: how much the filesystem can actually hold decides how
-        // many clusters there are, and everything else is derived from that.
-        if (!fat_geom_init(&g_geom, storage_total_bytes())) return false;
-        LockGuard _fs(&g_fs_lock);
-        if (!msc_build()) return false;
-        g_ready = true;
-    }
-    return true;
+    return ensure_ready();
 }
 
 void tud_msc_capacity_cb(uint8_t lun, uint32_t *block_count, uint16_t *block_size) {
     (void)lun;
     *block_size  = FAT_SECTOR_SIZE;
-    *block_count = g_ready ? g_geom.total_sectors : 0;
+    *block_count = ensure_ready() ? g_geom.total_sectors : 0;
 }
 
 // Read-only for now: the write path is the next pass. Saying so here is what
@@ -224,16 +284,7 @@ bool tud_msc_is_writable_cb(uint8_t lun) {
 int32_t tud_msc_read10_cb(uint8_t lun, uint32_t lba, uint32_t offset,
                           void *buffer, uint32_t bufsize) {
     (void)lun;
-    if (!g_ready) return -1;
-
-    // A read of the boot sector is what a fresh mount begins with, so it is the
-    // one moment the tree can be rebuilt without contradicting a view the host
-    // is already holding. Files the shell created since the last mount appear
-    // on a replug, and that is the only point at which they can.
-    if (lba == 0 && offset == 0) {
-        LockGuard _fs(&g_fs_lock);
-        msc_build();
-    }
+    if (!ensure_ready()) return -1;
 
     uint8_t sec[FAT_SECTOR_SIZE];
     uint32_t idx, sic;

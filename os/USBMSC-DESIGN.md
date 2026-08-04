@@ -215,6 +215,26 @@ discards.
   while the drive is mounted. `g_fs_lock` covers the OS side and the MSC
   callbacks take it too — which is only legal because they now run in thread
   context.
+- **The two locks are taken in opposite orders.** The shell prints while
+  holding the filesystem lock — `ls` prints each entry from inside
+  `storage_walk`, which holds it for the whole walk — so its order is
+  `g_fs_lock` then the SDK's `stdio_usb_mutex`. Anything reached through
+  `tud_task()` is inside `stdio_usb_mutex` already and takes `g_fs_lock`
+  second. Overlap those and neither side moves until the SDK's mutex gives up
+  after a second, and it gives up by discarding the console output that was
+  waiting. Both tasks are pinned to core 0, so this is reachable rather than
+  theoretical.
+
+  The tree walk is the long hold, and it has been moved onto the `usb` task
+  before it enters the device stack, which takes the dominant window out of
+  the inversion. What is left inside is a single sector read — on this
+  filesystem a memcpy out of memory-mapped flash — so the remaining exposure
+  is a narrow one, and the symptom if it is ever hit is a second of stalled
+  console and some lost output rather than anything corrupted.
+
+  It is still an inversion and it should be closed properly. The honest fix is
+  that `storage_walk` should not hold the filesystem lock across a caller's
+  callback, since that callback can do anything at all, including print.
 
 That last one is the reason to be careful rather than quick: the failure mode is
 a corrupted filesystem, which on this device has previously meant a board that
