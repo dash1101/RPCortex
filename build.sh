@@ -4,6 +4,7 @@
 #   ./build.sh              both boards
 #   ./build.sh pico2_w      one board
 #   ./build.sh --clean      wipe the build directories first
+#   ./build.sh --no-dev-packages   leave out bench, probe and stress
 #
 # Output lands in out/rpcortex-v2-<board>.uf2. Flashing is drag-and-drop: hold
 # BOOTSEL, plug in, copy the .uf2 onto the RPI-RP2 drive. There is no rawrepl
@@ -29,10 +30,16 @@ for sub in lib/cyw43-driver lib/lwip; do
 done
 
 CLEAN=0
+DEVPKGS=ON
 BOARDS=()
 for arg in "$@"; do
     case "$arg" in
         --clean) CLEAN=1 ;;
+        # bench, probe and stress are baked into the image so a board can be
+        # diagnosed before it has a network. They are of no use to somebody who
+        # just wants the OS, so a shipping build leaves them out — and this is
+        # the whole of doing that, rather than picking them out of the build.
+        --no-dev-packages) DEVPKGS=OFF ;;
         -*)      echo "unknown option: $arg" >&2; exit 1 ;;
         *)       BOARDS+=("$arg") ;;
     esac
@@ -61,9 +68,10 @@ for board in "${BOARDS[@]}"; do
         [ -x "$d/picotool" ] && PT="$(cd "$d" && pwd)" && break
     done
     if [ -n "$PT" ]; then
-        cmake -S os -B "$dir" -DPICO_BOARD="$board" -Dpicotool_DIR="$PT" >/dev/null
+        cmake -S os -B "$dir" -DPICO_BOARD="$board" -DRPC_DEV_PACKAGES="$DEVPKGS" \
+              -Dpicotool_DIR="$PT" >/dev/null
     else
-        cmake -S os -B "$dir" -DPICO_BOARD="$board" >/dev/null
+        cmake -S os -B "$dir" -DPICO_BOARD="$board" -DRPC_DEV_PACKAGES="$DEVPKGS" >/dev/null
     fi
     cmake --build "$dir" -j"$(nproc)" >/dev/null
     cp "$dir/rpcortex_v2.uf2" "out/rpcortex-v2-$board.uf2"

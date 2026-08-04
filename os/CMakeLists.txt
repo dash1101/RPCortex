@@ -298,24 +298,37 @@ rpc_add_app(bench)
 # boot. That is what keeps them real packages — `pkg remove stress` deletes it
 # like any other, and it stays gone — rather than built-in commands wearing a
 # package's clothes.
-add_custom_command(
-    OUTPUT ${CMAKE_BINARY_DIR}/stock_bench.cpp
-    COMMAND ${CMAKE_COMMAND} -E env python3 ${OS_ROOT}/tools_bin2c.py
-            ${CMAKE_BINARY_DIR}/apps/bench.app
-            ${CMAKE_BINARY_DIR}/stock_bench.cpp stock_bench
-    DEPENDS ${CMAKE_BINARY_DIR}/apps/bench.app ${OS_ROOT}/tools_bin2c.py
-    VERBATIM)
-add_custom_target(stock_bench_src DEPENDS ${CMAKE_BINARY_DIR}/stock_bench.cpp)
-target_sources(rpcortex_v2 PRIVATE ${CMAKE_BINARY_DIR}/stock_bench.cpp)
-add_dependencies(rpcortex_v2 stock_bench_src app_bench)
+# --- the development test suite ---------------------------------------------
+#
+# bench, probe and stress exist to exercise THIS build. They measure what the
+# host tests cannot — real cores, real interrupt jitter, real timing — and a
+# device with none of them attached cannot tell whether it is healthy.
+#
+# They are baked in rather than published, for three reasons. They are of no use
+# to anyone who just wants the OS; publishing each one costs a build, a checksum
+# and an index entry every time it changes; and a device that has them without
+# having to fetch them is a device that can be diagnosed before the network is
+# working, which is exactly when it usually matters.
+#
+# Turning them off is ONE flag, and that is deliberate — shipping the OS should
+# not mean picking them back out of the build by hand:
+#
+#     ./build.sh --no-dev-packages
+#
+option(RPC_DEV_PACKAGES "Bake the development test suite into the image" ON)
 
-add_custom_command(
-    OUTPUT ${CMAKE_BINARY_DIR}/stock_stress.cpp
-    COMMAND ${CMAKE_COMMAND} -E env python3 ${OS_ROOT}/tools_bin2c.py
-            ${CMAKE_BINARY_DIR}/apps/stress.app
-            ${CMAKE_BINARY_DIR}/stock_stress.cpp stock_stress
-    DEPENDS ${CMAKE_BINARY_DIR}/apps/stress.app ${OS_ROOT}/tools_bin2c.py
-    VERBATIM)
-add_custom_target(stock_stress_src DEPENDS ${CMAKE_BINARY_DIR}/stock_stress.cpp)
-target_sources(rpcortex_v2 PRIVATE ${CMAKE_BINARY_DIR}/stock_stress.cpp)
-add_dependencies(rpcortex_v2 stock_stress_src app_stress)
+if(RPC_DEV_PACKAGES)
+    target_compile_definitions(rpcortex_v2 PRIVATE RPC_DEV_PACKAGES=1)
+    foreach(devpkg bench stress probe)
+        add_custom_command(
+            OUTPUT ${CMAKE_BINARY_DIR}/stock_${devpkg}.cpp
+            COMMAND ${CMAKE_COMMAND} -E env python3 ${OS_ROOT}/tools_bin2c.py
+                    ${CMAKE_BINARY_DIR}/apps/${devpkg}.app
+                    ${CMAKE_BINARY_DIR}/stock_${devpkg}.cpp stock_${devpkg}
+            DEPENDS ${CMAKE_BINARY_DIR}/apps/${devpkg}.app ${OS_ROOT}/tools_bin2c.py
+            VERBATIM)
+        add_custom_target(stock_${devpkg}_src DEPENDS ${CMAKE_BINARY_DIR}/stock_${devpkg}.cpp)
+        target_sources(rpcortex_v2 PRIVATE ${CMAKE_BINARY_DIR}/stock_${devpkg}.cpp)
+        add_dependencies(rpcortex_v2 stock_${devpkg}_src app_${devpkg})
+    endforeach()
+endif()

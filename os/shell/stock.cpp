@@ -18,18 +18,42 @@
 #include <string.h>
 #include <stdlib.h>
 
+struct StockPkg { const char *name; const unsigned char *data; const unsigned int *len; };
+
+// The development test suite, baked in rather than published.
+//
+// bench, probe and stress measure what a host test cannot — real cores, real
+// interrupt jitter, real timing — so a device wants them before it has a
+// working network, which is when they are usually needed. They are of no use to
+// somebody who just wants the OS, and publishing each one costs a build and an
+// index entry every time it changes.
+//
+// Built with RPC_DEV_PACKAGES off, none of this exists and the table is empty.
+// That is the whole switch: shipping the OS should not mean picking them back
+// out of the build by hand.
+#if RPC_DEV_PACKAGES
 extern "C" const unsigned char stock_stress_data[];
 extern "C" const unsigned int  stock_stress_len;
 extern "C" const unsigned char stock_bench_data[];
 extern "C" const unsigned int  stock_bench_len;
-
-struct StockPkg { const char *name; const unsigned char *data; const unsigned int *len; };
+extern "C" const unsigned char stock_probe_data[];
+extern "C" const unsigned int  stock_probe_len;
 
 static const StockPkg kStock[] = {
     {"stress", stock_stress_data, &stock_stress_len},
     {"bench",  stock_bench_data,  &stock_bench_len},
+    {"probe",  stock_probe_data,  &stock_probe_len},
 };
-#define N_STOCK (sizeof(kStock) / sizeof(kStock[0]))
+#else
+// An empty array is not valid C++, and a table of one null entry would be
+// walked. A count of zero with no array is the honest shape.
+static const StockPkg *const kStock = nullptr;
+#endif
+#if RPC_DEV_PACKAGES
+  #define N_STOCK (sizeof(kStock) / sizeof(kStock[0]))
+#else
+  #define N_STOCK 0u
+#endif
 
 // Write one out and install it. Returns false if it could not be written.
 static bool stock_place(const StockPkg &p, bool quiet) {
