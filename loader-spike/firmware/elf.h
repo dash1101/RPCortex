@@ -36,6 +36,9 @@ typedef struct { uint32_t r_offset, r_info; } Elf32_Rel;
 #define SHT_NOBITS      8
 #define SHT_REL         9
 
+// SHF_WRITE is what sorts an app's sections into the half it may write to and
+// the half it may not — .text and .rodata lack it, .data and .bss carry it.
+#define SHF_WRITE       0x1
 #define SHF_ALLOC       0x2
 #define SHF_EXECINSTR   0x4
 

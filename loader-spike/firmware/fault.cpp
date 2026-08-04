@@ -67,41 +67,78 @@ void fault_report(FaultFrame *f, const char *kind) {
     note[n] = 0;
     bb_note_phase(note);
 
-    // The fault STATUS registers, which say exactly what kind of fault this was
-    // rather than leaving it to be inferred from a program counter. This should
-    // have been the first thing recorded:
+    // The fault STATUS register, which says exactly what kind of fault this was
+    // rather than leaving it to be inferred from a program counter.
     //
-    //   INVSTATE  a call landed in ARM state — a function pointer without its
-    //             Thumb bit, which is the classic loader bug
-    //   IACCVIOL  instruction fetch refused — the memory is not executable
-    //   PRECISERR a bad data address, with BFAR holding it
-    //   IMPRECIS  a deferred write fault; the PC is PAST the real instruction
-    //   STKERR    the exception frame itself could not be pushed: a bad SP
+    // CFSR is three registers in one word, and the bit numbering below is the
+    // whole point of this block — it was wrong, in a way that mattered. Bit 1 is
+    // DACCVIOL, a data access the memory protection refused, and it was labelled
+    // "STKERR bad SP". It also came first, so it won every comparison. Now that
+    // the protection hardware is actually configured, that bit is the ONE most
+    // likely to be set, and it would have been reported as the opposite of what
+    // it is: a corrupted stack pointer rather than a pointer that went where it
+    // should not.
+    //
+    //   MMFSR, bits 0-7 — the memory protection unit
+    //     IACCVIOL   an instruction fetch from memory marked non-executable
+    //     DACCVIOL   a read or write the region permissions refused; MMFAR says
+    //                where, and on this OS it usually means a package touched
+    //                something that is not its own
+    //     MSTKERR    the exception frame could not be pushed: a stack overflow
+    //                caught by the guard at the bottom of a task's stack
+    //   BFSR, bits 8-15 — the bus
+    //     PRECISERR  a bad data address, with BFAR holding it
+    //     IMPRECIS   a deferred write fault; the PC is PAST the instruction
+    //   UFSR, bits 16-31 — the instruction stream
+    //     INVSTATE   a call landed in ARM state — a function pointer without its
+    //                Thumb bit, which is the classic loader bug
+    //     STKOF      the stack pointer went below its limit. On ARMv8-M this is
+    //                what a stack overflow looks like, and it names the exact
+    //                instruction that did it.
     //
     // Recorded as a second line so the first still names the package and offset.
     {
         uint32_t cfsr = *(volatile uint32_t *)0xE000ED28;
         uint32_t hfsr = *(volatile uint32_t *)0xE000ED2C;
+        uint32_t mmfar = *(volatile uint32_t *)0xE000ED34;
+        uint32_t bfar  = *(volatile uint32_t *)0xE000ED38;
         const char *what = "?";
-        if      (cfsr & (1u << 1))  what = "STKERR bad SP";
-        else if (cfsr & (1u << 3))  what = "UNSTKERR";
+        // Most specific first. A stack overflow is the one worth naming plainly,
+        // because it is the failure that used to corrupt whatever the heap had
+        // put below the stack and get blamed on something else entirely.
+        if      (cfsr & (1u << 20)) what = "STKOF stack overflow";
+        else if (cfsr & (1u << 4))  what = "MSTKERR stack overflow on entry";
+        else if (cfsr & (1u << 1))  what = "DACCVIOL wrote where it may not";
         else if (cfsr & (1u << 0))  what = "IACCVIOL not executable";
-        else if (cfsr & (1u << 7))  what = "MMARVALID";
-        else if (cfsr & (1u << 9))  what = "PRECISERR bad addr";
-        else if (cfsr & (1u << 10)) what = "IMPRECISERR";
-        else if (cfsr & (1u << 12)) what = "STKERR bus";
+        else if (cfsr & (1u << 3))  what = "MUNSTKERR";
         else if (cfsr & (1u << 17)) what = "INVSTATE no Thumb bit";
         else if (cfsr & (1u << 16)) what = "UNDEFINSTR";
         else if (cfsr & (1u << 18)) what = "INVPC";
+        else if (cfsr & (1u << 19)) what = "NOCP no coprocessor";
         else if (cfsr & (1u << 24)) what = "UNALIGNED";
+        else if (cfsr & (1u << 25)) what = "DIVBYZERO";
+        else if (cfsr & (1u << 9))  what = "PRECISERR bad addr";
+        else if (cfsr & (1u << 10)) what = "IMPRECISERR";
+        else if (cfsr & (1u << 12)) what = "STKERR bus";
+        else if (cfsr & (1u << 11)) what = "UNSTKERR bus";
+        else if (cfsr & (1u << 8))  what = "IBUSERR";
         else if (hfsr & (1u << 30)) what = "FORCED escalated";
 
+        // The ADDRESS, when there is one. Without it a protection fault says
+        // only that something was refused, and the whole reason to configure the
+        // hardware was to be told what.
+        bool have_mm = (cfsr & (1u << 7)) != 0;      // MMARVALID
+        bool have_bf = (cfsr & (1u << 15)) != 0;     // BFARVALID
         printf("    cfsr=0x%08lx hfsr=0x%08lx sp=%p  %s\n",
                (unsigned long)cfsr, (unsigned long)hfsr, (void *)f, what);
+        if (have_mm || have_bf)
+            printf("    faulting address = 0x%08lx\n",
+                   (unsigned long)(have_mm ? mmfar : bfar));
         // And into the log ring, which survives to be read by logdump.
-        log_addf(LOG_K_ERR, "fault %s cfsr=%08lx sp=%08lx lr=%08lx",
-                 what, (unsigned long)cfsr, (unsigned long)(uintptr_t)f,
-                 (unsigned long)f->lr);
+        log_addf(LOG_K_ERR, "fault %s cfsr=%08lx addr=%08lx sp=%08lx lr=%08lx",
+                 what, (unsigned long)cfsr,
+                 (unsigned long)(have_mm ? mmfar : have_bf ? bfar : 0),
+                 (unsigned long)(uintptr_t)f, (unsigned long)f->lr);
     }
 
     printf("\n");
@@ -131,10 +168,34 @@ extern const char fault_kind_hard[];
 // author wrote.
 extern "C" const char *apps_locate(uint32_t addr, uint32_t *offset, bool *in_veneer);
 
+// Release the stack limit before anything else.
+//
+// On ARMv8-M the stack guard is MSPLIM, and a task that overflows its stack
+// arrives here with the stack pointer sitting AT the limit — the push that
+// violated it was refused, which is how the fault was raised. Everything below
+// runs on that same stack and pushes to it, so with the limit still in place
+// the very first push in the handler violates it again. A fault taken while
+// already handling a fault is not another report; it is the processor entering
+// lockup, and the device goes dark holding the one piece of information that
+// would have explained it.
+//
+// Writing zero costs two instructions and makes the handler reachable. It does
+// mean the report itself can run off the bottom of an exhausted stack into the
+// heap — but the crash note is written to memory that survives a reset before
+// any of the printing starts, so it is a corrupted heap on a device that is
+// two seconds from rebooting anyway, against no report at all.
+#if defined(__ARM_ARCH_6M__)
+  #define FAULT_RELEASE_STACK_LIMIT ""
+#else
+  #define FAULT_RELEASE_STACK_LIMIT  "movs r0, #0     \n" \
+                                     "msr  msplim, r0 \n"
+#endif
+
 // Pick the stack the exception came from (MSP or PSP) out of EXC_RETURN, then
 // hand the frame to the C reporter. Naked so the prologue cannot disturb it.
 __attribute__((naked)) void isr_hardfault(void) {
     __asm volatile(
+        FAULT_RELEASE_STACK_LIMIT
         "movs r0, #4        \n"
         "mov  r1, lr        \n"
         "tst  r0, r1        \n"

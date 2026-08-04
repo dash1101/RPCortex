@@ -11,7 +11,16 @@
 struct Task {
     TaskInfo info;
     void    *sp;            // saved stack pointer while not running
-    void    *stack;         // the malloc'd block; null for the adopted main task
+    // The stack, twice over. `stack` is where it actually begins — aligned, so
+    // the hardware guard can be placed on it — and `stack_raw` is what malloc
+    // returned and what must be given back. They differ by up to 31 bytes, and
+    // freeing the wrong one corrupts the heap in a way that surfaces much later
+    // somewhere else.
+    //
+    // Both are null for the adopted main task: it runs on the C startup stack,
+    // which this scheduler neither allocated nor may release.
+    void    *stack;
+    void    *stack_raw;
     TaskFn   fn;
     void    *arg;
     uint32_t wake_at_ms;    // for TASK_SLEEPING
@@ -43,6 +52,18 @@ struct Task {
     // first core's count sticks at non-zero forever, which quietly disables
     // preemption there for the rest of the boot.
     uint32_t crit;
+
+    // The package this task is currently executing, described for the
+    // protection hardware — or nothing, which is the usual case.
+    //
+    // Held BY VALUE rather than as a pointer to the loader's own record. The
+    // record for a package that runs and exits lives on the caller's stack, and
+    // the one for a resident package lives in a table entry that unloading
+    // frees; a pointer to either would outlive its subject in exactly the
+    // circumstances where a stale protection region does the most damage.
+    // Twenty-four bytes a task is a cheap way not to have to think about it.
+    TaskAppMem app_mem;
+    bool       app_mem_set;
 };
 
 static bool     g_up;                // task_init has run
@@ -64,6 +85,24 @@ static uint32_t g_cores = 1;
 // A distinct value at the very bottom, so an overflow is detectable even after
 // the paint above it has legitimately been used.
 #define STACK_GUARD 0xDEADBE57u
+
+// Re-establish the hardware protection for whatever is now running on this
+// core, and be called at EVERY point where execution resumes.
+//
+// The protection hardware belongs to the core, and a task does not: it parks on
+// one and, 99 times in 100 on this chip, comes back on the other. So a guard
+// installed when a task was created, or by the core that parked it, describes a
+// stack that is not the one in use. That failure is completely silent — the
+// guard still works, it just protects somebody else — which is why this is one
+// function called from a handful of places rather than three lines copied to
+// each of them.
+//
+// Null means the core's own scheduler context, which runs on the boot stack.
+static void arm_protection(Task *t) {
+    if (t && t->stack) task_stack_guard_set(t->stack, t->info.stack_size);
+    else               task_stack_guard_set(nullptr, 0);
+    task_app_mem_apply(t && t->app_mem_set ? &t->app_mem : nullptr);
+}
 
 static Task *slot_of(int pid) {
     for (uint32_t i = 0; i < TASK_MAX; i++)
@@ -189,6 +228,12 @@ void task_init(const char *name) {
     snprintf(t.info.path, sizeof(t.info.path), "%s", "(kernel)");
     g_used = 1;
     g_current[0] = t.info.pid;
+
+    // pid 1 runs on the C startup stack, which the platform locates from the
+    // linker. Guarding it matters more than guarding any other: it is the task
+    // the shell runs in, so every command and every package entry point is
+    // somewhere on it.
+    arm_protection(&t);
 }
 
 // Every task starts here rather than at fn directly, so a task that simply
@@ -196,6 +241,10 @@ void task_init(const char *name) {
 // a returning task would run off the end of its stack into nothing.
 static void task_trampoline(void) {
     Task *t = cur();
+    // A brand-new task did not come back from a context switch, so nothing has
+    // armed its guard yet. This is the other half of the rule in
+    // arm_protection: every place execution resumes, including the first time.
+    arm_protection(t);
     int rc = t->fn ? t->fn(t->arg) : 0;
     task_exit(rc);
 }
@@ -236,18 +285,33 @@ int task_spawn(const char *name, const char *path, TaskFn fn, void *arg,
             if (!oldest || c->info.pid < oldest->info.pid) oldest = c;
         }
         if (oldest) {
-            if (oldest->stack) { free(oldest->stack); oldest->stack = nullptr; }
+            if (oldest->stack_raw) free(oldest->stack_raw);
+            oldest->stack = oldest->stack_raw = nullptr;
             oldest->info.state = TASK_BLOCKED;   // straight to reserved
             oldest->live = false;
             oldest->crit = 0;
+            oldest->app_mem_set = false;
             t = oldest;
         }
     }
     lock_hw_exit();
     if (!t) return -1;
 
-    void *stack = malloc(stack_bytes);
-    if (!stack) { t->info.state = TASK_FREE; return -1; }
+    // Room for the alignment on top of the stack itself. The hardware guard has
+    // to sit on a TASK_STACK_ALIGN boundary and malloc only promises eight, so
+    // the slack is asked for here and the usable stack starts at the first
+    // boundary inside it. Rounding the other way would put the guard below the
+    // block, in whatever the heap handed out previously.
+    //
+    // Done in uintptr_t rather than through the 32-bit region helpers: this
+    // file also compiles for the host test, where a pointer does not fit in
+    // thirty-two bits and truncating one produces an address that is not a
+    // stack at all.
+    void *raw = malloc(stack_bytes + TASK_STACK_ALIGN);
+    if (!raw) { t->info.state = TASK_FREE; return -1; }
+    uintptr_t aligned = ((uintptr_t)raw + (TASK_STACK_ALIGN - 1))
+                        & ~(uintptr_t)(TASK_STACK_ALIGN - 1);
+    void *stack = (void *)aligned;
     paint(stack, stack_bytes);
 
     memset(&t->info, 0, sizeof(t->info));
@@ -257,9 +321,11 @@ int task_spawn(const char *name, const char *path, TaskFn fn, void *arg,
     snprintf(t->info.name, sizeof(t->info.name), "%s", name ? name : "task");
     snprintf(t->info.path, sizeof(t->info.path), "%s", path ? path : "-");
 
-    t->stack = stack;
-    t->fn    = fn;
-    t->arg   = arg;
+    t->stack     = stack;
+    t->stack_raw = raw;
+    t->fn        = fn;
+    t->arg       = arg;
+    t->app_mem_set = false;
     t->live  = false;        // slots are reused; the memset above only clears info
     t->crit  = 0;
 
@@ -477,8 +543,18 @@ static void reschedule(TaskState park_as) {
 
     // &me->live: cleared inside the switch, the instant after sp is stored.
     // The scheduler context (me == nullptr) has no task to advertise.
-    if (me) task_ctx_switch(&me->sp, next->sp, &me->live);
-    else    task_ctx_switch(&g_sched_sp[core], next->sp, nullptr);
+    //
+    // Both calls return only when THIS context is resumed, which may be on the
+    // other core and will certainly be after other tasks have reprogrammed the
+    // protection hardware for themselves. So the guard is re-armed here, on the
+    // far side of the switch, and not before it.
+    if (me) {
+        task_ctx_switch(&me->sp, next->sp, &me->live);
+        arm_protection(me);
+    } else {
+        task_ctx_switch(&g_sched_sp[core], next->sp, nullptr);
+        arm_protection(nullptr);
+    }
 }
 
 void task_yield(void) { reschedule(TASK_READY); }
@@ -691,7 +767,39 @@ const TaskInfo *task_find(int pid) {
 bool task_reap(int pid) {
     Task *t = slot_of(pid);
     if (!t || t->info.state != TASK_DONE) return false;
-    if (t->stack) { free(t->stack); t->stack = nullptr; }
+    // stack_raw, not stack: the latter is a few bytes further in, and handing
+    // the heap a pointer it never issued corrupts it silently.
+    if (t->stack_raw) free(t->stack_raw);
+    t->stack = t->stack_raw = nullptr;
+    t->app_mem_set = false;
     t->info.state = TASK_FREE;
     return true;
+}
+
+// --- package memory ---------------------------------------------------------
+
+void task_app_mem_set(const TaskAppMem *mem) {
+    Task *t = cur();
+    if (!t || !mem) return;
+    t->app_mem     = *mem;
+    t->app_mem_set = true;
+    task_app_mem_apply(&t->app_mem);
+}
+
+bool task_app_mem_get(TaskAppMem *out) {
+    Task *t = cur();
+    if (!t || !t->app_mem_set) return false;
+    if (out) *out = t->app_mem;
+    return true;
+}
+
+void task_app_mem_clear(void) {
+    Task *t = cur();
+    // The hardware is cleared whether or not a task was found. Leaving regions
+    // programmed after the package they describe has been freed is the failure
+    // this is here to prevent, and "there was no current task" is not a reason
+    // to leave them in place.
+    task_app_mem_apply(nullptr);
+    if (!t) return;
+    t->app_mem_set = false;
 }

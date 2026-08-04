@@ -18,6 +18,7 @@
 //     about a device whose whole heap is 400 KB.
 #include "loader.h"
 #include "elf.h"
+#include "mpu.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -42,6 +43,14 @@ static void *alloc32(size_t n) {
                        MAP_PRIVATE | MAP_ANONYMOUS | MAP_32BIT, -1, 0);
         if (p == MAP_FAILED) return nullptr;
         g_arena = (uint8_t *)p;
+        // Start deliberately OFF a block boundary.
+        //
+        // mmap returns a page, and every size the loader asks for is a whole
+        // number of blocks, so a bump allocator starting at zero hands back
+        // perfectly aligned pointers forever — and a loader that had forgotten
+        // to align at all would pass every check by luck. A real heap makes no
+        // such promise; eight bytes is what malloc actually guarantees.
+        g_used_bytes = 8;
     }
     n = (n + 7) & ~(size_t)7;
     if (g_used_bytes + n > ARENA) return nullptr;
@@ -78,29 +87,52 @@ uint32_t api_lookup(const char *n) {
 }
 uint32_t api_symbol_count(void) { return 64; }
 
-// Is a loaded-image offset inside an executable section? Recomputes the
-// loader's layout from the ELF so the answer matches what was actually placed.
-static bool in_text(const char *path, uint32_t off) {
+// Where a section landed in the loaded image, recomputed from the ELF so the
+// answers match what was actually placed.
+//
+// This MIRRORS the loader's layout rather than sharing it, deliberately: a
+// helper that called the loader's own code would agree with it whatever either
+// of them did. It has to be kept in step by hand, which is the price of it
+// being able to disagree.
+//
+// `want_off` is the offset being asked about. Returns the flags of the section
+// containing it, or 0 if none does.
+static uint32_t section_flags_at(const char *path, uint32_t want_off,
+                                 uint32_t *text_end_out) {
     FILE *f = fopen(path, "rb");
-    if (!f) return false;
+    if (!f) return 0;
     fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET);
     uint8_t *b = (uint8_t *)malloc(sz);
-    if (fread(b, 1, sz, f) != (size_t)sz) { fclose(f); free(b); return false; }
+    if (fread(b, 1, sz, f) != (size_t)sz) { fclose(f); free(b); return 0; }
     fclose(f);
     Elf32_Ehdr *eh = (Elf32_Ehdr *)b;
     Elf32_Shdr *sh = (Elf32_Shdr *)(b + eh->e_shoff);
-    uint32_t total = 0; bool hit = false;
-    for (int i = 0; i < eh->e_shnum; i++) {
-        if (!(sh[i].sh_flags & SHF_ALLOC) || sh[i].sh_size == 0) continue;
-        uint32_t al = sh[i].sh_addralign ? sh[i].sh_addralign : 4;
-        if (al < 4) al = 4;
-        total = (total + al - 1) & ~(al - 1);
-        if (off >= total && off < total + sh[i].sh_size)
-            hit = (sh[i].sh_flags & SHF_EXECINSTR) != 0;
-        total += sh[i].sh_size;
+    uint32_t total = 0, flags = 0, text_end = 0;
+    // Two passes, non-writable first — the same order the loader uses so the
+    // read-only half is contiguous and can be one protection region.
+    for (int pass = 0; pass < 2; pass++) {
+        for (int i = 0; i < eh->e_shnum; i++) {
+            if (!(sh[i].sh_flags & SHF_ALLOC) || sh[i].sh_size == 0) continue;
+            if (((sh[i].sh_flags & SHF_WRITE) != 0) != (pass == 1)) continue;
+            uint32_t al = sh[i].sh_addralign ? sh[i].sh_addralign : 4;
+            if (al < 4) al = 4;
+            total = (total + al - 1) & ~(al - 1);
+            if (want_off >= total && want_off < total + sh[i].sh_size)
+                flags = sh[i].sh_flags | 0x80000000u;   // marker: a section was found
+            total += sh[i].sh_size;
+        }
+        if (pass == 0) {
+            total = (total + (APP_BLOCK_ALIGN - 1)) & ~(APP_BLOCK_ALIGN - 1);
+            text_end = total;
+        }
     }
     free(b);
-    return hit;
+    if (text_end_out) *text_end_out = text_end;
+    return flags;
+}
+
+static bool in_text(const char *path, uint32_t off) {
+    return (section_flags_at(path, off, nullptr) & SHF_EXECINSTR) != 0;
 }
 
 static int load_one(const char *path) {
@@ -141,6 +173,97 @@ static int load_one(const char *path) {
     if (app.veneers_used > app.veneer_size) {
         printf("       FAIL veneer pool overran\n");
         bad = 1;
+    }
+
+    // --- the two halves ------------------------------------------------------
+    //
+    // Code and data want opposite permissions, so they have to be in separate,
+    // contiguous, separately-coverable spans. Every check here is about
+    // something that would silently produce NO protection rather than a visible
+    // failure: a block on the wrong boundary cannot be encoded as a region at
+    // all, and a writable section that slipped into the read-only half would be
+    // marked read-only and fault the first time the package assigned to a
+    // global.
+    if (b % APP_BLOCK_ALIGN) {
+        printf("       FAIL image starts at %p, off the block boundary\n", app.image);
+        bad = 1;
+    }
+    if ((uintptr_t)app.veneers % APP_BLOCK_ALIGN) {
+        printf("       FAIL veneer pool is off the block boundary\n");
+        bad = 1;
+    }
+    if (app.text_size % APP_BLOCK_ALIGN || app.image_size % APP_BLOCK_ALIGN) {
+        printf("       FAIL a half is not a whole number of blocks (%u / %u)\n",
+               app.text_size, app.image_size);
+        bad = 1;
+    }
+    if (app.text_size + app.data_size != app.image_size) {
+        printf("       FAIL the halves do not add up to the image\n");
+        bad = 1;
+    }
+    if (app.data && (uintptr_t)app.data != b + app.text_size) {
+        printf("       FAIL the writable half does not start where the other ends\n");
+        bad = 1;
+    }
+    // The entry point is code, so it must be in the half that stays executable.
+    if (e - b >= app.text_size) {
+        printf("       FAIL entry point is in the writable half\n");
+        bad = 1;
+    }
+
+    // Every region the OS will hand the hardware must actually be encodable.
+    //
+    // This is the join between the loader's layout and the protection
+    // hardware's rules, and it fails silently in the direction that matters: an
+    // unencodable region is refused, the region is left disabled, and the result
+    // is a package running with no protection while everything reports success.
+    //
+    // A veneer is sixteen bytes and a region is described in thirty-twos, so a
+    // package with an odd number of veneers produces a length the hardware
+    // cannot express — which is exactly what happened, and only to some
+    // packages, depending on how many distinct firmware functions they call.
+    {
+        MpuV8Region r;
+        uint32_t vsize = mpu_align_up(app.veneers_used, MPU_V8_GRAIN);
+        if (vsize > app.veneer_size) vsize = app.veneer_size;
+        struct { const char *what; uintptr_t base; uint32_t size; MpuPerm perm; } rgn[] = {
+            { "code",    (uintptr_t)app.image,   app.text_size, MPU_RO_EXEC },
+            { "data",    (uintptr_t)app.data,    app.data_size, MPU_RW_NOEXEC },
+            { "veneers", (uintptr_t)app.veneers, vsize,         MPU_RO_EXEC },
+        };
+        for (auto &g : rgn) {
+            if (!g.size) continue;                    // legitimately absent
+            if (!mpu_v8_encode((uint32_t)g.base, g.size, g.perm, &r)) {
+                printf("       FAIL the %s region cannot be encoded "
+                       "(base %08lx, %u bytes)\n",
+                       g.what, (unsigned long)g.base, g.size);
+                bad = 1;
+            }
+        }
+        if (app.veneers_used && !vsize) {
+            printf("       FAIL veneers were written but the region is empty\n");
+            bad = 1;
+        }
+    }
+    // And the decisive one: walk every byte of the image and check that nothing
+    // writable ended up before text_end and nothing read-only after it.
+    {
+        uint32_t text_end = 0, misplaced = 0;
+        for (uint32_t off = 0; off < app.image_size; off += 4) {
+            uint32_t fl = section_flags_at(path, off, &text_end);
+            if (!(fl & 0x80000000u)) continue;             // padding between sections
+            bool writable = (fl & SHF_WRITE) != 0;
+            if (writable != (off >= app.text_size)) misplaced++;
+        }
+        if (misplaced) {
+            printf("       FAIL %u byte(s) are in the wrong half\n", misplaced * 4);
+            bad = 1;
+        }
+        if (text_end != app.text_size) {
+            printf("       FAIL the loader and this test disagree on where the "
+                   "halves divide (%u vs %u)\n", app.text_size, text_end);
+            bad = 1;
+        }
     }
 
     // EVERY function pointer the package stores must be odd.

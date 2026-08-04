@@ -24,6 +24,7 @@ declare -A SRC=(
     [httpparse_test]="$CORE/httpparse.cpp"
     [repoindex_test]="$CORE/repoindex.cpp"
     [preempt_test]="$CORE/preempt.cpp"
+    [mpu_test]="$CORE/mpu.cpp"
     [excframe_test]="$CORE/excframe.cpp"
     [tui_test]="$CORE/tui.cpp"
     [tuilist_test]="$CORE/tuilist.cpp $CORE/tui.cpp"
@@ -53,13 +54,24 @@ declare -A SRC=(
     [history_test]="$CORE/history.cpp"
     [core_test]="$CORE/sha256.cpp $CORE/registry.cpp $CORE/users.cpp $CORE/lock.cpp $CORE/task.cpp $CORE/blackbox.cpp host_task_stub.cpp"
     [out_test]="$CORE/out.cpp $CORE/lock.cpp $CORE/task.cpp $CORE/blackbox.cpp $CORE/logring.cpp host_task_stub.cpp"
-    [realapp_test]="$SPIKE/loader.cpp"
+    [realapp_test]="$SPIKE/loader.cpp $CORE/mpu.cpp"
     [os_test]="$SHELL_DIR/command.cpp $CORE/lock.cpp $CORE/task.cpp $CORE/blackbox.cpp host_task_stub.cpp $SPIKE/loader.cpp"
-    [apps_test]="$SHELL_DIR/command.cpp $SHELL_DIR/apps.cpp $CORE/out.cpp $CORE/lock.cpp $CORE/task.cpp $CORE/blackbox.cpp $CORE/logring.cpp host_task_stub.cpp $SPIKE/loader.cpp"
+    [apps_test]="$CORE/mpu.cpp $SHELL_DIR/command.cpp $SHELL_DIR/apps.cpp $CORE/out.cpp $CORE/lock.cpp $CORE/task.cpp $CORE/blackbox.cpp $CORE/logring.cpp host_task_stub.cpp $SPIKE/loader.cpp"
 )
 
 # Extra flags for tests that need them. smp_test runs two real threads.
 declare -A FLAGS=( [smp_test]="-pthread" )
+
+# Tests worth running a SECOND time with no sanitizer.
+#
+# AddressSanitizer replaces malloc with its own allocator, and that allocator
+# aligns every block generously — so code that over-allocates and aligns inside
+# what it got can free the wrong pointer and ASan will never notice, because the
+# two pointers are equal under it. Real glibc hands back something 16-byte
+# aligned about half the time, and freeing a pointer it did not issue aborts on
+# the spot. task_spawn does exactly that alignment for the stack guard, so the
+# uninstrumented run is the one that can catch it.
+PLAIN="task_test"
 
 pass=0; fail=0
 for t in "${!SRC[@]}"; do
@@ -74,6 +86,22 @@ for t in "${!SRC[@]}"; do
         pass=$((pass+1))
     else
         echo "FAILED"; sed 's/^/      /' "$OUT/$t.out" | tail -20
+        fail=$((fail+1))
+    fi
+done
+
+for t in $PLAIN; do
+    printf '  %-16s ' "$t (plain)"
+    if ! ${CXX%% -std*} -std=c++17 -w $INC ${FLAGS[$t]:-} "$t.cpp" ${SRC[$t]} \
+            -o "$OUT/$t.plain" 2>"$OUT/$t.perr"; then
+        echo "BUILD FAILED"; sed 's/^/      /' "$OUT/$t.perr" | head -10
+        fail=$((fail+1)); continue
+    fi
+    if "$OUT/$t.plain" >"$OUT/$t.pout" 2>&1; then
+        echo "ok   real allocator"
+        pass=$((pass+1))
+    else
+        echo "FAILED"; sed 's/^/      /' "$OUT/$t.pout" | tail -12
         fail=$((fail+1))
     fi
 done

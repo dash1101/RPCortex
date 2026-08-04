@@ -509,6 +509,8 @@ static int run_one(char *seg) {
     // code is where it stopped; "calling" without "entered" means it never got
     // there at all.
     char phase[40];
+    TaskAppMem app_saved;
+    bool app_had_saved = false, app_protected = false;
     if (c->owner) {
         snprintf(phase, sizeof(phase), "calling package '%s'", c->name);
         bb_note_phase(phase);
@@ -516,8 +518,14 @@ static int run_one(char *seg) {
         // around app_main, so a fault in a registered command reported
         // "in firmware" — which is exactly backwards.
         g_current_app = c->name;
+        // And protect it for the duration of the call, the same way app_main is
+        // protected. A resident package spends nearly all of its life here
+        // rather than in app_main, so covering only the load would have been
+        // covering the part that barely runs.
+        app_protected = app_enter_owner(c->owner, &app_saved, &app_had_saved);
     }
     int rc = c->fn(argc, argv);
+    if (app_protected) app_leave(&app_saved, app_had_saved);
     g_current_app = nullptr;
     if (c->owner) {
         snprintf(phase, sizeof(phase), "'%s' returned", c->name);

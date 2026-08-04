@@ -35,9 +35,20 @@ static int noop(int, char **) { return 0; }
 static LoadedApp make_app(const char *name) {
     LoadedApp a;
     memset(&a, 0, sizeof(a));
-    a.image = malloc(64);
-    a.veneers = malloc(16);
-    a.image_size = 64;
+    // Shaped like a real load: one block split into a read-only half and a
+    // writable one, and the raw pointers recorded separately because those are
+    // what app_unload gives back. A fixture that only filled in the aligned
+    // pointers would leak on every unload and prove nothing about the real
+    // path — which is what it did until app_unload started freeing the raw
+    // ones, and ASan said so immediately.
+    a.image_raw   = malloc(64);
+    a.veneers_raw = malloc(16);
+    a.image       = a.image_raw;
+    a.veneers     = a.veneers_raw;
+    a.image_size  = 64;
+    a.text_size   = 32;
+    a.data        = (char *)a.image + 32;
+    a.data_size   = 32;
     a.veneer_size = 16;
     a.bytes_allocated = 80;
     strncpy(a.header.name, name, sizeof(a.header.name) - 1);

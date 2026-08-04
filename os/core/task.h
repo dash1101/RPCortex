@@ -64,7 +64,18 @@
 // Bytes at the low end of every stack kept as a tripwire. Checked at every
 // yield: if they have changed, the task has run off the end and the OS says so
 // by name instead of corrupting something and carrying on.
+//
+// This is the software half. It survives alongside the hardware guard rather
+// than being replaced by it, for two reasons: it is what the host tests can
+// exercise, and it catches a wild write into the bottom of the stack, which is
+// not the same event as the stack pointer crossing a line.
 #define TASK_GUARD_BYTES 16
+
+// Every stack starts on a boundary of this, so the hardware guard can be placed
+// on it. Both architectures protect memory in 32-byte units at minimum, so one
+// number serves both — and a stack that is merely 8-byte aligned, which is all
+// malloc promises, cannot carry a guard at all.
+#define TASK_STACK_ALIGN 32u
 
 enum TaskState {
     TASK_FREE = 0,
@@ -256,6 +267,64 @@ void task_alive(void);
 uint32_t task_main_stack_headroom(void);
 // Total size of that stack, from the linker.
 uint32_t task_main_stack_size(void);
+
+// --- hardware memory protection ---------------------------------------------
+
+// Point this core's hardware stack guard at the stack it is now running on.
+//
+// Called at every place execution RESUMES on a core — after each context
+// switch returns, and at the top of a new task — and nowhere else. That is the
+// only correct place, for a reason that is easy to miss: the protection
+// hardware is per-core, and a task can park on one core and be resumed on the
+// other. Programming the guard when a task is created, or from the core that
+// parked it, leaves the guard describing a stack that is no longer the one
+// being used. Nothing fails; it simply protects the wrong task, forever.
+//
+// A null `bottom` means the core's own boot stack — which both the adopted
+// main task and the scheduler loop run on, and which the platform can locate
+// from the linker without being told.
+//
+// The mechanism differs by architecture and this is where that stops
+// mattering. ARMv8-M has a dedicated stack limit register, which costs one
+// instruction and leaves all eight protection regions free. ARMv6-M has no
+// such register, so it spends a region on it.
+void task_stack_guard_set(const void *bottom, uint32_t size);
+
+// The memory a loaded package occupies, described for the protection hardware.
+//
+// Two blocks, because they want opposite permissions: code must be executable
+// and must not be writable, data must be writable and must never be executed.
+// A package where those are the same block cannot have either.
+struct TaskAppMem {
+    const void *text;        // code and read-only data
+    uint32_t    text_size;
+    void       *data;        // data and bss
+    uint32_t    data_size;
+    const void *veneer;      // the loader's call trampolines: code
+    uint32_t    veneer_size;
+};
+
+// Apply, or withdraw, the package regions for the CALLING task.
+//
+// Held per task rather than per core, and re-applied on resume alongside the
+// stack guard, because a package yields: any ABI call it makes can put another
+// task on the core. Left global, a second package would overwrite the first's
+// regions — and when that second package unloaded, the regions would still be
+// describing heap that had been freed and handed out again. The first write
+// into the reused block would then fault in code that had done nothing wrong.
+void task_app_mem_set(const TaskAppMem *mem);
+void task_app_mem_clear(void);
+
+// Read back what this task holds, so an entry into package code can put the
+// previous description back rather than clearing it. Nothing today can nest —
+// no ABI call lets a package invoke a command — but "clear on the way out" is
+// only correct while that stays true, and it would fail by leaving the OUTER
+// package running with no protection at all. Returns false if there was none.
+bool task_app_mem_get(TaskAppMem *out);
+
+// The platform half of the two above: program the hardware for whatever the
+// resuming task holds. Null means "no package is running here".
+void task_app_mem_apply(const TaskAppMem *mem);
 
 }  // extern "C"
 

@@ -20,7 +20,8 @@ package ABI, so packages — which only ever call `fw_*` — are testable too.
 | Suite | Covers |
 |---|---|
 | `smp_test` | The scheduler on two real threads. Double-scheduling, sleep handover, affinity gating. |
-| `task_test` | Spawn, exit, kill, slot reclamation, stack guards. |
+| `task_test` | Spawn, exit, kill, slot reclamation, stack guards, and that the hardware guard follows the running task rather than the core. |
+| `mpu_test` | Encoding a protection region on both architectures, and every request that has to be refused rather than rounded. |
 | `lock_test` | Recursion, hand-off, and that "busy" is per task rather than per core. |
 | `packages_test` | dht, i2cscan, gpio and ws2812 against a fake device. |
 | `calc_test` | The expression parser: precedence, associativity, errors. |
@@ -71,6 +72,14 @@ This is the honest list, and it is what `probe` exists for.
 | SPI and I2C on real parts | The fake models the SDK's return values, not the silicon | the part itself |
 | Flash writes, OTA | Needs the real flash controller | `update check` / `update install` |
 | USB CDC console | The whole console; a host test writes to a buffer | any interactive use |
+| Memory protection actually protecting | The host has no MPU. The encoding and the placement are tested; whether the silicon refuses the access is not | `mpu`, then `stress` — an overflow should now name the task instead of corrupting something |
+
+The last one deserves a sentence of its own, because it is the only part of this
+OS where a total failure looks identical to success. A region that was never
+programmed, or programmed on one core and not the other, behaves exactly like a
+working one until the moment it was supposed to catch something. `mpu` prints
+what each core actually has configured, which is the only way to tell from
+outside.
 
 No emulator is used. Renode is installed here but ships no RP2040 model, and
 writing one would mean modelling XIP flash, USB CDC, the cyw43 link and PIO —
@@ -83,6 +92,7 @@ a large piece of work producing a model that would itself need trusting.
 ```
 probe          cores, timing, jitter, hardware, memory - paste the whole block
 diag           version, uptime, storage, and whether the last run crashed
+mpu            what the memory protection has configured, per core
 logdump        the log ring, when something looks wrong
 ```
 

@@ -88,6 +88,9 @@ void task_stack_overflow(const char *, uint32_t) {
     fprintf(stderr, "  *** task_stack_overflow called on the host ***\n");
     abort();
 }
+// No protection hardware on the host; task_test.cpp is where these are checked.
+void task_stack_guard_set(const void *, uint32_t) {}
+void task_app_mem_apply(const TaskAppMem *) {}
 
 }
 

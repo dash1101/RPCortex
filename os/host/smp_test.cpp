@@ -129,6 +129,13 @@ void task_stack_overflow(const char *n, uint32_t) {
     abort();
 }
 
+// The protection seam. This harness models cores as threads and has no MPU, so
+// there is nothing to program — but these sit on the context-switch path, and
+// a missing definition here would mean the race harness was not exercising the
+// same code the device runs. task_test.cpp is where their behaviour is checked.
+void task_stack_guard_set(const void *, uint32_t) {}
+void task_app_mem_apply(const TaskAppMem *) {}
+
 }  // extern "C"
 
 // --- the cores --------------------------------------------------------------

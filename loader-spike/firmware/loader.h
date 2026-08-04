@@ -34,18 +34,38 @@ enum LoadResult {
 
 #define LOADER_MAX_SECTIONS 48
 
+// Loaded blocks start on a boundary of this and are padded to a multiple of it,
+// so the memory protection hardware can cover each one exactly. Both supported
+// architectures protect memory in 32-byte units at minimum, so one number
+// serves both. See os/core/mpu.h for what is done with them.
+#define APP_BLOCK_ALIGN 32u
+
 struct LoadedApp {
-    void    *image;            // one allocation holding every SHF_ALLOC section
-    uint32_t image_size;
+    // One allocation holding every SHF_ALLOC section, laid out in two halves:
+    // everything the app may not write to first, everything it must be able to
+    // write to after. `image` is the start and also the app's identity — the
+    // token a registered command is tagged with, and what a fault address is
+    // resolved against.
+    void    *image;
+    uint32_t image_size;       // both halves together
+    uint32_t text_size;        // the read-only half, from `image`
+    void    *data;             // the writable half; null if the app has none
+    uint32_t data_size;
     void    *veneers;          // trampoline pool (see loader.cpp)
     uint32_t veneer_size;
     uint32_t veneers_used;
+    // What the allocator actually returned. The pointers above are a few bytes
+    // further in, because a protected block has to start on a boundary and the
+    // allocator only promises eight — and handing back a pointer the allocator
+    // never issued corrupts the heap somewhere else entirely.
+    void    *image_raw;
+    void    *veneers_raw;
     int (*entry)(int);
     RpcAppHeader header;
     // Diagnostics for whatever failed, so an error can name the symbol or the
     // relocation type rather than just saying no.
     char     detail[48];
-    uint32_t bytes_allocated;  // image + veneers, for the RAM accounting
+    uint32_t bytes_allocated;  // image + veneers + slack, for the RAM accounting
 };
 
 // Where the loader gets memory. Pluggable for one concrete reason: the host

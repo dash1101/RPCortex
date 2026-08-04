@@ -4,6 +4,7 @@
 #include "storage.h"
 #include "kernel.h"
 #include "blackbox.h"
+#include "mpu.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -24,6 +25,53 @@ static LoadedApp *find(const char *name) {
     for (int i = 0; i < APPS_MAX; i++)
         if (g_used[i] && strcmp(g_apps[i].header.name, name) == 0) return &g_apps[i];
     return nullptr;
+}
+
+// --- entering package code --------------------------------------------------
+
+static void describe(const LoadedApp *a, TaskAppMem *m) {
+    m->text        = a->image;
+    m->text_size   = a->text_size;
+    m->data        = a->data;
+    m->data_size   = a->data_size;
+    m->veneer      = a->veneers;
+    // Only the part actually written, rounded up to a whole block.
+    //
+    // The pool is sized for the worst case — one veneer per relocation — and a
+    // typical package uses a third of it, so covering the whole allocation
+    // would put a read-only region over bytes that are still ordinary free
+    // heap. But a veneer is SIXTEEN bytes and a region is described in
+    // thirty-twos, so the used length is a multiple of 32 only half the time,
+    // and the other half the hardware would refuse the region outright — which
+    // reads as "the veneers are simply not protected" and says nothing at all.
+    // Rounding up stays inside the pool, because the allocation itself was
+    // padded to a whole number of blocks.
+    m->veneer_size = mpu_align_up(a->veneers_used, MPU_V8_GRAIN);
+    if (m->veneer_size > a->veneer_size) m->veneer_size = a->veneer_size;
+}
+
+void app_enter(const LoadedApp *app, TaskAppMem *saved, bool *had_saved) {
+    *had_saved = task_app_mem_get(saved);
+    if (!app) return;
+    TaskAppMem m;
+    describe(app, &m);
+    task_app_mem_set(&m);
+}
+
+void app_leave(const TaskAppMem *saved, bool had_saved) {
+    if (had_saved) task_app_mem_set(saved);
+    else           task_app_mem_clear();
+}
+
+bool app_enter_owner(const void *owner, TaskAppMem *saved, bool *had_saved) {
+    *had_saved = false;
+    if (!owner) return false;                  // a built-in: nothing to protect
+    for (int i = 0; i < APPS_MAX; i++) {
+        if (!g_used[i] || g_apps[i].image != owner) continue;
+        app_enter(&g_apps[i], saved, had_saved);
+        return true;
+    }
+    return false;
 }
 
 LoadedApp *apps_store(const LoadedApp *app) {
@@ -79,8 +127,18 @@ int apps_launch(const char *file, int arg, bool quiet) {
     // The first jump into loaded code. If a crash report stops here the loader
     // produced something that does not execute, which is a very different
     // problem from a package with a bug in it.
+    //
+    // The protection goes on immediately before that jump and comes off
+    // immediately after, and not one line wider. Outside this window the image
+    // is ordinary heap that the loader wrote and app_unload is about to hand
+    // back — and free() writes its own bookkeeping into a block it is
+    // reclaiming, which a read-only region would fault on.
     bb_note_phase("entering app_main");
+    TaskAppMem saved;
+    bool had_saved = false;
+    app_enter(&app, &saved, &had_saved);
     int ret = app.entry(arg);
+    app_leave(&saved, had_saved);
     bb_note_phase("app_main returned");
     g_current_app = nullptr;
     api_set_current_app(nullptr);

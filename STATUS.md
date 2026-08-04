@@ -22,6 +22,7 @@ shell that reads like RPCortex Vela on the same terminal.
 | **wireless** | cyw43 + lwIP, saved networks, autoconnect | wifi scan/connect/add/autoconnect/list/forget/auto |
 | **network** | DNS, ICMP, SNTP — none of them needs TLS | ping nslookup ntp |
 | **packages** | install / remove / list, boot-load, unload | pkg run apps unload put |
+| **memory protection** | hardware stack guard on every task; a package's code is read-only and its data non-executable while it runs | mpu |
 | **shell** | full line editing, tab completion, pipes, `&&` / `\|\|` / `;`, `>` / `>>`, quoting | help |
 
 Roughly 50 commands plus ~30 aliases (`ll`, `dir`, `more`, `del`, `free`, `gc`,
@@ -48,6 +49,24 @@ Tiers 1 and 2 of the plan are done, plus the console parity and wireless that
 make it feel like the same OS. This is the base the Nova D1 gets ported onto.
 
 ## Not done
+
+- **Packages still run with the OS's own privileges.** The memory protection
+  above stops a package writing to its own code, executing its own data, or
+  running off the end of a stack — the bugs. It does not stop a package that
+  wants to reach OS memory, because it is not running unprivileged, and it
+  cannot until a package has a stack of its own. Today `app_main` and every
+  command a package registers run on the SHELL's stack, which holds the shell's
+  saved return addresses into privileged firmware; a package able to write to
+  that stack can direct the OS wherever it likes, so unprivileged mode there
+  would be no isolation at all with extra cycles. The rest of what it needs:
+  a gateway so ABI calls can raise privilege, an arena of its own for
+  `fw_malloc`, and pointer checking at the ABI boundary so a package cannot use
+  the OS as a deputy.
+- **Package code protection is RP2350 only.** ARMv6-M regions are power-of-two
+  sized and aligned to their own size, so a 5 KB package would need an 8 KB
+  region on an 8 KB boundary and the allocation to match — more RAM than the
+  RP2040 has to spare. Stack guards work on both; they are 32 bytes, which is
+  the minimum region on either.
 
 - **Not run on hardware.** All host-tested, both `.uf2`s build, nothing flashed.
   First hardware step: BOOTSEL, copy `out/rpcortex-v2-pico2_w.uf2` onto the

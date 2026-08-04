@@ -35,4 +35,10 @@ void task_stack_overflow(const char *, uint32_t) {
     abort();
 }
 
+// No protection hardware here. task_test.cpp records these instead of ignoring
+// them, because it is the test that cares WHEN they are called; everything else
+// linking task.cpp just needs the symbols to exist.
+void task_stack_guard_set(const void *, uint32_t) {}
+void task_app_mem_apply(const TaskAppMem *) {}
+
 }

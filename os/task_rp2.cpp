@@ -6,6 +6,7 @@
 #include "preempt.h"
 #include "excframe.h"
 #include "lock.h"
+#include "mpu.h"
 
 #include <stdint.h>
 #include <string.h>
@@ -318,6 +319,12 @@ extern "C" void lock_hw_exit(void) {
 // allows core 1, runs it, and comes back here when that task yields. There is
 // no separate "core 1 task list" — one table, two cores taking from it.
 static void core1_main(void) {
+    // Its own memory protection. The two processors do not share any of it, so
+    // a core that never runs this has no stack guard and no package regions —
+    // and since an unpinned task runs on core 1 almost all the time, that would
+    // be nearly all of them.
+    mpu_platform_init();
+
     // Register with the flash subsystem BEFORE running anything. Without this
     // flash_safe_execute cannot park this core, and every filesystem write from
     // core 0 would be refused — or, worse, done anyway.

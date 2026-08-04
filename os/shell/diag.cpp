@@ -23,6 +23,7 @@
 #include "logring.h"
 #include "logring.h"
 #include "blackbox.h"
+#include "mpu.h"
 #include "perms.h"
 #include "users.h"
 #include "session.h"
@@ -437,7 +438,52 @@ bool safeboot_consume(char *staged, uint32_t cap) {
 
 // --- registration -----------------------------------------------------------
 
+// What the memory protection is actually doing, per core.
+//
+// Worth a command of its own because every failure mode of this hardware is
+// silent. A guard that was never armed, or armed on one core and not the other,
+// behaves exactly like one that is working right up until the moment it was
+// supposed to catch something. There is no way to tell from the outside except
+// to ask.
+static int cmd_mpu(int, char **) {
+    MpuReport r;
+    if (!mpu_report(0, &r) || !r.ready) {
+        out_warn("Memory protection is not enabled on this board.");
+        return 1;
+    }
+
+    out_multi("  %sMemory protection%s", C_CYAN, C_RESET);
+    out_multi("    Regions available : %u", (unsigned)r.regions);
+    out_multi("    Stack guard       : %s",
+              r.uses_msplim ? "stack limit register (MSPLIM)"
+                            : "protection region 0");
+    out_multi("    Package code      : %s",
+              r.app_supported
+                  ? "read-only while running; data never executable"
+                  : "not enforced on this part - regions cost too much RAM");
+    out_blank();
+
+    for (unsigned c = 0; c < task_core_count(); c++) {
+        MpuReport rc;
+        if (!mpu_report(c, &rc)) continue;
+        if (!rc.ready) {
+            out_multi("    core %u            : %snot configured%s", c, C_WARN, C_RESET);
+            continue;
+        }
+        out_multi("    core %u  guard at   : 0x%08lx%s", c,
+                  (unsigned long)rc.guard_at,
+                  rc.app_active ? "   (a package is running)" : "");
+    }
+    out_blank();
+    out_multi("  A task that runs past the end of its stack now faults at the");
+    out_multi("  instruction that did it, rather than corrupting whatever the");
+    out_multi("  heap put below it and being blamed on something else later.");
+    return 0;
+}
+
 void diag_register(void) {
+    static const Command c_mpu{"mpu", "what the memory protection is enforcing", cmd_mpu, nullptr};
+    cmd_register(&c_mpu);
     static const Command c_compat{"compat", "probe what this board actually supports", cmd_compat, nullptr};
     static const Command c_diag{"diag", "system state, and whether the last run crashed", cmd_diag, nullptr};
     static const Command c_input{"inputstat", "show the bytes this terminal sends", cmd_inputstat, nullptr};

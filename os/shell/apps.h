@@ -9,6 +9,27 @@
 #define RPC_APPS_H
 
 #include "loader.h"
+#include "task.h"
+
+// Entering and leaving package code.
+//
+// Everything a package runs — app_main, and later every command it registered —
+// goes through these, and they are the only reason the protection regions ever
+// point at anything. Entering describes the package's two halves to the
+// hardware: code read-only, data non-executable. Leaving puts back whatever was
+// there before, which is usually nothing.
+//
+// `mem` is filled in by app_enter and handed back to app_leave. Passing it back
+// rather than clearing means a package entered from inside another package
+// leaves the outer one still protected. Nothing can nest today; this costs one
+// stack slot and means it never has to be revisited.
+void app_enter(const LoadedApp *app, TaskAppMem *saved, bool *had_saved);
+void app_leave(const TaskAppMem *saved, bool had_saved);
+
+// The same, for a command that a package registered — found by the owner token
+// the command carries, which is the package's image. False if the owner is not
+// a resident package, in which case it is a built-in and nothing is protected.
+bool app_enter_owner(const void *owner, TaskAppMem *saved, bool *had_saved);
 
 // Copy a loaded app into the resident table. Returns the stored record (whose
 // image/veneer pointers are unchanged and stay valid) or nullptr if full or a

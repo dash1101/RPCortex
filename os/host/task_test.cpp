@@ -110,8 +110,86 @@ void task_stack_overflow(const char *, uint32_t) {
     abort();
 }
 
+// --- the protection seam, recorded rather than ignored ----------------------
+//
+// There is no MPU here, but the interesting question is not what the hardware
+// does with these — it is WHEN they are called and WITH WHAT. A guard armed for
+// the wrong task, or armed once and never updated, protects a stack that is not
+// in use and fails completely silently on a board. So the host records the last
+// value and the tests below check it tracks the task actually running.
+static const void *g_guard_arg;
+static uint32_t    g_guard_size;
+static int         g_guard_calls;
+static const void *g_appmem_text;
+static int         g_appmem_calls;
+
+void task_stack_guard_set(const void *bottom, uint32_t size) {
+    g_guard_arg  = bottom;
+    g_guard_size = size;
+    g_guard_calls++;
+}
+void task_app_mem_apply(const TaskAppMem *mem) {
+    g_appmem_text = mem ? mem->text : nullptr;
+    g_appmem_calls++;
+}
+
 
 // --- what the tasks do ------------------------------------------------------
+
+// Watching the stack guard from inside a running task.
+//
+// Each round, the task asks what the guard is currently set to and whether that
+// range contains a local variable — which is on its own stack by construction.
+// Anything other than "yes, every round" means the guard was armed for somebody
+// else and this task is running unprotected.
+#define GUARD_ROUNDS 3
+static int         g_covers[2];
+static const void *g_observed[2];
+
+// Not instrumented, and it has to be. AddressSanitizer moves a function's
+// locals into a shadow frame of its own so it can detect use-after-return, so
+// `&local` under ASan is an address in ASan's bookkeeping rather than on the
+// stack this task is running on — and the check below would compare two
+// unrelated regions and fail for a reason that has nothing to do with the
+// scheduler. Exempting this one function puts the local back where the compiler
+// would otherwise have put it. Everything around it stays instrumented.
+__attribute__((no_sanitize_address))
+static int task_guardcheck(void *arg) {
+    int slot = (int)(intptr_t)arg;
+    for (int i = 0; i < GUARD_ROUNDS; i++) {
+        char local = 0;
+        const char *g = (const char *)g_guard_arg;
+        (void)local;
+        g_observed[slot] = g;
+        if (g && &local >= g && &local < g + g_guard_size) g_covers[slot]++;
+        task_yield();
+    }
+    return 0;
+}
+
+// Two tasks, one holding package regions and one not, running alternately.
+static int g_fake_text, g_fake_data, g_fake_veneer;
+static const void *g_appmem_seen_self;
+static const void *g_appmem_seen_other;
+
+static int task_withpkg(void *) {
+    TaskAppMem mem = { &g_fake_text, 32, &g_fake_data, 32, &g_fake_veneer, 32 };
+    task_app_mem_set(&mem);
+    for (int i = 0; i < GUARD_ROUNDS; i++) {
+        task_yield();
+        g_appmem_seen_self = g_appmem_text;   // must be mine again after resuming
+    }
+    task_app_mem_clear();
+    return 0;
+}
+
+static int task_withoutpkg(void *) {
+    for (int i = 0; i < GUARD_ROUNDS; i++) {
+        g_appmem_seen_other = g_appmem_text;  // must be nothing while I run
+        task_yield();
+    }
+    return 0;
+}
 
 static char g_log[256];
 static void logc(const char *s) {
@@ -277,6 +355,50 @@ int main(void) {
     }
     eq(g_log, "qqqqq", "five short-lived tasks in a row all finish");
     ck(task_count() == 1, "and none of them leaked a slot");
+
+    // --- the hardware guard follows the task, not the core -------------------
+    //
+    // The protection hardware belongs to a core; a task does not. On the device
+    // an unpinned task changes core roughly once in two thousand yields, so a
+    // guard armed by the core that PARKED a task, or armed once when it was
+    // created, describes a stack that is no longer the one in use.
+    //
+    // Nothing about that is observable from the outside: the guard still works,
+    // it just protects the wrong task. So this checks the only thing that
+    // actually matters — that while a task is running, the guard covers the
+    // stack that task is really using. `&local` is on it by construction.
+    g_guard_calls = 0;
+    memset(g_covers, 0, sizeof(g_covers));
+    memset(g_observed, 0, sizeof(g_observed));
+    int g1 = task_spawn("g1", nullptr, task_guardcheck, (void *)(intptr_t)0, ST, AFFINITY_ANY);
+    int g2 = task_spawn("g2", nullptr, task_guardcheck, (void *)(intptr_t)1, ST, AFFINITY_ANY);
+    ck(g1 > 0 && g2 > 0, "two tasks to watch the guard with");
+    for (int i = 0; i < 12; i++) task_yield();
+
+    ck(g_guard_calls > 0, "the guard is armed at all");
+    ck(g_covers[0] == GUARD_ROUNDS, "every time g1 ran, the guard covered g1's stack");
+    ck(g_covers[1] == GUARD_ROUNDS, "and every time g2 ran, it covered g2's");
+    // The two tasks have different stacks, so if the guard were global — armed
+    // once and left — both would have seen the same address and one of them
+    // would have been protecting the other's memory.
+    ck(g_observed[0] != g_observed[1], "and the two tasks saw different guards");
+
+    // --- package regions belong to the task, not the core --------------------
+    //
+    // A package yields: every ABI call it makes can put another task on the
+    // core. If the regions were global, the next package to run would overwrite
+    // them — and when THAT package unloaded, the regions would still describe
+    // heap that had been freed and handed out again. The first write into the
+    // reused block would fault in code that had done nothing wrong.
+    g_appmem_seen_other = (const void *)1;      // a value neither task will set
+    int m1 = task_spawn("m1", nullptr, task_withpkg,  nullptr, ST, AFFINITY_ANY);
+    int m2 = task_spawn("m2", nullptr, task_withoutpkg, nullptr, ST, AFFINITY_ANY);
+    ck(m1 > 0 && m2 > 0, "one task with a package, one without");
+    for (int i = 0; i < 12; i++) task_yield();
+    ck(g_appmem_seen_other == nullptr,
+       "a task with no package sees no regions, even though another task has some");
+    ck(g_appmem_seen_self == &g_fake_text,
+       "and the package's own task gets its regions back after every yield");
 
     // --- guards -------------------------------------------------------------
     ck(!task_kill(1), "pid 1 cannot be killed");

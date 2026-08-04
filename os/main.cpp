@@ -24,6 +24,7 @@
 #include "blackbox.h"
 #include "out.h"
 #include "lock.h"
+#include "mpu.h"
 
 void net_autoconnect(void);
 void task_start_core1(void);
@@ -92,6 +93,9 @@ int main(void) {
     task_preempt_start();   // force-terminate a task that stops yielding entirely
 
     lock_hw_init();          // before core 1 exists, so the claim cannot race
+    // Memory protection before the scheduler, because task_init immediately
+    // arms the guard for pid 1 and there has to be something to arm.
+    mpu_platform_init();
     task_init("init");
     bool prior = log_init();
 

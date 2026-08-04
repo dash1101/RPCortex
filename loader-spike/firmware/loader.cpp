@@ -38,6 +38,17 @@ void loader_set_allocator(LoaderAlloc a, LoaderFree f) {
     g_free  = f ? f : free;
 }
 
+// Round an address up to a block boundary.
+//
+// In uintptr_t rather than through the 32-bit region helpers, because this file
+// also compiles for the host test where a pointer does not fit in thirty-two
+// bits — and a truncated one is not an address at all. Up, never down: rounding
+// down would put a protected block's start before the memory that was actually
+// allocated for it.
+static inline uintptr_t block_align(uintptr_t v) {
+    return (v + (APP_BLOCK_ALIGN - 1)) & ~(uintptr_t)(APP_BLOCK_ALIGN - 1);
+}
+
 // ---------------------------------------------------------------- utilities
 
 // Read exactly `len` bytes or fail. A partial read has to be an error: a
@@ -237,23 +248,45 @@ LoadResult app_load(const AppSource &src, LoadedApp *out) {
         return LOAD_ERR_API_MISMATCH;
     }
 
-    // --- lay the allocatable sections out in one block. One allocation rather
-    // than one per section: the heap this runs on is small, and a single free
-    // is the only way "unload reclaims everything" is verifiable.
+    // --- lay the allocatable sections out in one block, in two halves.
+    //
+    // Still one allocation: the heap this runs on is small, and a single free is
+    // the only way "unload reclaims everything" stays verifiable. But the block
+    // is now split, with everything the app may not write to first and
+    // everything it must be able to write to after, because those two want
+    // OPPOSITE permissions and a section order that interleaves them can be
+    // given neither. Code has to be executable and must not be writable; data
+    // has to be writable and must never be executed. Sorted by SHF_WRITE, which
+    // is the ELF flag that says exactly which is which.
+    //
+    // The halves are padded to APP_BLOCK_ALIGN so the protection hardware can
+    // cover each one exactly. Without that the region would either stop short —
+    // leaving the tail of the block unprotected — or run past the end and apply
+    // the app's permissions to whatever the heap handed out next.
     SectionMap map[LOADER_MAX_SECTIONS];
     memset(map, 0, sizeof(map));
+
     uint32_t total = 0;
-    for (int i = 0; i < eh.e_shnum; i++) {
-        if (!(sh[i].sh_flags & SHF_ALLOC) || sh[i].sh_size == 0) continue;
-        uint32_t align = sh[i].sh_addralign ? sh[i].sh_addralign : 4;
-        if (align < 4) align = 4;
-        total = (total + align - 1) & ~(align - 1);
-        map[i].addr = total;               // offset for now; rebased below
-        map[i].size = sh[i].sh_size;
-        map[i].loaded = true;
-        total += sh[i].sh_size;
+    uint32_t text_end = 0;                 // where the read-only half stops
+    for (int pass = 0; pass < 2; pass++) {
+        for (int i = 0; i < eh.e_shnum; i++) {
+            if (!(sh[i].sh_flags & SHF_ALLOC) || sh[i].sh_size == 0) continue;
+            bool writable = (sh[i].sh_flags & SHF_WRITE) != 0;
+            if (writable != (pass == 1)) continue;
+            uint32_t align = sh[i].sh_addralign ? sh[i].sh_addralign : 4;
+            if (align < 4) align = 4;
+            total = (total + align - 1) & ~(align - 1);
+            map[i].addr = total;           // offset for now; rebased below
+            map[i].size = sh[i].sh_size;
+            map[i].loaded = true;
+            total += sh[i].sh_size;
+        }
+        if (pass == 0) {
+            total = (total + (APP_BLOCK_ALIGN - 1)) & ~(APP_BLOCK_ALIGN - 1);
+            text_end = total;              // the writable half starts here
+        }
     }
-    total = (total + 3) & ~3u;
+    total = (total + (APP_BLOCK_ALIGN - 1)) & ~(APP_BLOCK_ALIGN - 1);
 
     // Veneer pool. Sized from the number of relocations rather than guessed:
     // worst case is one veneer per distinct out-of-range target.
@@ -261,18 +294,32 @@ LoadResult app_load(const AppSource &src, LoadedApp *out) {
     for (int i = 0; i < eh.e_shnum; i++)
         if (sh[i].sh_type == SHT_REL) reloc_count += sh[i].sh_size / sizeof(Elf32_Rel);
     uint32_t veneer_bytes = (reloc_count + 1) * VENEER_BYTES;
+    veneer_bytes = (veneer_bytes + (APP_BLOCK_ALIGN - 1)) & ~(APP_BLOCK_ALIGN - 1);
 
-    uint8_t *image = (uint8_t *)g_alloc(total ? total : 4);
-    if (!image) { free(names); return LOAD_ERR_OOM; }
-    uint8_t *veneers = (uint8_t *)g_alloc(veneer_bytes);
-    if (!veneers) { g_free(image); free(names); return LOAD_ERR_OOM; }
+    // Both blocks are over-allocated by one alignment and the useful part is
+    // placed on the first boundary inside. The raw pointers are kept because
+    // they, not the aligned ones, are what the allocator will take back.
+    uint8_t *image_raw = (uint8_t *)g_alloc((total ? total : APP_BLOCK_ALIGN) + APP_BLOCK_ALIGN);
+    if (!image_raw) { free(names); return LOAD_ERR_OOM; }
+    uint8_t *veneers_raw = (uint8_t *)g_alloc(veneer_bytes + APP_BLOCK_ALIGN);
+    if (!veneers_raw) { g_free(image_raw); free(names); return LOAD_ERR_OOM; }
 
+    uint8_t *image   = (uint8_t *)block_align((uintptr_t)image_raw);
+    uint8_t *veneers = (uint8_t *)block_align((uintptr_t)veneers_raw);
+
+    out->image_raw   = image_raw;
+    out->veneers_raw = veneers_raw;
+    out->text_size   = text_end;
+    out->data        = text_end < total ? image + text_end : nullptr;
+    out->data_size   = total - text_end;
     out->image = image;
     out->image_size = total;
     out->veneers = veneers;
     out->veneer_size = veneer_bytes;
     out->veneers_used = 0;
-    out->bytes_allocated = total + veneer_bytes;
+    // What was actually taken from the heap, alignment slack included — so the
+    // "did not release N bytes" report after a package runs stays truthful.
+    out->bytes_allocated = total + veneer_bytes + 2 * APP_BLOCK_ALIGN;
 
     for (int i = 0; i < eh.e_shnum; i++) {
         if (!map[i].loaded) continue;
@@ -486,11 +533,16 @@ LoadResult app_load(const AppSource &src, LoadedApp *out) {
 
 void app_unload(LoadedApp *app) {
     if (!app) return;
-    if (app->image)   g_free(app->image);
-    if (app->veneers) g_free(app->veneers);
-    app->image = nullptr;
-    app->veneers = nullptr;
+    // The RAW pointers, not the aligned ones. They are usually the same address
+    // and occasionally are not, which is the worst possible shape for a bug:
+    // it works on the bench and corrupts the heap in the field.
+    if (app->image_raw)   g_free(app->image_raw);
+    if (app->veneers_raw) g_free(app->veneers_raw);
+    app->image = app->image_raw = nullptr;
+    app->veneers = app->veneers_raw = nullptr;
+    app->data = nullptr;
     app->entry = nullptr;
-    app->image_size = app->veneer_size = app->veneers_used = 0;
+    app->image_size = app->text_size = app->data_size = 0;
+    app->veneer_size = app->veneers_used = 0;
     app->bytes_allocated = 0;
 }

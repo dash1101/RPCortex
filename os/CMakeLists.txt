@@ -28,6 +28,8 @@ add_executable(rpcortex_v2
     ${OS_ROOT}/panic.cpp
     ${OS_ROOT}/task_rp2.cpp
     ${OS_ROOT}/task_switch.S
+    ${OS_ROOT}/mpu_rp2.cpp
+    ${OS_ROOT}/core/mpu.cpp
     ${OS_ROOT}/kernel/kernel.cpp
     ${OS_ROOT}/core/path.cpp
     ${OS_ROOT}/core/httpparse.cpp
