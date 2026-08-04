@@ -380,6 +380,11 @@ static void core1_main(void) {
     // and since an unpinned task runs on core 1 almost all the time, that would
     // be nearly all of them.
     mpu_platform_init();
+    // And arm the guard for the stack this loop is standing on. Without it,
+    // core 1 has no stack limit at all until the first task happens to be
+    // scheduled here — which on a quiet device can be a long time, and which
+    // `mpu` reported honestly as a guard address of zero.
+    task_stack_guard_set(nullptr, 0);
 
     // Register with the flash subsystem BEFORE running anything. Without this
     // flash_safe_execute cannot park this core, and every filesystem write from
