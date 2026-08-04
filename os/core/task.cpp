@@ -295,6 +295,7 @@ int task_spawn(const char *name, const char *path, TaskFn fn, void *arg,
             oldest->crit = 0;
             oldest->app_mem_set = false;
             oldest->arena = nullptr;
+            task_slot_recycled((int)(oldest - g_tasks));
             t = oldest;
         }
     }
@@ -783,6 +784,7 @@ bool task_reap(int pid) {
     t->stack = t->stack_raw = nullptr;
     t->app_mem_set = false;
     t->arena = nullptr;
+    task_slot_recycled((int)(t - g_tasks));
     t->info.state = TASK_FREE;
     return true;
 }

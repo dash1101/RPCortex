@@ -137,6 +137,7 @@ void task_stack_overflow(const char *n, uint32_t) {
 // same code the device runs. task_test.cpp is where their behaviour is checked.
 void task_stack_guard_set(const void *, uint32_t) {}
 void task_app_mem_apply(const TaskAppMem *) {}
+void task_slot_recycled(int) {}
 
 }  // extern "C"
 

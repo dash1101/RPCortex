@@ -134,6 +134,10 @@ void task_app_mem_apply(const TaskAppMem *mem) {
     g_appmem_text = mem ? mem->text : nullptr;
     g_appmem_calls++;
 }
+// Recorded, not ignored: a slot handed on without this called is a slot whose
+// per-task state now describes somebody else.
+static int g_recycled;
+void task_slot_recycled(int) { g_recycled++; }
 
 
 // --- what the tasks do ------------------------------------------------------
@@ -473,7 +477,15 @@ int main(void) {
     ck(task_find(held)->exit_code == 3, "with its status kept, which is why the slot stays");
     ck(task_app_mem_holder(&g_fake_text) < 0,
        "but a finished task does not block the package it never gave back");
+
+    // Reaping hands the slot on, and anything kept AGAINST a slot is now about
+    // to describe a different task. The sandbox keeps four words per slot, one
+    // of them a return address into a package that reaping may have unloaded —
+    // and it is read from assembly, so nothing would notice it was stale.
+    int recycled_before = g_recycled;
     task_reap(held);
+    ck(g_recycled > recycled_before, "reaping a slot says so, so per-slot state is dropped");
+
 
     // --- guards -------------------------------------------------------------
     ck(!task_kill(1), "pid 1 cannot be killed");
@@ -543,6 +555,14 @@ int main(void) {
     // reaches.
     ck(TASK_STACK_NET >= TASK_STACK_SHELL, "a network task gets at least what the shell gets");
     ck(TASK_STACK_DEF < TASK_STACK_NET, "and more than the default, which the driver overruns");
+
+    // NOT covered here: the second call site, in task_spawn, where the oldest
+    // finished task is reclaimed because the table is full. Reaching it needs
+    // the table full of FINISHED tasks, and by this point it holds tasks pinned
+    // to a core that does not exist in this harness — they stay ready forever
+    // and reclamation only ever takes finished ones. Verified by reading, and
+    // it is one line beside the one above.
+    ck(g_recycled > 0, "a recycled slot is announced");
 
     printf("  task: %d checks, %d failed\n", checks, fails);
     return fails ? 1 : 0;

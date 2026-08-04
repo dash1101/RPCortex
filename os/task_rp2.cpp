@@ -47,6 +47,8 @@ void *task_ctx_init(void *stack_top, TaskEntry entry) {
 
 uint32_t task_now_us(void) { return time_us_32(); }
 
+void task_slot_recycled(int slot) { sandbox_forget(slot); }
+
 uint32_t task_now_ms(void) {
     return (uint32_t)(time_us_64() / 1000ull);
 }

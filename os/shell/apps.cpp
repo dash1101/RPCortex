@@ -134,6 +134,13 @@ int app_run(const LoadedApp *app, int (*fn)(int), int arg) {
 
     SandboxAlloc sa;
     bool boxed = sandbox_supported() && app->veneer_gates && sandbox_alloc(&sa, &m);
+    // A board that cannot sandbox is a fact about the board. A board that can
+    // and did not is an event, and a silent one would be the worst kind: the
+    // package runs with the OS's own privileges and nothing anywhere says the
+    // protection it was supposed to have did not happen.
+    if (sandbox_supported() && app->veneer_gates && !boxed)
+        out_warnp("apps", "Not enough memory to sandbox '%s' — it is running "
+                          "with full privileges.", app->header.name);
 
     had_saved = task_app_mem_get(&saved);
     task_app_mem_set(&m);
@@ -168,6 +175,9 @@ bool app_run_owner(const void *owner, int (*fn)(int, char **), int argc,
         describe(a, &m);
         SandboxAlloc sa;
         bool boxed = sandbox_supported() && a->veneer_gates && sandbox_alloc(&sa, &m);
+        if (sandbox_supported() && a->veneer_gates && !boxed)
+            out_warnp("apps", "Not enough memory to sandbox '%s' — it is running "
+                              "with full privileges.", a->header.name);
         had_saved = task_app_mem_get(&saved);
         task_app_mem_set(&m);
         if (boxed) task_arena_set(&sa.arena);

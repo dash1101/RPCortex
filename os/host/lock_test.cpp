@@ -93,6 +93,7 @@ void task_stack_overflow(const char *, uint32_t) {
 // No protection hardware on the host; task_test.cpp is where these are checked.
 void task_stack_guard_set(const void *, uint32_t) {}
 void task_app_mem_apply(const TaskAppMem *) {}
+void task_slot_recycled(int) {}
 
 }
 

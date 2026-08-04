@@ -309,6 +309,18 @@ uint32_t task_main_stack_used(void);
 // such register, so it spends a region on it.
 void task_stack_guard_set(const void *bottom, uint32_t size);
 
+// A task table slot is being reused, so anything kept AGAINST that slot is now
+// about to describe a different task.
+//
+// The sandbox keeps four words per slot, one of which is where a package will
+// resume and another the gate in its veneer pool. A slot handed on with those
+// still set gives the next task a return address into a package that has been
+// unloaded and freed — and it is reached from assembly, so there is nothing to
+// notice it. Slots are recycled by design here: a finished task keeps its slot
+// so its exit status stays readable, and task_spawn reclaims the oldest when
+// the table is full.
+void task_slot_recycled(int slot);
+
 // The memory a loaded package occupies, described for the protection hardware.
 //
 // Two blocks, because they want opposite permissions: code must be executable
