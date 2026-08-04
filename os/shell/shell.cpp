@@ -509,8 +509,6 @@ static int run_one(char *seg) {
     // code is where it stopped; "calling" without "entered" means it never got
     // there at all.
     char phase[40];
-    TaskAppMem app_saved;
-    bool app_had_saved = false, app_protected = false;
     if (c->owner) {
         snprintf(phase, sizeof(phase), "calling package '%s'", c->name);
         bb_note_phase(phase);
@@ -521,11 +519,13 @@ static int run_one(char *seg) {
         // And protect it for the duration of the call, the same way app_main is
         // protected. A resident package spends nearly all of its life here
         // rather than in app_main, so covering only the load would have been
-        // covering the part that barely runs.
-        app_protected = app_enter_owner(c->owner, &app_saved, &app_had_saved);
+        // covering the part that barely runs — see app_run_owner.
     }
-    int rc = c->fn(argc, argv);
-    if (app_protected) app_leave(&app_saved, app_had_saved);
+    // A package's command runs the way its app_main did: on a stack of its own,
+    // sandboxed where the board allows it. A built-in is called directly.
+    int rc = 0;
+    if (!c->owner || !app_run_owner(c->owner, c->fn, argc, argv, &rc))
+        rc = c->fn(argc, argv);
     g_current_app = nullptr;
     if (c->owner) {
         snprintf(phase, sizeof(phase), "'%s' returned", c->name);

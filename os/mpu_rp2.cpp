@@ -199,6 +199,8 @@ extern "C" void task_app_mem_apply(const TaskAppMem *mem) {
         set_region(MPU_RGN_APP_TEXT,   nullptr, 0, MPU_RO_EXEC);
         set_region(MPU_RGN_APP_DATA,   nullptr, 0, MPU_RW_NOEXEC);
         set_region(MPU_RGN_APP_VENEER, nullptr, 0, MPU_RO_EXEC);
+        set_region(MPU_RGN_APP_STACK,  nullptr, 0, MPU_RW_NOEXEC);
+        set_region(MPU_RGN_APP_ARENA,  nullptr, 0, MPU_RW_NOEXEC);
         mpu_sync();
         g_app_active[c] = false;
         return;
@@ -210,6 +212,11 @@ extern "C" void task_app_mem_apply(const TaskAppMem *mem) {
     set_region(MPU_RGN_APP_TEXT,   mem->text,   mem->text_size,   MPU_RO_EXEC);
     set_region(MPU_RGN_APP_DATA,   mem->data,   mem->data_size,   MPU_RW_NOEXEC);
     set_region(MPU_RGN_APP_VENEER, mem->veneer, mem->veneer_size, MPU_RO_EXEC);
+    // Its stack and its heap. Both zero for a package running with the OS's own
+    // privileges, which reaches them through the default map like everything
+    // else — the regions only mean anything once the default map is gone.
+    set_region(MPU_RGN_APP_STACK,  mem->stack,  mem->stack_size,  MPU_RW_NOEXEC);
+    set_region(MPU_RGN_APP_ARENA,  mem->arena,  mem->arena_size,  MPU_RW_NOEXEC);
     mpu_sync();
     g_app_active[c] = true;
 #endif

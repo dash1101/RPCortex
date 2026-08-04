@@ -140,17 +140,113 @@ const char *load_result_str(LoadResult r) {
 #define VENEER_BYTES   16
 #define VENEER_LITERAL 12      // byte offset of the target word within a veneer
 
+// --- the second form: a supervisor call --------------------------------------
+//
+// A SANDBOXED package cannot use the veneer above at all. It runs unprivileged,
+// and unprivileged code cannot fetch instructions from flash — that is precisely
+// what makes the sandbox a sandbox — so there is nothing for `bx ip` to reach.
+//
+// Instead it names the function by its position in the firmware's export table
+// and asks the supervisor to make the jump:
+//
+//   +0   ldr.w ip, [pc, #8]   f8df c008   ; -> the index at +12
+//   +4   svc  #0              df00
+//   +6   b    .               e7fe        ; never runs: the handler redirects
+//   +8   (pad)
+//   +12  .word index
+//
+// The index travels in a REGISTER rather than in the SVC immediate, which is
+// eight bits wide against an ABI that passed 156 entries some time ago. r12 is
+// call-clobbered under AAPCS so using it costs nothing, and r0-r3 — the
+// arguments — are never touched.
+//
+// The literal stays at +12, the same offset the direct form uses, so the
+// reuse scan below does not have to know which form it is looking at. For the
+// LDR at +0 the address is Align(PC, 4) + imm12 where PC is the instruction
+// address + 4, so imm12 = 8 lands on +12.
+//
+// Two fixed slots come before any of these, because the way OUT of privileged
+// code needs an instruction the package is allowed to execute, and flash is not
+// it. They are written once at load time and are read-only to the package.
+//
+//   slot 0, the return gate:  msr CONTROL, r2 ; isb ; bx r3
+//     Reached from the firmware, still privileged, with r2 holding the new
+//     CONTROL value and r3 the package's return address. The `msr` has to be
+//     the second-to-last instruction executed — everything after it runs
+//     unprivileged, so everything after it has to live here rather than in
+//     flash.
+//
+//   slot 1, the exit gate:  svc #1
+//     Handed to a package as its return address. When app_main or a registered
+//     command returns, it lands here and the supervisor takes the OS back.
+#define VENEER_GATE_BYTES   32     // slots 0 and 1, in SVC mode only
+#define VENEER_NOT_AN_INDEX 0xFFFFFFFFu
+#define VENEER_GATE_RETURN  0
+#define VENEER_GATE_EXIT    16
+
+static LoaderVeneerMode g_veneer_mode = LOADER_VENEER_DIRECT;
+
+void loader_set_veneer_mode(LoaderVeneerMode m) { g_veneer_mode = m; }
+LoaderVeneerMode loader_veneer_mode(void) { return g_veneer_mode; }
+
+// Write the two fixed gates at the start of the pool. Called once, before any
+// call veneer, so the offsets above are stable.
+static void veneer_write_gates(LoadedApp *app) {
+    uint8_t *base = (uint8_t *)app->veneers;
+
+    uint16_t *r = (uint16_t *)(base + VENEER_GATE_RETURN);
+    r[0] = 0xf382; r[1] = 0x8814;   // msr CONTROL, r2
+    r[2] = 0xf3bf; r[3] = 0x8f6f;   // isb sy
+    r[4] = 0x4718;                  // bx  r3
+    r[5] = 0xbe00;                  // bkpt: unreachable, and loud if it is not
+    // Not zero. The reuse scan below matches on this word, and zero is a
+    // perfectly ordinary ABI index — a gate carrying it would be handed out as
+    // the veneer for symbol 0, and calling that function would drop privilege
+    // into nowhere. The scan also starts past the gates; this is the half that
+    // does not depend on remembering to.
+    *(uint32_t *)(base + VENEER_GATE_RETURN + VENEER_LITERAL) = VENEER_NOT_AN_INDEX;
+
+    uint16_t *e = (uint16_t *)(base + VENEER_GATE_EXIT);
+    e[0] = 0xdf01;                  // svc #1  - the package has returned
+    e[1] = 0xe7fe;                  // b . : the handler redirects, so this is
+    e[2] = 0xe7fe;                  //       only reached if it did not
+    e[3] = 0xe7fe;
+    e[4] = 0xe7fe;
+    e[5] = 0xe7fe;
+    *(uint32_t *)(base + VENEER_GATE_EXIT + VENEER_LITERAL) = VENEER_NOT_AN_INDEX;
+
+    app->veneers_used  = VENEER_GATE_BYTES;
+    app->veneer_gates  = VENEER_GATE_BYTES;
+}
+
 static uint32_t veneer_emit(LoadedApp *app, uint32_t target) {
     // Reuse an existing veneer for the same target: a typical app calls
     // fw_printf a dozen times and one trampoline serves them all.
+    //
+    // The scan starts past the fixed gates. Their literal word is zero, and
+    // zero is a perfectly ordinary ABI index — scanning from the beginning
+    // would hand out the return gate as the veneer for symbol 0, and a package
+    // calling that function would drop privilege into nowhere.
     uint8_t *base = (uint8_t *)app->veneers;
-    for (uint32_t off = 0; off < app->veneers_used; off += VENEER_BYTES) {
+    for (uint32_t off = app->veneer_gates; off < app->veneers_used; off += VENEER_BYTES) {
         if (*(uint32_t *)(base + off + VENEER_LITERAL) == target)
             return (uint32_t)(uintptr_t)(base + off) | 1u;      // Thumb bit
     }
     if (app->veneers_used + VENEER_BYTES > app->veneer_size) return 0;
     uint8_t *v = base + app->veneers_used;
     uint16_t *c = (uint16_t *)v;
+
+    if (g_veneer_mode == LOADER_VENEER_SVC) {
+        c[0] = 0xf8df; c[1] = 0xc008;   // ldr.w ip, [pc, #8]
+        c[2] = 0xdf00;                  // svc  #0
+        c[3] = 0xe7fe;                  // b .
+        c[4] = 0xbe00;                  // bkpt, in the pad
+        c[5] = 0x0000;
+        *(uint32_t *)(v + VENEER_LITERAL) = target;   // the index, not an address
+        app->veneers_used += VENEER_BYTES;
+        return (uint32_t)(uintptr_t)v | 1u;
+    }
+
     c[0] = 0xb401;    // push {r0}
     c[1] = 0x4802;    // ldr  r0, [pc, #8]
     c[2] = 0x4684;    // mov  ip, r0
@@ -294,6 +390,7 @@ LoadResult app_load(const AppSource &src, LoadedApp *out) {
     for (int i = 0; i < eh.e_shnum; i++)
         if (sh[i].sh_type == SHT_REL) reloc_count += sh[i].sh_size / sizeof(Elf32_Rel);
     uint32_t veneer_bytes = (reloc_count + 1) * VENEER_BYTES;
+    if (g_veneer_mode == LOADER_VENEER_SVC) veneer_bytes += VENEER_GATE_BYTES;
     veneer_bytes = (veneer_bytes + (APP_BLOCK_ALIGN - 1)) & ~(APP_BLOCK_ALIGN - 1);
 
     // Both blocks are over-allocated by one alignment and the useful part is
@@ -317,6 +414,10 @@ LoadResult app_load(const AppSource &src, LoadedApp *out) {
     out->veneers = veneers;
     out->veneer_size = veneer_bytes;
     out->veneers_used = 0;
+    out->veneer_gates = 0;
+    // The gates go in before anything else, so their offsets are fixed and the
+    // reuse scan has a definite place to start.
+    if (g_veneer_mode == LOADER_VENEER_SVC) veneer_write_gates(out);
     // What was actually taken from the heap, alignment slack included — so the
     // "did not release N bytes" report after a package runs stays truthful.
     out->bytes_allocated = total + veneer_bytes + 2 * APP_BLOCK_ALIGN;
@@ -367,6 +468,25 @@ LoadResult app_load(const AppSource &src, LoadedApp *out) {
         *is_func = (ELF32_ST_TYPE(s.st_info) == STT_FUNC);
         if (s.st_shndx == SHN_UNDEF) {
             const char *nm = strs + s.st_name;
+            if (g_veneer_mode == LOADER_VENEER_SVC) {
+                // A sandboxed package never learns a firmware address at all.
+                // The symbol resolves to its own supervisor-call veneer, which
+                // means EVERY route to the firmware goes through the gateway —
+                // including the one a direct address would otherwise open.
+                //
+                // A package that stores a function pointer rather than calling
+                // through it is the case this covers: an ABS32 relocation to a
+                // real firmware address would produce a pointer that works
+                // perfectly while packages are privileged and faults the moment
+                // they are not, which is the worst possible time to find out.
+                int ix = api_index_of(nm);
+                if (ix < 0) { set_detail(out, nm); return LOAD_ERR_UNDEF_SYMBOL; }
+                uint32_t v = veneer_emit(out, (uint32_t)ix);
+                if (!v) { set_detail(out, nm); return LOAD_ERR_RELOC_RANGE; }
+                *addr = v;                 // already carries the Thumb bit
+                *is_func = true;
+                return LOAD_OK;
+            }
             uint32_t a = api_lookup(nm);
             if (!a) { set_detail(out, nm); return LOAD_ERR_UNDEF_SYMBOL; }
             *addr = a;
@@ -488,6 +608,17 @@ LoadResult app_load(const AppSource &src, LoadedApp *out) {
                 uint32_t real_target = (S & ~1u) + (uint32_t)addend + 4;
                 int32_t disp = (int32_t)(real_target - (P + 4));
                 if (!thumb_bl_in_range(disp)) {
+                    // In SVC mode this cannot legitimately happen and must not
+                    // be papered over. Firmware symbols already resolved to a
+                    // veneer next door, and anything else is inside the image —
+                    // so an out-of-range branch here means a target that is
+                    // neither, and emitting a veneer for it would build a
+                    // trampoline holding a raw address where the supervisor
+                    // expects an index.
+                    if (g_veneer_mode == LOADER_VENEER_SVC) {
+                        rc = LOAD_ERR_RELOC_RANGE;
+                        break;
+                    }
                     // This is the normal case, not an edge case: firmware lives
                     // in XIP flash at 0x10000000 and the app in SRAM at
                     // 0x20000000, so every call into the firmware is 256 MB
@@ -531,6 +662,16 @@ LoadResult app_load(const AppSource &src, LoadedApp *out) {
     return rc;
 }
 
+uint32_t app_return_gate(const LoadedApp *app) {
+    if (!app || !app->veneer_gates) return 0;
+    return ((uint32_t)(uintptr_t)app->veneers + VENEER_GATE_RETURN) | 1u;
+}
+
+uint32_t app_exit_gate(const LoadedApp *app) {
+    if (!app || !app->veneer_gates) return 0;
+    return ((uint32_t)(uintptr_t)app->veneers + VENEER_GATE_EXIT) | 1u;
+}
+
 void app_unload(LoadedApp *app) {
     if (!app) return;
     // The RAW pointers, not the aligned ones. They are usually the same address
@@ -543,6 +684,6 @@ void app_unload(LoadedApp *app) {
     app->data = nullptr;
     app->entry = nullptr;
     app->image_size = app->text_size = app->data_size = 0;
-    app->veneer_size = app->veneers_used = 0;
+    app->veneer_size = app->veneers_used = app->veneer_gates = 0;
     app->bytes_allocated = 0;
 }

@@ -78,13 +78,22 @@ static int file_read(void *, uint32_t off, void *dst, uint32_t len) {
 // Addresses sit ~256 MB from the loaded image on purpose: that is the real
 // distance from XIP flash to SRAM, so every firmware call is out of BL range and
 // has to go through a veneer, exercising that path rather than the easy one.
-uint32_t api_lookup(const char *n) {
-    static uint32_t next = 0x10001000;
-    static char seen[64][40]; static uint32_t addr[64]; static int ns;
-    for (int i = 0; i < ns; i++) if (!strcmp(seen[i], n)) return addr[i];
-    if (ns < 64) { snprintf(seen[ns], 40, "%s", n); addr[ns] = next | 1u; next += 4; ns++; return addr[ns-1]; }
-    return next | 1u;
+static char g_seen[64][40];
+static uint32_t g_addr[64];
+static int g_ns;
+static int api_slot(const char *n) {
+    for (int i = 0; i < g_ns; i++) if (!strcmp(g_seen[i], n)) return i;
+    if (g_ns >= 64) return -1;
+    snprintf(g_seen[g_ns], 40, "%s", n);
+    g_addr[g_ns] = (0x10001000u + (uint32_t)g_ns * 4u) | 1u;
+    return g_ns++;
 }
+uint32_t api_lookup(const char *n) { int i = api_slot(n); return i < 0 ? 0 : g_addr[i]; }
+// The index form, from the SAME table — a sandboxed package names a function by
+// position, and a fake where the position and the address disagreed would let a
+// mismatched pair pass unnoticed.
+int api_index_of(const char *n) { return api_slot(n); }
+uint32_t api_addr_at(uint32_t i) { return i < (uint32_t)g_ns ? g_addr[i] : 0; }
 uint32_t api_symbol_count(void) { return 64; }
 
 // Where a section landed in the loaded image, recomputed from the ELF so the
@@ -321,6 +330,109 @@ static int load_one(const char *path) {
     return bad;
 }
 
+// --- the sandboxed form of the same app --------------------------------------
+//
+// Loaded a second time with the veneers built as supervisor calls, which is
+// what a package gets when it runs unprivileged. Everything here is machine
+// code the host cannot execute, so what is checked is the ENCODING — and the
+// encoding is the part that fails without a word: a wrong literal offset makes
+// the veneer load its own instructions as an index, and a wrong index makes the
+// supervisor call a different function than the one the package asked for.
+static int load_svc(const char *path) {
+    g_f = fopen(path, "rb");
+    if (!g_f) return 0;
+    fseek(g_f, 0, SEEK_END); uint32_t sz = ftell(g_f);
+
+    loader_set_veneer_mode(LOADER_VENEER_SVC);
+    loader_set_allocator(alloc32, free32);
+    AppSource src{}; src.read = file_read; src.ctx = nullptr; src.size = sz;
+    LoadedApp app;
+    LoadResult rc = app_load(src, &app);
+    loader_set_veneer_mode(LOADER_VENEER_DIRECT);
+    const char *name = strrchr(path, '/');
+    name = name ? name + 1 : path;
+    fclose(g_f);
+
+    if (rc != LOAD_OK) {
+        printf("  FAIL %-12s sandboxed: %s%s%s\n", name, load_result_str(rc),
+               app.detail[0] ? " - " : "", app.detail);
+        return 1;
+    }
+    int bad = 0;
+    const uint8_t *v = (const uint8_t *)app.veneers;
+    const uint16_t *h = (const uint16_t *)v;
+
+    // The two fixed gates come first and at known offsets, because the shim
+    // that enters package code has to be able to name them.
+    if (app.veneer_gates != 32) {
+        printf("       FAIL sandboxed: the gates are %u bytes, not 32\n", app.veneer_gates);
+        bad = 1;
+    }
+    if (h[0] != 0xf382 || h[1] != 0x8814) {
+        printf("       FAIL sandboxed: the return gate does not start with msr CONTROL, r2\n");
+        bad = 1;
+    }
+    if (h[2] != 0xf3bf || h[3] != 0x8f6f || h[4] != 0x4718) {
+        printf("       FAIL sandboxed: the return gate is not isb then bx r3\n");
+        bad = 1;
+    }
+    if (((const uint16_t *)(v + 16))[0] != 0xdf01) {
+        printf("       FAIL sandboxed: the exit gate is not svc #1\n");
+        bad = 1;
+    }
+    // The gates carry a literal that is not a usable index, so that even a
+    // reuse scan starting in the wrong place cannot hand one out as the veneer
+    // for a real function.
+    if (*(const uint32_t *)(v + 12) != 0xFFFFFFFFu ||
+        *(const uint32_t *)(v + 16 + 12) != 0xFFFFFFFFu) {
+        printf("       FAIL sandboxed: a gate carries a literal that could pass "
+               "for an ABI index\n");
+        bad = 1;
+    }
+    if (app_return_gate(&app) != ((uint32_t)(uintptr_t)v | 1u) ||
+        app_exit_gate(&app)   != (((uint32_t)(uintptr_t)v + 16) | 1u)) {
+        printf("       FAIL sandboxed: the gate addresses do not match where they were written\n");
+        bad = 1;
+    }
+
+    // Every call veneer. The literal must hold an INDEX the firmware exports,
+    // not an address — mixing the two is the mistake that would look like the
+    // package calling a wild function, and only sometimes.
+    int calls = 0;
+    for (uint32_t off = app.veneer_gates; off < app.veneers_used; off += 16) {
+        const uint16_t *c = (const uint16_t *)(v + off);
+        uint32_t lit = *(const uint32_t *)(v + off + 12);
+        calls++;
+        if (c[0] != 0xf8df || c[1] != 0xc008) {
+            printf("       FAIL sandboxed veneer at +%u does not load from +12\n", off);
+            bad = 1;
+        }
+        if (c[2] != 0xdf00) {
+            printf("       FAIL sandboxed veneer at +%u is not svc #0\n", off);
+            bad = 1;
+        }
+        // An index, and one that resolves. api_addr_at is the bounds check the
+        // supervisor will apply, so asking it here is asking the same question.
+        if (!api_addr_at(lit)) {
+            printf("       FAIL sandboxed veneer at +%u holds %08x, which is not "
+                   "an index the firmware exports\n", off, lit);
+            bad = 1;
+        }
+        // The giveaway that an address slipped in where an index belongs.
+        if (lit >= 0x10000000u) {
+            printf("       FAIL sandboxed veneer at +%u holds an ADDRESS, not an index\n", off);
+            bad = 1;
+        }
+    }
+    if (!calls) {
+        printf("       FAIL sandboxed: no call veneers at all — nothing was checked\n");
+        bad = 1;
+    }
+    printf("  ok   %-12s sandboxed: %d gate(s) + %d supervisor call(s)\n",
+           name, 2, calls);
+    return bad;
+}
+
 // Where build.sh actually puts the apps. It builds per BOARD, so there is no
 // single "build" directory — and there WAS a stale one left from an older
 // layout that this test happily read for hours while reporting success. The
@@ -358,6 +470,9 @@ int main(int argc, char **argv) {
         for (int i = 1; i < argc; i++) fails += load_one(argv[i]);
     } else {
         for (int i = 0; i < napps; i++) fails += load_one(kApps[i]);
+        // And every one of them again as a sandboxed package, which produces a
+        // completely different veneer pool from the same file.
+        for (int i = 0; i < napps; i++) fails += load_svc(kApps[i]);
     }
     // Loading nothing is a failure, not a pass. These paths are relative to this
     // directory, so running from anywhere else — or a change to where the build

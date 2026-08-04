@@ -138,7 +138,12 @@ enum {
     MPU_RGN_APP_TEXT    = 1,   // package code + rodata: read-only, executable
     MPU_RGN_APP_DATA    = 2,   // package data + bss:    writable, never executed
     MPU_RGN_APP_VENEER  = 3,   // the loader's trampolines: read-only, executable
-    MPU_RGN_FIRST_FREE  = 4,   // 4..7 are unspoken for
+    // The two more a SANDBOXED package needs. Without the default memory map —
+    // and unprivileged code never gets it — a package cannot reach its own
+    // stack or its own heap unless they are described here.
+    MPU_RGN_APP_STACK   = 4,   // its own stack:  writable, never executed
+    MPU_RGN_APP_ARENA   = 5,   // what fw_malloc gives it: the same
+    MPU_RGN_FIRST_FREE  = 6,   // 6 and 7 are unspoken for
 };
 
 // --- the hardware side, which lives in mpu_rp2.cpp --------------------------

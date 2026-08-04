@@ -25,6 +25,8 @@
 #include "out.h"
 #include "lock.h"
 #include "mpu.h"
+#include "loader.h"
+#include "sandbox.h"
 
 void net_autoconnect(void);
 void task_start_core1(void);
@@ -102,6 +104,12 @@ int main(void) {
     // Memory protection before the scheduler, because task_init immediately
     // arms the guard for pid 1 and there has to be something to arm.
     mpu_platform_init();
+    // Which form the loader builds veneers in. A sandboxed package cannot branch
+    // into the firmware, so its calls have to be supervisor calls — and that is
+    // decided here, once, rather than baked in, so the same loader serves a part
+    // that cannot afford the sandbox.
+    loader_set_veneer_mode(sandbox_supported() ? LOADER_VENEER_SVC
+                                               : LOADER_VENEER_DIRECT);
     task_init("init");
     bool prior = log_init();
 

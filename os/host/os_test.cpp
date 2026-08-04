@@ -23,6 +23,8 @@ static void f(void*p){if(!p)return; ((Blk*)((uint8_t*)p-sizeof(Blk)))->free=1;}
 static const char* names[]={"fw_printf","fw_millis","fw_malloc","fw_free","fw_log","rpc_register_command"};
 uint32_t api_lookup(const char* n){for(auto s:names) if(!strcmp(s,n)) return 0x10000100u; return 0;}
 uint32_t api_symbol_count(){return 6;}
+int api_index_of(const char* n){int i=0;for(auto s:names){if(!strcmp(s,n))return i;i++;}return -1;}
+uint32_t api_addr_at(uint32_t i){return i<6?0x10000100u:0;}
 
 struct FC{FILE*f;};
 static int fread_(void*c,uint32_t o,void*d,uint32_t l){FC*x=(FC*)c; if(fseek(x->f,o,SEEK_SET))return -1; return (int)fread(d,1,l,x->f);}

@@ -31,6 +31,7 @@
 #include "pico/aon_timer.h"
 #include "sha256.h"
 #include "framebuf.h"
+#include "arena.h"
 #include <time.h>
 #include "hardware/clocks.h"
 
@@ -61,8 +62,24 @@ extern "C" int fw_printf(const char *fmt, ...) {
     return n;
 }
 extern "C" uint32_t fw_millis(void) { bb_note_phase("entered fw_millis"); task_alive(); return (uint32_t)(time_us_64() / 1000u); }
-extern "C" void    *fw_malloc(size_t n) { bb_note_phase("entered fw_malloc"); task_alive(); return malloc(n); }
-extern "C" void     fw_free(void *p)    { task_alive(); free(p); }
+// A SANDBOXED package cannot be handed OS heap: it has no way to reach it, and
+// the first write would fault. It gets its arena instead — one block, because
+// there is one protection region to describe it with. A privileged package
+// carries on using the ordinary heap, which is what every package did before
+// sandboxing existed.
+extern "C" void *fw_malloc(size_t n) {
+    bb_note_phase("entered fw_malloc");
+    task_alive();
+    Arena *a = task_arena();
+    if (a) return arena_alloc(a, (uint32_t)n);
+    return malloc(n);
+}
+extern "C" void fw_free(void *p) {
+    task_alive();
+    Arena *a = task_arena();
+    if (a) { arena_free(a, p); return; }
+    free(p);
+}
 
 extern "C" void fw_log(int level, const char *msg) {
     LogLevel l = (level == 2) ? LOG_ERROR : (level == 1) ? LOG_WARN : LOG_INFO;
@@ -1044,6 +1061,32 @@ uint32_t api_lookup(const char *name) {
     return 0;
 }
 uint32_t api_symbol_count(void) { return kSymbolCount; }
+
+// The same lookup, by INDEX rather than address.
+//
+// A sandboxed package cannot branch into the firmware at all — flash is not
+// reachable from unprivileged code, which is the point — so it names the
+// function it wants by its position in this table and asks the supervisor call
+// to make the jump. The index has to come from here, because this table is the
+// only definition of what that position means.
+//
+// Returns -1 for a name the firmware does not export, which is the same answer
+// api_lookup gives by returning 0: the app is refused at load time rather than
+// being allowed to ask for something that does not exist.
+int api_index_of(const char *name) {
+    for (uint32_t i = 0; i < kSymbolCount; i++)
+        if (strcmp(kSymbols[i].name, name) == 0) return (int)i;
+    return -1;
+}
+
+// And back again. This is the one the supervisor call uses on every entry, so
+// the bounds check is the whole security property: an index out of range is a
+// package asking for something that is not in the table, and the answer is
+// zero rather than whatever happens to follow it in memory.
+uint32_t api_addr_at(uint32_t index) {
+    if (index >= kSymbolCount) return 0;
+    return kSymbols[index].addr;
+}
 
 // --- the TUI (API 1.4) ------------------------------------------------------
 //

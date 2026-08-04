@@ -147,6 +147,15 @@ bool task_should_stop(void);
 // itself carried on fine. The shell clears it when it returns to the prompt.
 void task_clear_stop(void);
 
+// Which slot in the task table the running task occupies, or -1.
+//
+// A stable small integer, for anything that needs per-task storage of its own
+// without adding a field to every task in the system — the sandbox keeps four
+// words per task this way. The slot is reused when a task is reaped, so
+// whatever is kept against it has to be cleared then; task_slot_recycled is
+// the notification for that.
+int task_slot_index(void);
+
 // The shell's pid, or 0 before it starts.
 //
 // The watchdog and task_kill both refuse to terminate the shell, since ending
@@ -312,6 +321,12 @@ struct TaskAppMem {
     uint32_t    data_size;
     const void *veneer;      // the loader's call trampolines: code
     uint32_t    veneer_size;
+    // The two a SANDBOXED package also needs. Zero when it runs with the OS's
+    // own privileges, because then it reaches everything anyway.
+    void       *stack;       // its own, not the shell's
+    uint32_t    stack_size;
+    void       *arena;       // what fw_malloc hands it
+    uint32_t    arena_size;
 };
 
 // Apply, or withdraw, the package regions for the CALLING task.
@@ -324,6 +339,15 @@ struct TaskAppMem {
 // into the reused block would then fault in code that had done nothing wrong.
 void task_app_mem_set(const TaskAppMem *mem);
 void task_app_mem_clear(void);
+
+// The heap the running task's package allocates from, or null when it is not in
+// a sandboxed package and fw_malloc should use the ordinary one.
+//
+// Per task for the same reason the regions are: a package yields on every ABI
+// call it makes, and the next task on the core has a different answer.
+struct Arena;
+Arena *task_arena(void);
+void   task_arena_set(Arena *a);
 
 // Read back what this task holds, so an entry into package code can put the
 // previous description back rather than clearing it. Nothing today can nest —

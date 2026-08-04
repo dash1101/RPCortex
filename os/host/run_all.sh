@@ -25,6 +25,7 @@ declare -A SRC=(
     [repoindex_test]="$CORE/repoindex.cpp"
     [preempt_test]="$CORE/preempt.cpp"
     [mpu_test]="$CORE/mpu.cpp"
+    [arena_test]="$CORE/arena.cpp"
     [excframe_test]="$CORE/excframe.cpp"
     [tui_test]="$CORE/tui.cpp"
     [tuilist_test]="$CORE/tuilist.cpp $CORE/tui.cpp"
@@ -56,7 +57,7 @@ declare -A SRC=(
     [out_test]="$CORE/out.cpp $CORE/lock.cpp $CORE/task.cpp $CORE/blackbox.cpp $CORE/logring.cpp host_task_stub.cpp"
     [realapp_test]="$SPIKE/loader.cpp $CORE/mpu.cpp"
     [os_test]="$SHELL_DIR/command.cpp $CORE/lock.cpp $CORE/task.cpp $CORE/blackbox.cpp host_task_stub.cpp $SPIKE/loader.cpp"
-    [apps_test]="$CORE/mpu.cpp $SHELL_DIR/command.cpp $SHELL_DIR/apps.cpp $CORE/out.cpp $CORE/lock.cpp $CORE/task.cpp $CORE/blackbox.cpp $CORE/logring.cpp host_task_stub.cpp $SPIKE/loader.cpp"
+    [apps_test]="$CORE/mpu.cpp $CORE/arena.cpp host_sandbox_stub.cpp $SHELL_DIR/command.cpp $SHELL_DIR/apps.cpp $CORE/out.cpp $CORE/lock.cpp $CORE/task.cpp $CORE/blackbox.cpp $CORE/logring.cpp host_task_stub.cpp $SPIKE/loader.cpp"
 )
 
 # Extra flags for tests that need them. smp_test runs two real threads.

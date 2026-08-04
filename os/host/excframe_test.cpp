@@ -17,6 +17,8 @@ static void ok(bool c, const char *what) {
 }
 
 // A frame as the hardware would have left it: r0-r3, r12, LR, PC, xPSR.
+static uint32_t on_return_unused(void) { return 0x10006000u; }
+
 static void make_frame(uint32_t *f, uint32_t pc, uint32_t xpsr) {
     for (int i = 0; i < EXC_FRAME_WORDS; i++) f[i] = 0xA0000000u + i;
     f[EXC_PC_WORD] = pc;
@@ -107,6 +109,58 @@ int main(void) {
         ok(!exc_return_used_psp(0xFFFFFFF9u), "EXC_RETURN 0xFFFFFFF9 is the main stack");
         ok(exc_return_used_psp(0xFFFFFFFDu),  "EXC_RETURN 0xFFFFFFFD is the process stack");
         ok(!exc_return_used_psp(0xFFFFFFF1u), "EXC_RETURN 0xFFFFFFF1 is handler mode, main stack");
+    }
+
+    // --- a package's supervisor call ----------------------------------------
+    //
+    // A sandboxed package cannot branch into the firmware, so it names the
+    // function it wants by index and executes SVC. The handler turns that into
+    // a call by rewriting where the exception returns to. Every field it
+    // touches is one that fails without saying anything: the wrong PC jumps
+    // into nothing, a lost LR returns the package to whatever was in that word,
+    // and a clobbered r0-r3 loses the arguments in a way that looks like the
+    // firmware function misbehaving.
+    {
+        const uint32_t target    = 0x10005000u;   // a firmware function
+        const uint32_t on_return = 0x10006000u;   // the way back
+        uint32_t f[EXC_FRAME_WORDS];
+        make_frame(f, 0x20001004u, XPSR_THUMB);
+        f[EXC_LR_WORD] = 0x20002222u;             // where the package expects to resume
+        f[EXC_R12_WORD] = 42;                     // the index it asked for
+        uint32_t saved = 0;
+
+        ok(exc_frame_syscall_index(f) == 42, "the index comes from the stacked r12");
+
+        ok(exc_frame_enter_firmware(f, target, on_return, &saved) == SYSCALL_OK,
+           "a call into the firmware is set up");
+        ok(f[EXC_PC_WORD] == (target | 1u), "the return lands in the firmware function");
+        ok(f[EXC_LR_WORD] == (on_return | 1u), "which will return to the way back");
+        ok(saved == 0x20002222u,
+           "and the package's own return address is handed back, not discarded");
+        ok(f[EXC_XPSR_WORD] & XPSR_THUMB, "Thumb state is kept");
+
+        // The arguments. r0-r3 are what the package put there and the firmware
+        // function is about to read them.
+        bool args_kept = true;
+        for (int i = 0; i <= 3; i++) if (f[i] != 0xA0000000u + (uint32_t)i) args_kept = false;
+        ok(args_kept, "r0-r3 are untouched, because they are the arguments");
+    }
+    {
+        // An index the table does not have. The frame must be left EXACTLY as
+        // it was: a half-rewritten frame returns somewhere nobody chose, and
+        // the report would then describe that jump instead of the request.
+        uint32_t f[EXC_FRAME_WORDS], before[EXC_FRAME_WORDS];
+        make_frame(f, 0x20001004u, XPSR_THUMB);
+        f[EXC_LR_WORD] = 0x20002222u;
+        memcpy(before, f, sizeof(f));
+        uint32_t saved = 0xDEADBEEFu;
+
+        ok(exc_frame_enter_firmware(f, 0, on_return_unused(), &saved) == SYSCALL_BAD_INDEX,
+           "an index the firmware does not export is refused");
+        ok(memcmp(f, before, sizeof(f)) == 0, "and nothing at all is written");
+
+        ok(exc_frame_enter_firmware(nullptr, 0x10005000u, 0x10006000u, &saved)
+               == SYSCALL_NO_FRAME, "and there being no frame is its own answer");
     }
 
     // --- null safety --------------------------------------------------------

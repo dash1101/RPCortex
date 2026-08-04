@@ -7,6 +7,7 @@
 #include "excframe.h"
 #include "lock.h"
 #include "mpu.h"
+#include "sandbox.h"
 
 #include <stdint.h>
 #include <string.h>
@@ -151,6 +152,10 @@ void task_watchdog_feed(void) {
 // It never returns. task_exit does not come back, and reaching the end of this
 // would return into a stack frame that has been abandoned.
 extern "C" void task_forced_exit(void) {
+    // Whatever this task was inside, it is not inside it any more. The alarm
+    // already handed privilege back before redirecting here; this clears the
+    // bookkeeping so a reused slot does not inherit it.
+    sandbox_release_for_kill();
     const TaskInfo *t = task_current();
     if (t) {
         out_errp("watchdog", "'%s' (pid %d) would not stop. Terminated.", t->name, t->pid);
@@ -209,6 +214,13 @@ static bool should_force(void) {
 // an arbitrary instruction is how a fault handler comes to fault.
 static int64_t preempt_alarm(alarm_id_t, void *) {
     if (should_force()) {
+        // If the stalled task is a SANDBOXED package, it is running
+        // unprivileged and cannot fetch instructions from flash — so redirecting
+        // it into task_forced_exit would fault rather than terminate it, and
+        // report a protection violation in a task that was already being killed.
+        // Privilege is handed back first. The task is ending either way, so it
+        // has nothing left to protect.
+        if (sandbox_in_package()) sandbox_release_for_kill();
         // EXC_RETURN bit 2 says which stack the interrupted code was using.
         // Both are checked rather than assumed, because assuming MSP would
         // silently rewrite the wrong stack the day tasks move to PSP.

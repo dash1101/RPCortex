@@ -64,6 +64,9 @@ struct Task {
     // Twenty-four bytes a task is a cheap way not to have to think about it.
     TaskAppMem app_mem;
     bool       app_mem_set;
+    // Where fw_malloc sends this task while it is inside a sandboxed package.
+    // Owned by whoever set it; the scheduler only carries it.
+    Arena     *arena;
 };
 
 static bool     g_up;                // task_init has run
@@ -291,6 +294,7 @@ int task_spawn(const char *name, const char *path, TaskFn fn, void *arg,
             oldest->live = false;
             oldest->crit = 0;
             oldest->app_mem_set = false;
+            oldest->arena = nullptr;
             t = oldest;
         }
     }
@@ -326,6 +330,7 @@ int task_spawn(const char *name, const char *path, TaskFn fn, void *arg,
     t->fn        = fn;
     t->arg       = arg;
     t->app_mem_set = false;
+    t->arena = nullptr;
     t->live  = false;        // slots are reused; the memset above only clears info
     t->crit  = 0;
 
@@ -733,6 +738,11 @@ int task_self(void) {
     return t ? t->info.pid : -1;
 }
 
+int task_slot_index(void) {
+    Task *t = cur();
+    return t ? (int)(t - g_tasks) : -1;
+}
+
 const TaskInfo *task_current(void) {
     Task *t = cur();
     return t ? &t->info : nullptr;
@@ -772,6 +782,7 @@ bool task_reap(int pid) {
     if (t->stack_raw) free(t->stack_raw);
     t->stack = t->stack_raw = nullptr;
     t->app_mem_set = false;
+    t->arena = nullptr;
     t->info.state = TASK_FREE;
     return true;
 }
@@ -803,6 +814,16 @@ bool task_app_mem_get(TaskAppMem *out) {
     if (!t || !t->app_mem_set) return false;
     if (out) *out = t->app_mem;
     return true;
+}
+
+Arena *task_arena(void) {
+    Task *t = cur();
+    return t ? t->arena : nullptr;
+}
+
+void task_arena_set(Arena *a) {
+    Task *t = cur();
+    if (t) t->arena = a;
 }
 
 void task_app_mem_clear(void) {

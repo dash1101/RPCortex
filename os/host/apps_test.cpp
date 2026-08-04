@@ -15,6 +15,8 @@
 // resolve at link time.
 uint32_t api_lookup(const char *) { return 0; }
 uint32_t api_symbol_count(void) { return 0; }
+int api_index_of(const char *) { return -1; }
+uint32_t api_addr_at(uint32_t) { return 0; }
 
 // apps.cpp now also contains apps_launch, which references the kernel/storage/api
 // seams. This test exercises only the resident TABLE (store/unload), never

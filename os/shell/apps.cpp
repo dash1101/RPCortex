@@ -5,9 +5,12 @@
 #include "kernel.h"
 #include "blackbox.h"
 #include "mpu.h"
+#include "arena.h"
+#include "sandbox.h"
 
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 
 // Set around app_main so a registered command is tagged with its app (api.cpp)
 // and a fault names the culprit (fault.cpp).
@@ -50,6 +53,60 @@ static void describe(const LoadedApp *a, TaskAppMem *m) {
     if (m->veneer_size > a->veneer_size) m->veneer_size = a->veneer_size;
 }
 
+// --- the sandbox ------------------------------------------------------------
+//
+// A sandboxed package needs two things the OS has been lending it: a stack of
+// its own, and a heap of its own. Both are allocated for the duration of a call
+// into package code and given back after, rather than held for the lifetime of
+// a resident package — a package spends nearly all of its time not running, and
+// twelve kilobytes each is not worth holding for that.
+//
+// The stack has to be a real one. Firmware called through the ABI runs on it:
+// the supervisor call raises privilege and returns to the firmware function on
+// whatever stack the package was using, so fw_printf's 1128-byte frame lands
+// here. That is why it is sized like any other task's stack and not like a
+// scratch buffer.
+#define PKG_STACK_BYTES  TASK_STACK_DEF
+#define PKG_ARENA_BYTES  2048
+
+struct SandboxAlloc {
+    void  *stack_raw;
+    void  *stack;
+    void  *arena_raw;
+    void  *arena_mem;
+    Arena  arena;
+};
+
+static bool sandbox_alloc(SandboxAlloc *sa, TaskAppMem *m) {
+    memset(sa, 0, sizeof(*sa));
+    MpuBlockPlan sp, ap;
+    if (!mpu_v8_plan_block(PKG_STACK_BYTES, &sp)) return false;
+    if (!mpu_v8_plan_block(PKG_ARENA_BYTES, &ap)) return false;
+
+    sa->stack_raw = malloc(sp.alloc_bytes);
+    sa->arena_raw = malloc(ap.alloc_bytes);
+    if (!sa->stack_raw || !sa->arena_raw) {
+        free(sa->stack_raw); free(sa->arena_raw);
+        memset(sa, 0, sizeof(*sa));
+        return false;
+    }
+    sa->stack = (void *)(uintptr_t)mpu_align_up((uint32_t)(uintptr_t)sa->stack_raw, sp.align);
+    sa->arena_mem = (void *)(uintptr_t)mpu_align_up((uint32_t)(uintptr_t)sa->arena_raw, ap.align);
+    arena_init(&sa->arena, sa->arena_mem, ap.region_bytes);
+
+    m->stack      = sa->stack;
+    m->stack_size = sp.region_bytes;
+    m->arena      = sa->arena_mem;
+    m->arena_size = ap.region_bytes;
+    return true;
+}
+
+static void sandbox_release(SandboxAlloc *sa) {
+    free(sa->stack_raw);
+    free(sa->arena_raw);
+    memset(sa, 0, sizeof(*sa));
+}
+
 void app_enter(const LoadedApp *app, TaskAppMem *saved, bool *had_saved) {
     *had_saved = task_app_mem_get(saved);
     if (!app) return;
@@ -61,6 +118,71 @@ void app_enter(const LoadedApp *app, TaskAppMem *saved, bool *had_saved) {
 void app_leave(const TaskAppMem *saved, bool had_saved) {
     if (had_saved) task_app_mem_set(saved);
     else           task_app_mem_clear();
+}
+
+// Run package code, sandboxed if this board can and privileged if it cannot.
+//
+// The fallback is deliberate and is not silent: `apps` and `mpu` both say which
+// a package got. An RP2040 cannot afford the regions, and refusing to run
+// packages there would be a worse answer than running them the way they have
+// always run.
+int app_run(const LoadedApp *app, int (*fn)(int), int arg) {
+    TaskAppMem saved;
+    bool had_saved = false;
+    TaskAppMem m;
+    describe(app, &m);
+
+    SandboxAlloc sa;
+    bool boxed = sandbox_supported() && app->veneer_gates && sandbox_alloc(&sa, &m);
+
+    had_saved = task_app_mem_get(&saved);
+    task_app_mem_set(&m);
+    if (boxed) task_arena_set(&sa.arena);
+
+    int ret;
+    if (boxed) {
+        ret = sandbox_enter((void *)fn, arg, nullptr,
+                            (uint8_t *)sa.stack + m.stack_size,
+                            app_return_gate(app), app_exit_gate(app));
+    } else {
+        ret = fn(arg);
+    }
+
+    if (boxed) { task_arena_set(nullptr); sandbox_release(&sa); }
+    app_leave(&saved, had_saved);
+    return ret;
+}
+
+bool app_run_owner(const void *owner, int (*fn)(int, char **), int argc,
+                   char **argv, int *ret) {
+    if (!owner) return false;
+    for (int i = 0; i < APPS_MAX; i++) {
+        if (!g_used[i] || g_apps[i].image != owner) continue;
+        // A registered command takes two arguments where app_main takes one, so
+        // the shim carries both. Reinterpreting the pointer is safe because the
+        // call is made in assembly from registers rather than through this type:
+        // r0 and r1 are argc and argv under AAPCS either way.
+        LoadedApp *a = &g_apps[i];
+        TaskAppMem saved, m;
+        bool had_saved;
+        describe(a, &m);
+        SandboxAlloc sa;
+        bool boxed = sandbox_supported() && a->veneer_gates && sandbox_alloc(&sa, &m);
+        had_saved = task_app_mem_get(&saved);
+        task_app_mem_set(&m);
+        if (boxed) task_arena_set(&sa.arena);
+        if (boxed) {
+            *ret = sandbox_enter((void *)fn, argc, argv,
+                                 (uint8_t *)sa.stack + m.stack_size,
+                                 app_return_gate(a), app_exit_gate(a));
+        } else {
+            *ret = fn(argc, argv);
+        }
+        if (boxed) { task_arena_set(nullptr); sandbox_release(&sa); }
+        app_leave(&saved, had_saved);
+        return true;
+    }
+    return false;
 }
 
 bool app_enter_owner(const void *owner, TaskAppMem *saved, bool *had_saved) {
@@ -151,11 +273,7 @@ int apps_launch(const char *file, int arg, bool quiet) {
     // back — and free() writes its own bookkeeping into a block it is
     // reclaiming, which a read-only region would fault on.
     bb_note_phase("entering app_main");
-    TaskAppMem saved;
-    bool had_saved = false;
-    app_enter(&app, &saved, &had_saved);
-    int ret = app.entry(arg);
-    app_leave(&saved, had_saved);
+    int ret = app_run(&app, app.entry, arg);
     bb_note_phase("app_main returned");
     g_current_app = nullptr;
     api_set_current_app(nullptr);

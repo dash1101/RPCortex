@@ -31,6 +31,18 @@ void app_leave(const TaskAppMem *saved, bool had_saved);
 // a resident package, in which case it is a built-in and nothing is protected.
 bool app_enter_owner(const void *owner, TaskAppMem *saved, bool *had_saved);
 
+// Run package code the way this board can: sandboxed where the protection
+// hardware allows it, privileged where it does not. The one place that decides,
+// so `run`, a registered command and a boot-time load all get the same answer.
+int app_run(const LoadedApp *app, int (*fn)(int), int arg);
+
+// The same, for a command a package registered — found by the owner token the
+// command carries. `fn` takes argc/argv rather than an int, so it is passed
+// through as-is; false means the owner is not a resident package, and the
+// caller should just call it.
+bool app_run_owner(const void *owner, int (*fn)(int, char **), int argc,
+                   char **argv, int *ret);
+
 // Copy a loaded app into the resident table. Returns the stored record (whose
 // image/veneer pointers are unchanged and stay valid) or nullptr if full or a
 // package of that name is already resident.

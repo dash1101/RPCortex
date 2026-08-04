@@ -24,6 +24,7 @@
 #include "logring.h"
 #include "blackbox.h"
 #include "mpu.h"
+#include "sandbox.h"
 #include "perms.h"
 #include "users.h"
 #include "session.h"
@@ -461,6 +462,19 @@ static int cmd_mpu(int, char **) {
               r.app_supported
                   ? "read-only while running; data never executable"
                   : "not enforced on this part - regions cost too much RAM");
+    out_multi("    Packages run      : %s",
+              sandbox_supported()
+                  ? "unprivileged, on a stack and a heap of their own"
+                  : "with the OS's own privileges");
+    if (sandbox_supported()) {
+        uint32_t calls = 0, refused = 0;
+        sandbox_counts(&calls, &refused);
+        out_multi("    ABI calls served  : %lu%s", (unsigned long)calls,
+                  calls ? "" : "   (nothing has run yet)");
+        if (refused)
+            out_warn("  %lu were refused — a package named a function index that "
+                     "does not exist.", (unsigned long)refused);
+    }
     out_blank();
 
     for (unsigned c = 0; c < task_core_count(); c++) {

@@ -1,0 +1,60 @@
+// Running a package without the OS's own privileges.
+//
+// See sandbox_rp2.cpp for how, and UNPRIV-DESIGN.md for why it is shaped this
+// way. The short version: a sandboxed package can reach its own five regions
+// and nothing else in the machine, and every call it makes into the firmware is
+// a supervisor call rather than a branch.
+#ifndef RPC_SANDBOX_H
+#define RPC_SANDBOX_H
+
+#include <stdint.h>
+#include <stddef.h>
+
+// False on ARMv6-M, where the protection regions would cost more RAM than the
+// part has. Packages run privileged there, exactly as they did before.
+bool sandbox_supported(void);
+
+// Run `fn(arg)` unprivileged on `stack_top`, returning what it returned.
+//
+// `return_gate` and `exit_gate` are addresses in the package's own veneer pool.
+// They have to be: the last instructions of both paths out of privileged code
+// run unprivileged, and unprivileged code cannot fetch from flash.
+//
+// -1 if the sandbox could not be set up, which is a refusal to run the package
+// rather than a decision to run it unprotected.
+int sandbox_enter(void *fn, int arg0, void *arg1, void *stack_top,
+                  uint32_t return_gate, uint32_t exit_gate);
+
+// Whether THIS task is currently inside package code.
+bool sandbox_in_package(void);
+
+// Supervisor calls served, and how many were refused.
+//
+// Refusals are the number worth watching: each one is a package that named a
+// function index the firmware does not export, which means either a corrupted
+// veneer pool or a package doing something it was not built from.
+void sandbox_counts(uint32_t *calls, uint32_t *refused);
+
+// Give privilege back before a stalled task is redirected into firmware.
+//
+// The preemption alarm terminates a runaway task by rewriting the PC the
+// hardware stacked. That target is in flash, which an unprivileged package may
+// not fetch from — so without this the redirect faults instead of terminating
+// anything, and reports a protection violation in a task that was already being
+// killed, which explains nothing to anybody.
+void sandbox_release_for_kill(void);
+
+// Drop everything remembered about a task slot, when the scheduler reuses it.
+void sandbox_forget(int slot);
+
+// The assembly half. Declared here so there is one place that says what the
+// arguments are; sandbox_switch.S is where they mean something.
+extern "C" int  app_call_unpriv(void *fn, int arg0, void *arg1, void *stack_top,
+                                uint32_t exit_gate, uint32_t *park_sp_here);
+extern "C" void app_call_unpriv_tail(void);
+extern "C" void sandbox_syscall_return(void);
+extern "C" uint32_t sandbox_kernel_sp(void);
+extern "C" uint32_t sandbox_return_gate(void);
+extern "C" uint32_t sandbox_finish_call(void);
+
+#endif  // RPC_SANDBOX_H
