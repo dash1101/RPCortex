@@ -50,7 +50,8 @@ void sandbox_forget(int slot);
 // The assembly half. Declared here so there is one place that says what the
 // arguments are; sandbox_switch.S is where they mean something.
 extern "C" int  app_call_unpriv(void *fn, int arg0, void *arg1, void *stack_top,
-                                uint32_t exit_gate, uint32_t *park_sp_here);
+                                uint32_t exit_gate, uint32_t *park_sp_here,
+                                uint32_t enter_gate);
 extern "C" void app_call_unpriv_tail(void);
 extern "C" void sandbox_syscall_return(void);
 extern "C" uint32_t sandbox_kernel_sp(void);

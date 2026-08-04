@@ -52,14 +52,27 @@ isr_svcall:
 //   r1 = arg0       becomes the package's first argument
 //   r2 = arg1       ...and its second, so a registered command's argc/argv fit
 //   r3 = stack_top  the package's own stack
-//   [sp, #40] = exit_gate, in the veneer pool: where the package returns to
+//   [sp, #40] = exit_gate,  in the veneer pool: where the package returns to
 //   [sp, #44] = where to park the firmware's stack pointer
+//   [sp, #48] = enter_gate, in the veneer pool: where privilege is dropped
 //
 // The package needs a stack of its own and this is the reason: app_main and
 // every command a package registers would otherwise run on the SHELL's stack,
 // which holds the shell's saved return addresses into privileged firmware. A
 // package able to write those can send the OS anywhere it likes, so dropping
 // privilege while sharing a stack is not weaker isolation — it is none.
+//
+// The drop itself does NOT happen here, and that is the whole subtlety. The
+// instruction after `msr CONTROL` runs unprivileged, and this file is in flash
+// — which a sandboxed package may not fetch from. Writing the msr, an isb and a
+// bx in a row therefore faults on the BX, after the pipeline flush forces it to
+// be re-fetched under the new permissions. It is not the branch that is wrong,
+// it is where the branch lives.
+//
+// So this hands two registers to the gate in the package's veneer pool and
+// jumps there while still privileged. The gate is `msr CONTROL, r2 ; isb ;
+// bx r3`, and every instruction of it is somewhere the package is allowed to
+// execute. It is the same gate the return path uses, for the same reason.
 //
 // Ten words are pushed, not nine, to keep the stack eight-byte aligned.
     .section .text.app_call_unpriv, "ax"
@@ -72,25 +85,28 @@ app_call_unpriv:
     mov     r5, sp
     str     r5, [r4]
     ldr     r6, [sp, #40]           // the exit gate
+    ldr     r7, [sp, #48]           // the gate that drops privilege
+    mov     r8, r0                  // fn, before r0 becomes an argument
 
     // The same stack-limit release the context switch needs, for the same
     // reason: the package's stack is a different heap block and may be below
     // the limit that is currently protecting the task's. The package is not
     // left unguarded — MPU region 4 covers its stack exactly, so running off
     // the end lands outside every region it owns and faults there instead.
-    mov     r7, #0
-    msr     msplim, r7
+    movs    r5, #0
+    msr     msplim, r5
     mov     sp, r3                  // stand on the package's stack
-    mov     r12, r0
+
     mov     r0, r1                  // the package's two arguments
     mov     r1, r2
+    mov     r3, r8                  // what the gate will branch to
+    mov     r12, r7                 // ...and the gate itself
     mov     lr, r6                  // return to the exit gate, not to here
-
     mrs     r2, control
-    orr     r2, r2, #1              // nPRIV. Read-modify-write, because CONTROL
-    msr     control, r2             // also carries SPSEL and FPCA, and this
-    isb                             // build has an FPU that uses FPCA.
-    bx      r12                     // into the package, unprivileged
+    orr     r2, r2, #1              // nPRIV, for the gate to write. Read-modify-
+                                    // write: CONTROL also carries SPSEL and
+                                    // FPCA, and this build has an FPU.
+    bx      r12                     // -> the gate, still privileged
 
 // Where `svc #1` sends the exception return once the package is done.
 // Privileged again by then, still on the package's stack, with r0 holding what

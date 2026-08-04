@@ -80,10 +80,35 @@ def main():
     if not checked:
         print('  FAIL no stack switches found at all - nothing was checked')
         return 1
+
+    # And the other half of the same rule, for privilege rather than for SP.
+    #
+    # The instruction after `msr CONTROL` runs under the NEW privilege, and
+    # everything in flash is unreachable once that is unprivileged — so a
+    # routine in flash that drops privilege and then branches faults on the
+    # branch, after the pipeline flush forces it to be re-fetched. It is not the
+    # branch that is wrong, it is where the branch lives.
+    #
+    # Both routines below therefore hand the value to a gate in the package's
+    # own veneer pool and jump there while still privileged. Neither may contain
+    # a CONTROL write at all. sandbox_svc is exempt and is not listed: it runs in
+    # handler mode and only ever RAISES privilege, which needs no gate.
+    for routine in ('app_call_unpriv', 'sandbox_syscall_return'):
+        body = bodies.get(routine)
+        if body is None:
+            continue
+        for i, l in enumerate(body):
+            if re.search(r'\bmsr\s+CONTROL', l):
+                print('  FAIL %s writes CONTROL in flash; the drop belongs in '
+                      'the veneer pool gate:' % routine)
+                print('       ' + l.strip())
+                bad += 1
+        checked += 1
+
     if bad:
         return 1
-    print('  stackswitch     ok   %d stack switch(es), each releases MSPLIM first'
-          % checked)
+    print('  stackswitch     ok   %d switch(es) release MSPLIM, and privilege '
+          'is dropped only in the gate' % checked)
     return 0
 
 
