@@ -25,6 +25,7 @@
 // which matters, because moving where the filesystem starts costs every device
 // its files.
 
+#include "blockcache.h"
 #include "fat12.h"
 #include "fatview.h"
 #include "lock.h"
@@ -88,46 +89,36 @@ static bool g_formatted;
 // takes. usbmsc_service() runs on the same task a moment earlier, outside all
 // of that, and that is where the common case is paid.
 #define BLK STORAGE_USB_BLOCK
-#define SECTORS_PER_BLK (BLK / F12_SECTOR)
 
-static uint8_t  g_blk[BLK];
-static uint32_t g_blk_no = 0xFFFFFFFF;
-static bool     g_blk_dirty;
+static uint8_t    g_blk[BLK];
+static BlockCache g_cache;
+static bool       g_cache_ready;
 
-static bool blk_flush(void) {
-    if (g_blk_no == 0xFFFFFFFF || !g_blk_dirty) return true;
-    bool ok = storage_usb_write_block(g_blk_no * BLK, g_blk);
-    g_blk_dirty = false;
-    return ok;
+static bool flash_read_block(void *, uint32_t block, void *dst) {
+    return storage_usb_read(block * BLK, dst, BLK);
+}
+static bool flash_write_block(void *, uint32_t block, const void *src) {
+    return storage_usb_write_block(block * BLK, (const uint8_t *)src);
 }
 
-static bool blk_load(uint32_t block) {
-    if (g_blk_no == block) return true;
-    if (!blk_flush()) return false;
-    if (!storage_usb_read(block * BLK, g_blk, BLK)) return false;
-    g_blk_no = block;
-    return true;
+static void cache_start(void) {
+    if (g_cache_ready) return;
+    bc_init(&g_cache, g_blk, BLK, F12_SECTOR, nullptr, flash_read_block, flash_write_block);
+    g_cache_ready = true;
 }
+
+static bool blk_flush(void) { cache_start(); return bc_flush(&g_cache); }
 
 static bool region_read(void *, uint32_t lba, void *buf) {
     if ((lba + 1) * F12_SECTOR > storage_usb_bytes()) return false;
-    uint32_t block = lba / SECTORS_PER_BLK;
-    // The cached block may hold writes flash has not seen yet, so it answers
-    // for its own sectors. Reading around it would hand the host back the bytes
-    // that were there before its own write.
-    if (block == g_blk_no) {
-        memcpy(buf, g_blk + (lba % SECTORS_PER_BLK) * F12_SECTOR, F12_SECTOR);
-        return true;
-    }
-    return storage_usb_read(lba * F12_SECTOR, buf, F12_SECTOR);
+    cache_start();
+    return bc_read_sector(&g_cache, lba, buf);
 }
 
 static bool region_write(void *, uint32_t lba, const void *buf) {
     if ((lba + 1) * F12_SECTOR > storage_usb_bytes()) return false;
-    if (!blk_load(lba / SECTORS_PER_BLK)) return false;
-    memcpy(g_blk + (lba % SECTORS_PER_BLK) * F12_SECTOR, buf, F12_SECTOR);
-    g_blk_dirty = true;
-    return true;
+    cache_start();
+    return bc_write_sector(&g_cache, lba, buf);
 }
 
 static F12Io region_io(void) {
@@ -305,8 +296,11 @@ bool usbdrv_release_for_update(void) {
         }, &c);
         had_files = c.n > 0;
     }
-    g_blk_dirty = false;          // whatever was pending is about to be overwritten
-    g_blk_no = 0xFFFFFFFF;
+    // Dropped rather than flushed: the region is about to be overwritten with a
+    // firmware image, and writing this back would leave stale bytes in the
+    // middle of it.
+    cache_start();
+    bc_discard(&g_cache);
     g_formatted = false;
     return had_files;
 }
@@ -328,7 +322,7 @@ extern "C" void usbmsc_service(void) {
 
     // Push a settled write out, still outside the device stack, so the erase
     // does not happen with the console's mutex held.
-    if (!g_blk_dirty) return;
+    if (!g_cache_ready || !g_cache.dirty) return;
     if (!lock_try(&g_usb_lock)) return;      // the shell has it; the next turn will do
     blk_flush();
     lock_release(&g_usb_lock);
