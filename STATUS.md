@@ -34,7 +34,11 @@ An installed package's commands go live at boot; an app registers commands via
 the ABI (the `greet` app demonstrates it). That is the package system the Nova
 D1 will sit inside.
 
-**Tests** — 40 host suites, all green under ASan/UBSan: `os/host/run_all.sh`.
+**Tests** — 42 host suites, all green under ASan/UBSan: `os/host/run_all.sh`.
+One of them, `fatimage_test`, is not a test of this code against its author's
+reading of a specification — it synthesises a whole FAT volume and hands it to
+`fsck.fat`, because a filesystem this device only ever writes and never reads
+back has no failure that shows up on the device at all.
 Every check is confirmed to fail when the thing it covers is broken; `TESTING.md`
 says what is proven there and, more usefully, what is not. Two checks run against
 the built image rather than the source, because the bugs they cover are invisible
@@ -105,10 +109,12 @@ This is the base the Nova D1 gets ported onto.
   the two have never been compared over a long uptime. If they disagree, a
   healthy device reports high fragmentation, which is exactly the "diagnostic
   that invents a problem" failure v1 hit.
-- **Drag-and-drop file transfer** (#69). Getting a file onto the device means
-  `put` over the console or `pkg install` over the network. The plan is USB mass
-  storage with a FAT16 view synthesised over littlefs, since littlefs is not FAT
-  and presenting the partition raw shows an unformatted drive.
+- **Drag-and-drop file transfer** (#69) — **half done.** The device presents its
+  whole filesystem as a FAT16 volume over USB alongside the console, so
+  everything on it is visible and copyable off. Getting a file ON still means
+  `put` over the console or `pkg install` over the network: the volume reports
+  itself read-only, and the write path is the next pass. The synthesised
+  geometry is checked against `fsck.fat`, which reads a generated volume clean.
 - **The site oversells all of this** (#73). v2 is early alpha; v1 is still what
   anyone should be running.
 - **Missing v1 commands** — `watch`, `edit`/`nano`, `task`/`service`/`startup`,
