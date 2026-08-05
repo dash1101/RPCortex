@@ -83,8 +83,18 @@ static void describe(const LoadedApp *a, TaskAppMem *m) {
 // surfaced (MSTKERR: an interrupt arriving with no room to stack its frame) had
 // been a silent heap corruption in every build before this one.
 //
-// Two kilobytes covers littlefs and a formatted print with room to spare.
-#define FW_CALL_RESERVE  2048
+// Two kilobytes was not enough, which is why this is now measured rather than
+// estimated again. See apps_stack_peak(): the sandbox stack is painted and the
+// high-water mark reported by `mpu`, so the right number is an observation
+// instead of a third guess.
+//
+// Four kilobytes covers vsnprintf (over one), littlefs's write path, the
+// storage frames under it, and an exception frame arriving at the deepest
+// point — which on a part with an FPU is 104 bytes, not 32.
+#define FW_CALL_RESERVE  4096
+
+// What an untouched byte of sandbox stack looks like.
+#define STACK_PAINT      0xA5
 // Sized from what a package actually asks for, not from what felt tidy.
 //
 // 2 KB was a guess and `stress` broke it immediately: it allocates 24 blocks of
@@ -103,8 +113,9 @@ static void describe(const LoadedApp *a, TaskAppMem *m) {
 #define PKG_ARENA_BYTES  12288
 
 struct SandboxAlloc {
-    void  *stack_raw;
-    void  *stack;
+    void    *stack_raw;
+    void    *stack;
+    uint32_t stack_bytes;
     void  *arena_raw;
     void  *arena_mem;
     Arena  arena;
@@ -165,6 +176,10 @@ static bool sandbox_alloc(SandboxAlloc *sa, TaskAppMem *m, uint32_t stack_bytes)
         return false;
     }
     sa->stack = (void *)(uintptr_t)mpu_align_up((uint32_t)(uintptr_t)sa->stack_raw, sp.align);
+    // Painted so the deepest the stack ever got can be read back afterwards.
+    // Guessing at this size twice was enough.
+    memset(sa->stack, STACK_PAINT, sp.region_bytes);
+    sa->stack_bytes = sp.region_bytes;
     sa->arena_mem = (void *)(uintptr_t)mpu_align_up((uint32_t)(uintptr_t)sa->arena_raw, ap.align);
     arena_init(&sa->arena, sa->arena_mem, ap.region_bytes);
 
@@ -290,7 +305,30 @@ uint32_t apps_pool_reclaim(void) {
     return after > before ? after - before : 0;
 }
 
+// The deepest any package stack has been, across every one seen so far.
+//
+// Read by scanning up from the base for the first byte the paint no longer
+// covers. It is the number that says whether FW_CALL_RESERVE is right, and it
+// is why that constant is no longer a guess.
+static uint32_t g_stack_peak;
+static uint32_t g_stack_size;
+
+static void note_stack_peak(const SandboxAlloc *sa) {
+    if (!sa->stack || !sa->stack_bytes) return;
+    const uint8_t *p = (const uint8_t *)sa->stack;
+    uint32_t untouched = 0;
+    while (untouched < sa->stack_bytes && p[untouched] == STACK_PAINT) untouched++;
+    uint32_t used = sa->stack_bytes - untouched;
+    if (used > g_stack_peak) { g_stack_peak = used; g_stack_size = sa->stack_bytes; }
+}
+
+void apps_stack_peak(uint32_t *used, uint32_t *size) {
+    if (used) *used = g_stack_peak;
+    if (size) *size = g_stack_size;
+}
+
 static void sandbox_return(SandboxAlloc *sa, bool pooled) {
+    note_stack_peak(sa);
     if (!pooled) { sandbox_free(sa); return; }
     for (int i = 0; i < SANDBOX_POOL; i++) {
         if (!g_pool[i].lent || g_pool[i].sa.stack_raw != sa->stack_raw) continue;

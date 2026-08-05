@@ -26,6 +26,8 @@
 #include "mpu.h"
 #include "sandbox.h"
 #include "ptrcheck.h"
+
+void apps_stack_peak(uint32_t *used, uint32_t *size);
 #include "perms.h"
 #include "users.h"
 #include "session.h"
@@ -485,6 +487,23 @@ static int cmd_mpu(int, char **) {
         // behalf without looking.
         out_multi("    Pointer checks    : every buffer and string a package "
                   "passes is range-checked");
+
+        // The deepest a package stack has actually been.
+        //
+        // Worth reading because an ABI call does NOT switch stacks: littlefs
+        // and vsnprintf run on the package's own, so the true requirement is
+        // the package plus whatever the firmware does underneath it. This is
+        // the measurement that replaced guessing at that.
+        uint32_t used = 0, size = 0;
+        apps_stack_peak(&used, &size);
+        if (size) {
+            out_multi("    Package stack     : %lu of %lu bytes at its deepest  (%lu%%)",
+                      (unsigned long)used, (unsigned long)size,
+                      (unsigned long)(used * 100 / size));
+            if (used * 10 > size * 8)
+                out_warn("  Over 80%% — the firmware reserve is too small for what "
+                         "packages are doing.");
+        }
         uint32_t bad = ptr_refusals();
         if (bad)
             out_warn("  %lu call%s refused for pointing outside the package.",
