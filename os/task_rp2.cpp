@@ -19,6 +19,8 @@
 #include "logring.h"
 #include "blackbox.h"
 #include "hardware/watchdog.h"
+#include "hardware/timer.h"
+#include "hardware/irq.h"
 #include "pico/flash.h"
 #include "out.h"
 #include <stdio.h>
@@ -271,55 +273,105 @@ static bool should_force(void) {
 // The alarm handler. Deliberately does almost nothing: it decides, writes one
 // word, and returns. Printing or allocating from an interrupt that fired inside
 // an arbitrary instruction is how a fault handler comes to fault.
-// THE REDIRECT IS DISABLED, and this is why.
+// OWNING THE INTERRUPT, which is the whole of this.
 //
-// Everything below used to rewrite the interrupted task's stacked PC so a
-// wedged task resumed somewhere else. It never worked, and `havoc spin` is what
-// proved it: the redirect landed at pc=0x11020202 with an UNALIGNED fault,
-// which is not a task resuming anywhere — it is this handler returning into its
-// own corrupted frame.
+// The previous version hung off add_alarm_in_us, and an SDK alarm callback runs
+// several frames below the exception: by the time it is entered the timer IRQ
+// has been taken, the alarm pool's dispatcher has been called, and the callback
+// has its own frame. So `mov r0, lr` reads an ordinary return address rather
+// than EXC_RETURN, and `mrs r0, msp` gives the callback's stack pointer rather
+// than the value MSP had at exception entry.
 //
-// The mistake is structural. preempt_alarm is an SDK ALARM CALLBACK, not a
-// naked exception handler: by the time it runs, the timer IRQ has entered, the
-// alarm pool's dispatcher has been called, and this function has its own frame.
-// So `mov r0, lr` reads an ordinary return address rather than EXC_RETURN, and
-// `mrs msp` gives this handler's stack pointer rather than the value MSP had at
-// exception entry. The "frame" it computed pointed at the dispatcher's locals,
-// and writing a PC into word six of that is what produced the garbage address.
+// It therefore computed a "frame" pointing into the dispatcher's locals and
+// wrote a program counter into word six of it. `havoc spin` came back as
+// pc=0x11020202 with an UNALIGNED fault — the handler returning into its own
+// corrupted stack. The mechanism had been DEVICE-UNCONFIRMED since it was
+// written; that made it device-disproven.
 //
-// It was marked DEVICE-UNCONFIRMED from the start. It is now device-DISproven.
+// A naked handler on the alarm's own IRQ vector is entered BY the exception,
+// with nothing between. LR is EXC_RETURN and MSP still points at the frame the
+// hardware pushed, because nothing has pushed anything yet. That is the only
+// place those two are true.
+static int g_alarm = -1;
+// One intervention per stall. Without it the tick would keep rewriting a frame
+// it has already redirected.
+static bool g_acted;
+
+extern "C" void preempt_tick(uint32_t *frame);
+
+// Read MSP or PSP BEFORE pushing anything, hand the frame to C, then return
+// through the EXC_RETURN that was saved. r4 rides along only to keep the stack
+// eight-byte aligned across the call, which AAPCS requires.
+__attribute__((naked)) void isr_preempt(void) {
+    __asm volatile(
+        "movs r0, #4            \n"
+        "mov  r1, lr            \n"
+        "tst  r0, r1            \n"
+        "beq  1f                \n"
+        "mrs  r0, psp           \n"
+        "b    2f                \n"
+        "1:                     \n"
+        "mrs  r0, msp           \n"
+        "2:                     \n"
+        "push {r4, lr}          \n"
+        "bl   preempt_tick      \n"
+        "pop  {r4, pc}          \n"
+        ".align 2               \n"
+    );
+}
+
+// NOTHING HERE PRINTS OR FORMATS.
 //
-// Doing it properly means owning the interrupt: irq_set_exclusive_handler with
-// a naked handler that captures EXC_RETURN and the frame before anything else
-// runs, exactly as isr_hardfault does. That is a real change and it needs a
-// board to prove, so it is a task of its own rather than a third guess bolted
-// on here.
-//
-// Until then the alarm only OBSERVES. A wedged task still reaches the watchdog
-// and still reboots the device — which is worse than terminating it, and much
-// better than corrupting an interrupt handler's stack and faulting somewhere
-// unrelated.
-static int64_t preempt_alarm(alarm_id_t, void *) {
-    if (should_force()) {
-        // Recorded rather than acted on. The log line is what a future naked
-        // handler will replace with an actual redirect, and in the meantime it
-        // is the difference between "the device rebooted" and "the device
-        // rebooted because this task stopped yielding".
-        static bool said;
-        if (!said) {
-            said = true;
-            const TaskInfo *t = task_current();
-            log_addf(LOG_K_ERR,
-                     "preempt: '%s' pid %d will not yield; cannot terminate it "
-                     "safely yet (see preempt_alarm)",
-                     t ? t->name : "?", t ? t->pid : -1);
-        }
+// This runs on the interrupted task's stack, and vsnprintf alone wants over a
+// kilobyte of it — on a task that may already be deep, in an interrupt, which
+// is the stack overflow this whole mechanism exists to survive rather than
+// cause. Both outcomes already report from task context: task_forced_exit
+// says what it terminated, and apps.cpp says when a call was taken back.
+extern "C" void preempt_tick(uint32_t *frame) {
+    // Cleared and re-armed FIRST, so however the decision below goes the tick
+    // keeps coming.
+    if (g_alarm >= 0) {
+        timer_hw->intr = 1u << g_alarm;
+        timer_hw->alarm[g_alarm] = time_us_32() + PREEMPT_TICK_US;
     }
-    return PREEMPT_TICK_US;    // reschedule this alarm
+
+    uint32_t stall = bb_stall_ms(task_now_ms());
+    if (stall < STALL_KILL_MS) { g_acted = false; return; }
+    if (g_acted) return;
+
+    // A TASK WEDGED INSIDE A PACKAGE LOSES THE CALL, NOT THE TASK.
+    //
+    // This is the case that matters, because a package command runs on the
+    // SHELL task — so ending the task would take the session with it, which is
+    // why the shell is exempt from being forced at all. The unwind is the one
+    // `svc #1` performs when a package returns normally: the exception return
+    // goes into the shim's tail, app_call_unpriv returns, and its caller
+    // carries on into sandbox_return and app_leave exactly as it would have.
+    if (sandbox_in_package() && sandbox_abandon_call(frame)) {
+        g_acted = true;
+        return;                 // apps.cpp says so, back in task context
+    }
+
+    // Not in a package: end the task, if it is one that may be ended.
+    if (!should_force()) return;
+    g_acted = true;
+    exc_frame_redirect(frame, (uint32_t)(uintptr_t)&task_forced_exit);
 }
 
 void task_preempt_start(void) {
-    add_alarm_in_us(PREEMPT_TICK_US, preempt_alarm, nullptr, /*fire_if_past*/true);
+    // Core 0 only, deliberately. The stall clock is fed by bb_note_yield, which
+    // only core 0 calls, so core 0 is the only core whose idea of "nothing has
+    // yielded" means anything. A wedge on core 1 is not visible to this and is
+    // not pretended to be.
+    g_alarm = hardware_alarm_claim_unused(false);
+    if (g_alarm < 0) return;              // no spare alarm: no preemption, no harm
+
+    uint irq = timer_hardware_alarm_get_irq_num(timer_hw, (uint)g_alarm);
+    irq_set_exclusive_handler(irq, isr_preempt);
+    irq_set_enabled(irq, true);
+
+    timer_hw->inte |= 1u << g_alarm;
+    timer_hw->alarm[g_alarm] = time_us_32() + PREEMPT_TICK_US;
 }
 
 // --- stack overflow ---------------------------------------------------------
