@@ -72,19 +72,26 @@ static uint32_t g_busy;
 
 static F12  g_vol;
 static bool g_formatted;
-
-// Whether the drive exists right now.
-//
-// It exists only while `download` is running, and that IS the security model —
-// which is why there is no setting, nothing persisted, and nothing to remember
-// having left switched on. A device plugged into someone else's machine offers
-// a serial console and nothing else, because there is nobody at the prompt to
-// have asked for more.
-//
-// This replaced an off/on/auto setting. The setting was answering a question
-// that stops existing once the drive is tied to a command: "is it exposed right
-// now" has one answer, and it is on the screen.
 static bool g_open;
+static bool g_media_changed;
+
+// Whether `download` is running.
+//
+// The volume itself is ALWAYS present — an empty, read-only megabyte named
+// RPCORTEX — and this only says whether it is open for business.
+//
+// Making the medium come and go was the obvious reading of "hide it until
+// download mode", and it was slow enough to be unusable. A host that has been
+// told there is no medium backs off polling for one, so the drive took the best
+// part of a minute to appear; and it caches the volume it last saw, so after
+// closing it went on showing files that were no longer there. Neither is
+// something the device can hurry along: both are the host's own timers.
+//
+// An empty volume gives nothing away — there is nothing on it to see — while
+// staying mounted, which is what makes entering download mode instant. What
+// changes on entry is the CONTENTS, and a media-change notice is how the host
+// is told to look again.
+// (declared above, next to g_formatted)
 
 // Set when the filesystem could not take what the host wrote.
 //
@@ -102,7 +109,8 @@ static bool g_full;
 // stranded in a transfer area nothing else can read.
 #define USB_INBOX "/usb"
 
-static bool usb_offered(void) { return g_open; }
+// The volume is offered whenever it exists, open or not.
+static bool usb_offered(void) { return g_formatted; }
 
 // --- the block layer --------------------------------------------------------
 //
@@ -301,22 +309,34 @@ bool usbmsc_full(void) { return g_full; }
 // in a reset or a pulled cable cannot leave yesterday's files sitting on a
 // drive somebody else plugs in. It costs three flash blocks and it means the
 // state at the start of every session is the same one.
-bool usbmsc_open(void) {
-    LockGuard _lk(&g_usb_lock);
+// Empty the volume and tell the host to look again.
+static bool wipe_locked(void) {
     F12Io io = region_io();
     g_formatted = false;
-    g_full = false;
     if (!f12_format(&g_vol, &io, "RPCORTEX")) return false;
     blk_flush();
     g_formatted = true;
+    g_media_changed = true;
+    return true;
+}
+
+bool usbmsc_open(void) {
+    LockGuard _lk(&g_usb_lock);
+    g_full = false;
+    // Emptied on the way IN. A session that ended in a reset or a pulled cable
+    // cannot leave yesterday's files on a drive somebody else plugs in.
+    if (!wipe_locked()) return false;
     g_open = true;
     return true;
 }
 
 void usbmsc_close(void) {
     LockGuard _lk(&g_usb_lock);
-    blk_flush();
     g_open = false;
+    // Emptied on the way out too, so what the host sees between sessions
+    // matches what it is allowed to have: nothing. Everything on it has already
+    // been copied into /usb by the time this runs.
+    wipe_locked();
 }
 
 void usbmsc_init(void) { g_open = false; }
@@ -477,11 +497,21 @@ void tud_msc_inquiry_cb(uint8_t lun, uint8_t vendor_id[8], uint8_t product_id[16
 }
 
 bool tud_msc_test_unit_ready_cb(uint8_t lun) {
+    if (g_media_changed) {
+        // Reported exactly once, then the next poll succeeds. "Not ready to
+        // ready change, medium may have changed" is the sense every operating
+        // system answers by discarding what it cached and reading the volume
+        // again — which is the only way to tell a host that what it already
+        // read is no longer true.
+        //
+        // TinyUSB only supplies its own sense when the callback left one unset,
+        // so this survives rather than being replaced by "medium not present".
+        g_media_changed = false;
+        tud_msc_set_sense(lun, SCSI_SENSE_UNIT_ATTENTION, 0x28, 0x00);
+        return false;
+    }
     (void)lun;
-    // Not ready until the volume is up, which happens on the usb task. The MSC
-    // layer answers "medium not present", TinyUSB advertises the device as
-    // removable, and hosts poll removable media rather than giving up on it.
-    return usb_offered() && g_formatted;
+    return usb_offered();
 }
 
 void tud_msc_capacity_cb(uint8_t lun, uint32_t *block_count, uint16_t *block_size) {
@@ -492,10 +522,14 @@ void tud_msc_capacity_cb(uint8_t lun, uint32_t *block_count, uint16_t *block_siz
 
 bool tud_msc_is_writable_cb(uint8_t lun) {
     (void)lun;
-    // Read-only once the filesystem cannot take any more. Accepting a write
-    // that has nowhere to go is worse than refusing it: the host believes the
-    // file arrived.
-    return usb_offered() && !g_full;
+    // Writable only while download mode is running. Outside it the volume is
+    // present and empty, so there is nothing to read and nowhere to put
+    // anything — which is the whole of what "hidden" needs to mean.
+    //
+    // Read-only too once the filesystem cannot take any more: accepting a write
+    // that has nowhere to go is worse than refusing it, because the host
+    // believes the file arrived.
+    return g_open && !g_full;
 }
 
 int32_t tud_msc_read10_cb(uint8_t lun, uint32_t lba, uint32_t offset,
@@ -523,7 +557,7 @@ int32_t tud_msc_read10_cb(uint8_t lun, uint32_t lba, uint32_t offset,
 
 int32_t tud_msc_write10_cb(uint8_t lun, uint32_t lba, uint32_t offset,
                            uint8_t *buffer, uint32_t bufsize) {
-    if (!usb_offered() || !g_formatted) return -1;
+    if (!g_open || !g_formatted) return -1;
 
     // Out of room on the device, so nothing written here could be kept.
     //

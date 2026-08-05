@@ -22,6 +22,7 @@
 #include "out.h"
 #include "path.h"
 #include "storage.h"
+#include "task.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -98,9 +99,24 @@ static int cmd_download(int argc, char **argv) {
     // the file twice, once under a name nobody chose. Whatever the drive holds
     // at the end is what gets taken, however many times the host changed its
     // mind getting there.
+    // YIELD, do not wait.
+    //
+    // This loop used getchar_timeout_us(20000) ten times a frame, and that call
+    // busy-waits: it does not give the core back. The usb task is pinned to the
+    // same core, so it could not run for two hundred milliseconds at a stretch
+    // — USB serviced five times a second, one 512-byte sector per turn, about
+    // two and a half kilobytes a second. A 443 KB file would have taken three
+    // minutes, and a shell task that does not yield for that long is also what
+    // the stall watchdog exists to reboot.
+    //
+    // So the key is polled with a zero timeout and the core is handed straight
+    // back. Yielding in a tight loop burns cycles doing nothing, which is
+    // exactly right here: this is a transfer mode, and the only thing worth
+    // spending the core on is the transfer.
     static const char *kSpin = "|/-\\";
     uint32_t frame = 0, on_drive = offered;
     bool quit = false, counted = false;
+    uint32_t last_draw = 0;
 
     while (!quit) {
         if (usbmsc_settled() || !counted) {
@@ -109,22 +125,33 @@ static int cmd_download(int argc, char **argv) {
             on_drive = c.n;
             counted = true;
         }
-        printf("\r  %c  drive open   %u file%s on it   ",
-               kSpin[frame++ & 3], (unsigned)on_drive, on_drive == 1 ? "" : "s");
-        fflush(stdout);
 
-        for (int i = 0; i < 10 && !quit; i++)
-            if (getchar_timeout_us(20000) != PICO_ERROR_TIMEOUT) quit = true;
+        // The spinner on a clock rather than on a loop count, since the loop
+        // now turns thousands of times a second.
+        uint32_t now = task_now_ms();
+        if (now - last_draw >= 150) {
+            last_draw = now;
+            printf("\r  %c  drive open   %u file%s on it   ",
+                   kSpin[frame++ & 3], (unsigned)on_drive, on_drive == 1 ? "" : "s");
+            fflush(stdout);
+        }
+
+        if (getchar_timeout_us(0) != PICO_ERROR_TIMEOUT) quit = true;
         if (intr_check()) quit = true;
+        task_yield();
     }
 
     // Let a copy in flight finish. A key pressed mid-transfer would otherwise
-    // read half a file.
+    // read half a file. Yielding, for the same reason as above: the transfer
+    // being waited for needs the core to make progress.
     printf("\r  ...  finishing                          ");
     fflush(stdout);
-    for (int i = 0; i < 40; i++) {
-        if (usbmsc_settled()) break;
-        sleep_ms(50);
+    {
+        uint32_t until = task_now_ms() + 2000;
+        while (task_now_ms() < until) {
+            if (usbmsc_settled()) break;
+            task_yield();
+        }
     }
 
     bool refused = false;
