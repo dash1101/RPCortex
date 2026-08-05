@@ -115,7 +115,7 @@ static bool dir_write_slot(F12 *f, uint32_t slot, const uint8_t entry[DIRENT]) {
     return f->io.write(f->io.ctx, lba, sec);
 }
 
-bool f12_format(F12 *f, const F12Io *io, const char *label) {
+bool f12_format(F12 *f, const F12Io *io, const char *label, uint32_t serial) {
     memset(f, 0, sizeof(*f));
     f->io = *io;
 
@@ -174,7 +174,8 @@ bool f12_format(F12 *f, const F12Io *io, const char *label) {
     wr16(sec + 26, 255);
     sec[36] = 0x80;
     sec[38] = 0x29;
-    wr32(sec + 39, 0x52504332);          // "RPC2"
+    // The volume serial. NOT a constant: see the note in fat12.h.
+    wr32(sec + 39, serial ? serial : 0x52504332u);
     memset(sec + 43, ' ', 11);
     for (int i = 0; i < 11 && label && label[i]; i++) sec[43 + i] = (uint8_t)label[i];
     memcpy(sec + 54, "FAT12   ", 8);

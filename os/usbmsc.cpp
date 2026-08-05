@@ -109,8 +109,17 @@ static bool g_full;
 // stranded in a transfer area nothing else can read.
 #define USB_INBOX "/usb"
 
-// The volume is offered whenever it exists, open or not.
-static bool usb_offered(void) { return g_formatted; }
+// PRESENT ONLY WHILE DOWNLOAD MODE IS RUNNING.
+//
+// This used to return g_formatted, so the medium existed whether or not the
+// mode did — and a host therefore never saw it go away. Windows caches the
+// directory of a volume it believes has been there all along, which is how a
+// file deleted between sessions stayed on screen: the device was right, the
+// listing was remembered.
+//
+// A drive that appears and disappears is also what the shell already tells
+// people happens, so this is the code catching up with the description.
+static bool usb_offered(void) { return g_open && g_formatted; }
 
 // --- the block layer --------------------------------------------------------
 //
@@ -172,12 +181,20 @@ static F12Io region_io(void) {
 // device it holds erased flash. Neither is a filesystem, and both are the
 // normal case rather than an error — so failing to mount means format, not
 // complain.
+// A DIFFERENT SERIAL EVERY TIME, because Windows keys its directory cache on
+// it. The clock alone is not enough — two formats inside the same millisecond
+// are ordinary — so a counter rides along with it.
+static uint32_t next_serial(void) {
+    static uint32_t seq;
+    return (task_now_ms() << 8) ^ (++seq * 0x9E3779B9u) ^ 0x52504332u;
+}
+
 static bool ensure_volume(void) {
     if (g_formatted) return true;
     F12Io io = region_io();
     if (io.sectors < 64) return false;
     if (f12_mount(&g_vol, &io)) { g_formatted = true; return true; }
-    if (!f12_format(&g_vol, &io, "RPCORTEX")) return false;
+    if (!f12_format(&g_vol, &io, "RPCORTEX", next_serial())) return false;
     blk_flush();
     g_formatted = true;
     return true;
@@ -217,7 +234,7 @@ bool usbdrv_format(void) {
     LockGuard _lk(&g_usb_lock);
     F12Io io = region_io();
     g_formatted = false;
-    if (!f12_format(&g_vol, &io, "RPCORTEX")) return false;
+    if (!f12_format(&g_vol, &io, "RPCORTEX", next_serial())) return false;
     blk_flush();
     g_formatted = true;
     return true;
@@ -313,7 +330,7 @@ bool usbmsc_full(void) { return g_full; }
 static bool wipe_locked(void) {
     F12Io io = region_io();
     g_formatted = false;
-    if (!f12_format(&g_vol, &io, "RPCORTEX")) return false;
+    if (!f12_format(&g_vol, &io, "RPCORTEX", next_serial())) return false;
     blk_flush();
     g_formatted = true;
     g_media_changed = true;

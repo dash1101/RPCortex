@@ -93,7 +93,26 @@ int main(void) {
     F12 f;
 
     memset(disk, 0xFF, sizeof(disk));    // erased flash, which is what it starts as
-    ck(f12_format(&f, &io, "RPCORTEX"), "a one megabyte region formats");
+    ck(f12_format(&f, &io, "RPCORTEX", 0x11223344u), "a one megabyte region formats");
+    // THE VOLUME SERIAL REACHES THE BOOT SECTOR. Windows keys its directory
+    // cache on it, so a serial that does not change means a host shows what it
+    // remembers rather than what is there — which is exactly how a file deleted
+    // between sessions stayed on screen.
+    {
+        uint8_t bs[F12_SECTOR];
+        ck(io.read(io.ctx, 0, bs), "the boot sector reads back");
+        uint32_t got = (uint32_t)bs[39] | ((uint32_t)bs[40] << 8) |
+                       ((uint32_t)bs[41] << 16) | ((uint32_t)bs[42] << 24);
+        ck(got == 0x11223344u, "and carries the serial it was given");
+
+        F12 f2;
+        ck(f12_format(&f2, &io, "RPCORTEX", 0xAABBCCDDu), "a second format works");
+        ck(io.read(io.ctx, 0, bs), "its boot sector reads back");
+        got = (uint32_t)bs[39] | ((uint32_t)bs[40] << 8) |
+              ((uint32_t)bs[41] << 16) | ((uint32_t)bs[42] << 24);
+        ck(got == 0xAABBCCDDu, "with a DIFFERENT serial, not the last one");
+        ck(f12_format(&f, &io, "RPCORTEX", 0x11223344u), "back to the first");
+    }
     ck(f.clusters > 0 && f.clusters < 4085,
        "and lands in the FAT12 range -- 4085 or more would be FAT16, and every "
        "entry would then be read at the wrong bit offset");

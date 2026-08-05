@@ -56,7 +56,12 @@ struct F12 {
 };
 
 // Lay down a fresh, empty volume. Everything already there is lost.
-bool f12_format(F12 *f, const F12Io *io, const char *label);
+// `serial` is the FAT volume ID, and it is a parameter rather than a constant
+// because Windows keys its DIRECTORY CACHE on it. A volume that always
+// formats to the same serial is, as far as the host is concerned, the same
+// volume it read last time — so it shows what it remembers and never looks
+// again. Pass something different every time the contents change.
+bool f12_format(F12 *f, const F12Io *io, const char *label, uint32_t serial);
 
 // Read an existing volume's parameters. False when what is there is not a FAT
 // volume this can work with — which on a region that has held something else
