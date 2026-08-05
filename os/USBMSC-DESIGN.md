@@ -425,3 +425,26 @@ by hand would be one more thing to remember at exactly the wrong moment.
 Refused per command as well as through `tud_msc_is_writable_cb`: hosts read that
 flag when they mount the volume and do not necessarily look again, so a device
 that fills up mid-session would otherwise keep accepting files it cannot keep.
+
+## The drive exists only during `download`
+
+The off/on/auto setting is gone, and so is the `usb` command. There is one
+command and the drive exists while it is running.
+
+That is the security model as well as the interface. A setting can be left
+switched on and then forgotten; a mode cannot, because "is the filesystem
+exposed right now" has exactly one answer and it is on the screen. A device
+plugged into someone else's machine offers a serial console and nothing else,
+because there is nobody at the prompt to have asked for more.
+
+Formatted on the way IN, not out. A session that ended in a reset or a pulled
+cable cannot leave yesterday's files on a drive somebody else plugs in, and
+every session starts from the same state. It costs three flash blocks.
+
+Both directions, one command:
+
+    download                 open it empty, take what lands
+    download report.txt      put that on it first, to be dragged off
+
+Which is why there is no `usb put` any more: naming a file was the only thing
+the second command did that this one does not.

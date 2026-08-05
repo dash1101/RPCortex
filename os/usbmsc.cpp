@@ -73,21 +73,18 @@ static uint32_t g_busy;
 static F12  g_vol;
 static bool g_formatted;
 
-// Whether the drive is offered at all, and when.
+// Whether the drive exists right now.
 //
-// OFF by default, and that is the important part. Plugging a device into a
-// machine should not hand that machine a filesystem by reflex — this one is
-// meant to be carried around and plugged into things, and the person doing the
-// plugging is not always the person who owns it.
+// It exists only while `download` is running, and that IS the security model —
+// which is why there is no setting, nothing persisted, and nothing to remember
+// having left switched on. A device plugged into someone else's machine offers
+// a serial console and nothing else, because there is nobody at the prompt to
+// have asked for more.
 //
-// AUTO exists because typing a command every time is its own kind of wrong. It
-// offers the drive whenever a host has actually configured the device, and
-// withholds it when the device is running from a charger or a battery with
-// nothing to talk to. On a board sitting on a desk plugged into a computer that
-// is most of the time, so the honest description of AUTO is "on, except when
-// there is nobody there to see it".
-enum UsbMode { USB_OFF, USB_ON, USB_AUTO };
-static UsbMode g_mode = USB_OFF;
+// This replaced an off/on/auto setting. The setting was answering a question
+// that stops existing once the drive is tied to a command: "is it exposed right
+// now" has one answer, and it is on the screen.
+static bool g_open;
 
 // Set when the filesystem could not take what the host wrote.
 //
@@ -105,9 +102,7 @@ static bool g_full;
 // stranded in a transfer area nothing else can read.
 #define USB_INBOX "/usb"
 
-static bool usb_offered(void) {
-    return g_mode == USB_ON || (g_mode == USB_AUTO && tud_mounted());
-}
+static bool usb_offered(void) { return g_open; }
 
 // --- the block layer --------------------------------------------------------
 //
@@ -297,23 +292,34 @@ bool usbdrv_export(const char *path, const char *name) {
 
 // --- the toggle -------------------------------------------------------------
 
-bool usbmsc_enabled(void) { return usb_offered(); }
-int  usbmsc_mode(void) { return (int)g_mode; }
+bool usbmsc_enabled(void) { return g_open; }
 bool usbmsc_full(void) { return g_full; }
 
-void usbmsc_set_mode(int mode) {
-    g_mode = (UsbMode)mode;
-    { LockGuard _lk(&g_usb_lock); blk_flush(); }
-    reg_set(MSC_REG_KEY, mode == USB_ON ? "on" : mode == USB_AUTO ? "auto" : "off");
+// Open the drive, empty.
+//
+// Formatted on the way in rather than on the way out, so a session that ended
+// in a reset or a pulled cable cannot leave yesterday's files sitting on a
+// drive somebody else plugs in. It costs three flash blocks and it means the
+// state at the start of every session is the same one.
+bool usbmsc_open(void) {
+    LockGuard _lk(&g_usb_lock);
+    F12Io io = region_io();
+    g_formatted = false;
+    g_full = false;
+    if (!f12_format(&g_vol, &io, "RPCORTEX")) return false;
+    blk_flush();
+    g_formatted = true;
+    g_open = true;
+    return true;
 }
 
-void usbmsc_init(void) {
-    const char *v = reg_get(MSC_REG_KEY, "off");
-    if (!v) { g_mode = USB_OFF; return; }
-    if (v[0] == 'a' || v[0] == 'A')      g_mode = USB_AUTO;
-    else if (v[0] == 'o' && (v[1] == 'n' || v[1] == 'N')) g_mode = USB_ON;
-    else                                  g_mode = USB_OFF;
+void usbmsc_close(void) {
+    LockGuard _lk(&g_usb_lock);
+    blk_flush();
+    g_open = false;
 }
+
+void usbmsc_init(void) { g_open = false; }
 
 // Give the region up so an update can stage a firmware image into it.
 //
