@@ -417,7 +417,7 @@ int app_run_stack(const LoadedApp *app, int (*fn)(int), int arg, uint32_t stack_
         ret = sandbox_enter((void *)fn, arg, nullptr,
                             (uint8_t *)sa.stack + m.stack_size,
                             app_return_gate(app), app_enter_gate(app),
-                            app_exit_gate(app));
+                            app_exit_gate(app), m.stack_size);
     } else {
         ret = fn(arg);
     }
@@ -555,7 +555,7 @@ bool app_run_owner(const void *owner, int (*fn)(int, char **), int argc,
                 *ret = sandbox_enter((void *)fn, argc, boxed_argv,
                                      (uint8_t *)sa.stack + top,
                                      app_return_gate(a), app_enter_gate(a),
-                                     app_exit_gate(a));
+                                     app_exit_gate(a), top);
             }
         } else {
             *ret = fn(argc, argv);

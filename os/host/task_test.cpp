@@ -139,6 +139,9 @@ void task_app_mem_apply(const TaskAppMem *mem) {
 static int g_recycled;
 void task_slot_recycled(int) { g_recycled++; }
 
+// No sandbox on the host, so a task is always on its own stack.
+extern "C" bool sandbox_guard_stack(int, void **, unsigned *) { return false; }
+
 
 // --- what the tasks do ------------------------------------------------------
 

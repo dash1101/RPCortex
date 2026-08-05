@@ -101,9 +101,22 @@ static uint32_t g_cores = 1;
 // each of them.
 //
 // Null means the core's own scheduler context, which runs on the boot stack.
+extern "C" bool sandbox_guard_stack(int slot, void **base, unsigned *size);
+
 static void arm_protection(Task *t) {
-    if (t && t->stack) task_stack_guard_set(t->stack, t->info.stack_size);
-    else               task_stack_guard_set(nullptr, 0);
+    // A task inside a package is running on the PACKAGE's stack, not its own.
+    //
+    // Arming the guard against the task's stack there is not a missing check,
+    // it is a fault: the stack pointer is in a different allocation, and
+    // whether it lands above or below the limit depends on where the heap put
+    // the two. It faulted intermittently, moved with the heap layout, and
+    // reported a stack overflow in a task with most of its stack unused.
+    void *sb = nullptr;
+    unsigned sbsz = 0;
+    if (t && sandbox_guard_stack((int)(t - g_tasks), &sb, &sbsz))
+        task_stack_guard_set(sb, sbsz);
+    else if (t && t->stack) task_stack_guard_set(t->stack, t->info.stack_size);
+    else                    task_stack_guard_set(nullptr, 0);
     task_app_mem_apply(t && t->app_mem_set ? &t->app_mem : nullptr);
 }
 

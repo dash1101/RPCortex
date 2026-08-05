@@ -23,7 +23,16 @@ bool sandbox_supported(void);
 // -1 if the sandbox could not be set up, which is a refusal to run the package
 // rather than a decision to run it unprotected.
 int sandbox_enter(void *fn, int arg0, void *arg1, void *stack_top,
-                  uint32_t return_gate, uint32_t enter_gate, uint32_t exit_gate);
+                  uint32_t return_gate, uint32_t enter_gate, uint32_t exit_gate,
+                  uint32_t stack_size);
+
+// The stack a task is running on while inside a package, so the scheduler can
+// arm the stack guard against THAT rather than against the task's own stack.
+//
+// They are different memory: a sandboxed package runs on its own allocation.
+// Arming the guard against the wrong one is a fault whose address depends on
+// which the heap happened to put lower.
+extern "C" bool sandbox_guard_stack(int slot, void **base, unsigned *size);
 
 // Whether THIS task is currently inside package code.
 bool sandbox_in_package(void);

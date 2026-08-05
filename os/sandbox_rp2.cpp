@@ -94,6 +94,17 @@ struct SandboxState {
     uint32_t package_lr;     // where to return inside the package
     uint32_t return_gate;    // the drop-privilege gate in its veneer pool
     uint32_t kernel_sp;      // the firmware stack app_call_unpriv left behind
+    // The stack the package is running ON, so the guard can be armed against
+    // the right one.
+    //
+    // Without this the scheduler re-armed MSPLIM to the TASK's stack every time
+    // a sandboxed task resumed, while its stack pointer was somewhere else
+    // entirely — the sandbox stack, a separate allocation. Whether that faulted
+    // came down to which of the two the heap had put lower, so it was
+    // intermittent, it moved with the heap layout, and it looked like a stack
+    // overflow in a task that had plenty left.
+    void    *stack_base;
+    uint32_t stack_size;
     uint8_t  depth;          // 0 when this task is not inside a package
 };
 
@@ -190,12 +201,18 @@ extern "C" void sandbox_svc(uint32_t *frame, uint32_t which) {
 // --- entering package code ---------------------------------------------------
 
 int sandbox_enter(void *fn, int arg0, void *arg1, void *stack_top,
-                  uint32_t return_gate, uint32_t enter_gate, uint32_t exit_gate) {
+                  uint32_t return_gate, uint32_t enter_gate, uint32_t exit_gate,
+                  uint32_t stack_size) {
     SandboxState *s = state_of_current();
     if (!s || !fn || !stack_top || !return_gate || !enter_gate || !exit_gate) return -1;
     s->return_gate = return_gate;
     s->package_lr  = 0;
     s->depth       = 1;
+    // The guard follows the package onto its own stack. `stack_top` is the top
+    // of the sandbox block and the region is the size the caller planned it
+    // with, so the base is one below the top.
+    s->stack_base  = (uint8_t *)stack_top - stack_size;
+    s->stack_size  = stack_size;
     // Two gates, both in the package's veneer pool because that is the only
     // memory a package may execute once privilege is gone. They differ in where
     // they end up: the enter gate branches to app_main and leaves LR holding
@@ -206,6 +223,18 @@ int sandbox_enter(void *fn, int arg0, void *arg1, void *stack_top,
     // task is back on its own now, so the guard describes it again.
     task_rearm_protection();
     return ret;
+}
+
+// Where the guard should point for a task that may be inside a package.
+//
+// Returns false when it is not, and the caller uses the task's own stack.
+extern "C" bool sandbox_guard_stack(int slot, void **base, unsigned *size) {
+    if (slot < 0 || slot >= (int)TASK_MAX) return false;
+    SandboxState *s = &g_state[slot];
+    if (!s->depth || !s->stack_base) return false;
+    *base = s->stack_base;
+    *size = s->stack_size;
+    return true;
 }
 
 bool sandbox_in_package(void) {
@@ -234,7 +263,14 @@ void sandbox_counts(uint32_t *calls, uint32_t *refused) {
     if (calls) *calls = 0;
     if (refused) *refused = 0;
 }
-int sandbox_enter(void *, int, void *, void *, uint32_t, uint32_t, uint32_t) { return -1; }
+int sandbox_enter(void *, int, void *, void *, uint32_t, uint32_t, uint32_t, uint32_t) {
+    return -1;
+}
+
+// No sandbox on ARMv6-M, so a task is always on its own stack and the
+// scheduler's usual answer is the right one.
+extern "C" bool sandbox_guard_stack(int, void **, unsigned *) { return false; }
+
 bool sandbox_in_package(void) { return false; }
 void sandbox_release_for_kill(void) {}
 void sandbox_forget(int) {}

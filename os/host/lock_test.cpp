@@ -95,6 +95,9 @@ void task_stack_guard_set(const void *, uint32_t) {}
 void task_app_mem_apply(const TaskAppMem *) {}
 void task_slot_recycled(int) {}
 
+// No sandbox on the host, so a task is always on its own stack.
+extern "C" bool sandbox_guard_stack(int, void **, unsigned *) { return false; }
+
 }
 
 // --- the shared thing being protected ---------------------------------------
