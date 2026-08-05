@@ -618,8 +618,8 @@ int app_run_stack(const LoadedApp *app, int (*fn)(int), int arg,
     // The alarm cannot print — it fires inside an arbitrary instruction — so it
     // leaves a flag and this says what happened, back in task context.
     if (sandbox_took_call_back())
-        out_errp("apps", "'%s' stopped responding and was ended. The shell is "
-                         "fine.", app->header.name);
+        out_errp("apps", "'%s' was stopped. The shell is fine.",
+                 app->header.name);
     return ret;
 }
 
@@ -759,8 +759,8 @@ bool app_run_owner(const void *owner, int (*fn)(int, char **), int argc,
         if (boxed) { task_arena_set(nullptr); sandbox_return(&sa, pooled); }
         app_leave(&saved, had_saved);
         if (sandbox_took_call_back())
-            out_errp("apps", "'%s' stopped responding and was ended. The shell "
-                             "is fine.", a->header.name);
+            out_errp("apps", "'%s' was stopped. The shell is fine.",
+                     a->header.name);
         return true;
     }
     return false;
@@ -966,6 +966,45 @@ void apps_register(void) {
 // reboots two seconds later and a log line about a stack that no longer exists
 // is worth less than one naming it while it does.
 extern "C" void mpu_dump_live(unsigned sp);
+
+// Was this fault the PACKAGE's, and can it be unwound?
+//
+// Called from the fault handler once it has printed its report. Returning
+// non-zero means the frame has been rewritten so the exception return lands in
+// the shim's tail — the same unwind `svc #1` performs when a package returns
+// normally — and the device carries on instead of resetting.
+//
+// The test is: a package is running, and the faulting stack pointer is inside
+// the sandbox stack that package was given. That is precise for the case this
+// is for, a package running off the end of its own stack, and it is the only
+// thing available for a STACKING fault — when the frame could not be pushed
+// there is no stacked PC to look at, so the usual "was the program counter in
+// package code" question cannot be asked.
+//
+// WHAT IT DOES NOT KNOW: firmware called through the ABI also runs on that
+// stack, so a fault inside an ABI call is contained as though it were the
+// package's. The package asked for the call, the report names it either way,
+// and a lock the firmware held at that moment is not released — so a contained
+// fault can in principle leave something stuck. That is still a better outcome
+// than resetting a device with a working shell on it, and the watchdog remains
+// underneath for the case where it is not.
+extern "C" bool sandbox_abandon_call(uint32_t *frame);
+
+extern "C" int fault_try_contain(uint32_t *frame) {
+    if (!frame || !sandbox_in_package()) return 0;
+
+    TaskAppMem m;
+    if (!task_app_mem_get(&m) || !m.stack || !m.stack_size) return 0;
+
+    uint32_t sp   = (uint32_t)(uintptr_t)frame;
+    uint32_t base = (uint32_t)(uintptr_t)m.stack;
+    if (sp < base || sp >= base + m.stack_size) return 0;   // not the package's
+
+    if (!sandbox_abandon_call(frame)) return 0;
+    // apps.cpp says which package once it is back in task context; see
+    // sandbox_took_call_back below.
+    return 1;
+}
 
 extern "C" void fault_report_stacks(uint32_t sp) {
     // The hardware first, because what the MPU HELD is the question and

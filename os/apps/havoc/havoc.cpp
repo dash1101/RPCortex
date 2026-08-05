@@ -20,7 +20,8 @@
 //
 //   havoc            the safe suite: everything that must return an error
 //   havoc all        adds the destructive groups below
-//   havoc stack      deliberate stack exhaustion   (expects a NAMED fault)
+//   havoc fault      a bad pointer                 (expects to be CONTAINED)
+//   havoc stack      deliberate stack exhaustion   (expects a NAMED reset)
 //   havoc spin       a loop that never yields      (expects to be killed)
 //   havoc <group>    one group: ptr, str, handle, mem, task, io
 //
@@ -357,11 +358,35 @@ static int burn_stack(int depth) {
 
 static void group_stack(void) {
     fw_printf("\n[stack] deliberate stack exhaustion\n");
-    fw_printf("  This SHOULD end the command. The question is whether it ends\n");
-    fw_printf("  with a fault that names havoc, or with a silent reboot.\n\n");
+    fw_printf("  This one still RESETS the device, and that is the honest\n");
+    fw_printf("  answer rather than a missing feature. The fault handler has\n");
+    fw_printf("  to release the stack guard to run at all, so everything it\n");
+    fw_printf("  prints runs off the bottom of the exhausted stack into the\n");
+    fw_printf("  heap. Carrying on would mean carrying that corruption with\n");
+    fw_printf("  it. Other faults inside a package ARE contained.\n\n");
+    fw_printf("  What to check: the report names havoc, and the reset is\n");
+    fw_printf("  explained rather than silent.\n\n");
     step("recursing until the stack runs out");
     fw_printf("    returned %d — the guard did not fire, which is its own finding\n",
               burn_stack(0));
+}
+
+// A fault that is NOT a stack overflow, which is the case containment covers.
+//
+// An unprivileged package writing outside its regions is refused by the memory
+// protection, and the whole promise of the sandbox is that this costs the
+// package and nothing else.
+static void group_fault(void) {
+    fw_printf("\n[fault] a bad pointer, dereferenced by the package itself\n");
+    fw_printf("  Not through the ABI - the firmware checks those and returns an\n");
+    fw_printf("  error. This writes to firmware flash directly, which the\n");
+    fw_printf("  protection unit refuses.\n\n");
+    fw_printf("  Expected: a report naming havoc, the command ends, the shell\n");
+    fw_printf("  survives. A reset is a finding.\n\n");
+    step("writing to 0x10000000");
+    // volatile, or the write is optimised away as dead.
+    *(volatile uint32_t *)0x10000000u = 0xDEADBEEF;
+    fw_printf("    it was ALLOWED — the package wrote to firmware flash\n");
 }
 
 static void group_spin(void) {
@@ -407,6 +432,7 @@ static int havoc_cmd(int argc, char **argv) {
 
     if (argc >= 2) {
         if (is(argv[1], "stack")) { group_stack(); report(); return 0; }
+        if (is(argv[1], "fault")) { group_fault(); report(); return 0; }
         if (is(argv[1], "spin"))  { group_spin();  return 0; }   // never returns
         if (is(argv[1], "ptr"))   { group_ptr();    report(); return 0; }
         if (is(argv[1], "str"))   { group_str();    report(); return 0; }
@@ -421,7 +447,7 @@ static int havoc_cmd(int argc, char **argv) {
             return 0;
         }
         fw_printf("Unknown group '%s'.\n", argv[1]);
-        fw_printf("Try: ptr str handle mem task io stack spin all\n");
+        fw_printf("Try: ptr str handle mem task io fault stack spin all\n");
         return 1;
     }
 

@@ -19,6 +19,18 @@
 // loader spike, which has neither, still links.
 extern "C" void __attribute__((weak)) fault_report_stacks(uint32_t sp) { (void)sp; }
 
+// Can this fault be contained rather than rebooted?
+//
+// Supplied by the OS, which knows whether a package was running and how to
+// unwind out of one. Weak so the loader spike, which has no sandbox, keeps the
+// old behaviour: every fault is fatal.
+//
+// Returns non-zero when it has REWRITTEN the frame so the exception return
+// lands somewhere survivable. The handler then resumes instead of resetting.
+extern "C" int __attribute__((weak)) fault_try_contain(uint32_t *frame) {
+    (void)frame; return 0;
+}
+
 
 extern "C" {
 
@@ -31,7 +43,11 @@ struct FaultFrame {
 
 extern "C" const char *apps_locate(uint32_t addr, uint32_t *offset, bool *in_veneer);
 
-void fault_report(FaultFrame *f, const char *kind) {
+// Returns non-zero when the fault was contained and execution may resume.
+int fault_report(FaultFrame *f, const char *kind) {
+    // Whether the STACK itself was the casualty. Set below, once CFSR is read,
+    // and it decides whether this fault may be contained. See the note there.
+    bool stack_intact = true;
     // RECORD FIRST, print second.
     //
     // A fault runs with interrupts off, so nothing services USB and everything
@@ -132,6 +148,19 @@ void fault_report(FaultFrame *f, const char *kind) {
         // The ADDRESS, when there is one. Without it a protection fault says
         // only that something was refused, and the whole reason to configure the
         // hardware was to be told what.
+        // A STACK OVERFLOW CANNOT BE CONTAINED, and the comment on
+        // FAULT_RELEASE_STACK_LIMIT is why: this handler clears MSPLIM so it
+        // can run at all, and everything it prints then runs off the bottom of
+        // the exhausted stack into whatever the heap put below it. That was an
+        // acceptable trade against "no report at all" on a device two seconds
+        // from a reset — and it stops being acceptable the moment the device
+        // carries on, because the corruption carries on with it.
+        //
+        // So an overflow still resets. The report is the same and it names the
+        // package; what is not offered is a machine that keeps running on
+        // memory this handler has already written through.
+        stack_intact = !(cfsr & (1u << 4)) && !(cfsr & (1u << 20));  // MSTKERR, STKOF
+
         bool have_mm = (cfsr & (1u << 7)) != 0;      // MMARVALID
         bool have_bf = (cfsr & (1u << 15)) != 0;     // BFARVALID
         printf("    cfsr=0x%08lx hfsr=0x%08lx sp=%p  %s\n",
@@ -168,6 +197,17 @@ void fault_report(FaultFrame *f, const char *kind) {
     // from, so this reports where the stack pointer ACTUALLY was rather than
     // where it was expected to be.
     fault_report_stacks((uint32_t)(uintptr_t)f);
+
+    // CONTAIN IT IF IT BELONGS TO A PACKAGE.
+    //
+    // A sandboxed package faulting is the case the sandbox exists for. Taking
+    // the whole device down for it is the opposite of containment — and the
+    // report above has already been printed, so nothing is hidden by carrying
+    // on.
+    if (stack_intact && fault_try_contain((uint32_t *)f)) {
+        printf("    the package was stopped; the device is still running\n\n");
+        return 1;
+    }
 
     printf("    resetting in 2s\n\n");
     // Flush before the reset, or the report never leaves the USB buffer.
@@ -237,7 +277,13 @@ __attribute__((naked)) void isr_hardfault(void) {
         "mrs  r0, msp       \n"
         "2:                 \n"
         "ldr  r1, =fault_kind_hard \n"
-        "b    fault_report  \n"
+        // Was a tail branch, because the reporter never came back. It can now:
+        // a fault inside a package is contained rather than fatal, and then the
+        // exception return has to happen. r4 rides along only to keep the stack
+        // eight-byte aligned across the call.
+        "push {r4, lr}      \n"
+        "bl   fault_report  \n"
+        "pop  {r4, pc}      \n"
         ".align 2           \n"
     );
 }
