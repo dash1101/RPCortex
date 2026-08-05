@@ -346,7 +346,13 @@ static int lw_open(void *ctx, const char *host, uint16_t port, bool tls) {
     if (!c->pcb || e != ERR_OK)  { conn_detach(c); net_op_release(); return -1; }
     bb_note_phase(tls ? "http: handshaking" : "http: connecting");
     if (!wait_flag(c->connected, CONNECT_MS, &c->failed)) {
+        // Distinct phases, because "still waiting" and "gave up and is tearing
+        // down" are eight seconds apart and were indistinguishable: both left
+        // "http: handshaking" as the last note, so a reboot during the teardown
+        // read exactly like a reboot during the wait.
+        bb_note_phase("http: handshake gave up");
         conn_detach(c);
+        bb_note_phase("http: handshake torn down");
         net_op_release();
         return -1;
     }

@@ -20,17 +20,33 @@
 #define MBEDTLS_HAVE_TIME
 
 #define MBEDTLS_CIPHER_MODE_CBC
-#define MBEDTLS_ECP_DP_SECP192R1_ENABLED
-#define MBEDTLS_ECP_DP_SECP224R1_ENABLED
+// THE CURVES, and this one setting does two jobs that pull in opposite
+// directions.
+//
+// It decides what a certificate may be SIGNED on, and it decides what the
+// client OFFERS for the key exchange — mbedtls derives the advertised group
+// list from whatever is enabled here, strongest first. There is no way to
+// separate them without reaching inside an altcp_tls_config, and lwIP keeps
+// that struct private to its own .c file.
+//
+// So the list is the intersection of what is needed and what is affordable.
+//
+// Needed: a public CA root is on P-256 or P-384. Trimming to two curves broke
+// the bundle immediately and cacerts_test said so — "1 certificate(s) did not
+// parse" — because one of the three roots in /os/ca.pem is P-384.
+//
+// Affordable: the handshake runs in the cyw43 background context, which is an
+// INTERRUPT on core 0, and core 0 is the only core that feeds the watchdog.
+// Nothing reaches the scheduler while a scalar multiplication runs there, so an
+// expensive curve is not a slow connection - it is a reboot, and no timeout in
+// the calling task can prevent it because the task is not running either.
+//
+// Gone: secp521r1 and brainpoolP512r1, the two most expensive things a server
+// could have picked; the Brainpool and Koblitz curves, which no public CA uses;
+// and 192/224, which nothing has offered in a decade. What is left is what the
+// web actually runs on.
 #define MBEDTLS_ECP_DP_SECP256R1_ENABLED
 #define MBEDTLS_ECP_DP_SECP384R1_ENABLED
-#define MBEDTLS_ECP_DP_SECP521R1_ENABLED
-#define MBEDTLS_ECP_DP_SECP192K1_ENABLED
-#define MBEDTLS_ECP_DP_SECP224K1_ENABLED
-#define MBEDTLS_ECP_DP_SECP256K1_ENABLED
-#define MBEDTLS_ECP_DP_BP256R1_ENABLED
-#define MBEDTLS_ECP_DP_BP384R1_ENABLED
-#define MBEDTLS_ECP_DP_BP512R1_ENABLED
 #define MBEDTLS_ECP_DP_CURVE25519_ENABLED
 #define MBEDTLS_KEY_EXCHANGE_RSA_ENABLED
 #define MBEDTLS_PKCS1_V15

@@ -117,7 +117,21 @@ uint32_t task_now_ms(void) {
 // different amount of risk from re-basing every task onto PSP, and it buys the
 // thing that was actually wanted: a wedged package costs that package.
 #define PREEMPT_TICK_US  100000     // 100 ms; fine enough against a 6 s threshold
-#define WATCHDOG_MS   8000
+// Sixteen, not eight, and the reason is that the old premise stopped being
+// true. The comment above says the longest legitimate gap between yields is a
+// flash erase-and-write at under 200 ms. That was written before this OS could
+// speak TLS.
+//
+// A handshake is driven from the cyw43 background context, which is an
+// interrupt on core 0 — and core 0 is the only core that feeds this. While the
+// crypto runs there nothing reaches the scheduler, so the gap is however long
+// the handshake takes, and no timeout in the calling task can shorten it
+// because the task is not running either.
+//
+// The curve list is cut down so that gap should now be well under a second.
+// This is the margin for the case where it is not: a slow handshake should be
+// a slow connection, not a reboot.
+#define WATCHDOG_MS   16000
 #define STALL_WARN_MS 3000
 #define STALL_KILL_MS 6000
 
