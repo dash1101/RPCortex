@@ -92,6 +92,43 @@ struct SandboxAlloc {
     Arena  arena;
 };
 
+// A package's stack and heap, held for as long as the task that uses them.
+//
+// They used to be allocated and freed around every call: three kilobytes and
+// twelve, taken and given back for a command that might run for a millisecond.
+// On a device where fragmentation has been a hard stop that is the wrong shape
+// — not because the allocator is slow, but because a repeating fifteen-kilobyte
+// cycle is exactly what leaves a heap with plenty free and nowhere to put
+// anything.
+//
+// So they are kept against the task instead. A shell running `calc` twenty
+// times allocates once. A package task spawned with fw_task_spawn keeps its
+// pair for its lifetime. The blocks come back when the task ends, which is what
+// task_slot_recycled is for.
+//
+// The ARENA is still reset between calls even though the memory is not
+// released. A pointer from one call was never valid in the next — the whole
+// allocation used to be freed — and keeping the contents would quietly change
+// that into something packages could come to rely on.
+#define SANDBOX_POOL 4
+
+// Keyed by TASK SLOT, not by pid.
+//
+// task_slot_recycled — the hook that says an owner has gone — is given the slot
+// index, and by the time it runs the task is already dismantled, so there is no
+// pid left to translate. Keying on the same thing the hook reports is the only
+// version where the two cannot disagree.
+//
+// `used` rather than a zero-means-free slot number, because slot 0 is a real
+// slot and this table is zero-initialised.
+struct SandboxSlot {
+    bool         used;
+    int          slot;
+    bool         lent;       // currently inside a call
+    SandboxAlloc sa;
+};
+static SandboxSlot g_pool[SANDBOX_POOL];
+
 static bool sandbox_alloc(SandboxAlloc *sa, TaskAppMem *m) {
     memset(sa, 0, sizeof(*sa));
     MpuBlockPlan sp, ap;
@@ -116,10 +153,97 @@ static bool sandbox_alloc(SandboxAlloc *sa, TaskAppMem *m) {
     return true;
 }
 
-static void sandbox_release(SandboxAlloc *sa) {
+static void sandbox_free(SandboxAlloc *sa) {
     free(sa->stack_raw);
     free(sa->arena_raw);
     memset(sa, 0, sizeof(*sa));
+}
+
+// Fill `m` from a slot that is already allocated.
+static void sandbox_describe_from(const SandboxAlloc *sa, TaskAppMem *m) {
+    MpuBlockPlan sp, ap;
+    mpu_v8_plan_block(PKG_STACK_BYTES, &sp);
+    mpu_v8_plan_block(PKG_ARENA_BYTES, &ap);
+    m->stack      = sa->stack;
+    m->stack_size = sp.region_bytes;
+    m->arena      = sa->arena_mem;
+    m->arena_size = ap.region_bytes;
+}
+
+// Borrow this task's stack and heap, allocating them the first time.
+//
+// `pooled` says whether the caller should give them back or free them: a task
+// that arrives when every slot is taken still gets a sandbox, just a transient
+// one. Refusing to sandbox because a table is full would be the wrong trade —
+// the protection matters more than the churn it was costing.
+static bool sandbox_acquire(SandboxAlloc *sa, TaskAppMem *m, bool *pooled) {
+    int slot = task_slot_index();
+    *pooled = false;
+    // No slot means no owner to hold anything against — boot, or a context the
+    // scheduler does not know. Transient, as it always was.
+    if (slot < 0) return sandbox_alloc(sa, m);
+
+    for (int i = 0; i < SANDBOX_POOL; i++) {
+        if (!g_pool[i].used || g_pool[i].slot != slot || g_pool[i].lent) continue;
+        g_pool[i].lent = true;
+        *sa = g_pool[i].sa;
+        sandbox_describe_from(sa, m);
+        // Fresh arena, same memory. See the note above.
+        arena_init(&sa->arena, sa->arena_mem, m->arena_size);
+        g_pool[i].sa = *sa;
+        *pooled = true;
+        return true;
+    }
+
+    if (!sandbox_alloc(sa, m)) return false;
+
+    for (int i = 0; i < SANDBOX_POOL; i++) {
+        if (g_pool[i].used) continue;
+        g_pool[i].used = true;
+        g_pool[i].slot = slot;
+        g_pool[i].lent = true;
+        g_pool[i].sa = *sa;
+        *pooled = true;
+        break;
+    }
+    return true;
+}
+
+static void sandbox_return(SandboxAlloc *sa, bool pooled) {
+    if (!pooled) { sandbox_free(sa); return; }
+    for (int i = 0; i < SANDBOX_POOL; i++) {
+        if (!g_pool[i].lent || g_pool[i].sa.stack_raw != sa->stack_raw) continue;
+        g_pool[i].lent = false;
+        return;
+    }
+    // Lent from no slot: it was transient after all.
+    sandbox_free(sa);
+}
+
+// The scheduler is reusing a task slot, so whatever it held is nobody's now.
+//
+// Without this the pool would hand a dead task's stack to whatever pid landed
+// in the same slot next, and hold the memory for the life of the device.
+extern "C" void apps_task_ended(int slot) {
+    for (int i = 0; i < SANDBOX_POOL; i++) {
+        if (!g_pool[i].used || g_pool[i].slot != slot) continue;
+        // Still lent means the task died inside a call. The memory cannot be
+        // freed from here — the call may still be unwinding on another core —
+        // so the slot is disowned and the block leaks rather than being handed
+        // to somebody still using it. Rare, and the safe direction.
+        if (!g_pool[i].lent) sandbox_free(&g_pool[i].sa);
+        memset(&g_pool[i], 0, sizeof(g_pool[i]));
+    }
+}
+
+// How much the pool is holding, for meminfo to report.
+uint32_t apps_pool_bytes(void) {
+    MpuBlockPlan sp, ap;
+    if (!mpu_v8_plan_block(PKG_STACK_BYTES, &sp)) return 0;
+    if (!mpu_v8_plan_block(PKG_ARENA_BYTES, &ap)) return 0;
+    uint32_t n = 0;
+    for (int i = 0; i < SANDBOX_POOL; i++) if (g_pool[i].used) n++;
+    return n * (sp.alloc_bytes + ap.alloc_bytes);
 }
 
 // Copy an argument vector into the package's own memory.
@@ -209,7 +333,9 @@ int app_run(const LoadedApp *app, int (*fn)(int), int arg) {
     describe(app, &m);
 
     SandboxAlloc sa;
-    bool boxed = sandbox_supported() && app->veneer_gates && sandbox_alloc(&sa, &m);
+    bool pooled = false;
+    bool boxed = sandbox_supported() && app->veneer_gates &&
+                 sandbox_acquire(&sa, &m, &pooled);
     // A board that cannot sandbox is a fact about the board. A board that can
     // and did not is an event, and a silent one would be the worst kind: the
     // package runs with the OS's own privileges and nothing anywhere says the
@@ -232,7 +358,7 @@ int app_run(const LoadedApp *app, int (*fn)(int), int arg) {
         ret = fn(arg);
     }
 
-    if (boxed) { task_arena_set(nullptr); sandbox_release(&sa); }
+    if (boxed) { task_arena_set(nullptr); sandbox_return(&sa, pooled); }
     app_leave(&saved, had_saved);
     return ret;
 }
@@ -251,7 +377,9 @@ bool app_run_owner(const void *owner, int (*fn)(int, char **), int argc,
         bool had_saved;
         describe(a, &m);
         SandboxAlloc sa;
-        bool boxed = sandbox_supported() && a->veneer_gates && sandbox_alloc(&sa, &m);
+        bool pooled = false;
+        bool boxed = sandbox_supported() && a->veneer_gates &&
+                     sandbox_acquire(&sa, &m, &pooled);
         if (sandbox_supported() && a->veneer_gates && !boxed)
             out_warnp("apps", "Not enough memory to sandbox '%s' — it is running "
                               "with full privileges.", a->header.name);
@@ -274,7 +402,7 @@ bool app_run_owner(const void *owner, int (*fn)(int, char **), int argc,
         } else {
             *ret = fn(argc, argv);
         }
-        if (boxed) { task_arena_set(nullptr); sandbox_release(&sa); }
+        if (boxed) { task_arena_set(nullptr); sandbox_return(&sa, pooled); }
         app_leave(&saved, had_saved);
         return true;
     }

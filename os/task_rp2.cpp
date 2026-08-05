@@ -47,7 +47,15 @@ void *task_ctx_init(void *stack_top, TaskEntry entry) {
 
 uint32_t task_now_us(void) { return time_us_32(); }
 
-void task_slot_recycled(int slot) { sandbox_forget(slot); }
+extern "C" void apps_task_ended(int pid);
+
+// A task slot is being reused, so anything held against the old occupant has to
+// go: the sandbox state, and the stack and heap the package pool was keeping
+// for it. Missing either leaves memory owned by a task that no longer exists.
+void task_slot_recycled(int slot) {
+    sandbox_forget(slot);
+    apps_task_ended(slot);
+}
 
 uint32_t task_now_ms(void) {
     return (uint32_t)(time_us_64() / 1000ull);

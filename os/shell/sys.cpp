@@ -157,6 +157,8 @@ static int cmd_sysinfo(int, char **) {
     return 0;
 }
 
+uint32_t apps_pool_bytes(void);
+
 static int cmd_meminfo(int, char **) {
     uint32_t free  = heap_free();
     uint32_t total = heap_total();
@@ -176,6 +178,28 @@ static int cmd_meminfo(int, char **) {
     if (big > free) frag = 0;
     out_multi("  Largest block : %u KB   (fragmentation %u%%)",
               (unsigned)(big / 1024), frag);
+
+    // The two numbers side by side, because the FIGURE is the thing that has
+    // never been checked and it is the kind that invents problems.
+    //
+    // `free` is the arena minus what is live, which is honest rather than a
+    // high-water mark. `largest` is found by asking malloc for real blocks
+    // until one fails. They measure different things and they are allowed to
+    // differ — but if they differ by a lot on a device that has been quietly
+    // idle, then either the search is wrong or the accounting is, and the
+    // percentage above is reporting a problem that is not there. That is
+    // exactly the failure v1 shipped, and the way to catch it is to be able to
+    // read both.
+    out_multi("  %s(free is arena minus live; largest is found by asking malloc "
+              "until it says no)%s", C_GRAY, C_RESET);
+    if (free >= 4096 && big < free / 2)
+        out_warn("Half the free memory is not in one piece. If this device has "
+                 "been idle, the figure is more likely wrong than the heap is.");
+
+    uint32_t pool = apps_pool_bytes();
+    if (pool)
+        out_multi("  Held for packages : %u KB   (stacks and heaps kept for "
+                  "running tasks, not per call)", (unsigned)(pool / 1024));
     return 0;
 }
 
