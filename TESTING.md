@@ -126,7 +126,7 @@ ws2812 proof <pin> <count>   a strip, quiet then under load - they must look ide
 
 Put the file in `host/`, add one line to the `SRC` map in `run_all.sh` naming
 the extra sources it needs, and that is all — there is no build system here on
-purpose, because a test you can run with one script is a test that gets run.
+purpose, because a test that runs from one script is a test that gets run.
 
 **Prove a new test can fail.** Every check in this suite was verified by
 breaking the thing it covers and confirming it goes red. A test written against

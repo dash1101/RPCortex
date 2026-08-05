@@ -1,6 +1,7 @@
 # RPCortex v2 — status
 
-Where the C++ rewrite stands. Plan: `../tools/PLAN-v2.0-cpp.md`.
+Where the C++ rewrite stands. `ARCHITECTURE.md` is how it is built,
+`VS-V1.md` is how it compares to the MicroPython release.
 
 ## Built and verified (host-tested; builds clean on RP2350 + RP2040)
 

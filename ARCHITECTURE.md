@@ -259,7 +259,7 @@ current rule make sense, but the restriction it describes is lifted.
 Two changes did it. First, only ONE task is ever inside cyw43 or lwIP: every
 network operation takes `g_net_op`, an `RpcLock` that YIELDS while it waits
 rather than blocking the core. Second, and more important, the questions other
-tasks actually ask — "are we online", "what is the address" — read a cached
+tasks actually ask — is there a connection, what is the address — read a cached
 struct instead of reaching into lwIP at all.
 
 That second part is what removes the contention rather than merely managing it.
