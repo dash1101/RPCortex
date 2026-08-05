@@ -127,6 +127,15 @@ static void describe(const LoadedApp *a, TaskAppMem *m) {
 // 8192-byte arena.
 #define PKG_ARENA_BYTES  12288
 
+// What a default-sized sandbox stack actually costs, reserve included.
+//
+// Named once because three places need the same answer and one of them had a
+// different one: apps_pool_bytes planned from PKG_STACK_BYTES alone, so
+// `meminfo` reported the pool as 60 KB when it was holding 76. A figure that
+// exists to say where the memory went is worth more than the four thousand
+// bytes it was quietly leaving out.
+#define PKG_STACK_TOTAL  (PKG_STACK_BYTES + FW_CALL_RESERVE)
+
 struct SandboxAlloc {
     void    *stack_raw;
     void    *stack;
@@ -235,7 +244,7 @@ static void sandbox_describe_from(const SandboxAlloc *sa, TaskAppMem *m) {
     // Must match what sandbox_alloc planned for a pooled block, reserve and all
     // — a region shorter than the allocation would put the end of the stack
     // outside it, which is the fault this reserve exists to prevent.
-    mpu_v8_plan_block(PKG_STACK_BYTES + FW_CALL_RESERVE, &sp);
+    mpu_v8_plan_block(PKG_STACK_TOTAL, &sp);
     mpu_v8_plan_block(PKG_ARENA_BYTES, &ap);
     m->stack      = sa->stack;
     m->stack_size = sp.region_bytes;
@@ -446,7 +455,7 @@ extern "C" void apps_task_ended(int slot) {
 // How much the pool is holding, for meminfo to report.
 uint32_t apps_pool_bytes(void) {
     MpuBlockPlan sp, ap;
-    if (!mpu_v8_plan_block(PKG_STACK_BYTES, &sp)) return 0;
+    if (!mpu_v8_plan_block(PKG_STACK_TOTAL, &sp)) return 0;
     if (!mpu_v8_plan_block(PKG_ARENA_BYTES, &ap)) return 0;
     uint32_t n = 0;
     for (int i = 0; i < SANDBOX_POOL; i++) if (g_pool[i].used) n++;
