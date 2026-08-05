@@ -383,11 +383,29 @@ uint32_t line_edit(const LineEdit *le, char *buf, uint32_t cap) {
             char common[COMP_LEN];
             uint32_t clen = line_common_prefix(cands, n, common, sizeof(common));
 
-            if (clen > plen) {
-                // Extend to the unambiguous part. A single match also gets a
-                // trailing space, because the next thing typed is always another
-                // word and adding it by hand every time is friction.
-                for (uint32_t i = plen; i < clen && len + 1 < cap; i++)
+            // REPLACE the word, do not extend it.
+            //
+            // This used to insert only the characters past what had been typed,
+            // which assumes the completion begins with exactly those characters.
+            // Two things make that false. Matching is case-insensitive, so `s`
+            // can complete to `Screenshot.jpg` — and extending produced
+            // `screenshot.jpg`, a name that does not exist, which then failed to
+            // delete for reasons that looked like the filesystem's fault. And a
+            // name containing a space comes back quoted, so `t` completing to
+            // `"Test 1.txt"` produced `tTest 1.txt"` with the opening quote lost.
+            //
+            // Replacing is also simply what completion means: the word becomes
+            // the candidate, whatever was typed to find it.
+            bool differs = clen != plen;
+            for (uint32_t i = 0; !differs && i < plen; i++)
+                if (buf[ws + i] != common[i]) differs = true;
+
+            if (differs) {
+                // Take the typed prefix out, then put the whole candidate in.
+                memmove(buf + ws, buf + pos, len - pos);
+                len -= plen;
+                pos = ws;
+                for (uint32_t i = 0; i < clen && len + 1 < cap; i++)
                     len = line_insert(buf, len, cap, pos++, common[i]);
                 if (n == 1 && len + 1 < cap && (pos == len || buf[pos] != ' '))
                     len = line_insert(buf, len, cap, pos++, ' ');

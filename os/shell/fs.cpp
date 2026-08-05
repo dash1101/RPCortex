@@ -186,52 +186,93 @@ static bool glob_match(const char *pat, const char *name) {
     return true;
 }
 
-// Remove a directory and everything under it, depth first. Bounded by the
-// filesystem's own nesting rather than by recursion here: each level walks its
-// children into a local list before descending, so the walk is never held open
-// across a remove — storage_walk holds the filesystem lock across its callback,
-// which is #82, and removing from inside it would deadlock.
-struct RmScan { char names[24][64]; bool dirs[24]; int n; };
+// Remove a directory and everything under it, depth first.
+//
+// ONE SHARED PATH, and one name per level. The first version kept a 24-entry
+// scan buffer and a 192-byte path in every frame — over 1700 bytes per level of
+// nesting, which overflowed an 8 KB shell stack four directories down and took
+// the device with it. `rm -r /usb` was enough.
+//
+// So the path is built once and truncated on the way back out, and each level
+// holds a single name. That is about ninety bytes a level instead of seventeen
+// hundred.
+//
+// One entry is found per pass rather than a list being collected, because
+// storage_walk holds the filesystem lock across its callback (#82) and removing
+// from inside it would deadlock. Finding the first survivor and removing it
+// outside the walk is O(n^2) in entries and correct, which at these sizes is
+// the right way round.
+#define RM_PATH_MAX 256
+#define RM_DEPTH_MAX 16
 
-static void rm_scan_cb(void *ctx, const char *name, bool is_dir, uint32_t) {
-    RmScan *s = (RmScan *)ctx;
-    if (s->n >= 24) return;
-    snprintf(s->names[s->n], sizeof(s->names[0]), "%s", name);
-    s->dirs[s->n] = is_dir;
-    s->n++;
+static char g_rm_path[RM_PATH_MAX];
+
+struct RmFirst { char name[64]; bool is_dir; bool found; };
+
+static void rm_first_cb(void *ctx, const char *name, bool is_dir, uint32_t) {
+    RmFirst *f = (RmFirst *)ctx;
+    if (f->found) return;
+    snprintf(f->name, sizeof(f->name), "%s", name);
+    f->is_dir = is_dir;
+    f->found = true;
 }
 
-static bool rm_tree(const char *path, unsigned depth, unsigned *removed) {
-    // A filesystem cannot nest deeper than this without something being wrong,
-    // and the recursion below runs on the shell's stack.
-    if (depth > 12) return false;
+// Append "/name" to the shared path. Returns the length to truncate back to, or
+// 0 if it would not fit — a path too deep to name is a path this will not walk.
+static size_t rm_push(const char *name) {
+    size_t was = strlen(g_rm_path);
+    size_t need = was + 1 + strlen(name);
+    if (need + 1 >= RM_PATH_MAX) return 0;
+    if (was == 0 || g_rm_path[was - 1] != '/')
+        strncat(g_rm_path, "/", RM_PATH_MAX - strlen(g_rm_path) - 1);
+    strncat(g_rm_path, name, RM_PATH_MAX - strlen(g_rm_path) - 1);
+    return was;
+}
+
+struct RmMatch { const char *pat; char name[64]; bool found; };
+
+static void rm_match_cb(void *ctx, const char *name, bool is_dir, uint32_t) {
+    RmMatch *m = (RmMatch *)ctx;
+    (void)is_dir;
+    if (m->found || !glob_match(m->pat, name)) return;
+    snprintf(m->name, sizeof(m->name), "%s", name);
+    m->found = true;
+}
+
+static bool rm_tree(unsigned depth, unsigned *removed) {
+    if (depth > RM_DEPTH_MAX) return false;
 
     bool is_dir = false;
-    if (!storage_stat(path, &is_dir, nullptr)) return false;
+    if (!storage_stat(g_rm_path, &is_dir, nullptr)) return false;
     if (!is_dir) {
-        if (!storage_remove(path)) return false;
+        if (!storage_remove(g_rm_path)) return false;
         (*removed)++;
         return true;
     }
 
     for (;;) {
-        RmScan scan;
-        scan.n = 0;
-        if (!storage_walk(path, rm_scan_cb, &scan)) return false;
-        if (!scan.n) break;                       // empty: fall through and remove it
-        for (int i = 0; i < scan.n; i++) {
-            char child[192];
-            snprintf(child, sizeof(child), "%s%s%s", path,
-                     path[strlen(path) - 1] == '/' ? "" : "/", scan.names[i]);
-            if (!rm_tree(child, depth + 1, removed)) return false;
-            if (intr_check()) return false;
-        }
-        // Round again: the scan holds at most 24 names, so a wide directory
-        // takes several passes rather than a bigger buffer.
+        RmFirst f;
+        f.found = false;
+        if (!storage_walk(g_rm_path, rm_first_cb, &f)) return false;
+        if (!f.found) break;                      // empty: remove it below
+
+        size_t back = rm_push(f.name);
+        if (!back) return false;                  // too deep to name
+        bool ok = rm_tree(depth + 1, removed);
+        g_rm_path[back] = 0;                      // back out one level
+        if (!ok) return false;
+        if (intr_check()) return false;
     }
-    if (!storage_remove(path)) return false;
+    if (!storage_remove(g_rm_path)) return false;
     (*removed)++;
     return true;
+}
+
+// Start a removal at `path`. The shared buffer means this is the only way in.
+static bool rm_at(const char *path, unsigned *removed) {
+    if (strlen(path) + 1 >= RM_PATH_MAX) return false;
+    snprintf(g_rm_path, RM_PATH_MAX, "%s", path);
+    return rm_tree(0, removed);
 }
 
 // Say what is actually wrong. "(directory not empty?)" was printed for every
@@ -305,29 +346,29 @@ static int cmd_rm(int argc, char **argv) {
             else if (last - path > 1) last[-1] = 0;
             else path[1] = 0;
 
+            // One match at a time, for the same reason rm_tree takes one entry
+            // at a time: nothing is removed from inside a walk, and no list is
+            // held on the stack.
             unsigned removed = 0;
             for (;;) {
-                RmScan scan;
-                scan.n = 0;
-                if (!storage_walk(path, rm_scan_cb, &scan)) {
+                RmMatch m;
+                m.pat = pat;
+                m.found = false;
+                if (!storage_walk(path, rm_match_cb, &m)) {
                     out_err("Cannot read '%s'.", path);
                     failed++;
                     break;
                 }
-                int hit = 0;
-                for (int k = 0; k < scan.n; k++) {
-                    if (!glob_match(pat, scan.names[k])) continue;
-                    hit++;
-                    char child[192];
-                    snprintf(child, sizeof(child), "%s%s%s", path,
-                             path[strlen(path) - 1] == '/' ? "" : "/", scan.names[k]);
-                    // A directory caught by a wildcard is removed whole. `rm
-                    // /dir/*` that stopped at the first subdirectory would be
-                    // the same complaint again.
-                    if (!rm_tree(child, 0, &removed)) { rm_explain(child); failed++; }
-                    if (intr_check()) { hit = 0; break; }
-                }
-                if (!hit) break;
+                if (!m.found) break;
+
+                char child[RM_PATH_MAX];
+                snprintf(child, sizeof(child), "%s%s%s", path,
+                         path[strlen(path) - 1] == '/' ? "" : "/", m.name);
+                // A directory caught by a wildcard is removed whole. `rm /dir/*`
+                // that stopped at the first subdirectory would be the same
+                // complaint again.
+                if (!rm_at(child, &removed)) { rm_explain(child); failed++; break; }
+                if (intr_check()) break;
             }
             if (!removed && !failed) out_multi("Nothing matched '%s'.", pat);
             else if (removed) out_multi("Removed %u item%s.", removed,
@@ -337,7 +378,7 @@ static int cmd_rm(int argc, char **argv) {
 
         if (recurse) {
             unsigned removed = 0;
-            if (!rm_tree(path, 0, &removed)) { rm_explain(path); failed++; }
+            if (!rm_at(path, &removed)) { rm_explain(path); failed++; }
             else out_multi("Removed %u item%s.", removed, removed == 1 ? "" : "s");
             continue;
         }
