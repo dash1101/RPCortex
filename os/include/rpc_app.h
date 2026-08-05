@@ -23,7 +23,7 @@ extern "C" {
 // MINOR: a symbol added — older-minor apps still run (everything they want is
 //        present); newer-minor apps refused (they may want something absent).
 #define RPC_API_MAJOR 1
-#define RPC_API_MINOR 14
+#define RPC_API_MINOR 15
 
 typedef struct {
     uint32_t magic;          // RPC_APP_MAGIC
@@ -389,6 +389,37 @@ int fw_http_download(const char *url, const char *path);
 // handshake are not counted against the rate — and is never zero when anything
 // arrived, so dividing by it is safe.
 int fw_http_measure(const char *url, uint32_t *bytes, uint32_t *ms);
+
+// --- directories (API 1.15) -------------------------------------------------
+//
+// Read BY INDEX rather than through an open/read/close handle, and that is a
+// sandbox decision rather than a stylistic one. A handle needs state the
+// firmware must clean up when a task dies, and it brings use-after-close and
+// double-close with it — every one of which havoc found in the socket API and
+// none of which can exist here. A callback would be worse still: calling INTO
+// unprivileged package code is the hard direction across this boundary.
+//
+// The cost is that listing a directory of n entries walks it n times. For the
+// sizes involved that is not worth a handle.
+//
+// The directory must not be changing underneath: an entry added or removed
+// between calls shifts the indices after it. For a listing that matters, read
+// fw_dir_count first and stop if it changes.
+
+#define FW_NAME_MAX 64
+
+typedef struct {
+    char     name[FW_NAME_MAX];
+    int      is_dir;
+    uint32_t size;              // bytes; meaningless for a directory
+} FwDirEntry;
+
+// How many entries the directory has, or negative if it cannot be read.
+int fw_dir_count(const char *path);
+
+// One entry. Returns 1 when `out` was filled, 0 when `index` is past the end,
+// negative when the directory cannot be read.
+int fw_dir_entry(const char *path, unsigned index, FwDirEntry *out);
 
 // --- TCP (API 1.14) ---------------------------------------------------------
 //

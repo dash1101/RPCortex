@@ -675,6 +675,47 @@ extern "C" int fw_http_measure(const char *url, uint32_t *bytes, uint32_t *ms) {
     task_alive();
     return net_pkg_http_measure(url, bytes, ms);
 }
+// --- directories -------------------------------------------------------------
+//
+// storage_walk holds the filesystem lock across the callback — that was #82 —
+// so these callbacks copy and count and do nothing else. No printing, no
+// yielding, no allocation.
+struct DirCount { unsigned n; };
+
+static void dir_count_cb(void *ctx, const char *, bool, uint32_t) {
+    ((DirCount *)ctx)->n++;
+}
+
+struct DirPick { unsigned want, at; bool found; FwDirEntry *out; };
+
+static void dir_pick_cb(void *ctx, const char *name, bool is_dir, uint32_t size) {
+    DirPick *p = (DirPick *)ctx;
+    if (p->found || p->at++ != p->want) return;
+    snprintf(p->out->name, FW_NAME_MAX, "%s", name ? name : "");
+    p->out->is_dir = is_dir ? 1 : 0;
+    p->out->size   = size;
+    p->found = true;
+}
+
+extern "C" int fw_dir_count(const char *path) {
+    if (!ok_s(path)) return -1;
+    task_alive();
+    DirCount c{0};
+    if (!storage_walk(path, dir_count_cb, &c)) return -1;
+    return (int)c.n;
+}
+
+extern "C" int fw_dir_entry(const char *path, unsigned index, FwDirEntry *out) {
+    if (!ok_s(path) || !ok_w(out, sizeof(*out))) return -1;
+    task_alive();
+    // Filled before the walk, so a caller that ignores the return value gets an
+    // empty entry rather than whatever its buffer held.
+    memset(out, 0, sizeof(*out));
+    DirPick p{index, 0, false, out};
+    if (!storage_walk(path, dir_pick_cb, &p)) return -1;
+    return p.found ? 1 : 0;
+}
+
 extern "C" int fw_tcp_listen(unsigned port) {
     bb_note_phase("entered fw_tcp_listen");
     task_alive();
@@ -1149,6 +1190,8 @@ static const ApiSymbol kSymbols[] = {
     SYM(fw_http_download),
     SYM(fw_http_measure),
     SYM(fw_net_ping),
+    SYM(fw_dir_count),
+    SYM(fw_dir_entry),
     SYM(fw_tcp_listen),
     SYM(fw_tcp_accept),
     SYM(fw_tcp_recv),

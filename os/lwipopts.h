@@ -79,21 +79,14 @@
 #define LWIP_STATS_DISPLAY          0
 
 #ifndef NDEBUG
-// Off in general — the driver is noisy and the shell is not — but the TLS
-// layer is exempt.
+// The driver is noisy and the shell is not.
 //
-// A failed handshake reaches the shell as "the request failed", because the
-// only thing lwIP hands back is an aborted connection: mbedtls's actual reason
-// is logged inside altcp_tls_mbedtls.c and thrown away when debugging is off.
-// Four rounds were spent inferring that reason from the outside.
-//
-// ALTCP_MBEDTLS_DEBUG alone is quiet in normal use: it prints on handshake
-// completion and on error, not per packet. That is worth having permanently.
-#define LWIP_DEBUG                  1
-#define ALTCP_MBEDTLS_DEBUG         LWIP_DBG_ON
-
-// Everything else stays off. LWIP_DEBUG=1 only ENABLES the machinery; each
-// subsystem is still gated by its own flag, and the defaults are all OFF.
+// Turned on once, with ALTCP_MBEDTLS_DEBUG, to find out why a handshake was
+// failing. It printed nothing — the answer turned out to be that the handshake
+// was not failing at all, only running out of time — so it bought no
+// information and is off again rather than left in on the strength of an
+// intention.
+#define LWIP_DEBUG                  0
 #endif
 
 // --- TLS --------------------------------------------------------------------
