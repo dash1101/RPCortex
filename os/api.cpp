@@ -618,6 +618,11 @@ int net_pkg_http_get(const char *url, void *buf, unsigned cap);
 int net_pkg_http_download(const char *url, const char *path);
 int net_pkg_http_measure(const char *url, uint32_t *bytes, uint32_t *ms);
 int net_pkg_ping(const char *host, uint32_t timeout_ms);
+int net_pkg_tcp_listen(unsigned port);
+int net_pkg_tcp_accept(int listener, uint32_t timeout_ms);
+int net_pkg_tcp_recv(int conn, void *buf, unsigned cap, uint32_t timeout_ms);
+int net_pkg_tcp_send(int conn, const void *buf, unsigned len);
+int net_pkg_tcp_close(int handle);
 bool net_is_connected(void);
 
 extern "C" int fw_net_connected(void) { return net_is_connected() ? 1 : 0; }
@@ -663,6 +668,29 @@ extern "C" int fw_http_measure(const char *url, uint32_t *bytes, uint32_t *ms) {
     if (ms    && !ok_w(ms,    sizeof(*ms)))    return -1;
     task_alive();
     return net_pkg_http_measure(url, bytes, ms);
+}
+extern "C" int fw_tcp_listen(unsigned port) {
+    bb_note_phase("entered fw_tcp_listen");
+    task_alive();
+    return net_pkg_tcp_listen(port);
+}
+extern "C" int fw_tcp_accept(int listener, uint32_t timeout_ms) {
+    task_alive();
+    return net_pkg_tcp_accept(listener, timeout_ms);
+}
+extern "C" int fw_tcp_recv(int conn, void *buf, unsigned cap, uint32_t timeout_ms) {
+    if (!ok_w(buf, cap)) return -1;
+    task_alive();
+    return net_pkg_tcp_recv(conn, buf, cap, timeout_ms);
+}
+extern "C" int fw_tcp_send(int conn, const void *buf, unsigned len) {
+    if (!ok_r(buf, len)) return -1;
+    task_alive();
+    return net_pkg_tcp_send(conn, buf, len);
+}
+extern "C" int fw_tcp_close(int handle) {
+    task_alive();
+    return net_pkg_tcp_close(handle);
 }
 extern "C" int fw_net_ping(const char *host, uint32_t timeout_ms) {
     bb_note_phase("entered fw_net_ping");
@@ -1110,6 +1138,11 @@ static const ApiSymbol kSymbols[] = {
     SYM(fw_http_download),
     SYM(fw_http_measure),
     SYM(fw_net_ping),
+    SYM(fw_tcp_listen),
+    SYM(fw_tcp_accept),
+    SYM(fw_tcp_recv),
+    SYM(fw_tcp_send),
+    SYM(fw_tcp_close),
     SYM(fw_spi_init),
     SYM(fw_spi_set_baud),
     SYM(fw_spi_write),

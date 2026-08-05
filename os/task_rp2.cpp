@@ -61,9 +61,15 @@ extern "C" void task_irq_restore(unsigned state) {
     if (!state) __asm volatile ("cpsie i" ::: "memory");
 }
 
+extern "C" void net_tcp_task_ended(int slot);
+
 void task_slot_recycled(int slot) {
     sandbox_forget(slot);
     apps_task_ended(slot);
+    // A listener left bound holds its port until the next reboot, and a
+    // half-open connection holds a PCB nobody will collect. Neither is the
+    // package author's to clean up after their task has already gone.
+    net_tcp_task_ended(slot);
 }
 
 uint32_t task_now_ms(void) {

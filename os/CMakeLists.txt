@@ -96,6 +96,7 @@ add_executable(rpcortex_v2
     ${OS_ROOT}/shell/help.cpp
     ${OS_ROOT}/shell/net.cpp
     ${OS_ROOT}/shell/netapps.cpp
+    ${OS_ROOT}/shell/nettcp.cpp
     ${OS_ROOT}/shell/httptransport.cpp
     ${OS_ROOT}/shell/fetch.cpp
     ${OS_ROOT}/shell/ps.cpp

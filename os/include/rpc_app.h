@@ -23,7 +23,7 @@ extern "C" {
 // MINOR: a symbol added — older-minor apps still run (everything they want is
 //        present); newer-minor apps refused (they may want something absent).
 #define RPC_API_MAJOR 1
-#define RPC_API_MINOR 13
+#define RPC_API_MINOR 14
 
 typedef struct {
     uint32_t magic;          // RPC_APP_MAGIC
@@ -389,6 +389,44 @@ int fw_http_download(const char *url, const char *path);
 // handshake are not counted against the rate — and is never zero when anything
 // arrived, so dividing by it is safe.
 int fw_http_measure(const char *url, uint32_t *bytes, uint32_t *ms);
+
+// --- TCP (API 1.14) ---------------------------------------------------------
+//
+// The five calls a server is built from. httpd is a package because of these,
+// and a LAN scanner or the Nova D1's networking wants the same five.
+//
+// A handle is a small opaque integer, never a pointer: the firmware looks it up
+// in a table it owns, so the worst a bad one can do is return -1. It carries a
+// generation too, so a handle kept after a close does not quietly land on
+// whichever socket got the slot next.
+//
+// Errors are -1 for "wrong, and it will stay wrong" and -2 for "timed out or
+// interrupted, try again". A package that cannot tell those apart will either
+// spin on a dead socket or give up on a slow one.
+
+// Bind and listen. Returns a handle, or -1 if the port is taken or there is no
+// room. Nothing is accepted until fw_tcp_accept asks.
+int fw_tcp_listen(unsigned port);
+
+// Take the next waiting connection. Returns a connection handle, -2 if none
+// arrived within the timeout (including Ctrl+C), -1 if the listener is invalid.
+// Yields while it waits, so other tasks keep running.
+int fw_tcp_accept(int listener, uint32_t timeout_ms);
+
+// Read what has arrived. Returns the byte count, 0 when the peer has closed and
+// there is nothing left, -2 on timeout, -1 on a broken connection.
+//
+// Bytes are acknowledged as they are READ, not as they arrive, so a slow reader
+// slows the sender down instead of losing data.
+int fw_tcp_recv(int conn, void *buf, unsigned cap, uint32_t timeout_ms);
+
+// Write. Returns how many bytes were accepted, which may be fewer than asked
+// for on a slow link. The data is copied, so the buffer is free immediately.
+int fw_tcp_send(int conn, const void *buf, unsigned len);
+
+// Close a connection or a listener. A socket left open when its task ends is
+// closed for it, but a long-running package should not rely on that.
+int fw_tcp_close(int handle);
 
 // Send one ICMP echo and time the reply. Returns the round trip in
 // MICROSECONDS, or negative: -1 could not send, -2 no reply in time.
