@@ -123,6 +123,7 @@ uint32_t task_now_ms(void) {
 
 static bool     g_wd_on;
 static uint32_t g_last_stage;      // which escalation has already been reported
+static bool     g_named;           // the stalling task has been recorded once
 
 void task_watchdog_start(void) {
     watchdog_enable(WATCHDOG_MS, /*pause_on_debug*/true);
@@ -137,11 +138,30 @@ void task_watchdog_feed(void) {
     watchdog_update();
 
     uint32_t stall = bb_stall_ms(task_now_ms());
-    if (stall < STALL_WARN_MS) { g_last_stage = 0; return; }
+    if (stall < STALL_WARN_MS) { g_last_stage = 0; g_named = false; return; }
 
     const TaskInfo *t = task_current();
-    // Never the idle task, and never the shell — asking the shell to stop set a
-    // flag nothing cleared, which silently broke every later scan and ping.
+
+    // SAY WHO, WHATEVER IT IS. This used to return here for the idle task and
+    // the shell, before recording anything — so the one case that matters most
+    // produced a completely silent reboot. Three rounds of a hang inside a
+    // package's HTTPS fetch were debugged with an empty logdump for exactly
+    // that reason: the stalling task WAS the shell, so nothing was written.
+    //
+    // Killing it is still off the table for those two. Naming it is not.
+    // The PHASE IS NOT TOUCHED. Writing a note here would overwrite the one
+    // thing worth having — where the machine had got to — with the fact that it
+    // stopped, which the reboot reason already says. It goes to the log ring
+    // instead, which survives the reset and is what logdump prints.
+    if (!g_named) {
+        g_named = true;
+        log_addf(LOG_K_ERR, "watchdog: '%s' pid %d core %u stalled %u ms at '%s'",
+                 t ? t->name : "?", t ? t->pid : -1, (unsigned)get_core_num(),
+                 (unsigned)stall, bb_phase());
+    }
+
+    // Never force the idle task or the shell to exit — asking the shell to stop
+    // set a flag nothing cleared, which silently broke every later scan and ping.
     if (!t || t->pid == 1) return;
     if (t->pid == task_shell_pid()) return;
 

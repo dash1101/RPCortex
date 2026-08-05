@@ -28,6 +28,7 @@
 #include "task.h"
 #include "storage.h"
 #include "path.h"
+#include "blackbox.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -278,6 +279,11 @@ static int lw_open(void *ctx, const char *host, uint16_t port, bool tls) {
     TcpConn *c = (TcpConn *)ctx;
     // Taken here and released in lw_close, which the fetch driver always calls
     // — including on every failure path and between redirect hops.
+    // A hang inside a fetch used to leave "entered fw_http_get" as the last
+    // phase and nothing else, so every stage of a connection had to be ruled out
+    // by argument. Each one says so now: the crash report names the last one
+    // reached, which is the one that did not finish.
+    bb_note_phase("http: waiting for the network lock");
     net_op_acquire();
 
     // The wireless driver only works on the core that initialised it. Nothing
@@ -291,6 +297,7 @@ static int lw_open(void *ctx, const char *host, uint16_t port, bool tls) {
 
     struct altcp_tls_config *cfg = nullptr;
     if (tls) {
+        bb_note_phase("http: loading roots");
         cfg = tls_config();
         if (!cfg) { net_op_release(); return -1; }   // no roots: refuse, never downgrade
     }
@@ -303,8 +310,10 @@ static int lw_open(void *ctx, const char *host, uint16_t port, bool tls) {
     memset(c, 0, sizeof(*c));
 
     ip_addr_t addr;
+    bb_note_phase("http: resolving");
     if (!resolve(host, &addr)) { net_op_release(); return -1; }
 
+    bb_note_phase(tls ? "http: opening (tls)" : "http: opening");
     cyw43_arch_lwip_begin();
     c->pcb = tls ? altcp_tls_new(cfg, IP_GET_TYPE(&addr))
                  : altcp_tcp_new_ip_type(IP_GET_TYPE(&addr));
@@ -328,6 +337,7 @@ static int lw_open(void *ctx, const char *host, uint16_t port, bool tls) {
     // called for an open that failed — the driver only closes what it opened —
     // which is why these say so themselves.
     if (!c->pcb || e != ERR_OK)  { conn_detach(c); net_op_release(); return -1; }
+    bb_note_phase(tls ? "http: handshaking" : "http: connecting");
     if (!wait_flag(c->connected, CONNECT_MS, &c->failed)) {
         conn_detach(c);
         net_op_release();
@@ -338,6 +348,7 @@ static int lw_open(void *ctx, const char *host, uint16_t port, bool tls) {
 
 static int lw_send(void *ctx, const uint8_t *data, uint32_t len) {
     TcpConn *c = (TcpConn *)ctx;
+    bb_note_phase("http: sending");
     uint32_t at = 0;
     absolute_time_t send_deadline = make_timeout_time_ms(SEND_MS);
 
@@ -375,6 +386,7 @@ static int lw_send(void *ctx, const uint8_t *data, uint32_t len) {
 
 static int lw_recv(void *ctx, uint8_t *buf, uint32_t cap) {
     TcpConn *c = (TcpConn *)ctx;
+    bb_note_phase("http: receiving");
 
     absolute_time_t deadline = make_timeout_time_ms(READ_MS);
     while (rx_available(c) == 0) {
@@ -457,6 +469,7 @@ static void conn_detach(TcpConn *c) {
 }
 
 static void lw_close(void *ctx) {
+    bb_note_phase("http: closing");
     conn_detach((TcpConn *)ctx);
     net_op_release();
 }

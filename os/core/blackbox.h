@@ -53,6 +53,9 @@ void bb_note_yield(uint32_t now_ms);
 // this survives the reboot, so the last checkpoint reached names the exact step
 // that did not finish. Exposed to packages as fw_progress.
 void bb_note_phase(const char *what);
+// What the last note said. For a diagnostic that wants to report where the
+// machine got to without clearing it.
+const char *bb_phase(void);
 
 // Read what the previous run left behind. Returns null when there is nothing —
 // a cold boot, or a clean shutdown.
