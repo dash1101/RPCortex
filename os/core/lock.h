@@ -95,6 +95,22 @@ void lock_hw_enter(void);
 // answer on a device, always 0 on the host.
 unsigned lock_hw_core(void);
 void lock_hw_exit(void);
+
+// Interrupts off across a context switch, and on again once the incoming task
+// owns the hardware.
+//
+// Not a performance guard — a correctness one. Between the instruction that
+// changes the stack pointer and the one that reprograms the protection unit,
+// the processor is running on one task's stack with another task's regions.
+// An interrupt arriving in that window pushes its frame onto memory the
+// protection unit does not cover, and faults: MSTKERR, on a stack with
+// kilobytes free, at an address that IS inside the region the task was given.
+//
+// Symmetric by construction. Every context masks before it switches out and
+// unmasks after it has armed itself on the way back in, so the state carries
+// across the switch without being saved anywhere.
+void task_irq_off(void);
+void task_irq_on(void);
 }
 
 #endif  // RPC_LOCK_H

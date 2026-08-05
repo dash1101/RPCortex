@@ -260,7 +260,12 @@ static void task_trampoline(void) {
     // A brand-new task did not come back from a context switch, so nothing has
     // armed its guard yet. This is the other half of the rule in
     // arm_protection: every place execution resumes, including the first time.
+    //
+    // It arrives here with interrupts masked, because whichever task switched
+    // to it masked them and this context never had a switch of its own to
+    // unmask after. So it completes the pair.
     arm_protection(t);
+    task_irq_on();
     int rc = t->fn ? t->fn(t->arg) : 0;
     task_exit(rc);
 }
@@ -567,6 +572,24 @@ static void reschedule(TaskState park_as) {
     // other core and will certainly be after other tasks have reprogrammed the
     // protection hardware for themselves. So the guard is re-armed here, on the
     // far side of the switch, and not before it.
+    // Interrupts off across the switch, and on again once this context has
+    // armed its own protection.
+    //
+    // The window between the two is the whole reason. task_ctx_switch changes
+    // the stack pointer to the incoming task's stack, but the protection unit
+    // still holds the OUTGOING task's regions until arm_protection runs a few
+    // instructions later. An interrupt arriving in between pushes its frame
+    // onto memory the protection unit does not cover, and faults — MSTKERR, on
+    // a stack with kilobytes free, at an address that is inside the region the
+    // task was given. Which is exactly what it looked like: an overflow that
+    // was not one.
+    //
+    // Symmetric rather than saved: every context masks before switching out and
+    // unmasks after arming on the way back in, so the state carries across the
+    // switch on its own. A brand-new task does the same in task_trampoline,
+    // which is the one place execution arrives without having switched out
+    // first.
+    task_irq_off();
     if (me) {
         task_ctx_switch(&me->sp, next->sp, &me->live);
         arm_protection(me);
@@ -574,6 +597,7 @@ static void reschedule(TaskState park_as) {
         task_ctx_switch(&g_sched_sp[core], next->sp, nullptr);
         arm_protection(nullptr);
     }
+    task_irq_on();
 }
 
 void task_yield(void) { reschedule(TASK_READY); }

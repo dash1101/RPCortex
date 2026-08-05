@@ -52,6 +52,9 @@ extern "C" void apps_task_ended(int pid);
 // A task slot is being reused, so anything held against the old occupant has to
 // go: the sandbox state, and the stack and heap the package pool was keeping
 // for it. Missing either leaves memory owned by a task that no longer exists.
+extern "C" void task_irq_off(void) { __asm volatile ("cpsid i" ::: "memory"); }
+extern "C" void task_irq_on(void)  { __asm volatile ("cpsie i" ::: "memory"); }
+
 void task_slot_recycled(int slot) {
     sandbox_forget(slot);
     apps_task_ended(slot);
