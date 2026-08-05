@@ -32,7 +32,19 @@ enum LoadResult {
     LOAD_ERR_TOO_MANY_SECTIONS,
 };
 
-#define LOADER_MAX_SECTIONS 48
+// Sections in one .app, not bytes. Every function and every data item gets its
+// own with -ffunction-sections -fdata-sections, and each one that needs fixing
+// up brings a .rel section too — so this is roughly twice the number of
+// functions, and it grows with the SOURCE, not with the binary.
+//
+// 48 was set when the biggest package was a calculator, and calc reached 47 of
+// it. `havoc` needs 60 and would not load at all: "too many sections", on a
+// package that was otherwise fine.
+//
+// Raising it is cheap because the two tables it sizes are static rather than
+// stack — see app_load. The cost is .bss, paid once; the alternative was six
+// kilobytes of frame on the stack of whoever happened to install a package.
+#define LOADER_MAX_SECTIONS 128
 
 // Loaded blocks start on a boundary of this and are padded to a multiple of it,
 // so the memory protection hardware can cover each one exactly. Both supported

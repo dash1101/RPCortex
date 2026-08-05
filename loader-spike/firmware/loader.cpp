@@ -326,7 +326,17 @@ LoadResult app_load(const AppSource &src, LoadedApp *out) {
     if (eh.e_machine != EM_ARM)   return LOAD_ERR_NOT_ARM;
     if (eh.e_shnum > LOADER_MAX_SECTIONS) return LOAD_ERR_TOO_MANY_SECTIONS;
 
-    Elf32_Shdr sh[LOADER_MAX_SECTIONS];
+    // STATIC, not on the stack.
+    //
+    // These two are sized by LOADER_MAX_SECTIONS, and at 128 that is over six
+    // kilobytes between them — a frame that large lands on whoever called
+    // app_load, which is the shell during `pkg install` and the boot task
+    // before that. Neither has room for it, and neither should have to.
+    //
+    // Safe because loading is one at a time by construction: packages load
+    // sequentially at boot, and installing is a shell command. Nothing in the
+    // ABI lets a package load another one.
+    static Elf32_Shdr sh[LOADER_MAX_SECTIONS];
     if (!read_exact(src, eh.e_shoff, sh, eh.e_shnum * sizeof(Elf32_Shdr)))
         return LOAD_ERR_READ;
 
@@ -374,7 +384,9 @@ LoadResult app_load(const AppSource &src, LoadedApp *out) {
     // cover each one exactly. Without that the region would either stop short —
     // leaving the tail of the block unprotected — or run past the end and apply
     // the app's permissions to whatever the heap handed out next.
-    SectionMap map[LOADER_MAX_SECTIONS];
+    // Static for the same reason as `sh` above, and cleared on every entry
+    // because a static keeps the last load's answers.
+    static SectionMap map[LOADER_MAX_SECTIONS];
     memset(map, 0, sizeof(map));
 
     uint32_t total = 0;
