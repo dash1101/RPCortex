@@ -8,6 +8,7 @@
 #include "arena.h"
 #include "sandbox.h"
 #include "lock.h"
+#include "logring.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -1008,12 +1009,14 @@ extern "C" int fault_try_contain(uint32_t *frame) {
     // the time this runs, so one more line costs nothing.
     if (!frame) return 0;
     if (!sandbox_in_package()) {
+        log_addf(LOG_K_ERR, "not contained: no package was running");
         printf("    not contained: no package was running\n");
         return 0;
     }
 
     TaskAppMem m;
     if (!task_app_mem_get(&m) || !m.stack || !m.stack_size) {
+        log_addf(LOG_K_ERR, "not contained: the package has no sandbox stack");
         printf("    not contained: the package has no sandbox stack\n");
         return 0;
     }
@@ -1021,6 +1024,9 @@ extern "C" int fault_try_contain(uint32_t *frame) {
     uint32_t sp   = (uint32_t)(uintptr_t)frame;
     uint32_t base = (uint32_t)(uintptr_t)m.stack;
     if (sp < base || sp >= base + m.stack_size) {
+        log_addf(LOG_K_ERR, "not contained: sp %08lx outside package stack "
+                            "%08lx..%08lx", (unsigned long)sp,
+                 (unsigned long)base, (unsigned long)(base + m.stack_size));
         printf("    not contained: sp 0x%08lx is outside the package stack "
                "0x%08lx..0x%08lx\n", (unsigned long)sp, (unsigned long)base,
                (unsigned long)(base + m.stack_size));
@@ -1028,9 +1034,15 @@ extern "C" int fault_try_contain(uint32_t *frame) {
     }
 
     if (!sandbox_abandon_call(frame)) {
+        log_addf(LOG_K_ERR, "not contained: the package was not inside a call");
         printf("    not contained: the package was not inside a call\n");
         return 0;
     }
+    // WHY THE LOG RING AND NOT JUST printf: the console is the first thing lost
+    // when a fault takes the device down, and the reason a fault could not be
+    // contained is precisely what is wanted afterwards. logdump survives the
+    // reset; the terminal does not.
+    log_addf(LOG_K_WARN, "contained a fault in a package; the shell survived");
     // apps.cpp says which package once it is back in task context; see
     // sandbox_took_call_back below.
     return 1;

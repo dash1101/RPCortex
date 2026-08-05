@@ -36,7 +36,7 @@ RPC_APP_VER("havoc", "1.0");
 // TLS handshake — on its own stack, so it keeps almost nothing there.
 static char     g_buf[256];
 static char     g_scratch[64];
-static unsigned g_checks, g_bad;
+static unsigned g_checks, g_bad, g_skipped;
 
 // A step announces itself first. If the device dies here, the last thing on the
 // screen is the culprit.
@@ -170,7 +170,11 @@ static void group_handle(void) {
     step("a real listener, then the same handle after closing it");
     int lsn = fw_tcp_listen(8099);
     if (lsn < 0) {
-        fw_printf("    (no listener — needs a network; skipping the reuse checks)\n");
+        // COUNTED, not silently absent. A run that reports 55 checks where the
+        // last one reported 62 looks like something regressed; saying seven
+        // were skipped and why says the opposite.
+        g_skipped += 7;
+        fw_printf("    (no network, so 7 socket checks are skipped)\n");
     } else {
         g_checks++;
         if (fw_tcp_close(lsn) != 0) { g_bad++; fw_printf("    [!] close() refused a live handle\n"); }
@@ -421,11 +425,14 @@ static void report(void) {
     if (g_bad) fw_printf("  %u of %u checks were ACCEPTED when they should not be.\n",
                          g_bad, g_checks);
     else       fw_printf("  %u checks, every one refused cleanly.\n", g_checks);
+    if (g_skipped)
+        fw_printf("  %u skipped for want of a network — connect and run again\n"
+                  "  for the full set.\n", g_skipped);
     fw_printf("  Reaching this line at all is the main result.\n\n");
 }
 
 static int havoc_cmd(int argc, char **argv) {
-    g_checks = g_bad = 0;
+    g_checks = g_bad = g_skipped = 0;
 
     fw_printf("\n=== havoc — trying to break the OS from inside the sandbox ===\n");
     fw_printf("Each step prints before it runs, so the last line is the culprit.\n");
