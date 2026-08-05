@@ -129,10 +129,11 @@ struct SandboxSlot {
 };
 static SandboxSlot g_pool[SANDBOX_POOL];
 
-static bool sandbox_alloc(SandboxAlloc *sa, TaskAppMem *m) {
+static bool sandbox_alloc(SandboxAlloc *sa, TaskAppMem *m, uint32_t stack_bytes) {
     memset(sa, 0, sizeof(*sa));
     MpuBlockPlan sp, ap;
-    if (!mpu_v8_plan_block(PKG_STACK_BYTES, &sp)) return false;
+    if (stack_bytes < PKG_STACK_BYTES) stack_bytes = PKG_STACK_BYTES;
+    if (!mpu_v8_plan_block(stack_bytes, &sp)) return false;
     if (!mpu_v8_plan_block(PKG_ARENA_BYTES, &ap)) return false;
 
     sa->stack_raw = malloc(sp.alloc_bytes);
@@ -178,12 +179,29 @@ static void sandbox_describe_from(const SandboxAlloc *sa, TaskAppMem *m) {
 // the protection matters more than the churn it was costing.
 uint32_t apps_pool_reclaim(void);
 
-static bool sandbox_acquire(SandboxAlloc *sa, TaskAppMem *m, bool *pooled) {
+// `stack_bytes` is what the caller needs, which is NOT always the default.
+//
+// A package that spawns a task asks for a stack size, and it asks for a reason:
+// stress gives its filesystem workers four kilobytes because littlefs needs
+// them. Handing that task the pooled three-kilobyte stack instead overflowed it
+// — the task had asked for what it needed and been given less, which is a
+// stack overflow with a completely innocent-looking cause.
+//
+// So a request for anything other than the default is served with its own
+// allocation and never pooled. Pooling exists to stop a shell running the same
+// command repeatedly from cycling fifteen kilobytes; a task is created once, so
+// there is nothing there to save.
+static bool sandbox_acquire(SandboxAlloc *sa, TaskAppMem *m, bool *pooled,
+                            uint32_t stack_bytes) {
     int slot = task_slot_index();
     *pooled = false;
+
+    // Anything but the default size bypasses the pool entirely.
+    if (stack_bytes > PKG_STACK_BYTES) return sandbox_alloc(sa, m, stack_bytes);
+
     // No slot means no owner to hold anything against — boot, or a context the
     // scheduler does not know. Transient, as it always was.
-    if (slot < 0) return sandbox_alloc(sa, m);
+    if (slot < 0) return sandbox_alloc(sa, m, PKG_STACK_BYTES);
 
     for (int i = 0; i < SANDBOX_POOL; i++) {
         if (!g_pool[i].used || g_pool[i].slot != slot || g_pool[i].lent) continue;
@@ -197,13 +215,13 @@ static bool sandbox_acquire(SandboxAlloc *sa, TaskAppMem *m, bool *pooled) {
         return true;
     }
 
-    if (!sandbox_alloc(sa, m)) {
+    if (!sandbox_alloc(sa, m, PKG_STACK_BYTES)) {
         // Out of memory with idle slots still held is the one case the pool
         // must never cause. Give them all back and try once more before
         // reporting failure, since failing here means running a package
         // unprotected.
         if (!apps_pool_reclaim()) return false;
-        if (!sandbox_alloc(sa, m)) return false;
+        if (!sandbox_alloc(sa, m, PKG_STACK_BYTES)) return false;
     }
 
     for (int i = 0; i < SANDBOX_POOL; i++) {
@@ -372,7 +390,7 @@ void app_leave(const TaskAppMem *saved, bool had_saved) {
 // a package got. An RP2040 cannot afford the regions, and refusing to run
 // packages there would be a worse answer than running them the way they have
 // always run.
-int app_run(const LoadedApp *app, int (*fn)(int), int arg) {
+int app_run_stack(const LoadedApp *app, int (*fn)(int), int arg, uint32_t stack_bytes) {
     TaskAppMem saved;
     bool had_saved = false;
     TaskAppMem m;
@@ -381,7 +399,7 @@ int app_run(const LoadedApp *app, int (*fn)(int), int arg) {
     SandboxAlloc sa;
     bool pooled = false;
     bool boxed = sandbox_supported() && app->veneer_gates &&
-                 sandbox_acquire(&sa, &m, &pooled);
+                 sandbox_acquire(&sa, &m, &pooled, stack_bytes);
     // A board that cannot sandbox is a fact about the board. A board that can
     // and did not is an event, and a silent one would be the worst kind: the
     // package runs with the OS's own privileges and nothing anywhere says the
@@ -409,6 +427,10 @@ int app_run(const LoadedApp *app, int (*fn)(int), int arg) {
     return ret;
 }
 
+int app_run(const LoadedApp *app, int (*fn)(int), int arg) {
+    return app_run_stack(app, fn, arg, PKG_STACK_BYTES);
+}
+
 // --- tasks a package spawns --------------------------------------------------
 //
 // A package that called fw_task_spawn used to escape its own sandbox, and it
@@ -425,18 +447,19 @@ int app_run(const LoadedApp *app, int (*fn)(int), int arg) {
 // between the sandbox being a property of the package and a property of
 // whichever call happened to enter it.
 struct PkgTask {
-    bool   used;
-    void  *image;          // which package it belongs to
-    int  (*fn)(int);
-    int    arg;
+    bool     used;
+    void    *image;        // which package it belongs to
+    int    (*fn)(int);
+    int      arg;
+    uint32_t stack;        // what the package asked for, and must actually get
 };
 static PkgTask g_pkg_tasks[8];
 
 // Run fn(arg) inside the sandbox of the package that owns `image`.
-static bool run_in_image(void *image, int (*fn)(int), int arg, int *ret) {
+static bool run_in_image(void *image, int (*fn)(int), int arg, uint32_t stack, int *ret) {
     for (int i = 0; i < APPS_MAX; i++) {
         if (!g_used[i] || g_apps[i].image != image) continue;
-        *ret = app_run(&g_apps[i], fn, arg);
+        *ret = app_run_stack(&g_apps[i], fn, arg, stack);
         return true;
     }
     return false;
@@ -445,7 +468,7 @@ static bool run_in_image(void *image, int (*fn)(int), int arg, int *ret) {
 static int pkg_task_shim(void *v) {
     PkgTask *e = (PkgTask *)v;
     int r = 0;
-    if (!run_in_image(e->image, e->fn, e->arg, &r)) {
+    if (!run_in_image(e->image, e->fn, e->arg, e->stack, &r)) {
         // The package was unloaded between the spawn and this task getting a
         // turn. Running its code now would be running code the heap has taken
         // back, so the task simply ends.
@@ -470,8 +493,27 @@ extern "C" int apps_spawn_in_sandbox(const char *name, int (*fn)(int), void *arg
         g_pkg_tasks[i].image = (void *)m.text;
         g_pkg_tasks[i].fn    = fn;
         g_pkg_tasks[i].arg   = (int)(uintptr_t)arg;
+        // The SANDBOX stack is what the package asked for, and it asked for a
+        // reason — stress gives its filesystem workers four kilobytes because
+        // littlefs needs them.
+        uint32_t want = stack ? stack : PKG_STACK_BYTES;
+        g_pkg_tasks[i].stack = want;
+
+        // The TASK stack depends on whether the sandbox will actually be set
+        // up. When it is, the package runs on the sandbox stack and this one
+        // only carries the shim — find the image, call app_run_stack — so the
+        // minimum is ample. When it is not (ARMv6-M, or an allocation that
+        // fails), app_run calls the package function directly on THIS stack,
+        // and it had better be the size the package asked for.
+        //
+        // Getting that backwards is a stack overflow whose cause looks like
+        // anything but a stack size, which is how the first version of this
+        // went wrong.
+        uint32_t task_stack = sandbox_supported() ? TASK_STACK_MIN : want;
+        if (task_stack < TASK_STACK_MIN) task_stack = TASK_STACK_MIN;
+
         int pid = task_spawn(name, "(package)", pkg_task_shim, &g_pkg_tasks[i],
-                             stack ? stack : TASK_STACK_DEF, AFFINITY_ANY);
+                             task_stack, AFFINITY_ANY);
         if (pid < 0) g_pkg_tasks[i].used = false;
         return pid;
     }
@@ -495,7 +537,7 @@ bool app_run_owner(const void *owner, int (*fn)(int, char **), int argc,
         SandboxAlloc sa;
         bool pooled = false;
         bool boxed = sandbox_supported() && a->veneer_gates &&
-                     sandbox_acquire(&sa, &m, &pooled);
+                     sandbox_acquire(&sa, &m, &pooled, PKG_STACK_BYTES);
         if (sandbox_supported() && a->veneer_gates && !boxed)
             out_warnp("apps", "Not enough memory to sandbox '%s' — it is running "
                               "with full privileges.", a->header.name);
