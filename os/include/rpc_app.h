@@ -23,7 +23,7 @@ extern "C" {
 // MINOR: a symbol added — older-minor apps still run (everything they want is
 //        present); newer-minor apps refused (they may want something absent).
 #define RPC_API_MAJOR 1
-#define RPC_API_MINOR 15
+#define RPC_API_MINOR 16
 
 typedef struct {
     uint32_t magic;          // RPC_APP_MAGIC
@@ -142,6 +142,16 @@ int      fw_file_write(const char *path, const void *data, uint32_t len);
 uint32_t fw_file_read(const char *path, void *buf, uint32_t cap);
 int      fw_file_remove(const char *path);
 int      fw_file_exists(const char *path);
+
+// Read from an OFFSET, so a file bigger than anything a package can hold is
+// still readable a piece at a time. Returns how many bytes were read: short at
+// the end, zero past it. Added at 1.16 because fw_file_read alone capped httpd
+// downloads at one buffer.
+uint32_t fw_file_read_at(const char *path, uint32_t offset, void *buf, uint32_t cap);
+
+// How big a file is, or 0 if it is absent or a directory. Enough to send a
+// Content-Length before the body rather than leaving the far end to guess.
+uint32_t fw_file_size(const char *path);
 
 // Memory. fw_heap_largest is the biggest single allocation available right now —
 // free bytes do not predict whether the next allocation succeeds, this does.

@@ -19,6 +19,12 @@ bool     storage_append_file(const char *name, const uint8_t *data, uint32_t len
 // for the small config files (registry, users), not for app images — those
 // stream through storage_open_source so a large one never lands in RAM whole.
 uint32_t storage_read_file(const char *name, uint8_t *buf, uint32_t cap);
+// Read up to `cap` bytes starting at `off`. Returns how many were read, which
+// is short at the end of the file and zero past it. Opens and closes per call:
+// stateless, so no handle can be leaked by a caller that goes away, which is
+// what a package is.
+uint32_t storage_read_at(const char *name, uint32_t off, uint8_t *buf, uint32_t cap);
+
 bool     storage_open_source(const char *name, AppSource *src, void **handle);
 void     storage_close_source(void *handle);
 

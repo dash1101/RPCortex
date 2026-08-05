@@ -31,7 +31,7 @@
 // not get. This package keeps essentially nothing there.
 #include "rpc_app.h"
 
-RPC_APP_VER("httpd", "2.0");
+RPC_APP_VER("httpd", "2.1");
 
 #define DEF_PORT      8080
 // A request line plus the headers a browser sends. Anything longer is a request
@@ -58,6 +58,23 @@ static char g_scratch[PATH_MAX];
 // out empty. Found by httpd_test rather than by looking at a page.
 static char g_esc[PATH_MAX];
 static unsigned g_served;
+
+// --- what this instance is serving -------------------------------------------
+//
+// Shared between the command and the background task, which is safe because a
+// package's spawned task runs in the SAME sandbox: same code, same data, same
+// statics. There is one server, so there is one set of these.
+static char     g_root[PATH_MAX];    // empty = the device view, else a site root
+static unsigned g_port;
+static volatile bool g_running;
+static volatile bool g_stop;
+static int      g_bg_pid = -1;
+
+// A file is sent in pieces this big. Bigger is fewer round trips through
+// littlefs; too big and it will not fit alongside everything else a package
+// holds. This is read straight into g_req, which is idle once the request has
+// been parsed.
+#define CHUNK (REQ_MAX)
 
 // --- small string helpers ----------------------------------------------------
 
@@ -216,6 +233,21 @@ static bool put_html(int c, const char *s) {
     return true;
 }
 
+// Same as head(), plus a length. A browser that knows the size can show
+// progress and knows the transfer finished, rather than inferring it from the
+// connection closing.
+static bool head_len(int c, const char *status, const char *ctype, uint32_t len) {
+    g_out[0] = 0;
+    s_cat(g_out, OUT_MAX, "HTTP/1.1 ");
+    s_cat(g_out, OUT_MAX, status);
+    s_cat(g_out, OUT_MAX, "\r\nContent-Type: ");
+    s_cat(g_out, OUT_MAX, ctype);
+    s_cat(g_out, OUT_MAX, "\r\nContent-Length: ");
+    s_cat_uint(g_out, OUT_MAX, len);
+    s_cat(g_out, OUT_MAX, "\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n");
+    return flush(c);
+}
+
 static bool head(int c, const char *status, const char *ctype) {
     g_out[0] = 0;
     s_cat(g_out, OUT_MAX, "HTTP/1.1 ");
@@ -227,6 +259,36 @@ static bool head(int c, const char *status, const char *ctype) {
     s_cat(g_out, OUT_MAX, "\r\nConnection: close\r\n"
                           "Cache-Control: no-store\r\n\r\n");
     return flush(c);
+}
+
+// The extension decides the type, because nothing else can. A site served with
+// everything as octet-stream downloads instead of rendering, which reads as
+// "the server is broken" rather than "the type was not set".
+static bool ends_with(const char *s, const char *suf) {
+    unsigned a = s_len(s), b = s_len(suf);
+    if (b > a) return false;
+    s += a - b;
+    while (*suf) {
+        char x = *s++, y = *suf++;
+        if (x >= 'A' && x <= 'Z') x = (char)(x - 'A' + 'a');
+        if (x != y) return false;
+    }
+    return true;
+}
+
+static const char *content_type(const char *path) {
+    if (ends_with(path, ".html") || ends_with(path, ".htm")) return "text/html; charset=utf-8";
+    if (ends_with(path, ".css"))  return "text/css";
+    if (ends_with(path, ".js"))   return "text/javascript";
+    if (ends_with(path, ".json")) return "application/json";
+    if (ends_with(path, ".svg"))  return "image/svg+xml";
+    if (ends_with(path, ".png"))  return "image/png";
+    if (ends_with(path, ".jpg") || ends_with(path, ".jpeg")) return "image/jpeg";
+    if (ends_with(path, ".gif"))  return "image/gif";
+    if (ends_with(path, ".ico"))  return "image/x-icon";
+    if (ends_with(path, ".txt") || ends_with(path, ".md") ||
+        ends_with(path, ".cfg") || ends_with(path, ".log")) return "text/plain; charset=utf-8";
+    return "application/octet-stream";
 }
 
 static const char *kStyle =
@@ -318,21 +380,28 @@ static bool page_dir(int c, const char *path) {
     return put(c, "</table>");
 }
 
-static bool page_file(int c, const char *path) {
-    // Read and send in pieces. A file larger than the arena is the normal case,
-    // not the exception, so nothing is ever held whole.
+// STREAMED, in CHUNK-sized pieces. A file bigger than anything this package
+// could hold is the normal case, not the exception, so none of it is ever held
+// whole — g_req is reused for the body once the request has been parsed out of
+// it.
+static bool page_file(int c, const char *path, const char *ctype) {
     if (!fw_file_exists(path)) {
         if (!head(c, "404 Not Found", "text/plain")) return false;
         return send_str(c, "no such file\r\n");
     }
-    if (!head(c, "200 OK", "application/octet-stream")) return false;
+    uint32_t size = fw_file_size(path);
+    if (!head_len(c, "200 OK", ctype, size)) return false;
 
-    // fw_file_read has no offset, so this serves what fits in one read. Enough
-    // for anything on this device worth looking at from a browser, and honest
-    // about the limit rather than silently truncating: see httpd info.
-    uint32_t n = fw_file_read(path, g_req, sizeof(g_req));
-    if (!n) return true;
-    return send_all(c, g_req, n);
+    uint32_t off = 0;
+    while (off < size) {
+        uint32_t n = fw_file_read_at(path, off, g_req, CHUNK);
+        if (!n) break;                      // truncated or vanished mid-send
+        if (!send_all(c, g_req, n)) return false;
+        off += n;
+        // A large file is a long loop, and Ctrl+C has to reach it.
+        if (fw_task_should_stop() || g_stop) return false;
+    }
+    return true;
 }
 
 static bool page_404(int c) {
@@ -382,6 +451,23 @@ static void split_target(const char *target) {
     }
 }
 
+// Join the document root and a request path into g_scratch, and refuse anything
+// that is not underneath it. path_ok has already rejected `..`; this is the
+// second half — the root is a prefix and stays one.
+static bool site_path(const char *req) {
+    g_scratch[0] = 0;
+    s_cat(g_scratch, sizeof(g_scratch), g_root);
+    unsigned n = s_len(g_scratch);
+    if (n && g_scratch[n - 1] == '/') g_scratch[n - 1] = 0;   // no doubled slash
+    s_cat(g_scratch, sizeof(g_scratch), req);
+
+    // A directory, or the root itself, means the index.
+    if (s_len(req) == 0 || req[s_len(req) - 1] == '/')
+        s_cat(g_scratch, sizeof(g_scratch), "index.html");
+
+    return path_ok(g_scratch) && starts(g_scratch, g_root);
+}
+
 static void serve(int c) {
     // Read until the headers end. A browser sends them in one segment in
     // practice; this does not rely on that.
@@ -394,20 +480,18 @@ static void serve(int c) {
         if (n > 0) {
             got += (unsigned)n;
             g_req[got] = 0;
-            // The end of the header block. Both spellings, because not every
-            // client is a browser.
             if (got >= 4) {
                 for (unsigned i = 0; i + 3 < got; i++)
                     if (g_req[i] == '\r' && g_req[i+1] == '\n' &&
-                        g_req[i+2] == '\r' && g_req[i+3] == '\n') { got = 0; goto ready; }
+                        g_req[i+2] == '\r' && g_req[i+3] == '\n') goto ready;
                 for (unsigned i = 0; i + 1 < got; i++)
-                    if (g_req[i] == '\n' && g_req[i+1] == '\n') { got = 0; goto ready; }
+                    if (g_req[i] == '\n' && g_req[i+1] == '\n') goto ready;
             }
             continue;
         }
         if (n == 0) break;                       // peer closed
         if (fw_millis() - started > REQ_TIMEOUT) return;
-        if (fw_task_should_stop()) return;
+        if (fw_task_should_stop() || g_stop) return;
     }
 ready:
     g_out[0] = 0;
@@ -415,9 +499,20 @@ ready:
     char target[PATH_MAX];
     if (!parse_request(target, sizeof(target))) { page_404(c); return; }
     split_target(target);
-
     g_served++;
 
+    // SITE MODE: every path is a file under the document root, and none of the
+    // device routes exist. A site that also exposed the whole filesystem would
+    // be a surprise, and surprises in a web server are the expensive kind.
+    if (g_root[0]) {
+        char want[PATH_MAX];
+        url_decode(want, sizeof(want), g_path);
+        if (!path_ok(want) || !site_path(want)) { page_404(c); return; }
+        page_file(c, g_scratch, content_type(g_scratch));
+        return;
+    }
+
+    // DEVICE MODE.
     if (s_eq(g_path, "/")) {
         if (page_status(c)) flush(c);
         return;
@@ -430,78 +525,173 @@ ready:
     }
     if (s_eq(g_path, "/dl")) {
         if (!path_ok(g_arg)) { page_404(c); return; }
-        page_file(c, g_arg);
+        page_file(c, g_arg, content_type(g_arg));
         return;
     }
     page_404(c);
 }
 
+// The accept loop, shared by the foreground command and the background task.
+// Returns when the listener dies or a stop is asked for.
+static void accept_loop(int lsn) {
+    g_running = true;
+    while (!g_stop && !fw_task_should_stop()) {
+        int c = fw_tcp_accept(lsn, ACCEPT_TICK);
+        if (c == -1) break;                 // the listener died
+        if (c == -2) continue;              // nothing waiting; check the flags
+        serve(c);
+        fw_tcp_close(c);
+    }
+    fw_tcp_close(lsn);
+    g_running = false;
+}
+
+static int bg_task(void *) {
+    int lsn = fw_tcp_listen(g_port);
+    if (lsn < 0) { g_running = false; return 1; }
+    accept_loop(lsn);
+    g_bg_pid = -1;
+    return 0;
+}
+
 // --- the command -------------------------------------------------------------
 
 static void info(void) {
-    fw_printf("\n  httpd serves three things over plain HTTP:\n\n");
-    fw_printf("    /                a status page\n");
-    fw_printf("    /fs?path=/       the filesystem, as links\n");
-    fw_printf("    /dl?path=<file>  a file\n\n");
-    fw_printf("  EVERY FILE IS READABLE by anyone who can reach the port, with\n");
-    fw_printf("  no password. Do not run it on a network you do not trust.\n\n");
-    fw_printf("  One connection at a time, served and closed. A browser opening\n");
-    fw_printf("  several is served several times in a row.\n\n");
-    fw_printf("  A download is limited to one read of %d bytes — enough for\n", REQ_MAX);
-    fw_printf("  configuration and logs, not for images. The ABI has no offset\n");
-    fw_printf("  to read from yet, and a silently truncated file would be worse\n");
-    fw_printf("  than a stated limit.\n\n");
-    fw_printf("  '..' in a path is refused rather than resolved.\n\n");
+    fw_printf("\n  httpd serves the device, or a directory as a website.\n\n");
+    fw_printf("    httpd [port]              the device: status, files, downloads\n");
+    fw_printf("    httpd site <dir> [port]   serve <dir> as a website\n");
+    fw_printf("    httpd bg [...]            the same, in the background\n");
+    fw_printf("    httpd stop                stop a background server\n");
+    fw_printf("    httpd status              what is running\n\n");
+    fw_printf("  DEVICE MODE exposes every file on the device, read-only, to\n");
+    fw_printf("  anyone who can reach the port, with no password. Do not run it\n");
+    fw_printf("  on a network you do not trust.\n\n");
+    fw_printf("  SITE MODE serves only what is under the directory given, and\n");
+    fw_printf("  none of the device routes exist. A request for '/' returns\n");
+    fw_printf("  <dir>/index.html; a request for '/x/' returns <dir>/x/index.html.\n");
+    fw_printf("  So:  httpd site /web    puts /web/index.html at the root.\n\n");
+    fw_printf("  Types come from the extension - .html .css .js .json .png .jpg\n");
+    fw_printf("  .gif .svg .ico .txt .md - and anything else is served as a\n");
+    fw_printf("  download.\n\n");
+    fw_printf("  Files are streamed in %d-byte pieces, so size is not a limit.\n", CHUNK);
+    fw_printf("  '..' in a path is refused rather than resolved, and in site\n");
+    fw_printf("  mode the root has to remain a prefix of what is served.\n\n");
+    fw_printf("  One connection at a time, served and closed.\n\n");
+}
+
+static void status(void) {
+    g_scratch[0] = 0;
+    fw_net_ip(g_scratch, sizeof(g_scratch));
+    if (!g_running) { fw_printf("\n  Not running.\n\n"); return; }
+    fw_printf("\n  Serving on http://%s:%u/\n", g_scratch, g_port);
+    if (g_root[0]) fw_printf("  Site root : %s\n", g_root);
+    else           fw_printf("  Device view (every file is readable).\n");
+    fw_printf("  Requests  : %u\n", g_served);
+    fw_printf("  %s\n\n", g_bg_pid >= 0 ? "In the background. 'httpd stop' ends it."
+                                         : "In the foreground.");
+}
+
+// Read "[site <dir>] [port]" out of the arguments, from `at` onward.
+static bool parse_where(int argc, char **argv, int at) {
+    g_root[0] = 0;
+    g_port = DEF_PORT;
+
+    if (at < argc && s_eq(argv[at], "site")) {
+        at++;
+        if (at >= argc) { fw_printf("Usage: httpd site <dir> [port]\n"); return false; }
+        s_cat(g_root, sizeof(g_root), argv[at++]);
+        // Trailing slash removed once, here, so every join below is the same.
+        unsigned n = s_len(g_root);
+        if (n > 1 && g_root[n - 1] == '/') g_root[n - 1] = 0;
+        if (!path_ok(g_root)) {
+            fw_printf("'%s' is not a usable directory path.\n", g_root);
+            return false;
+        }
+        if (fw_dir_count(g_root) < 0) {
+            fw_printf("'%s' cannot be read. Is it a directory?\n", g_root);
+            return false;
+        }
+    }
+
+    if (at < argc) {
+        unsigned v = 0;
+        const char *p = argv[at];
+        while (*p >= '0' && *p <= '9') v = v * 10 + (unsigned)(*p++ - '0');
+        if (*p || v == 0 || v > 65535) {
+            fw_printf("'%s' is not a port.\n", argv[at]);
+            return false;
+        }
+        g_port = v;
+    }
+    return true;
+}
+
+static void announce(void) {
+    g_scratch[0] = 0;
+    fw_net_ip(g_scratch, sizeof(g_scratch));
+    fw_printf("\n  Serving on http://%s:%u/\n", g_scratch, g_port);
+    if (g_root[0]) fw_printf("  Site root: %s  (/ is %s/index.html)\n", g_root, g_root);
+    else           fw_printf("  Every file on the device is readable from here.\n");
 }
 
 static int httpd_cmd(int argc, char **argv) {
-    if (argc >= 2 && s_eq(argv[1], "info")) { info(); return 0; }
+    if (argc >= 2 && s_eq(argv[1], "info"))   { info();   return 0; }
+    if (argc >= 2 && s_eq(argv[1], "status")) { status(); return 0; }
 
-    unsigned port = DEF_PORT;
-    if (argc >= 2) {
-        unsigned v = 0;
-        const char *p = argv[1];
-        while (*p >= '0' && *p <= '9') v = v * 10 + (unsigned)(*p++ - '0');
-        if (*p || v == 0 || v > 65535) {
-            fw_printf("Usage: httpd [port]   (or 'httpd info')\n");
-            return 1;
-        }
-        port = v;
+    if (argc >= 2 && s_eq(argv[1], "stop")) {
+        if (!g_running) { fw_printf("Not running.\n"); return 1; }
+        g_stop = true;
+        for (int i = 0; i < 40 && g_running; i++) fw_task_sleep_ms(100);
+        fw_printf(g_running ? "It has not stopped yet.\n" : "Stopped.\n");
+        return g_running ? 1 : 0;
     }
+
+    if (g_running) {
+        fw_printf("Already running. 'httpd status', or 'httpd stop' first.\n");
+        return 1;
+    }
+
+    bool bg = argc >= 2 && s_eq(argv[1], "bg");
+    if (!parse_where(argc, argv, bg ? 2 : 1)) return 1;
 
     if (!fw_net_connected()) {
         fw_printf("Not connected. Use 'wifi connect <ssid>' first.\n");
         return 1;
     }
 
-    int lsn = fw_tcp_listen(port);
+    g_stop = false;
+    g_served = 0;
+
+    if (bg) {
+        // Claimed before the task starts, so a second `httpd bg` in the gap
+        // before it runs is refused rather than opening a second listener.
+        g_running = true;
+        g_bg_pid = fw_task_spawn("httpd", bg_task, nullptr, 4096);
+        if (g_bg_pid < 0) {
+            g_running = false;
+            fw_printf("Could not start the background task.\n");
+            return 1;
+        }
+        announce();
+        fw_printf("  In the background. 'httpd stop' ends it.\n\n");
+        return 0;
+    }
+
+    int lsn = fw_tcp_listen(g_port);
     if (lsn < 0) {
-        fw_printf("Could not listen on port %u. It may already be in use.\n", port);
+        fw_printf("Could not listen on port %u. It may already be in use.\n", g_port);
         return 1;
     }
-
-    g_scratch[0] = 0;
-    fw_net_ip(g_scratch, sizeof(g_scratch));
-    fw_printf("\n  Serving on http://%s:%u/\n", g_scratch, port);
-    fw_printf("  Every file on the device is readable from here.\n");
+    announce();
     fw_printf("  Ctrl+C stops it.\n\n");
 
-    g_served = 0;
-    while (!fw_task_should_stop()) {
-        int c = fw_tcp_accept(lsn, ACCEPT_TICK);
-        if (c == -1) break;                 // the listener died
-        if (c == -2) continue;              // nothing waiting; check for Ctrl+C
-        serve(c);
-        fw_tcp_close(c);
-    }
-
-    fw_tcp_close(lsn);
+    accept_loop(lsn);
     fw_printf("\n  Stopped after %u request%s.\n\n", g_served, g_served == 1 ? "" : "s");
     return 0;
 }
 
 extern "C" int app_main(int arg) {
     (void)arg;
-    rpc_register_command("httpd", "serve the device over WiFi", httpd_cmd);
+    rpc_register_command("httpd", "serve the device or a directory over WiFi", httpd_cmd);
     return 0;
 }

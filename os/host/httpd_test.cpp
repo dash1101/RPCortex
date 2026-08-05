@@ -46,7 +46,19 @@ uint32_t fw_file_read(const char *, void *b, uint32_t cap) {
     memcpy(b, s, n);
     return n;
 }
-int  fw_dir_count(const char *) { return 1; }
+uint32_t fw_file_size(const char *) { return 9; }
+uint32_t fw_file_read_at(const char *, uint32_t off, void *b, uint32_t cap) {
+    const char *s = "file body";
+    uint32_t n = (uint32_t)strlen(s);
+    if (off >= n) return 0;
+    n -= off;
+    if (n > cap) n = cap;
+    memcpy(b, s + off, n);
+    return n;
+}
+void fw_task_sleep_ms(uint32_t) {}
+int  fw_task_spawn(const char *, TaskFn, void *, uint32_t) { return 7; }
+int  fw_dir_count(const char *p) { return (p && strcmp(p, "/nope") == 0) ? -1 : 1; }
 int  fw_dir_entry(const char *, unsigned i, FwDirEntry *o) {
     if (i) return 0;
     memset(o, 0, sizeof(*o));
@@ -186,6 +198,34 @@ int main(void) {
 
         split_target("/dl?path=%2Fos%2Fca.pem");
         ck(strcmp(g_arg, "/os/ca.pem") == 0, "an encoded argument is decoded");
+    }
+
+    // --- site mode: the root must stay a prefix ------------------------------
+    {
+        snprintf(g_root, sizeof(g_root), "%s", "/web");
+
+        ck(site_path("/"), "the site root resolves");
+        ck(strcmp(g_scratch, "/web/index.html") == 0, "and / is index.html");
+
+        ck(site_path("/style.css"), "a file under the root resolves");
+        ck(strcmp(g_scratch, "/web/style.css") == 0, "to the joined path");
+
+        ck(site_path("/sub/"), "a subdirectory resolves");
+        ck(strcmp(g_scratch, "/web/sub/index.html") == 0, "to its index");
+
+        // The whole point: nothing may escape the root. path_ok catches `..`
+        // before this is reached, and this is the second line of defence.
+        ck(!site_path("/../etc"), "a .. escape is refused");
+        ck(!site_path("/../../"), "a doubled .. escape is refused");
+
+        // A request that shares a PREFIX with the root but is not under it —
+        // /webfoo against a root of /web — must not be accepted. This is the
+        // classic off-by-one in a prefix check.
+        snprintf(g_root, sizeof(g_root), "%s", "/web");
+        site_path("foo/x");
+        ck(strncmp(g_scratch, "/web", 4) == 0, "the root is always the prefix");
+
+        g_root[0] = 0;   // back to device mode for the test below
     }
 
     // --- a directory listing, end to end -------------------------------------

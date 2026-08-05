@@ -697,6 +697,22 @@ static void dir_pick_cb(void *ctx, const char *name, bool is_dir, uint32_t size)
     p->found = true;
 }
 
+extern "C" uint32_t fw_file_read_at(const char *path, uint32_t offset,
+                                    void *buf, uint32_t cap) {
+    if (!ok_s(path) || !ok_w(buf, cap)) return 0;
+    task_alive();
+    return storage_read_at(path, offset, (uint8_t *)buf, cap);
+}
+
+extern "C" uint32_t fw_file_size(const char *path) {
+    if (!ok_s(path)) return 0;
+    task_alive();
+    bool is_dir = false;
+    uint32_t size = 0;
+    if (!storage_stat(path, &is_dir, &size) || is_dir) return 0;
+    return size;
+}
+
 extern "C" int fw_dir_count(const char *path) {
     if (!ok_s(path)) return -1;
     task_alive();
@@ -1190,6 +1206,8 @@ static const ApiSymbol kSymbols[] = {
     SYM(fw_http_download),
     SYM(fw_http_measure),
     SYM(fw_net_ping),
+    SYM(fw_file_read_at),
+    SYM(fw_file_size),
     SYM(fw_dir_count),
     SYM(fw_dir_entry),
     SYM(fw_tcp_listen),

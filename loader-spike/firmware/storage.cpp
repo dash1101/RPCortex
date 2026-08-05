@@ -326,6 +326,19 @@ static int lfs_source_read(void *ctx, uint32_t off, void *dst, uint32_t len) {
     return (int)n;
 }
 
+uint32_t storage_read_at(const char *name, uint32_t off, uint8_t *buf, uint32_t cap) {
+    if (!name || !buf || !cap) return 0;
+    AppSource src;
+    void *h = nullptr;
+    if (!storage_open_source(name, &src, &h)) return 0;
+    if (off >= src.size) { storage_close_source(h); return 0; }
+    uint32_t room = src.size - off;
+    if (cap > room) cap = room;
+    int n = src.read(src.ctx, off, buf, cap);
+    storage_close_source(h);
+    return n > 0 ? (uint32_t)n : 0;
+}
+
 bool storage_open_source(const char *name, AppSource *src, void **handle) {
     if (!g_mounted) return false;
     FileHandle *h = (FileHandle *)malloc(sizeof(FileHandle));
