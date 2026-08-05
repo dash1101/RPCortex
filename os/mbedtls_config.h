@@ -45,12 +45,34 @@
 // could have picked; the Brainpool and Koblitz curves, which no public CA uses;
 // and 192/224, which nothing has offered in a decade. What is left is what the
 // web actually runs on.
+// THE TWO FLAGS THAT DECIDE HOW FAST ELLIPTIC CURVE MATHS IS.
+//
+// Both are ON by default in mbedtls. This file is a full REPLACEMENT for the
+// library's config rather than an addition to it, so anything not repeated here
+// is lost — and these two were never repeated.
+//
+// MBEDTLS_ECP_NIST_OPTIM is the fast modular reduction for the NIST primes.
+// Without it every reduction on P-256 and P-384 goes through generic Montgomery
+// arithmetic. MBEDTLS_HAVE_ASM is the assembly multiply-accumulate underneath
+// the bignum layer; without it, pure C.
+//
+// Together they are worth several times the speed of a handshake, and the
+// handshake is what this device could not finish. en.wikipedia.org sends a
+// four-certificate chain needing three P-384 ECDSA verifications on top of the
+// key exchange; raw.githubusercontent.com sends three and costs less. That is
+// the whole difference between the host that worked and the host that did not.
+#define MBEDTLS_HAVE_ASM
+#define MBEDTLS_ECP_NIST_OPTIM
+
 #define MBEDTLS_ECP_DP_SECP256R1_ENABLED
 #define MBEDTLS_ECP_DP_SECP384R1_ENABLED
 #define MBEDTLS_ECP_DP_CURVE25519_ENABLED
 #define MBEDTLS_KEY_EXCHANGE_RSA_ENABLED
 #define MBEDTLS_PKCS1_V15
-#define MBEDTLS_SHA256_SMALLER
+// MBEDTLS_SHA256_SMALLER is deliberately NOT set. It trades speed for a few
+// hundred bytes, and SHA-256 runs over every certificate in a chain — the same
+// path that could not finish in time. The curve trim above gave back far more
+// flash than this costs.
 #define MBEDTLS_SSL_SERVER_NAME_INDICATION
 #define MBEDTLS_AES_C
 #define MBEDTLS_ASN1_PARSE_C

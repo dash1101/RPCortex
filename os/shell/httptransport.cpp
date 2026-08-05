@@ -65,7 +65,13 @@ bool http_tls_available(void);       // the shell's working directory (fs.cpp)
 // seconds against a watchdog that fires at eight, and every reboot in that
 // window arrived with no explanation. Giving up first means the failure is
 // reported by the code that knows what failed.
-#define CONNECT_MS    6000
+// Under the 16 s watchdog, with room for a slow chain.
+//
+// 6000 was chosen when the watchdog was 8000 and a handshake could not be
+// interrupted. It then became the thing that failed: with the ECC flags missing
+// the Wikipedia chain took longer than six seconds and this gave up on a
+// connection that was still working.
+#define CONNECT_MS    12000
 #define READ_MS       15000
 #define SEND_MS       10000
 
