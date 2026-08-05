@@ -62,6 +62,10 @@ static const char *kSystem[] = {
     "  date [set ...]       Show date/time, or 'date set YYYY-MM-DD HH:MM:SS'",
     "  ver / uname          Show OS version",
     "  reboot / sreboot     Restart the device",
+    "  update [check]       Check for and apply a firmware update",
+    "  power                Sleep, and what the board draws",
+    "  autonomy             Boot straight to a shell, with no login prompt",
+    "  radio                Lock every radio off, or release it",
     "  bootloader           Reboot into USB flashing mode (drag a .uf2 on)",
     "  sleep <secs>         Pause for the given number of seconds",
     "  which <cmd>          Show where a command is defined",
@@ -100,6 +104,8 @@ static const char *kPackages[] = {
     "  apps                 Packages resident in RAM right now",
     "  unload <name>        Unload a resident package",
     "  run <app.app> [arg]  Load and run an app without installing it",
+    "  pkgenable | pkgdisable <name>   Allow or stop a package loading at boot",
+    "  stock <name>         Restore a package built into the firmware",
     "  exec <app.app>       Same as run  (v1's verb)",
     "",
     "  Packages are compiled .app files, not source. Build one on the host",
@@ -114,6 +120,7 @@ static const char *kUsers[] = {
     "  usermod <user> passwd | admin on|off | nopass on|off",
     "  rmuser <username>       Remove an account",
     "  logout / exit           Return to the login prompt",
+    "  sudo <command>          Run one command as an admin",
 };
 
 static const char *kMisc[] = {
@@ -136,11 +143,42 @@ static const char *kTasks[] = {
     "  task start | stop    Start or stop the scheduler",
     "  service add <cmd>    A long-running command started at boot",
     "  watch [-n s] <cmd>   Re-run in the foreground until Ctrl+C",
+    "  script <file.rps>    Run a script",
+    "  edit <file>          Edit a file  (nano, vi and vim open the same one)",
     "",
     "  Tasks are cooperative: a kill takes effect at the task's next yield",
     "  point, where it is not holding a lock or part-way through a write.",
     "  A task that never yields cannot be killed — which is better than one",
     "  that can be torn down mid-write.",
+};
+
+static const char *kWeb[] = {
+    "  wget <url> [file]    Download a file over HTTP or HTTPS",
+    "  curl <url>           Fetch a URL and print it",
+    "  runurl <url>         Fetch a script and run it",
+    "",
+    "  Root certificates ship with the firmware, so https:// works on a device",
+    "  that has never been set up. The web SERVER is a package: 'pkg install",
+    "  httpd', then 'httpd --root /web' to serve a directory.",
+};
+
+static const char *kRecovery[] = {
+    "  diag                 System state, and whether the last run crashed",
+    "  logdump              The log ring -- it survives a reboot",
+    "  logdump save <file>  Write it out",
+    "  mpu                  What the memory protection is enforcing",
+    "  compat               What this board actually supports",
+    "  inputstat            The bytes this terminal is sending",
+    "",
+    "  safeboot             Restart with no services, startup commands or packages",
+    "  fscheck              Check and repair the OS layout",
+    "  regreset             Restore every setting to its default",
+    "  factoryreset         Erase all data and restart",
+    "  pkgdisable <name>    Stop one package loading at boot, without removing it",
+    "",
+    "  In that order: safeboot and fscheck cost nothing, regreset costs your",
+    "  settings, factoryreset costs everything. If none of them reach a prompt,",
+    "  hold BOOTSEL and reflash -- that depends on nothing being correct.",
 };
 
 static const char *kShell[] = {
@@ -176,6 +214,10 @@ static const Category kCategories[] = {
         "help  history  fetch  alias  unalias"),
     CAT(kTasks, "tasks", "Tasks & automation",
         "ps  kill  bg  startup  task  service  watch"),
+    CAT(kWeb, "web", "The Web",
+        "wget  curl  runurl"),
+    CAT(kRecovery, "recovery", "Diagnostics & Recovery",
+        "diag  logdump  mpu  compat  safeboot  fscheck  regreset  factoryreset"),
     CAT(kShell, "shell", "Shell Syntax",
         "pipes |   chaining && ||   sequencing ;   redirect > >>"),
 };
@@ -216,7 +258,8 @@ static int cmd_help(int argc, char **argv) {
         for (unsigned i = 0; i < N_CATEGORIES; i++) print_index_line(&kCategories[i]);
         out_blank();
         out_multi("  Type 'help <category>' for details, or 'help all' for every command.");
-        out_multi("  Categories: filesystem  text  system  network  packages  users  tasks  misc  shell");
+        out_multi("  Categories: filesystem  text  system  network  web  packages");
+        out_multi("              users  tasks  recovery  misc  shell");
         return 0;
     }
 

@@ -5,9 +5,8 @@
 // Nova D1's networking want the same five, which is why this is a socket
 // interface and not an HTTP one.
 //
-// DEVICE-UNCONFIRMED: written against the lwIP raw API and the SDK's
-// threadsafe_background locking rules, and compiled for all four boards, but no
-// hardware has run it yet.
+// CONFIRMED on a Pico 2 W: the httpd package serves a directory listing and a
+// site root through these five calls, to a real browser.
 //
 // --- handles, not pointers --------------------------------------------------
 //

@@ -2,12 +2,10 @@
 //
 // core/httpfetch.cpp decides what happens; this only moves bytes. Keeping the
 // split that sharp is what let redirects, size caps, truncation and a full
-// filesystem all be tested on a host with no radio in it. What is unproven
-// until a board runs it is this file, and it is deliberately the small one.
+// filesystem all be tested on a host with no radio in it.
 //
-// DEVICE-UNCONFIRMED: written against the lwIP raw API and the SDK's
-// threadsafe_background locking rules, and compiled for all four boards, but no
-// hardware has run it yet.
+// CONFIRMED on a Pico 2 W: `wget` and `curl` over HTTPS, and the websearch and
+// speedtest packages, which reach the wider web rather than one known server.
 //
 // Two things this has to get right, both of which have bitten elsewhere in this
 // tree already:
