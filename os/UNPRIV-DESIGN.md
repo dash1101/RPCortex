@@ -222,3 +222,32 @@ checked when passed, and they stay valid as long as the package is loaded — bu
 nothing rechecks them at use, so unloading a package while its commands are
 still registered would leave them dangling. That is an existing lifetime
 question rather than a new one, and it is not what this pass was about.
+
+## Tasks a package spawns
+
+A package escaped its own sandbox by asking for a second thread, and it did not
+have to try.
+
+`task_spawn` starts every task with `app_mem_set` false. So a task created
+through `fw_task_spawn` ran with the OS's own privileges, and — because the
+pointer checks read the CALLING task's regions and it had none — every pointer
+it handed the ABI passed unchecked as well. Both halves of the sandbox came off
+at once, for a package doing something entirely ordinary.
+
+The task now starts in a shim that re-enters the package's sandbox before
+calling anything: its own stack, its own arena from the pool, the same code and
+data regions, unprivileged. The cost is one table entry and one stack frame.
+
+Worth stating as a principle, because it is the thing that was wrong rather than
+the code: **the sandbox is a property of the package, not of the call that
+entered it.** Anything that starts package code has to establish it, and there
+are only two such places — running a command, and spawning a task.
+
+Two edges, both deliberate:
+
+- A package unloaded between the spawn and the task's first turn finds no image
+  and the task ends. Running the code then would be running code the heap has
+  already taken back.
+- With no table slot left, `fw_task_spawn` REFUSES rather than falling back to
+  an ordinary task. A package that gets an unsandboxed thread because a table
+  was full is worse than one that gets an error it can report.

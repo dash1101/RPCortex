@@ -409,6 +409,76 @@ int app_run(const LoadedApp *app, int (*fn)(int), int arg) {
     return ret;
 }
 
+// --- tasks a package spawns --------------------------------------------------
+//
+// A package that called fw_task_spawn used to escape its own sandbox, and it
+// did not have to try: task_spawn starts every task with app_mem_set false, so
+// the new task ran with the OS's own privileges AND with no regions registered
+// — which meant every pointer it handed the ABI passed unchecked as well,
+// because the checks read the calling task's regions and there were none.
+//
+// So a sandboxed package got out of the sandbox by asking for a second thread.
+//
+// The task now starts in a shim that re-enters the package's sandbox first: its
+// own stack, its own arena, the same code and data regions, unprivileged. The
+// entry costs one table slot and one extra frame, and it is the difference
+// between the sandbox being a property of the package and a property of
+// whichever call happened to enter it.
+struct PkgTask {
+    bool   used;
+    void  *image;          // which package it belongs to
+    int  (*fn)(int);
+    int    arg;
+};
+static PkgTask g_pkg_tasks[8];
+
+// Run fn(arg) inside the sandbox of the package that owns `image`.
+static bool run_in_image(void *image, int (*fn)(int), int arg, int *ret) {
+    for (int i = 0; i < APPS_MAX; i++) {
+        if (!g_used[i] || g_apps[i].image != image) continue;
+        *ret = app_run(&g_apps[i], fn, arg);
+        return true;
+    }
+    return false;
+}
+
+static int pkg_task_shim(void *v) {
+    PkgTask *e = (PkgTask *)v;
+    int r = 0;
+    if (!run_in_image(e->image, e->fn, e->arg, &r)) {
+        // The package was unloaded between the spawn and this task getting a
+        // turn. Running its code now would be running code the heap has taken
+        // back, so the task simply ends.
+        r = -1;
+    }
+    e->used = false;
+    return r;
+}
+
+// Spawn a task that will run package code, inside that package's sandbox.
+//
+// Returns -1 when the caller is not inside a package, so fw_task_spawn can fall
+// back to an ordinary task — the shell and the OS's own code spawn tasks too.
+extern "C" int apps_spawn_in_sandbox(const char *name, int (*fn)(int), void *arg,
+                                     uint32_t stack) {
+    TaskAppMem m;
+    if (!task_app_mem_get(&m) || !m.text) return -1;
+
+    for (unsigned i = 0; i < sizeof(g_pkg_tasks) / sizeof(g_pkg_tasks[0]); i++) {
+        if (g_pkg_tasks[i].used) continue;
+        g_pkg_tasks[i].used  = true;
+        g_pkg_tasks[i].image = (void *)m.text;
+        g_pkg_tasks[i].fn    = fn;
+        g_pkg_tasks[i].arg   = (int)(uintptr_t)arg;
+        int pid = task_spawn(name, "(package)", pkg_task_shim, &g_pkg_tasks[i],
+                             stack ? stack : TASK_STACK_DEF, AFFINITY_ANY);
+        if (pid < 0) g_pkg_tasks[i].used = false;
+        return pid;
+    }
+    return -1;      // no slot: the caller reports the failure rather than
+                    // quietly spawning something unprotected
+}
+
 bool app_run_owner(const void *owner, int (*fn)(int, char **), int argc,
                    char **argv, int *ret) {
     if (!owner) return false;

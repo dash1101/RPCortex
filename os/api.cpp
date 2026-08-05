@@ -155,8 +155,26 @@ extern "C" int rpc_register_command(const char *name, const char *help,
 // the background, keep state on disk, and see what memory it is using — added
 // as a MINOR bump, so every existing package still loads.
 
+extern "C" int apps_spawn_in_sandbox(const char *name, int (*fn)(int), void *arg,
+                                     uint32_t stack);
+
 extern "C" int fw_task_spawn(const char *name, TaskFn fn, void *arg, uint32_t stack) {
     if (!ok_s(name)) return -1;
+
+    // Inside a sandboxed package, the new task goes into the SAME sandbox.
+    //
+    // Without this a package escaped simply by asking for a second thread:
+    // task_spawn starts every task with no regions registered, so the new one
+    // ran privileged and every pointer it passed went unchecked. The sandbox
+    // has to be a property of the package, not of whichever call entered it.
+    int pid = apps_spawn_in_sandbox(name, (int (*)(int))fn, arg, stack);
+    if (pid >= 0) return pid;
+    // Not inside a package, or no slot left. The first is the shell and the OS
+    // spawning their own tasks, which is ordinary; the second is a refusal, and
+    // task_spawn below will not paper over it because the caller is then not a
+    // package either.
+    if (task_app_mem_current()) return -1;
+
     // A package's task is AFFINITY_ANY, so it uses the second core when there is
     // one and the first when there is not. A package should never have to know.
     return task_spawn(name, "(package)", fn, arg,
