@@ -25,6 +25,9 @@ declare -A SRC=(
     [repoindex_test]="$CORE/repoindex.cpp"
     [preempt_test]="$CORE/preempt.cpp"
     [mpu_test]="$CORE/mpu.cpp"
+    # The package source is INCLUDED by the test rather than linked: its scanners
+    # are static, and they are the part that fails without saying so.
+    [websearch_test]=""
     [arena_test]="$CORE/arena.cpp"
     [fatview_test]="$CORE/fatview.cpp"
     [fatimage_test]="$CORE/fatview.cpp"

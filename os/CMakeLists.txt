@@ -332,6 +332,7 @@ rpc_add_app(greet)
 rpc_add_app(tuidemo)
 rpc_add_app(stress)
 rpc_add_app(bench)
+rpc_add_app(websearch)
 
 # --- packages that ship installed -------------------------------------------
 #
