@@ -67,6 +67,24 @@ static void describe(const LoadedApp *a, TaskAppMem *m) {
 // here. That is why it is sized like any other task's stack and not like a
 // scratch buffer.
 #define PKG_STACK_BYTES  TASK_STACK_DEF
+
+// What the FIRMWARE needs on top of whatever the package asked for.
+//
+// An ABI call does not switch stacks: sandbox_svc raises privilege and the
+// firmware function runs on the package's own stack. So `fw_file_write` runs
+// littlefs there, `fw_printf` runs vsnprintf there — and vsnprintf alone wants
+// over a kilobyte. None of that is the package's to predict, and asking authors
+// to budget for the internals of calls they make is asking them to guess.
+//
+// This was invisible until the sandbox gave the stack an MPU region. Before
+// that a package overflowing its stack wrote quietly into whatever the heap had
+// put below it and nothing complained; now the region ends and the hardware
+// says so — which is the protection working, not a new fault. The crash it
+// surfaced (MSTKERR: an interrupt arriving with no room to stack its frame) had
+// been a silent heap corruption in every build before this one.
+//
+// Two kilobytes covers littlefs and a formatted print with room to spare.
+#define FW_CALL_RESERVE  2048
 // Sized from what a package actually asks for, not from what felt tidy.
 //
 // 2 KB was a guess and `stress` broke it immediately: it allocates 24 blocks of
@@ -133,6 +151,9 @@ static bool sandbox_alloc(SandboxAlloc *sa, TaskAppMem *m, uint32_t stack_bytes)
     memset(sa, 0, sizeof(*sa));
     MpuBlockPlan sp, ap;
     if (stack_bytes < PKG_STACK_BYTES) stack_bytes = PKG_STACK_BYTES;
+    // The reserve is added HERE rather than at each caller, so there is one
+    // place that knows the firmware shares this stack.
+    stack_bytes += FW_CALL_RESERVE;
     if (!mpu_v8_plan_block(stack_bytes, &sp)) return false;
     if (!mpu_v8_plan_block(PKG_ARENA_BYTES, &ap)) return false;
 
@@ -163,7 +184,10 @@ static void sandbox_free(SandboxAlloc *sa) {
 // Fill `m` from a slot that is already allocated.
 static void sandbox_describe_from(const SandboxAlloc *sa, TaskAppMem *m) {
     MpuBlockPlan sp, ap;
-    mpu_v8_plan_block(PKG_STACK_BYTES, &sp);
+    // Must match what sandbox_alloc planned for a pooled block, reserve and all
+    // — a region shorter than the allocation would put the end of the stack
+    // outside it, which is the fault this reserve exists to prevent.
+    mpu_v8_plan_block(PKG_STACK_BYTES + FW_CALL_RESERVE, &sp);
     mpu_v8_plan_block(PKG_ARENA_BYTES, &ap);
     m->stack      = sa->stack;
     m->stack_size = sp.region_bytes;

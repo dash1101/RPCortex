@@ -251,3 +251,25 @@ Two edges, both deliberate:
 - With no table slot left, `fw_task_spawn` REFUSES rather than falling back to
   an ordinary task. A package that gets an unsandboxed thread because a table
   was full is worse than one that gets an error it can report.
+
+## An ABI call runs on the package's stack
+
+`sandbox_svc` raises privilege and lets the firmware function run where it
+stands. It does not switch stacks. So `fw_file_write` runs littlefs on the
+package's stack, and `fw_printf` runs vsnprintf there — and vsnprintf alone
+wants over a kilobyte.
+
+None of that is the package's to predict. Asking an author to budget for the
+internals of calls they make is asking them to guess, and they will guess low.
+So the OS adds its own reserve on top of whatever was requested, in one place,
+where it can say why.
+
+**This was invisible before the sandbox existed.** A package overflowing its
+stack wrote quietly into whatever the heap had put below it, and nothing
+complained — the allocator's next customer got corrupted memory and the blame
+landed somewhere else entirely. Giving the stack an MPU region turned that into
+a fault at the instruction that did it, which is the whole point of the region,
+and the first thing it caught was an overflow that had been happening all along.
+
+Worth remembering as a shape: **new protection does not create the bugs it
+reports.** The first crashes after adding a check are usually the check working.
