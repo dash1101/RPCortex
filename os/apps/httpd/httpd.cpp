@@ -57,6 +57,8 @@ static char g_scratch[PATH_MAX];
 // first thing put_html did was clear its own argument, and every filename came
 // out empty. Found by httpd_test rather than by looking at a page.
 static char g_esc[PATH_MAX];
+// The name a download should be saved as. Empty for anything that is not one.
+static char g_dl_name[FW_NAME_MAX];
 static unsigned g_served;
 
 // --- what this instance is serving -------------------------------------------
@@ -236,6 +238,13 @@ static bool put_html(int c, const char *s) {
 // Same as head(), plus a length. A browser that knows the size can show
 // progress and knows the transfer finished, rather than inferring it from the
 // connection closing.
+// The last component of a path, for naming a download.
+static const char *base_name(const char *path) {
+    const char *b = path;
+    for (const char *p = path; *p; p++) if (*p == '/') b = p + 1;
+    return b;
+}
+
 static bool head_len(int c, const char *status, const char *ctype, uint32_t len) {
     g_out[0] = 0;
     s_cat(g_out, OUT_MAX, "HTTP/1.1 ");
@@ -244,6 +253,19 @@ static bool head_len(int c, const char *status, const char *ctype, uint32_t len)
     s_cat(g_out, OUT_MAX, ctype);
     s_cat(g_out, OUT_MAX, "\r\nContent-Length: ");
     s_cat_uint(g_out, OUT_MAX, len);
+    // NAME IT. Without this a browser saves the last path segment, which for
+    // /dl?path=/x/y.txt is "dl" — the route, not the file. The name is quoted
+    // and the quotes in it are dropped rather than escaped: a filename cannot
+    // be allowed to close the header field it is sitting in.
+    if (g_dl_name[0]) {
+        s_cat(g_out, OUT_MAX, "\r\nContent-Disposition: inline; filename=\"");
+        for (const char *p = g_dl_name; *p; p++) {
+            if (*p == '"' || *p == '\\' || (unsigned char)*p < 0x20) continue;
+            char one[2] = { *p, 0 };
+            s_cat(g_out, OUT_MAX, one);
+        }
+        s_cat(g_out, OUT_MAX, "\"");
+    }
     s_cat(g_out, OUT_MAX, "\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n");
     return flush(c);
 }
@@ -300,6 +322,7 @@ static const char *kStyle =
     "code{color:#9fe}</style>";
 
 static bool page_top(int c, const char *title) {
+    g_dl_name[0] = 0;
     if (!head(c, "200 OK", "text/html; charset=utf-8")) return false;
     if (!put(c, "<!doctype html><meta charset=utf-8><meta name=viewport "
                 "content=\"width=device-width,initial-scale=1\"><title>")) return false;
@@ -385,6 +408,8 @@ static bool page_dir(int c, const char *path) {
 // whole — g_req is reused for the body once the request has been parsed out of
 // it.
 static bool page_file(int c, const char *path, const char *ctype) {
+    g_dl_name[0] = 0;
+    s_cat(g_dl_name, sizeof(g_dl_name), base_name(path));
     if (!fw_file_exists(path)) {
         if (!head(c, "404 Not Found", "text/plain")) return false;
         return send_str(c, "no such file\r\n");
@@ -405,6 +430,7 @@ static bool page_file(int c, const char *path, const char *ctype) {
 }
 
 static bool page_404(int c) {
+    g_dl_name[0] = 0;
     if (!head(c, "404 Not Found", "text/html; charset=utf-8")) return false;
     return put(c, "<!doctype html><meta charset=utf-8>") && put(c, kStyle)
         && put(c, "<h1>Not found</h1><p><a href=\"/\">status</a></p>") && flush(c);

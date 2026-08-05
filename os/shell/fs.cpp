@@ -160,14 +160,191 @@ static int cmd_mkdir(int argc, char **argv) {
     return 0;
 }
 
+// --- rm ----------------------------------------------------------------------
+//
+// Three things beyond "delete one file", all of which were reported from a
+// board and all of which are the same complaint: the shell made the easy thing
+// hard.
+
+// Does `name` match a pattern containing '*'? One star, matched as a prefix and
+// a suffix, which covers `*.txt`, `log*` and `*` itself. A full glob would be
+// more code than the thing it selects.
+static bool glob_match(const char *pat, const char *name) {
+    const char *star = nullptr;
+    for (const char *p = pat; *p; p++) if (*p == '*') { star = p; break; }
+    // Exact, because the device filesystem IS case-sensitive: /Packages and
+    // /packages are different directories, and a wildcard that pretended
+    // otherwise would delete the wrong one.
+    if (!star) return strcmp(pat, name) == 0;
+
+    size_t pre = (size_t)(star - pat);
+    size_t nlen = strlen(name), slen = strlen(star + 1);
+    if (nlen < pre + slen) return false;
+    for (size_t i = 0; i < pre; i++) if (pat[i] != name[i]) return false;
+    for (size_t i = 0; i < slen; i++)
+        if (star[1 + i] != name[nlen - slen + i]) return false;
+    return true;
+}
+
+// Remove a directory and everything under it, depth first. Bounded by the
+// filesystem's own nesting rather than by recursion here: each level walks its
+// children into a local list before descending, so the walk is never held open
+// across a remove — storage_walk holds the filesystem lock across its callback,
+// which is #82, and removing from inside it would deadlock.
+struct RmScan { char names[24][64]; bool dirs[24]; int n; };
+
+static void rm_scan_cb(void *ctx, const char *name, bool is_dir, uint32_t) {
+    RmScan *s = (RmScan *)ctx;
+    if (s->n >= 24) return;
+    snprintf(s->names[s->n], sizeof(s->names[0]), "%s", name);
+    s->dirs[s->n] = is_dir;
+    s->n++;
+}
+
+static bool rm_tree(const char *path, unsigned depth, unsigned *removed) {
+    // A filesystem cannot nest deeper than this without something being wrong,
+    // and the recursion below runs on the shell's stack.
+    if (depth > 12) return false;
+
+    bool is_dir = false;
+    if (!storage_stat(path, &is_dir, nullptr)) return false;
+    if (!is_dir) {
+        if (!storage_remove(path)) return false;
+        (*removed)++;
+        return true;
+    }
+
+    for (;;) {
+        RmScan scan;
+        scan.n = 0;
+        if (!storage_walk(path, rm_scan_cb, &scan)) return false;
+        if (!scan.n) break;                       // empty: fall through and remove it
+        for (int i = 0; i < scan.n; i++) {
+            char child[192];
+            snprintf(child, sizeof(child), "%s%s%s", path,
+                     path[strlen(path) - 1] == '/' ? "" : "/", scan.names[i]);
+            if (!rm_tree(child, depth + 1, removed)) return false;
+            if (intr_check()) return false;
+        }
+        // Round again: the scan holds at most 24 names, so a wide directory
+        // takes several passes rather than a bigger buffer.
+    }
+    if (!storage_remove(path)) return false;
+    (*removed)++;
+    return true;
+}
+
+// Say what is actually wrong. "(directory not empty?)" was printed for every
+// failure, including a file that simply is not there — which sent people
+// looking for a directory that did not exist.
+static void rm_explain(const char *path) {
+    bool is_dir = false;
+    if (!storage_stat(path, &is_dir, nullptr)) {
+        out_err("There is no '%s'.", path);
+        return;
+    }
+    if (is_dir) {
+        out_err("'%s' is not empty. Use 'rm -r %s' to remove it and its "
+                "contents.", path, path);
+        return;
+    }
+    out_err("Could not remove '%s'.", path);
+}
+
 static int cmd_rm(int argc, char **argv) {
-    if (argc < 2) { out_multi("Usage: rm <path>"); return 1; }
-    char path[128]; resolve(argv[1], path, sizeof(path));
-    // A bare `rm` on a non-empty directory fails at the littlefs level rather
-    // than recursively deleting — deleting a tree from a shell should be a
-    // deliberate, separate act, not a silent side effect.
-    if (!storage_remove(path)) { out_err("Could not remove %s  (directory not empty?)", path); return 1; }
-    return 0;
+    bool recurse = false;
+    int at = 1;
+    while (at < argc && (strcmp(argv[at], "-r") == 0 || strcmp(argv[at], "-rf") == 0)) {
+        recurse = true;
+        at++;
+    }
+    if (at >= argc) {
+        out_multi("Usage: rm [-r] <path>...");
+        out_multi("  rm -r /dir        remove a directory and everything in it");
+        out_multi("  rm /dir/*         remove everything in /dir, keeping /dir");
+        out_multi("  rm \"a name.txt\"   quote a name containing spaces");
+        return 1;
+    }
+
+    // A NAME WITH SPACES, unquoted. The shell already understands quotes, and
+    // this does not replace them — it only rescues the case where the joined
+    // arguments name something that actually exists, which cannot be ambiguous
+    // because the alternative reading refers to nothing.
+    if (!recurse && argc - at > 1) {
+        char joined[128];
+        joined[0] = 0;
+        for (int i = at; i < argc; i++) {
+            if (i > at) strncat(joined, " ", sizeof(joined) - strlen(joined) - 1);
+            strncat(joined, argv[i], sizeof(joined) - strlen(joined) - 1);
+        }
+        char full[160];
+        resolve(joined, full, sizeof(full));
+        if (storage_stat(full, nullptr, nullptr)) {
+            if (!storage_remove(full)) { rm_explain(full); return 1; }
+            return 0;
+        }
+    }
+
+    int failed = 0;
+    for (int i = at; i < argc; i++) {
+        char path[160];
+        resolve(argv[i], path, sizeof(path));
+
+        // A WILDCARD. Split the last component off and match it against the
+        // directory's entries; everything else is an ordinary path.
+        char *last = path;
+        for (char *p = path; *p; p++) if (*p == '/') last = p + 1;
+        bool has_star = false;
+        for (char *p = last; *p; p++) if (*p == '*') { has_star = true; break; }
+
+        if (has_star) {
+            char pat[64];
+            snprintf(pat, sizeof(pat), "%s", last);
+            // The directory: the path up to the last slash, or root.
+            if (last == path) { path[0] = '/'; path[1] = 0; }
+            else if (last - path > 1) last[-1] = 0;
+            else path[1] = 0;
+
+            unsigned removed = 0;
+            for (;;) {
+                RmScan scan;
+                scan.n = 0;
+                if (!storage_walk(path, rm_scan_cb, &scan)) {
+                    out_err("Cannot read '%s'.", path);
+                    failed++;
+                    break;
+                }
+                int hit = 0;
+                for (int k = 0; k < scan.n; k++) {
+                    if (!glob_match(pat, scan.names[k])) continue;
+                    hit++;
+                    char child[192];
+                    snprintf(child, sizeof(child), "%s%s%s", path,
+                             path[strlen(path) - 1] == '/' ? "" : "/", scan.names[k]);
+                    // A directory caught by a wildcard is removed whole. `rm
+                    // /dir/*` that stopped at the first subdirectory would be
+                    // the same complaint again.
+                    if (!rm_tree(child, 0, &removed)) { rm_explain(child); failed++; }
+                    if (intr_check()) { hit = 0; break; }
+                }
+                if (!hit) break;
+            }
+            if (!removed && !failed) out_multi("Nothing matched '%s'.", pat);
+            else if (removed) out_multi("Removed %u item%s.", removed,
+                                        removed == 1 ? "" : "s");
+            continue;
+        }
+
+        if (recurse) {
+            unsigned removed = 0;
+            if (!rm_tree(path, 0, &removed)) { rm_explain(path); failed++; }
+            else out_multi("Removed %u item%s.", removed, removed == 1 ? "" : "s");
+            continue;
+        }
+
+        if (!storage_remove(path)) { rm_explain(path); failed++; }
+    }
+    return failed ? 1 : 0;
 }
 
 static int cmd_mv(int argc, char **argv) {
@@ -400,7 +577,7 @@ void fs_register(void) {
         {"ls",     "list a directory",            cmd_ls,     nullptr},
         {"cat",    "print a file",                cmd_cat,    nullptr},
         {"mkdir",  "make a directory",            cmd_mkdir,  nullptr},
-        {"rm",     "remove a file or empty dir",  cmd_rm,     nullptr},
+        {"rm",     "remove files; -r for a whole directory", cmd_rm, nullptr},
         {"mv",     "move a file",                 cmd_mv,     nullptr},
         {"cp",     "copy a file",                 cmd_cp,     nullptr},
         {"rename", "rename in place",             cmd_rename, nullptr},

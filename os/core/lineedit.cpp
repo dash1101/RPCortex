@@ -143,7 +143,14 @@ int line_decode_escape(const char *seq, uint32_t len) {
 // --- the interactive loop ---------------------------------------------------
 
 #define COMP_MAX     16      // candidates shown / considered at once
-#define COMP_LEN     40
+// Long enough for a real filename, and then some.
+//
+// 40 silently truncated anything longer, which reads as "completion does not
+// fill in the whole name" — and it is not obvious that the shell is the thing
+// at fault rather than the file. littlefs allows 255; 96 covers every name a
+// person types and keeps the two buffers below off the wrong side of a shell
+// stack.
+#define COMP_LEN     96
 // An escape sequence longer than this is not one we handle; the cap stops a
 // stream of junk from being mistaken for a key that never terminates.
 #define ESC_MAX      12

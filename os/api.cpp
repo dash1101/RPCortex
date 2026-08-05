@@ -14,6 +14,7 @@
 #include "storage.h"
 #include "logring.h"
 #include "blackbox.h"
+#include "interrupt.h"
 
 #include <string.h>
 #include <stdlib.h>
@@ -189,7 +190,18 @@ extern "C" int fw_task_spawn(const char *name, TaskFn fn, void *arg, uint32_t st
 extern "C" void fw_task_yield(void)            { task_yield(); }
 extern "C" void fw_task_sleep_ms(uint32_t ms)  { task_sleep_ms(ms); }
 extern "C" int  fw_task_self(void)             { return task_self(); }
-extern "C" int  fw_task_should_stop(void)      { return task_should_stop() ? 1 : 0; }
+// CTRL+C, not just the stop flag.
+//
+// This returned task_should_stop() alone, which is only set when something
+// calls task_kill. Ctrl+C is folded in by intr_check, and a package cannot
+// call that — so no package loop has ever been able to see Ctrl+C. httpd ran
+// until the connection died, havoc's spin could not be interrupted, and the
+// header's promise that "any loop that runs for a while must check it" was
+// true of the wrong thing.
+//
+// intr_check yields as well, which is the other half of what a long loop in a
+// package should be doing at the point it asks.
+extern "C" int  fw_task_should_stop(void)      { return intr_check() ? 1 : 0; }
 extern "C" int  fw_task_kill(int pid)          { return task_kill(pid) ? 1 : 0; }
 extern "C" uint32_t fw_cores(void)             { return task_core_count(); }
 

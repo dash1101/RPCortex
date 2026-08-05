@@ -122,11 +122,41 @@ struct CompleteWalk {
     bool        found;
 };
 
+// Case-INSENSITIVE matching, and the whole name.
+//
+// The filesystem is case-sensitive and that is not negotiable — /Packages and
+// /packages are different directories. But matching what somebody TYPED is a
+// different job from deciding which file they meant, and requiring the capital
+// before offering the name helps nobody: they are asking the shell to tell them
+// what the name is.
+//
+// The completion inserted is the real name, so the case-sensitivity of the
+// filesystem is preserved exactly. Only the comparison is relaxed.
+static bool prefix_matches(const char *name, const char *prefix) {
+    for (size_t i = 0; prefix[i]; i++) {
+        char a = name[i], b = prefix[i];
+        if (!a) return false;
+        if (a >= 'A' && a <= 'Z') a = (char)(a - 'A' + 'a');
+        if (b >= 'A' && b <= 'Z') b = (char)(b - 'A' + 'a');
+        if (a != b) return false;
+    }
+    return true;
+}
+
 static void complete_offer(CompleteWalk *w, const char *name, bool is_dir) {
     if (w->found) return;
-    if (strncmp(name, w->prefix, strlen(w->prefix)) != 0) return;
+    if (!prefix_matches(name, w->prefix)) return;
     if (w->seen++ != w->want) return;
-    snprintf(w->out, w->cap, "%s%s", name, is_dir ? "/" : "");
+
+    // A NAME WITH SPACES COMES BACK QUOTED, because the line it is going into
+    // is about to be split on spaces. Completing `New Text Document.txt` into
+    // three arguments is what made the name look like it had not been completed
+    // at all — the whole thing was there, and then taken apart again.
+    bool spaced = false;
+    for (const char *p = name; *p; p++) if (*p == ' ') { spaced = true; break; }
+
+    if (spaced) snprintf(w->out, w->cap, "\"%s%s\"", name, is_dir ? "/" : "");
+    else        snprintf(w->out, w->cap, "%s%s",      name, is_dir ? "/" : "");
     w->found = true;
 }
 
