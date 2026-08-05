@@ -251,26 +251,53 @@ extern "C" void mpu_dump_live(unsigned sp) {
     (void)sp;
     printf("    mpu: ARMv6-M, app regions not enforced here\n");
 #else
+    // SNAPSHOT FIRST, print second, with interrupts off across the read.
+    //
+    // Printing goes over USB, which is serviced by a task, which means another
+    // task can be scheduled in the middle of the dump — and reprogram the very
+    // registers being read. The first version of this printed as it went and
+    // produced a region whose base came from one task and whose limit came from
+    // another: eighty-three kilobytes of arena where twelve were allocated, and
+    // an overlap that was never really there.
+    //
+    // A torn read of the thing you are debugging is worse than no read, because
+    // it looks like evidence.
+    uint32_t ctrl;
+    uint32_t rbar[8], rlar[8];
+    {
+        uint32_t primask;
+        __asm volatile ("mrs %0, primask \n cpsid i" : "=r"(primask) :: "memory");
+        ctrl = mpu_hw->ctrl;
+        for (uint32_t r = 0; r < 8; r++) {
+            mpu_hw->rnr = r;
+            rbar[r] = mpu_hw->rbar;
+            rlar[r] = mpu_hw->rlar;
+        }
+        if (!primask) __asm volatile ("cpsie i" ::: "memory");
+    }
+
     printf("    mpu ctrl=0x%08lx  (enabled=%lu privdefena=%lu)\n",
-           (unsigned long)mpu_hw->ctrl,
-           (unsigned long)(mpu_hw->ctrl & 1u),
-           (unsigned long)((mpu_hw->ctrl >> 2) & 1u));
+           (unsigned long)ctrl, (unsigned long)(ctrl & 1u),
+           (unsigned long)((ctrl >> 2) & 1u));
 
     bool covered = false;
+    uint32_t hits = 0;
     for (uint32_t r = 0; r < 8; r++) {
-        mpu_hw->rnr = r;
-        uint32_t rbar = mpu_hw->rbar, rlar = mpu_hw->rlar;
-        if (!(rlar & 1u)) continue;                     // not enabled
-        uint32_t base  = rbar & ~0x1Fu;
-        uint32_t limit = (rlar & ~0x1Fu) | 0x1Fu;       // inclusive last byte
+        if (!(rlar[r] & 1u)) continue;                  // not enabled
+        uint32_t base  = rbar[r] & ~0x1Fu;
+        uint32_t limit = (rlar[r] & ~0x1Fu) | 0x1Fu;    // inclusive last byte
         bool has = sp >= base && sp <= limit;
-        if (has) covered = true;
-        printf("    region %lu: 0x%08lx..0x%08lx ap=%lu xn=%lu%s\n",
+        if (has) { covered = true; hits++; }
+        printf("    region %lu: 0x%08lx..0x%08lx (%lu B) ap=%lu xn=%lu%s\n",
                (unsigned long)r, (unsigned long)base, (unsigned long)limit,
-               (unsigned long)((rbar >> 1) & 3u), (unsigned long)(rbar & 1u),
+               (unsigned long)(limit - base + 1),
+               (unsigned long)((rbar[r] >> 1) & 3u), (unsigned long)(rbar[r] & 1u),
                has ? "   <- sp is here" : "");
     }
     if (!covered)
         printf("    NO ENABLED REGION COVERS SP — that is the fault, not a size\n");
+    if (hits > 1)
+        printf("    %lu REGIONS OVERLAP AT SP — ARMv8-M calls that UNPREDICTABLE\n",
+               (unsigned long)hits);
 #endif
 }

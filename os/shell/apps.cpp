@@ -33,6 +33,20 @@ static LoadedApp *find(const char *name) {
 // --- entering package code --------------------------------------------------
 
 static void describe(const LoadedApp *a, TaskAppMem *m) {
+    // ZEROED FIRST, and it is not defensiveness.
+    //
+    // This fills text, data and veneer. The stack and arena are filled later by
+    // sandbox_acquire — and only if that succeeds. Every caller declares its
+    // TaskAppMem as a bare local, so when the sandbox could NOT be acquired the
+    // two were left holding whatever was on the stack at the time, and
+    // task_app_mem_set programmed the protection unit with it.
+    //
+    // Random bases, random sizes, overlapping whatever they landed on. ARMv8-M
+    // calls overlapping regions UNPREDICTABLE, which is exactly what it
+    // behaved like: a fault at an address inside a region that permitted it,
+    // on a stack with kilobytes free, at intervals that moved with whatever
+    // the heap and the stack happened to contain.
+    memset(m, 0, sizeof(*m));
     m->text        = a->image;
     m->text_size   = a->text_size;
     m->data        = a->data;
