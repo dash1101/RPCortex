@@ -257,39 +257,49 @@ static bool should_force(void) {
 // The alarm handler. Deliberately does almost nothing: it decides, writes one
 // word, and returns. Printing or allocating from an interrupt that fired inside
 // an arbitrary instruction is how a fault handler comes to fault.
+// THE REDIRECT IS DISABLED, and this is why.
+//
+// Everything below used to rewrite the interrupted task's stacked PC so a
+// wedged task resumed somewhere else. It never worked, and `havoc spin` is what
+// proved it: the redirect landed at pc=0x11020202 with an UNALIGNED fault,
+// which is not a task resuming anywhere — it is this handler returning into its
+// own corrupted frame.
+//
+// The mistake is structural. preempt_alarm is an SDK ALARM CALLBACK, not a
+// naked exception handler: by the time it runs, the timer IRQ has entered, the
+// alarm pool's dispatcher has been called, and this function has its own frame.
+// So `mov r0, lr` reads an ordinary return address rather than EXC_RETURN, and
+// `mrs msp` gives this handler's stack pointer rather than the value MSP had at
+// exception entry. The "frame" it computed pointed at the dispatcher's locals,
+// and writing a PC into word six of that is what produced the garbage address.
+//
+// It was marked DEVICE-UNCONFIRMED from the start. It is now device-DISproven.
+//
+// Doing it properly means owning the interrupt: irq_set_exclusive_handler with
+// a naked handler that captures EXC_RETURN and the frame before anything else
+// runs, exactly as isr_hardfault does. That is a real change and it needs a
+// board to prove, so it is a task of its own rather than a third guess bolted
+// on here.
+//
+// Until then the alarm only OBSERVES. A wedged task still reaches the watchdog
+// and still reboots the device — which is worse than terminating it, and much
+// better than corrupting an interrupt handler's stack and faulting somewhere
+// unrelated.
 static int64_t preempt_alarm(alarm_id_t, void *) {
-    // The frame first, because both answers below rewrite it.
-    uint32_t exc_return;
-    __asm volatile ("mov %0, lr" : "=r"(exc_return));
-    uint32_t *frame;
-    if (exc_return_used_psp(exc_return)) __asm volatile ("mrs %0, psp" : "=r"(frame));
-    else                                 __asm volatile ("mrs %0, msp" : "=r"(frame));
-
-    // A task wedged INSIDE A PACKAGE loses the call, not the task.
-    //
-    // This is the one that matters, because a package command runs on the SHELL
-    // task — so the old answer, task_forced_exit, would have taken the session
-    // with it. That is why the shell was exempt from being forced at all, and
-    // why a package that never yields rebooted the whole device instead of
-    // costing one command.
-    //
-    // Detection has to happen HERE rather than in the scheduler. task_watchdog_
-    // feed runs from reschedule, so it only ever sees tasks that are still
-    // yielding — which is precisely not the case it exists to catch. This is a
-    // timer interrupt and fires whether anything yields or not.
-    if (bb_stall_ms(task_now_ms()) >= STALL_KILL_MS && sandbox_in_package()) {
-        if (sandbox_abandon_call(frame)) return PREEMPT_TICK_US;
-    }
-
     if (should_force()) {
-        // If the stalled task is a SANDBOXED package, it is running
-        // unprivileged and cannot fetch instructions from flash — so redirecting
-        // it into task_forced_exit would fault rather than terminate it, and
-        // report a protection violation in a task that was already being killed.
-        // Privilege is handed back first. The task is ending either way, so it
-        // has nothing left to protect.
-        if (sandbox_in_package()) sandbox_release_for_kill();
-        exc_frame_redirect(frame, (uint32_t)(uintptr_t)&task_forced_exit);
+        // Recorded rather than acted on. The log line is what a future naked
+        // handler will replace with an actual redirect, and in the meantime it
+        // is the difference between "the device rebooted" and "the device
+        // rebooted because this task stopped yielding".
+        static bool said;
+        if (!said) {
+            said = true;
+            const TaskInfo *t = task_current();
+            log_addf(LOG_K_ERR,
+                     "preempt: '%s' pid %d will not yield; cannot terminate it "
+                     "safely yet (see preempt_alarm)",
+                     t ? t->name : "?", t ? t->pid : -1);
+        }
     }
     return PREEMPT_TICK_US;    // reschedule this alarm
 }
