@@ -362,17 +362,16 @@ static int burn_stack(int depth) {
 
 static void group_stack(void) {
     fw_printf("\n[stack] deliberate stack exhaustion\n");
-    fw_printf("  Recursion until the guard fires. The guard is a hardware\n");
-    fw_printf("  stack limit, and the fault handler has to release it to run\n");
-    fw_printf("  at all - which is why this used to reset the device: the\n");
-    fw_printf("  report itself ran off the bottom of the exhausted stack and\n");
-    fw_printf("  into the heap. The handler now stands on a stack of its own\n");
-    fw_printf("  and the unwind out of a package uses none of the package's,\n");
-    fw_printf("  so there is nothing left to corrupt.\n\n");
-    fw_printf("  Expected: a report naming havoc, the command ends, the shell\n");
-    fw_printf("  survives. A reset is a finding - and if the exception frame\n");
-    fw_printf("  landed below the stack it is declined on purpose, which\n");
-    fw_printf("  logdump says in as many words.\n\n");
+    fw_printf("  This one RESETS the device, and unlike the other faults that\n");
+    fw_printf("  is the architecture rather than a missing feature. An\n");
+    fw_printf("  exception pushes its frame BELOW the stack pointer, so a\n");
+    fw_printf("  stack with nothing left has nowhere to put it: the frame is\n");
+    fw_printf("  not written, and a frame that was never written cannot be\n");
+    fw_printf("  redirected somewhere survivable. Every other fault inside a\n");
+    fw_printf("  package IS contained.\n\n");
+    fw_printf("  What to check: the report names havoc, the fault is STKOF or\n");
+    fw_printf("  MSTKERR at an address INSIDE the package's stack, and the\n");
+    fw_printf("  reset is explained rather than silent.\n\n");
     step("recursing until the stack runs out");
     fw_printf("    returned %d — the guard did not fire, which is its own finding\n",
               burn_stack(0));

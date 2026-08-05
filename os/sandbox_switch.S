@@ -55,6 +55,7 @@ isr_svcall:
 //   [sp, #40] = exit_gate,  in the veneer pool: where the package returns to
 //   [sp, #44] = where to park the firmware's stack pointer
 //   [sp, #48] = enter_gate, in the veneer pool: where privilege is dropped
+//   [sp, #52] = where to set the stack limit once standing on that stack
 //
 // The package needs a stack of its own and this is the reason: app_main and
 // every command a package registers would otherwise run on the SHELL's stack,
@@ -87,15 +88,32 @@ app_call_unpriv:
     ldr     r6, [sp, #40]           // the exit gate
     ldr     r7, [sp, #48]           // the gate that drops privilege
     mov     r8, r0                  // fn, before r0 becomes an argument
+    ldr     r9, [sp, #52]           // where the guard goes once SP has moved
 
-    // The same stack-limit release the context switch needs, for the same
-    // reason: the package's stack is a different heap block and may be below
-    // the limit that is currently protecting the task's. The package is not
-    // left unguarded — MPU region 4 covers its stack exactly, so running off
-    // the end lands outside every region it owns and faults there instead.
+    // RELEASE THE LIMIT, MOVE, THEN ARM IT AGAIN.
+    //
+    // The release is unavoidable: the package's stack is a different heap block
+    // and may be below the limit currently protecting the task's, so the limit
+    // has to go before SP can. Leaving it AT ZERO for the whole call is the
+    // part that was wrong.
+    //
+    // The claim was that MPU region 4 covers the package's stack exactly, so
+    // running off the end faults anyway. It does — but too late to be caught
+    // usefully. `sub sp, #264` is not a memory access, so with no limit set
+    // nothing stops the stack pointer walking straight past the bottom of the
+    // region; only the first WRITE faults, and by then SP is already outside.
+    // The exception frame is then pushed at that outside address, which is why
+    // a package stack overflow arrived as MSTKERR with a frame 256 bytes below
+    // the region — unreadable, unrewritable, and therefore uncontainable.
+    //
+    // With the limit on the package's own stack the SUB itself faults, SP is
+    // left untouched, and the frame lands inside the region where the fault
+    // handler can find it. The caller leaves a band above the bottom so there
+    // is room for that frame; see PKG_STACK_GUARD_BAND.
     movs    r5, #0
     msr     msplim, r5
     mov     sp, r3                  // stand on the package's stack
+    msr     msplim, r9              // and guard it at its own bottom
 
     mov     r0, r1                  // the package's two arguments
     mov     r1, r2

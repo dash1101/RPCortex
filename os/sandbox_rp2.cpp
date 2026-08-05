@@ -74,6 +74,27 @@ void sandbox_counts(uint32_t *calls, uint32_t *refused) {
 // exception.
 #define CONTROL_NPRIV  1u
 
+// --- where the package's stack guard goes ------------------------------------
+//
+// Not at the bottom. A stack limit that fires with no room left to TAKE the
+// exception is not a guard: the violation is reported by an exception, the
+// exception pushes a frame below the stack pointer, and if that frame does not
+// fit the fault becomes MSTKERR — "the frame could not be pushed" — which is
+// the one fault that cannot be contained, because there is then nothing to read
+// or rewrite.
+//
+// This build has an FPU, so the frame is the extended one: 0x68 bytes, plus up
+// to four more if the hardware has to realign. 128 rounds that up and leaves a
+// little over.
+#define PKG_STACK_GUARD_BAND  128u
+
+// Rounded up as well, because MSPLIM's low three bits are RES0 — an unaligned
+// value would quietly set the limit BELOW the intended one.
+static inline uint32_t guard_for(const void *base) {
+    uint32_t b = (uint32_t)(uintptr_t)base + PKG_STACK_GUARD_BAND;
+    return (b + 7u) & ~7u;
+}
+
 static inline uint32_t control_get(void) {
     uint32_t v;
     __asm volatile ("mrs %0, control" : "=r"(v));
@@ -219,7 +240,8 @@ int sandbox_enter(void *fn, int arg0, void *arg1, void *stack_top,
     // they end up: the enter gate branches to app_main and leaves LR holding
     // the exit gate, the return gate branches to LR.
     int ret = app_call_unpriv(fn, arg0, arg1, stack_top, exit_gate,
-                              &s->kernel_sp, enter_gate);
+                              &s->kernel_sp, enter_gate,
+                              guard_for(s->stack_base));
     // Reached whether the package returned normally or was unwound out of by
     // the fault handler. A contained fault that never gets here died in the
     // tail, on the firmware stack, between the exception return and this line.
@@ -237,7 +259,11 @@ extern "C" bool sandbox_guard_stack(int slot, void **base, unsigned *size) {
     if (slot < 0 || slot >= (int)TASK_MAX) return false;
     SandboxState *s = &g_state[slot];
     if (!s->depth || !s->stack_base) return false;
-    *base = s->stack_base;
+    // The same band the shim armed, so a task that is rescheduled mid-package
+    // comes back with the guard where it left it rather than at the bare
+    // bottom. Two answers to this question is how a limit ends up somewhere
+    // nobody chose.
+    *base = (void *)(uintptr_t)guard_for(s->stack_base);
     *size = s->stack_size;
     return true;
 }

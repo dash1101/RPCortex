@@ -60,7 +60,7 @@ void sandbox_forget(int slot);
 // arguments are; sandbox_switch.S is where they mean something.
 extern "C" int  app_call_unpriv(void *fn, int arg0, void *arg1, void *stack_top,
                                 uint32_t exit_gate, uint32_t *park_sp_here,
-                                uint32_t enter_gate);
+                                uint32_t enter_gate, uint32_t stack_guard);
 extern "C" void app_call_unpriv_tail(void);
 // The same unwind for a call that is being abandoned rather than finished. It
 // takes the firmware stack pointer in r1 instead of asking for it, so it uses
