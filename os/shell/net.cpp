@@ -1133,6 +1133,123 @@ int net_pkg_ip(char *out, unsigned cap) {
     return n < 0 ? 0 : n;
 }
 
+// --- name resolution --------------------------------------------------------
+//
+// A DNS REQUEST OUTLIVES THE CALL THAT ASKED FOR IT, and that is not a choice.
+//
+// lwIP has no way to cancel one, and it always calls back: on an answer, on a
+// failure, and on the retries running out — dns.c ends that path with
+// dns_call_found(i, NULL) rather than dropping the request. The record the
+// callback writes into therefore cannot be a local.
+//
+// Both callers used to park one on the stack and hand lwIP its address, and
+// both give up early: on Ctrl+C, or on their own eight-second deadline, which
+// is SHORTER than lwIP's own retry schedule. So the ordinary case of a name
+// that will not resolve was enough. The callback then wrote twelve bytes into a
+// stack frame that had since been handed to something else, and the damage
+// surfaced wherever those bytes happened to land — once as a branch to a
+// garbage address out of the lwIP worker loop, half a second after an
+// interrupted `ntp sync`.
+//
+// The records live here instead, and one is reused only after its callback has
+// arrived. Exactly one callback per accepted request is what makes that safe,
+// and it is the same guarantee that stops an abandoned record leaking: the
+// callback that frees it has already been promised.
+//
+// Four of them. One command owns the network at a time (net_op_acquire), so the
+// only way to need more is to abandon several in a row faster than lwIP retires
+// them — and refusing the fifth with a message beats any of the alternatives.
+#define DNS_WAITS 4
+
+enum { DNS_FREE = 0, DNS_WAITING, DNS_ABANDONED };
+
+struct DnsWait {
+    volatile uint8_t state;
+    volatile bool    done;
+    bool             ok;
+    ip_addr_t        addr;
+};
+static DnsWait g_dns[DNS_WAITS];
+
+// Runs in the driver's background context, under the lwIP lock. Every state
+// change below is made under NetLock for that reason: it is the one thing that
+// can order a claim, or an abandon, against this.
+static void dns_found(const char *, const ip_addr_t *ip, void *arg) {
+    DnsWait *w = (DnsWait *)arg;
+    if (!w) return;
+    if (w->state == DNS_ABANDONED) { w->state = DNS_FREE; return; }   // nobody left to tell
+    if (ip) { w->addr = *ip; w->ok = true; }
+    w->done = true;
+}
+
+// Yields rather than spinning: the background context needs the core, and a raw
+// sleep parks it without reaching the scheduler, so nothing feeds the watchdog.
+static bool dns_wait(volatile bool &flag, uint32_t ms) {
+    absolute_time_t deadline = make_timeout_time_ms(ms);
+    while (!flag) {
+        if (absolute_time_diff_us(get_absolute_time(), deadline) < 0) return false;
+        if (intr_check()) return false;              // Ctrl+C gets out of every wait
+        task_sleep_ms(5);
+    }
+    return true;
+}
+
+bool net_resolve(const char *host, ip_addr_t *out) {
+    if (!host || !out) return false;
+    // Already a dotted quad: no lookup, no record.
+    if (ip4addr_aton(host, ip_2_ip4(out))) { IP_SET_TYPE(out, IPADDR_TYPE_V4); return true; }
+
+    DnsWait *w = nullptr;
+    {
+        NetLock lk;
+        for (int i = 0; i < DNS_WAITS; i++) {
+            if (g_dns[i].state != DNS_FREE) continue;
+            w = &g_dns[i];
+            w->state = DNS_WAITING;
+            w->done  = false;
+            w->ok    = false;
+            break;
+        }
+    }
+    if (!w) {
+        out_err("Too many name lookups are still outstanding. Try again shortly.");
+        return false;
+    }
+
+    err_t e;
+    { NetLock lk; e = dns_gethostbyname(host, &w->addr, dns_found, w); }
+
+    // Answered from the cache. No callback is coming for this one, so the
+    // record goes back immediately.
+    if (e == ERR_OK) {
+        *out = w->addr;
+        NetLock lk;
+        w->state = DNS_FREE;
+        return true;
+    }
+    // Refused outright — again, no callback to wait for.
+    if (e != ERR_INPROGRESS) {
+        NetLock lk;
+        w->state = DNS_FREE;
+        return false;
+    }
+
+    dns_wait(w->done, 8000);
+
+    // Re-read under the lock: the callback can land between the wait giving up
+    // and this line, and an answer that arrived is still an answer.
+    bool ok = false;
+    NetLock lk;
+    if (w->done) {
+        ok = w->ok;
+        if (ok) *out = w->addr;
+        w->state = DNS_FREE;
+    } else {
+        w->state = DNS_ABANDONED;      // released by the callback, whenever it comes
+    }
+    return ok;
+}
+
 #else   // no CYW43 part on this board
 
 void net_op_acquire(void) {}

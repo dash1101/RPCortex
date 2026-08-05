@@ -161,25 +161,14 @@ static err_t on_sent(void *arg, struct altcp_pcb *, u16_t len) {
 
 // --- DNS --------------------------------------------------------------------
 
-struct DnsWait { volatile bool done; bool ok; ip_addr_t addr; };
-
-static void on_dns(const char *, const ip_addr_t *ip, void *arg) {
-    DnsWait *w = (DnsWait *)arg;
-    if (ip) { w->addr = *ip; w->ok = true; }
-    w->done = true;
-}
+// One implementation, in net.cpp, because the record lwIP writes into has to
+// outlive this call — see the note there. This used to be a DnsWait on the
+// stack, and a fetch that timed out or was interrupted left lwIP holding its
+// address, to be written into long after the frame had gone.
+bool net_resolve(const char *host, ip_addr_t *out);        // net.cpp
 
 static bool resolve(const char *host, ip_addr_t *out) {
-    if (ip4addr_aton(host, ip_2_ip4(out))) { IP_SET_TYPE(out, IPADDR_TYPE_V4); return true; }
-    DnsWait w{false, false, {}};
-    cyw43_arch_lwip_begin();
-    err_t e = dns_gethostbyname(host, &w.addr, on_dns, &w);
-    cyw43_arch_lwip_end();
-    if (e == ERR_OK) { *out = w.addr; return true; }
-    if (e != ERR_INPROGRESS) return false;
-    if (!wait_flag(w.done, 8000) || !w.ok) return false;
-    *out = w.addr;
-    return true;
+    return net_resolve(host, out);
 }
 
 // --- the HttpTransport implementation ---------------------------------------

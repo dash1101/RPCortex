@@ -55,28 +55,14 @@ static bool wait_for(volatile bool &flag, uint32_t ms) {
 
 // --- DNS --------------------------------------------------------------------
 
-struct DnsWait { volatile bool done; bool ok; ip_addr_t addr; };
-
-static void dns_cb(const char *, const ip_addr_t *ipaddr, void *arg) {
-    DnsWait *w = (DnsWait *)arg;
-    if (ipaddr) { w->addr = *ipaddr; w->ok = true; }
-    w->done = true;
-}
+// One implementation, in net.cpp, because the record lwIP writes into has to
+// outlive this call — see the note there. This used to be a DnsWait on the
+// stack, and giving up early left lwIP holding its address.
+bool net_resolve(const char *host, ip_addr_t *out);        // net.cpp
 
 // Resolve a name, or parse it if it is already a dotted quad.
 static bool resolve_host(const char *host, ip_addr_t *out) {
-    if (ip4addr_aton(host, ip_2_ip4(out))) { IP_SET_TYPE(out, IPADDR_TYPE_V4); return true; }
-
-    DnsWait w{false, false, {}};
-    cyw43_arch_lwip_begin();
-    err_t e = dns_gethostbyname(host, &w.addr, dns_cb, &w);
-    cyw43_arch_lwip_end();
-
-    if (e == ERR_OK) { *out = w.addr; return true; }     // already cached
-    if (e != ERR_INPROGRESS) return false;
-    if (!wait_for(w.done, 8000) || !w.ok) return false;
-    *out = w.addr;
-    return true;
+    return net_resolve(host, out);
 }
 
 static bool require_network(void) {
