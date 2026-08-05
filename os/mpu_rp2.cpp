@@ -25,6 +25,7 @@
 // CFSR still records exactly which kind of fault it was — so the diagnosis is
 // no worse and there is one handler instead of three. The device reboots either
 // way; what matters is that it says why first.
+#include <stdio.h>
 #include "core/mpu.h"
 #include "core/task.h"
 
@@ -233,4 +234,43 @@ extern "C" bool mpu_report(unsigned core, MpuReport *out) {
     out->uses_msplim   = !MPU_V6;
     out->app_supported = !MPU_V6;
     return true;
+}
+
+// --- what the hardware actually held, at the moment it faulted ---------------
+//
+// A protection fault says an access was refused. It does not say by WHICH
+// region, or which regions were programmed at the time — and when the answer is
+// "not the ones this task was given", every other reading of the fault is
+// wrong. Two rounds were spent on stack sizes for a fault that was never about
+// size.
+//
+// So the registers are read straight out of the hardware and printed. No
+// interpretation, because interpretation is what kept going wrong.
+extern "C" void mpu_dump_live(unsigned sp) {
+#if MPU_V6
+    (void)sp;
+    printf("    mpu: ARMv6-M, app regions not enforced here\n");
+#else
+    printf("    mpu ctrl=0x%08lx  (enabled=%lu privdefena=%lu)\n",
+           (unsigned long)mpu_hw->ctrl,
+           (unsigned long)(mpu_hw->ctrl & 1u),
+           (unsigned long)((mpu_hw->ctrl >> 2) & 1u));
+
+    bool covered = false;
+    for (uint32_t r = 0; r < 8; r++) {
+        mpu_hw->rnr = r;
+        uint32_t rbar = mpu_hw->rbar, rlar = mpu_hw->rlar;
+        if (!(rlar & 1u)) continue;                     // not enabled
+        uint32_t base  = rbar & ~0x1Fu;
+        uint32_t limit = (rlar & ~0x1Fu) | 0x1Fu;       // inclusive last byte
+        bool has = sp >= base && sp <= limit;
+        if (has) covered = true;
+        printf("    region %lu: 0x%08lx..0x%08lx ap=%lu xn=%lu%s\n",
+               (unsigned long)r, (unsigned long)base, (unsigned long)limit,
+               (unsigned long)((rbar >> 1) & 3u), (unsigned long)(rbar & 1u),
+               has ? "   <- sp is here" : "");
+    }
+    if (!covered)
+        printf("    NO ENABLED REGION COVERS SP — that is the fault, not a size\n");
+#endif
 }

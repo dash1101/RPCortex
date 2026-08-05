@@ -12,3 +12,6 @@ bool sandbox_in_package(void) { return false; }
 void sandbox_counts(uint32_t *c, uint32_t *r) { if (c) *c = 0; if (r) *r = 0; }
 void sandbox_release_for_kill(void) {}
 void sandbox_forget(int) {}
+
+// No protection unit on the host to dump.
+extern "C" void mpu_dump_live(unsigned) {}

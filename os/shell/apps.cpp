@@ -828,7 +828,13 @@ void apps_register(void) {
 // Printed at the point of the crash rather than logged, because the device
 // reboots two seconds later and a log line about a stack that no longer exists
 // is worth less than one naming it while it does.
+extern "C" void mpu_dump_live(unsigned sp);
+
 extern "C" void fault_report_stacks(uint32_t sp) {
+    // The hardware first, because what the MPU HELD is the question and
+    // everything below is what it was supposed to hold.
+    mpu_dump_live(sp);
+
     TaskAppMem m;
     if (!task_app_mem_get(&m) || !m.stack || !m.stack_size) {
         printf("    stack: not inside a package (sp=0x%08lx)\n", (unsigned long)sp);
