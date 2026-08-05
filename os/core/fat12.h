@@ -86,8 +86,33 @@ bool f12_list(F12 *f, F12WalkFn cb, void *ctx);
 // — which is what the format itself does.
 bool f12_find(F12 *f, const char *name, F12Entry *out);
 
+// Where a sequential read got to, so the next one does not start over.
+//
+// A file is a CHAIN of clusters, not a range, so reaching byte N means walking
+// N/cluster_size links — and every link is two FAT lookups, each of which reads
+// a sector. A reader working through a file a sector at a time therefore does
+// quadratic work: for the 955 KB firmware image this area exists to carry, at
+// the 512-byte clusters f12_format uses, that is 3.6 MILLION sector reads for
+// one file. It presented as the device hanging on exit from download mode,
+// because nothing in that loop yielded either.
+//
+// Passing a cursor makes it linear. It is optional — f12_read with a null
+// cursor walks from the start, which is right for a one-off read and is what
+// every caller did before.
+struct F12Cursor {
+    uint32_t first;      // whose chain this is; a different file resets it
+    uint32_t cluster;    // the cluster containing `at`
+    uint32_t at;         // the file offset that cluster begins at
+};
+
+// Start a cursor. Cheap; it only has to be done once per file.
+void f12_cursor_init(F12Cursor *c);
+
 // Read part of a file. Returns bytes read, which is short at the end.
-uint32_t f12_read(F12 *f, const F12Entry *e, uint32_t off, void *buf, uint32_t len);
+// `cur` may be null. When it is not, reads that move FORWARD through the file
+// resume from it; anything else falls back to walking and re-seats it.
+uint32_t f12_read(F12 *f, const F12Entry *e, F12Cursor *cur,
+                  uint32_t off, void *buf, uint32_t len);
 
 // Create or replace a file, from a callback that supplies the bytes.
 //

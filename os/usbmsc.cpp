@@ -269,6 +269,22 @@ bool usbdrv_import(const char *name, const char *dest) {
     // A sector at a time, so the size of the file is not also the size of the
     // buffer it needs. The transfer area exists to carry things the device
     // cannot hold in memory, which is most of the point of it.
+    //
+    // WITH A CURSOR, and the reason is the difference between this working and
+    // hanging the device. A FAT file is a chain, so reaching byte N means
+    // walking N/512 links, and each link is two FAT lookups that each read a
+    // sector. Re-walking from the start on every sector made a 955 KB firmware
+    // image cost 3.6 million sector reads — quadratic, in the one path whose
+    // whole purpose is carrying a firmware image.
+    //
+    // AND A YIELD, because the loop had none. Even linear, nearly two thousand
+    // passes with nothing feeding the watchdog is a reboot, and that is exactly
+    // how this presented: the device died on exit from download mode and left a
+    // zero-byte file behind. task_alive is the same call the ABI uses — it
+    // marks progress and gives the core up at a point where nothing is
+    // half-written.
+    F12Cursor cur;
+    f12_cursor_init(&cur);
     uint8_t buf[F12_SECTOR];
     uint32_t off = 0;
     bool ok = true;
@@ -276,11 +292,12 @@ bool usbdrv_import(const char *name, const char *dest) {
         uint32_t n;
         {
             LockGuard _lk(&g_usb_lock);
-            n = f12_read(&g_vol, &e, off, buf, sizeof(buf));
+            n = f12_read(&g_vol, &e, &cur, off, buf, sizeof(buf));
         }
         if (!n) { ok = false; break; }
         ok = storage_sink_write(sink, buf, n);
         off += n;
+        task_alive();
     }
     if (!storage_close_sink(sink)) ok = false;
     if (!ok) storage_remove(dest);

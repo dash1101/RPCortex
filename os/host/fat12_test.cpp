@@ -71,13 +71,20 @@ static bool roundtrip(F12 *f, const char *name, uint32_t seed, uint32_t size) {
     // also a sector boundary does not pass.
     static uint8_t got[210000];
     if (size > sizeof(got)) return false;
+    //
+    // Driven through a CURSOR, because that is the path the device uses and a
+    // cursor that is subtly wrong reads the wrong cluster rather than failing.
+    // The irregular steps below cross sector and cluster boundaries at every
+    // offset, which is exactly where a resume point goes wrong.
+    F12Cursor cur;
+    f12_cursor_init(&cur);
     uint32_t off = 0;
     const uint32_t steps[] = {1, 511, 512, 513, 1000};
     int si = 0;
     while (off < size) {
         uint32_t want = steps[si++ % 5];
         if (want > size - off) want = size - off;
-        uint32_t n = f12_read(f, &e, off, got + off, want);
+        uint32_t n = f12_read(f, &e, &cur, off, got + off, want);
         if (n != want) return false;
         off += n;
     }
@@ -268,6 +275,68 @@ int main(void) {
             if (system(cmd) != 0) { /* not worth failing over */ }
         }
         remove(tmpl);
+    }
+
+    // --- the read cursor ------------------------------------------------------
+    //
+    // It exists because re-walking the cluster chain on every sector made a
+    // 955 KB file cost millions of sector reads, and the device hung. So the
+    // property that matters is not that it is fast — it is that it returns
+    // EXACTLY what walking from the start returns, including when it is used
+    // in ways it was not designed for.
+    {
+        F12 h;
+        ck(f12_format(&h, &io, "CURSOR", 0x1234u), "a volume to read through");
+
+        const uint32_t size = 100000;          // ~195 clusters at 512 bytes
+        Pattern p{0xBEEFu, size};
+        ck(f12_write(&h, "big.bin", size, 1785801600u, pat_source, &p),
+           "a file long enough for the chain to matter");
+
+        F12Entry e;
+        ck(f12_find(&h, "big.bin", &e), "and it is there");
+
+        static uint8_t a[100000], b[100000];
+        F12Cursor cur;
+        f12_cursor_init(&cur);
+
+        bool same = true;
+        for (uint32_t off = 0; off < size; off += 512) {
+            uint32_t want = size - off < 512 ? size - off : 512;
+            uint32_t n1 = f12_read(&h, &e, &cur, off, a + off, want);
+            uint32_t n2 = f12_read(&h, &e, nullptr, off, b + off, want);
+            if (n1 != want || n2 != want) { same = false; break; }
+        }
+        ck(same, "every sequential read returns a full chunk");
+        ck(memcmp(a, b, size) == 0, "with a cursor and without agree, byte for byte");
+
+        bool ok = true;
+        for (uint32_t i = 0; i < size; i++)
+            if (a[i] != pat_byte(0xBEEFu, i)) { ok = false; break; }
+        ck(ok, "and both agree with what was written");
+
+        // BACKWARDS. The cursor is now at the end of the file; a read before it
+        // must fall back to walking rather than resuming from somewhere past
+        // where it was asked for. This is the one that silently returns another
+        // cluster's bytes if the ordering check is wrong.
+        uint8_t back[512];
+        uint32_t n = f12_read(&h, &e, &cur, 0, back, sizeof(back));
+        ck(n == sizeof(back), "a backwards read still reads");
+        ck(memcmp(back, a, sizeof(back)) == 0, "and reads the right bytes");
+
+        // A CURSOR FROM ANOTHER FILE. Same shape of mistake, different way in.
+        Pattern p2{0x5150u, 4096};
+        ck(f12_write(&h, "other.bin", 4096, 1785801600u, pat_source, &p2),
+           "a second file");
+        F12Entry e2;
+        ck(f12_find(&h, "other.bin", &e2), "found");
+        uint8_t o[512];
+        n = f12_read(&h, &e2, &cur, 0, o, sizeof(o));   // cursor belongs to big.bin
+        ck(n == sizeof(o), "a stale cursor does not stop the read");
+        ok = true;
+        for (uint32_t i = 0; i < sizeof(o); i++)
+            if (o[i] != pat_byte(0x5150u, i)) { ok = false; break; }
+        ck(ok, "and it reads the SECOND file, not the first");
     }
 
     // --- a region holding something else ------------------------------------

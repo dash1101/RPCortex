@@ -392,7 +392,12 @@ bool f12_find(F12 *f, const char *name, F12Entry *out) {
     return s.slot >= 0;
 }
 
-uint32_t f12_read(F12 *f, const F12Entry *e, uint32_t off, void *buf, uint32_t len) {
+void f12_cursor_init(F12Cursor *c) {
+    if (c) { c->first = 0; c->cluster = 0; c->at = 0; }
+}
+
+uint32_t f12_read(F12 *f, const F12Entry *e, F12Cursor *cur,
+                  uint32_t off, void *buf, uint32_t len) {
     if (!f->mounted || !e || e->is_dir) return 0;
     if (off >= e->size) return 0;
     if (off + len > e->size) len = e->size - off;
@@ -401,14 +406,34 @@ uint32_t f12_read(F12 *f, const F12Entry *e, uint32_t off, void *buf, uint32_t l
     uint8_t *dst = (uint8_t *)buf;
     uint32_t done = 0;
 
-    // Walk the chain to the cluster the read starts in. A transfer area holds
-    // few and small files, so walking rather than indexing costs nothing worth
-    // the bookkeeping an index would need.
+    // WHERE TO START WALKING FROM.
+    //
+    // From the cursor when it belongs to this file and has not gone past the
+    // offset asked for; from the beginning otherwise. A backwards read or a
+    // different file is rare and correctness matters more than its cost, so it
+    // simply falls back — the cursor is an optimisation and never an answer.
     uint32_t cluster = e->first_cluster;
-    uint32_t skip = off / bytes_per_cluster;
+    uint32_t base = 0;
+    if (cur && cur->first == e->first_cluster && cur->cluster >= 2 &&
+        cur->at <= off) {
+        cluster = cur->cluster;
+        base    = cur->at;
+    }
+
+    uint32_t skip = (off - base) / bytes_per_cluster;
+    uint32_t start = base + skip * bytes_per_cluster;
     while (skip-- && cluster >= 2 && cluster < 0xFF8) cluster = fat_get(f, cluster);
 
-    uint32_t within = off % bytes_per_cluster;
+    // Seat the cursor on the cluster this read STARTS in, before the read moves
+    // it on. Recording where it ended instead would be wrong for a caller that
+    // re-reads the same offset.
+    if (cur && cluster >= 2) {
+        cur->first   = e->first_cluster;
+        cur->cluster = cluster;
+        cur->at      = start;
+    }
+
+    uint32_t within = off - start;
     uint8_t sec[F12_SECTOR];
 
     while (done < len && cluster >= 2 && cluster < 0xFF8) {
