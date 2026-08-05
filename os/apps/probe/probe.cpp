@@ -145,6 +145,83 @@ static void probe_syscall(void) {
     fw_printf("\n");
 }
 
+// Does a PIO state machine actually run?
+//
+// The instruction encoders are checked on a host against the datasheet's own
+// tables, and the ABI plumbing is checked against a fake device — but the fake
+// RECORDS programs, it does not execute them. Whether a state machine ever
+// drove a pin has never been established, and it cannot be from a host: there
+// is no silicon there to run it.
+//
+// Proving it needs no strip, no scope and no second board. A jumper wire
+// between two pins is enough: PIO is told to drive one, the CPU reads the
+// other, and the only way the level changes is if the state machine executed
+// the instructions it was given.
+//
+//     jumper GP2 --- GP3, then: probe pio
+//
+// Skipped without the argument, since driving a pin somebody has something
+// attached to is not a thing to do uninvited.
+static unsigned parse_pin(const char *s) {
+    unsigned v = 0;
+    while (*s >= '0' && *s <= '9') v = v * 10 + (unsigned)(*s++ - '0');
+    return v;
+}
+
+static void probe_pio(unsigned out_pin, unsigned in_pin) {
+    fw_printf("PIO\n");
+    fw_printf("  jumper needed       GP%u --> GP%u\n", out_pin, in_pin);
+
+    int h = fw_pio_claim();
+    if (h < 0) { fw_printf("  claim               FAILED - no state machine free\n"); return; }
+
+    // Two instructions: set the pin high, set it low, and wrap. The delays make
+    // each level last long enough for a polling CPU to see it without needing
+    // any timing precision at all.
+    static const unsigned short kProg[] = {
+        FW_PIO_SET(0, 1, 31),      // dst 0 is "pins"
+        FW_PIO_SET(0, 0, 31),
+    };
+    if (fw_pio_load(h, kProg, 2, 0, 1) < 0) {
+        fw_printf("  load                FAILED\n");
+        fw_pio_release(h);
+        return;
+    }
+    // set_base is the output pin, one pin wide. config_pins also sets the pin
+    // direction and hands it to PIO, so nothing else has to.
+    if (fw_pio_config_pins(h, 0, 0, out_pin, 1, 0, 0) != 0) {
+        fw_printf("  config              FAILED\n");
+        fw_pio_release(h);
+        return;
+    }
+    // Slowed hard. The divider is 24.8 fixed point, so 256 is full speed and
+    // this is roughly a thousandth of that — a few kilohertz of instruction
+    // rate, with 31 cycles of delay on each instruction on top. Sampling from C
+    // then cannot miss an edge, and the result says something about PIO rather
+    // than about how fast this loop polls.
+    fw_pio_config_clock(h, 256 * 1000);
+
+    fw_gpio_init(in_pin, FW_PIN_IN);
+    fw_pio_start(h);
+
+    // Watch for both levels. Either alone could be the pin's resting state; it
+    // is seeing it CHANGE that means instructions ran.
+    int saw_high = 0, saw_low = 0;
+    uint32_t t0 = fw_millis();
+    while (fw_millis() - t0 < 500 && !(saw_high && saw_low)) {
+        if (fw_gpio_get(in_pin)) saw_high = 1; else saw_low = 1;
+    }
+    fw_pio_stop(h);
+    fw_pio_release(h);
+
+    if (saw_high && saw_low)
+        fw_printf("  RESULT              the pin toggled - a state machine really ran\n");
+    else
+        fw_printf("  RESULT              pin stuck %s - no jumper, wrong pins, or PIO did not run\n",
+                  saw_high ? "high" : "low");
+    fw_printf("\n");
+}
+
 static void probe_hardware(void) {
     fw_printf("HARDWARE\n");
     fw_printf("  gpio count          %u\n", fw_gpio_count());
@@ -250,7 +327,14 @@ static void probe_memory(void) {
 }
 
 static int probe_cmd(int argc, char **argv) {
-    (void)argc; (void)argv;
+    // `probe pio <out> <in>` runs the loopback and nothing else, because it
+    // drives a pin and that is not something to do as part of a general report.
+    if (argc >= 2 && argv[1][0] == 'p') {
+        unsigned a = argc >= 3 ? parse_pin(argv[2]) : 2;
+        unsigned b = argc >= 4 ? parse_pin(argv[3]) : 3;
+        probe_pio(a, b);
+        return 0;
+    }
 
     fw_printf("%s\n", RULE);
     fw_printf("RPCortex probe - paste this whole block back\n");

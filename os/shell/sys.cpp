@@ -159,6 +159,16 @@ static int cmd_sysinfo(int, char **) {
 
 uint32_t apps_pool_bytes(void);
 
+// Everything statically allocated: bss and initialised data together. The
+// linker knows, so nothing here has to be kept in step by hand.
+extern "C" char __bss_start__, __bss_end__, __data_start__, __end__;
+
+static uint32_t static_ram(void) {
+    uint32_t bss  = (uint32_t)(uintptr_t)(&__bss_end__ - &__bss_start__);
+    uint32_t data = (uint32_t)(uintptr_t)(&__end__ - &__data_start__);
+    return bss > data ? bss : data;    // __end__ covers bss on this layout
+}
+
 static int cmd_meminfo(int, char **) {
     uint32_t free  = heap_free();
     uint32_t total = heap_total();
@@ -174,32 +184,39 @@ static int cmd_meminfo(int, char **) {
                   (unsigned)(total ? alloc * 100 / total : 0));
     out_multi("  Free  : %u KB", (unsigned)(free / 1024));
     uint32_t big = largest_block();
-    unsigned frag = free ? (unsigned)(100 - (big * 100 / free)) : 0;
-    if (big > free) frag = 0;
-    out_multi("  Largest block : %u KB   (fragmentation %u%%)",
-              (unsigned)(big / 1024), frag);
 
-    // The two numbers side by side, because the FIGURE is the thing that has
-    // never been checked and it is the kind that invents problems.
+    // No "fragmentation %" any more, and that is the point of this pass.
     //
-    // `free` is the arena minus what is live, which is honest rather than a
-    // high-water mark. `largest` is found by asking malloc for real blocks
-    // until one fails. They measure different things and they are allowed to
-    // differ — but if they differ by a lot on a device that has been quietly
-    // idle, then either the search is wrong or the accounting is, and the
-    // percentage above is reporting a problem that is not there. That is
-    // exactly the failure v1 shipped, and the way to catch it is to be able to
-    // read both.
-    out_multi("  %s(free is arena minus live; largest is found by asking malloc "
-              "until it says no)%s", C_GRAY, C_RESET);
-    if (free >= 4096 && big < free / 2)
-        out_warn("Half the free memory is not in one piece. If this device has "
-                 "been idle, the figure is more likely wrong than the heap is.");
+    // It was reported as 100 minus largest-over-free, which on a perfectly
+    // healthy device reads 52% — because 91 KB of live allocations sit spread
+    // through a 315 KB arena and split what is left into a few pieces. Nothing
+    // is wrong with that. The percentage was not measuring a problem, it was
+    // measuring the ordinary shape of a working heap, and reporting it as a
+    // percentage of anything invited exactly the reading v1 got wrong.
+    //
+    // What matters is whether the largest piece is big enough to be useful. So
+    // that is the number, and the warning fires on an absolute floor rather
+    // than on a ratio that is alarming by construction.
+    out_multi("  Largest block : %u KB", (unsigned)(big / 1024));
+    if (big < 32 * 1024)
+        out_warn("The largest single block is under 32 KB. A large allocation "
+                 "will fail even though there is free memory.");
 
     uint32_t pool = apps_pool_bytes();
     if (pool)
-        out_multi("  Held for packages : %u KB   (stacks and heaps kept for "
-                  "running tasks, not per call)", (unsigned)(pool / 1024));
+        out_multi("  For packages  : %u KB  (stacks and heaps held per task)",
+                  (unsigned)(pool / 1024));
+
+    // What never reaches the heap at all.
+    //
+    // "The OS uses 91 KB" is a fair thing to conclude from the line above and a
+    // wrong one: the heap is what is left AFTER the statically allocated
+    // buffers, and those are the larger number. Showing it stops the heap
+    // figure from being read as the whole story.
+    out_blank();
+    out_multi("  Reserved before the heap : %u KB", (unsigned)(static_ram() / 1024));
+    out_multi("  %sthe network buffers, Bluetooth, the editor and the log ring; "
+              "fixed at build time, not allocated%s", C_GRAY, C_RESET);
     return 0;
 }
 
