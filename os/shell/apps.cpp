@@ -817,3 +817,47 @@ void apps_register(void) {
     };
     for (const auto &c : cmds) cmd_register(&c);
 }
+
+// --- what the fault handler asks --------------------------------------------
+//
+// A stacking fault says the exception frame would not fit and nothing else.
+// WHICH stack it would not fit in is the whole question, and reasoning it out
+// from an address and a fault code got it wrong twice — so this answers it from
+// the same table the protection unit is programmed from.
+//
+// Printed at the point of the crash rather than logged, because the device
+// reboots two seconds later and a log line about a stack that no longer exists
+// is worth less than one naming it while it does.
+extern "C" void fault_report_stacks(uint32_t sp) {
+    TaskAppMem m;
+    if (!task_app_mem_get(&m) || !m.stack || !m.stack_size) {
+        printf("    stack: not inside a package (sp=0x%08lx)\n", (unsigned long)sp);
+        return;
+    }
+
+    uint32_t base = (uint32_t)(uintptr_t)m.stack;
+    uint32_t top  = base + m.stack_size;
+    printf("    package stack : 0x%08lx .. 0x%08lx  (%lu bytes)\n",
+           (unsigned long)base, (unsigned long)top, (unsigned long)m.stack_size);
+
+    if (sp >= base && sp < top) {
+        printf("    sp is INSIDE it, %lu bytes from the bottom\n",
+               (unsigned long)(sp - base));
+    } else {
+        // The interesting answer. If the stack pointer was not in the region
+        // the protection unit was told about, the fault is a mismatch between
+        // the two rather than a package using too much.
+        printf("    sp is OUTSIDE it — %s by %lu bytes\n",
+               sp < base ? "below" : "above",
+               (unsigned long)(sp < base ? base - sp : sp - top));
+    }
+
+    // How deep it ever got, from the paint. A figure close to the size means a
+    // genuine overflow; one nowhere near it means the fault was something else
+    // wearing an overflow's clothes.
+    const uint8_t *p = (const uint8_t *)(uintptr_t)base;
+    uint32_t untouched = 0;
+    while (untouched < m.stack_size && p[untouched] == STACK_PAINT) untouched++;
+    printf("    deepest used  : %lu of %lu bytes\n",
+           (unsigned long)(m.stack_size - untouched), (unsigned long)m.stack_size);
+}

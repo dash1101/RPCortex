@@ -15,6 +15,11 @@
 #include "pico/stdlib.h"
 #include "hardware/watchdog.h"
 
+// Supplied by the OS, which knows the task and sandbox layout. Weak so the
+// loader spike, which has neither, still links.
+extern "C" void __attribute__((weak)) fault_report_stacks(uint32_t sp) { (void)sp; }
+
+
 extern "C" {
 
 // Set while an app is running, so a fault can say WHOSE fault it was.
@@ -151,6 +156,19 @@ void fault_report(FaultFrame *f, const char *kind) {
     printf("    r2  = 0x%08lx   r3  = 0x%08lx\n",
            (unsigned long)f->r2, (unsigned long)f->r3);
     printf("    psr = 0x%08lx\n", (unsigned long)f->psr);
+
+    // WHICH STACK, and how much of it was left.
+    //
+    // A stacking fault says the exception frame would not fit, and nothing
+    // else. Which stack it would not fit in is the entire question, and four
+    // rounds of reasoning from an address and a fault code got it wrong twice —
+    // so the device answers it directly instead.
+    //
+    // The regions come from the same table the protection unit is programmed
+    // from, so this reports where the stack pointer ACTUALLY was rather than
+    // where it was expected to be.
+    fault_report_stacks((uint32_t)(uintptr_t)f);
+
     printf("    resetting in 2s\n\n");
     // Flush before the reset, or the report never leaves the USB buffer.
     for (int i = 0; i < 200; i++) { sleep_ms(10); }
