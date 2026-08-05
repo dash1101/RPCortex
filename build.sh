@@ -107,6 +107,35 @@ for board in "${BOARDS[@]}"; do
         printf '    out/rpcortex-v2-%s.bin  (%s KB)  sha256 %s\n' \
             "$board" "$((bsize / 1024))" \
             "$(sha256sum "out/rpcortex-v2-$board.bin" | cut -c1-16)..."
+
+        # DOES IT STILL FIT?
+        #
+        # The firmware runs from the first half of RPC_FW_RESERVE and an update
+        # is assembled in the second. Nothing checked that the image fits the
+        # half it runs from, and the way that failure presents is in
+        # storage.cpp's own words: "an image that outgrew its reserve mid-update
+        # would be discovered by overwriting the start of the filesystem."
+        # Finding out by losing the filesystem is not finding out.
+        #
+        # Reported every build, not only when it fails, because the number
+        # matters most while it is still shrinking. It went from 71 KB of
+        # headroom to 22 without anyone noticing.
+        # RPC_FW_RESERVE is 2 MB and the slot is half of it. Kept in step with
+        # loader-spike/firmware/storage.cpp by hand; there is one definition
+        # there and this is the only other place that needs the number.
+        slot=$((2048 * 1024 / 2))
+        left=$((slot - bsize))
+        if [ "$left" -lt 0 ]; then
+            printf '    [!] %s KB OVER the %s KB slot — this image cannot be flashed by an update\n' \
+                "$(( -left / 1024 ))" "$((slot / 1024))"
+            exit 1
+        elif [ "$left" -lt $((64 * 1024)) ]; then
+            printf '    [?] %s KB left in the %s KB slot\n' \
+                "$((left / 1024))" "$((slot / 1024))"
+        else
+            printf '    %s KB left in the %s KB slot\n' \
+                "$((left / 1024))" "$((slot / 1024))"
+        fi
     fi
 done
 

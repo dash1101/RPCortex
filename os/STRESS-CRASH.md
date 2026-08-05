@@ -182,6 +182,33 @@ instead of arriving as a silent reboot.
 - **`task_irq_save`/`task_irq_restore`.** `mrs primask; cpsid i` and a
   conditional `cpsie i`. They nest correctly.
 
+## Current standing — 2026-08-05
+
+**It has not reproduced since the write-ordering fix.** Repeated `stress` runs
+on the build of 2026-08-05, which also carries the pool lock, the interrupt
+masking across all of `arm_protection`, and the region shadow. Nothing. The
+count was not recorded, so this is "did not reproduce across repeated runs"
+rather than a rate.
+
+That is not proof. The bug was roughly one run in twelve at its worst and has
+never had a mechanism proven end to end — what is established is that the
+write-ordering defect existed, was real, and matches every number observed.
+
+What has changed since the last reproduction, any of which could matter:
+
+- The ordering fix itself: the limit is cleared before the base is written, so
+  a half-finished region describes nothing rather than the wrong memory.
+- `arm_protection` and `task_app_mem_apply` mask interrupts across the whole
+  sequence, not just the scheduler's call.
+- The pool use-after-free is closed, so a block can no longer be handed back to
+  the heap while a package stands on it.
+- MSPLIM is armed on the package's own stack rather than left at zero (#88).
+
+**Left in place deliberately:** the region shadow, the mid-write marker, and —
+new — one `log_addf` line carrying the three decisive answers into `logdump`,
+because the console is lost in a fault and that cost several rounds here. If
+this returns, one line names which of the three explanations it is.
+
 ## Narrowed the frequency, did not remove it
 
 Masking interrupts across the context switch — the window between
