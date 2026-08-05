@@ -122,8 +122,10 @@ extern "C" void *fw_malloc(size_t n) {
         // Only when the request was plausible. A package deliberately asking
         // for 112 MB to check that failure is handled cleanly — which `stress`
         // does — is not a device running out of memory, and reporting it as one
-        // trains people to ignore the message that matters.
-        if (!p && n <= arena_size(a))
+        // trains people to ignore the message that matters. Nor is asking for
+        // nothing: `malloc(0)` returning null is an answer, not a shortage, and
+        // "ran out of its own heap asking for 0 bytes" said the opposite.
+        if (!p && n && n <= arena_size(a))
             klog(LOG_WARN, "a package ran out of its own heap asking for %u bytes",
                  (unsigned)n);
         return p;

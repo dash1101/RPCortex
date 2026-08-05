@@ -1,7 +1,6 @@
 #include "blackbox.h"
 
 #include <string.h>
-#include <stdio.h>
 
 #define BB_MAGIC 0x42425831u   // 'BBX1'
 
@@ -16,6 +15,21 @@ static BB_NOINIT BlackBox g_bb;
 // because it only has to survive this run.
 static BlackBox g_prev;
 static bool     g_have_prev;
+
+// A bounded copy, not snprintf.
+//
+// Every one of these fields was filled with snprintf(dst, cap, "%s", src), which
+// is a full vfprintf — and newlib's wants over a kilobyte of stack. That cost is
+// paid in the two places least able to afford it: bb_note_task runs inside the
+// scheduler, and bb_note_phase is reachable from fw_millis, which runs on a
+// PACKAGE's stack. A checkpoint that can overflow the stack it is describing is
+// not a diagnostic, and the whole point of these notes is to be safe to put
+// anywhere, including inside a fault.
+static void copy_into(char *dst, unsigned cap, const char *src) {
+    unsigned n = 0;
+    if (src) while (n + 1 < cap && src[n]) { dst[n] = src[n]; n++; }
+    dst[n] = 0;
+}
 
 // Clearing the task name is what marks it: the reporters all key off that
 // field, so a run that ends on purpose leaves nothing for them to find.
@@ -43,20 +57,17 @@ void bb_note_task(int pid, uint8_t core, const char *name,
     g_bb.core = core;
     g_bb.stack_used = stack_used;
     g_bb.stack_size = stack_size;
-    // snprintf rather than strncpy: this runs in the scheduler and a
-    // non-terminated name would be read back as garbage after a reboot, which is
-    // the one moment it has to be right.
-    snprintf(g_bb.task, sizeof(g_bb.task), "%s", name ? name : "?");
+    copy_into(g_bb.task, sizeof(g_bb.task), name ? name : "?");
 }
 
 void bb_note_command(const char *line) {
     if (g_bb.magic != BB_MAGIC) bb_init();
-    snprintf(g_bb.cmd, sizeof(g_bb.cmd), "%s", line ? line : "");
+    copy_into(g_bb.cmd, sizeof(g_bb.cmd), line);
 }
 
 void bb_note_phase(const char *what) {
     if (g_bb.magic != BB_MAGIC) bb_init();
-    snprintf(g_bb.phase, sizeof(g_bb.phase), "%s", what ? what : "");
+    copy_into(g_bb.phase, sizeof(g_bb.phase), what);
 }
 
 const char *bb_phase(void) {

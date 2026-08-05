@@ -758,8 +758,16 @@ bool app_run_owner(const void *owner, int (*fn)(int, char **), int argc,
         } else {
             *ret = fn(argc, argv);
         }
+        // CHECKPOINTS, because this is the path a package COMMAND takes and it
+        // had none. `havoc fault` is a registered command, so it comes through
+        // here rather than through app_run_stack — and a fault contained inside
+        // it left a report that could not say whether the unwind had finished,
+        // because the only marker after sandbox_enter was in the other function.
+        bb_note_phase("apps: the command returned");
         if (boxed) { task_arena_set(nullptr); sandbox_return(&sa, pooled); }
+        bb_note_phase("apps: sandbox released");
         app_leave(&saved, had_saved);
+        bb_note_phase("apps: left the package");
         if (sandbox_took_call_back())
             out_errp("apps", "'%s' was stopped. The shell is fine.",
                      a->header.name);
@@ -1085,4 +1093,20 @@ extern "C" void fault_report_stacks(uint32_t sp) {
     while (untouched < m.stack_size && p[untouched] == STACK_PAINT) untouched++;
     printf("    deepest used  : %lu of %lu bytes\n",
            (unsigned long)(m.stack_size - untouched), (unsigned long)m.stack_size);
+
+    // AND INTO THE LOG RING, which is the only half of this that is ever read.
+    //
+    // Nothing printed above reaches a terminal. USB is drained by a task and
+    // this runs at fault priority, so the whole report sits in a buffer the
+    // device never gets to send — the console shows the board disappearing and
+    // that is all. Meanwhile these two numbers are exactly what decides whether
+    // the handler had room: room left below the fault, and how deep anything
+    // ever went. logdump survives the reset and has been the only thing that
+    // has moved this forward.
+    log_addf(LOG_K_ERR, "stack %08lx..%08lx sp %s, %lu below, deepest %lu of %lu",
+             (unsigned long)base, (unsigned long)top,
+             (sp >= base && sp < top) ? "inside" : "OUTSIDE",
+             (unsigned long)(sp >= base && sp < top ? sp - base : 0),
+             (unsigned long)(m.stack_size - untouched),
+             (unsigned long)m.stack_size);
 }

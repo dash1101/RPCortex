@@ -220,8 +220,16 @@ int fault_report(FaultFrame *f, const char *kind) {
         // flushing; this one returned immediately, so the tail of the report
         // was still in the USB buffer when the shell printed over it — the
         // region dump ended mid-number.
+        //
+        // BUSY-WAIT, NOT sleep_ms. sleep_ms goes through the default alarm
+        // pool: a hardware spinlock, an alarm the IRQ for which cannot possibly
+        // fire at fault priority, and a WFE waiting for it. Whether that
+        // returns at all was never tested — a hang inside it and a successful
+        // reboot both arrive as "the watchdog reset the device", so the two
+        // have never been told apart. busy_wait_us_32 reads the timer and
+        // nothing else.
         fflush(stdout);
-        for (int i = 0; i < 30; i++) sleep_ms(10);
+        busy_wait_us_32(300u * 1000u);
         // The last thing this handler does. If the next report stops here, the
         // decision was right and the RESUME is what failed — a distinction
         // worth having, because they are different bugs in different files.
@@ -231,7 +239,8 @@ int fault_report(FaultFrame *f, const char *kind) {
 
     printf("    resetting in 2s\n\n");
     // Flush before the reset, or the report never leaves the USB buffer.
-    for (int i = 0; i < 200; i++) { sleep_ms(10); }
+    // Busy-waiting for the same reason as the contained path above.
+    busy_wait_us_32(2000u * 1000u);
     watchdog_reboot(0, 0, 0);
     while (1) {}
 }

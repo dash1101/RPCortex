@@ -136,6 +136,12 @@ extern "C" uint32_t sandbox_return_gate(void) {
 // tail, which arrives back on the PACKAGE's stack and has to stand on the
 // firmware's again before it can pop the frame it pushed.
 extern "C" uint32_t sandbox_kernel_sp(void) {
+    // The only checkpoint available INSIDE the shim's tail, which is assembly
+    // and cannot note anything itself. Reaching this means the exception return
+    // landed where it was aimed and the tail is running; what is left after it
+    // is three instructions and a pop. Cheap enough for the hot path now that a
+    // note is a bounded copy rather than a vfprintf.
+    bb_note_phase("tail: asked for the kernel stack");
     SandboxState *s = state_of_current();
     return s ? s->kernel_sp : 0;
 }
