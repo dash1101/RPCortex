@@ -242,6 +242,44 @@ bool sandbox_in_package(void) {
     return s && s->depth;
 }
 
+// End the package call a wedged task is inside, WITHOUT ending the task.
+//
+// The alarm's other answer is task_forced_exit, and for the shell that is no
+// answer at all: a package command runs ON the shell task, so killing the task
+// takes the session with it — which is why the shell was exempt, and why
+// `havoc spin` rebooted the board instead of losing one command.
+//
+// This is the same unwind `svc #1` performs when a package returns normally.
+// The exception return goes into the shim's tail, which puts the firmware's
+// stack back and returns out of app_call_unpriv; sandbox_enter then re-arms the
+// guard and its caller carries on into sandbox_return and app_leave exactly as
+// it would have. The task never notices it was interrupted, because from its
+// point of view the package simply returned.
+//
+// r0 is set to -1 first, so the command reports a failure rather than whatever
+// the package happened to leave in the register.
+static volatile bool g_abandoned;
+
+extern "C" bool sandbox_abandon_call(uint32_t *frame) {
+    SandboxState *s = state_of_current();
+    if (!s || !s->depth || !frame) return false;
+    s->depth = 0;
+    control_set(control_get() & ~CONTROL_NPRIV);
+    frame[EXC_R0_WORD] = (uint32_t)-1;
+    exc_frame_redirect(frame, (uint32_t)(uintptr_t)&app_call_unpriv_tail);
+    g_abandoned = true;
+    return true;
+}
+
+// Read once and cleared, by whoever is about to report it. The alarm cannot
+// print — it fires inside an arbitrary instruction — so it leaves a flag and
+// the task context says so when it gets there.
+extern "C" bool sandbox_took_call_back(void) {
+    bool v = g_abandoned;
+    g_abandoned = false;
+    return v;
+}
+
 // Called from the preemption alarm before it redirects a stalled task into
 // firmware. An unprivileged package cannot fetch instructions from flash, so
 // the redirect would fault instead of terminating anything — and a fault
@@ -270,6 +308,9 @@ int sandbox_enter(void *, int, void *, void *, uint32_t, uint32_t, uint32_t, uin
 // No sandbox on ARMv6-M, so a task is always on its own stack and the
 // scheduler's usual answer is the right one.
 extern "C" bool sandbox_guard_stack(int, void **, unsigned *) { return false; }
+
+extern "C" bool sandbox_abandon_call(uint32_t *) { return false; }
+extern "C" bool sandbox_took_call_back(void) { return false; }
 
 bool sandbox_in_package(void) { return false; }
 void sandbox_release_for_kill(void) {}

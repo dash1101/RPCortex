@@ -68,3 +68,9 @@ extern "C" uint32_t sandbox_return_gate(void);
 extern "C" uint32_t sandbox_finish_call(void);
 
 #endif  // RPC_SANDBOX_H
+
+// End the package call a wedged task is inside, without ending the task. Called
+// from the preemption alarm; see sandbox_rp2.cpp.
+extern "C" bool sandbox_abandon_call(uint32_t *frame);
+// Whether a call was taken back since this was last asked. Cleared on read.
+extern "C" bool sandbox_took_call_back(void);

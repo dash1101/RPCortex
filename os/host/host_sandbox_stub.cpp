@@ -15,3 +15,7 @@ void sandbox_forget(int) {}
 
 // No protection unit on the host to dump.
 extern "C" void mpu_dump_live(unsigned) {}
+
+// No sandbox on the host, so a call is never taken back from one.
+extern "C" bool sandbox_abandon_call(uint32_t *) { return false; }
+extern "C" bool sandbox_took_call_back(void) { return false; }

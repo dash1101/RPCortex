@@ -44,7 +44,11 @@ struct Command {
 // register took the last two slots and every one after that was refused —
 // silently, because installs launch quietly. "Installed" followed by "not a
 // command" with nothing in between is about the worst way to find that out.
-#define CMD_MAX 192
+// Raised from 192, which a stock image plus one more package reached: havoc
+// could not register at boot and said so. A Command is small and the table is
+// static, so the ceiling is cheap; running out of it is not, because the
+// package loads fine and then simply has no command.
+#define CMD_MAX 256
 
 // Register a command. Returns false if the table is full or the name collides
 // with an existing one — a silent overwrite would let an app shadow `reboot`.

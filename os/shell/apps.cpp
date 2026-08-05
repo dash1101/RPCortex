@@ -594,6 +594,11 @@ int app_run_stack(const LoadedApp *app, int (*fn)(int), int arg, uint32_t stack_
 
     if (boxed) { task_arena_set(nullptr); sandbox_return(&sa, pooled); }
     app_leave(&saved, had_saved);
+    // The alarm cannot print — it fires inside an arbitrary instruction — so it
+    // leaves a flag and this says what happened, back in task context.
+    if (sandbox_took_call_back())
+        out_errp("apps", "'%s' stopped responding and was ended. The shell is "
+                         "fine.", app->header.name);
     return ret;
 }
 
@@ -732,6 +737,9 @@ bool app_run_owner(const void *owner, int (*fn)(int, char **), int argc,
         }
         if (boxed) { task_arena_set(nullptr); sandbox_return(&sa, pooled); }
         app_leave(&saved, had_saved);
+        if (sandbox_took_call_back())
+            out_errp("apps", "'%s' stopped responding and was ended. The shell "
+                             "is fine.", a->header.name);
         return true;
     }
     return false;

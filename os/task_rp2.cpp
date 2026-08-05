@@ -258,6 +258,29 @@ static bool should_force(void) {
 // word, and returns. Printing or allocating from an interrupt that fired inside
 // an arbitrary instruction is how a fault handler comes to fault.
 static int64_t preempt_alarm(alarm_id_t, void *) {
+    // The frame first, because both answers below rewrite it.
+    uint32_t exc_return;
+    __asm volatile ("mov %0, lr" : "=r"(exc_return));
+    uint32_t *frame;
+    if (exc_return_used_psp(exc_return)) __asm volatile ("mrs %0, psp" : "=r"(frame));
+    else                                 __asm volatile ("mrs %0, msp" : "=r"(frame));
+
+    // A task wedged INSIDE A PACKAGE loses the call, not the task.
+    //
+    // This is the one that matters, because a package command runs on the SHELL
+    // task — so the old answer, task_forced_exit, would have taken the session
+    // with it. That is why the shell was exempt from being forced at all, and
+    // why a package that never yields rebooted the whole device instead of
+    // costing one command.
+    //
+    // Detection has to happen HERE rather than in the scheduler. task_watchdog_
+    // feed runs from reschedule, so it only ever sees tasks that are still
+    // yielding — which is precisely not the case it exists to catch. This is a
+    // timer interrupt and fires whether anything yields or not.
+    if (bb_stall_ms(task_now_ms()) >= STALL_KILL_MS && sandbox_in_package()) {
+        if (sandbox_abandon_call(frame)) return PREEMPT_TICK_US;
+    }
+
     if (should_force()) {
         // If the stalled task is a SANDBOXED package, it is running
         // unprivileged and cannot fetch instructions from flash — so redirecting
@@ -266,14 +289,6 @@ static int64_t preempt_alarm(alarm_id_t, void *) {
         // Privilege is handed back first. The task is ending either way, so it
         // has nothing left to protect.
         if (sandbox_in_package()) sandbox_release_for_kill();
-        // EXC_RETURN bit 2 says which stack the interrupted code was using.
-        // Both are checked rather than assumed, because assuming MSP would
-        // silently rewrite the wrong stack the day tasks move to PSP.
-        uint32_t exc_return;
-        __asm volatile ("mov %0, lr" : "=r"(exc_return));
-        uint32_t *frame;
-        if (exc_return_used_psp(exc_return)) __asm volatile ("mrs %0, psp" : "=r"(frame));
-        else                                 __asm volatile ("mrs %0, msp" : "=r"(frame));
         exc_frame_redirect(frame, (uint32_t)(uintptr_t)&task_forced_exit);
     }
     return PREEMPT_TICK_US;    // reschedule this alarm
