@@ -28,6 +28,7 @@
 #include <stdio.h>
 #include "core/mpu.h"
 #include "core/task.h"
+#include "core/lock.h"      // task_irq_save / task_irq_restore
 
 #include <stdint.h>
 #include <string.h>
@@ -164,22 +165,80 @@ extern "C" void task_stack_guard_set(const void *bottom, uint32_t size) {
 // --- package regions --------------------------------------------------------
 
 #if !MPU_V6
+// What each region was last ASKED for, per core, and what was written for it.
+//
+// A region is described by two registers, and a fault report can only read what
+// the hardware ended up holding. When those two disagree with each other the
+// report says a region is 83 kilobytes when 12 were requested, and there is no
+// way from that alone to tell whether the caller passed something wrong or the
+// programming did — which is a whole debugging round per crash.
+//
+// So the intent is recorded next to the act. The dump prints both and says
+// which of the two is wrong.
+struct RegionShadow {
+    uint32_t base, size, rbar, rlar;
+};
+static RegionShadow g_shadow[2][8];
+// Region number plus one while a region is mid-write, zero otherwise. A fault
+// that lands here says the state the dump is reading is a half-finished write
+// rather than something that persisted.
+static volatile uint8_t g_prog[2];
+
 static void set_region(uint32_t rgn, const void *base, uint32_t size, MpuPerm perm) {
     MpuV8Region r;
+    unsigned c = this_core();
+    RegionShadow *sh = &g_shadow[c][rgn & 7u];
+    sh->base = (uint32_t)(uintptr_t)base;
+    sh->size = size;
+
+    g_prog[c] = (uint8_t)(rgn + 1);
     mpu_hw->rnr = rgn;
+
+    // DISABLE BEFORE CHANGING, always.
+    //
+    // A region is a base register and a limit register, and the enable bit
+    // lives in the limit. Writing the base first therefore leaves the region
+    // ENABLED, with the new base and the PREVIOUS limit, for as long as it
+    // takes to reach the next store — a span the hardware will happily enforce
+    // if an exception arrives inside it.
+    //
+    // What it enforces then is not a small error. The old limit belongs to a
+    // different allocation, so the region stretches from one block to wherever
+    // the last one ended: tens of kilobytes, overlapping whatever lies between,
+    // and ARMv8-M calls overlapping regions UNPREDICTABLE. An access the real
+    // region would have allowed can be refused, and the refusal is reported
+    // against an address that is plainly inside a region granting it.
+    //
+    // Clearing the limit first costs one store and means the intermediate state
+    // is a region that does not exist rather than one describing the wrong
+    // memory. Where no region matches, privileged code still has the default
+    // map (PRIVDEFENA) and unprivileged code is denied — denial being the safe
+    // direction, and unreachable in practice because callers mask interrupts.
+    mpu_hw->rlar = 0;
+    __dsb();
+
     if (!base || size == 0 || !mpu_v8_encode((uint32_t)(uintptr_t)base, size, perm, &r)) {
-        mpu_hw->rbar = 0;
-        mpu_hw->rlar = 0;                  // EN clear: no region rather than a wrong one
+        mpu_hw->rbar = 0;                  // EN already clear: no region rather
+        sh->rbar = sh->rlar = 0;           // than a wrong one
+        g_prog[c] = 0;
         return;
     }
     mpu_hw->rbar = r.rbar;
     mpu_hw->rlar = r.rlar;
+    sh->rbar = r.rbar;
+    sh->rlar = r.rlar;
+    g_prog[c] = 0;
 }
 #endif
 
 extern "C" void task_app_mem_apply(const TaskAppMem *mem) {
     unsigned c = this_core();
     if (!g_ready[c]) return;
+
+    // Five regions are one description, not five. arm_protection already masks
+    // around its call; this covers task_app_mem_set and task_app_mem_clear,
+    // which reach here directly. The pairs nest.
+    unsigned irq = task_irq_save();
 
 #if MPU_V6
     // Not enforced on ARMv6-M.
@@ -196,31 +255,30 @@ extern "C" void task_app_mem_apply(const TaskAppMem *mem) {
     (void)mem;
     g_app_active[c] = false;
 #else
-    if (!mem) {
-        set_region(MPU_RGN_APP_TEXT,   nullptr, 0, MPU_RO_EXEC);
-        set_region(MPU_RGN_APP_DATA,   nullptr, 0, MPU_RW_NOEXEC);
-        set_region(MPU_RGN_APP_VENEER, nullptr, 0, MPU_RO_EXEC);
-        set_region(MPU_RGN_APP_STACK,  nullptr, 0, MPU_RW_NOEXEC);
-        set_region(MPU_RGN_APP_ARENA,  nullptr, 0, MPU_RW_NOEXEC);
-        mpu_sync();
-        g_app_active[c] = false;
-        return;
-    }
     // Code read-only, data never executable. The veneers are code the loader
     // wrote, and they are protected for a reason beyond tidiness: they are the
     // only way a package reaches the firmware, so leaving them writable would
     // let a package point one at an address of its choosing.
-    set_region(MPU_RGN_APP_TEXT,   mem->text,   mem->text_size,   MPU_RO_EXEC);
-    set_region(MPU_RGN_APP_DATA,   mem->data,   mem->data_size,   MPU_RW_NOEXEC);
-    set_region(MPU_RGN_APP_VENEER, mem->veneer, mem->veneer_size, MPU_RO_EXEC);
+    //
+    // A null `mem` withdraws all five rather than taking a separate path, so
+    // there is one sequence to reason about and one place the mask is dropped.
+    set_region(MPU_RGN_APP_TEXT,   mem ? mem->text   : nullptr,
+                                   mem ? mem->text_size   : 0, MPU_RO_EXEC);
+    set_region(MPU_RGN_APP_DATA,   mem ? mem->data   : nullptr,
+                                   mem ? mem->data_size   : 0, MPU_RW_NOEXEC);
+    set_region(MPU_RGN_APP_VENEER, mem ? mem->veneer : nullptr,
+                                   mem ? mem->veneer_size : 0, MPU_RO_EXEC);
     // Its stack and its heap. Both zero for a package running with the OS's own
     // privileges, which reaches them through the default map like everything
     // else — the regions only mean anything once the default map is gone.
-    set_region(MPU_RGN_APP_STACK,  mem->stack,  mem->stack_size,  MPU_RW_NOEXEC);
-    set_region(MPU_RGN_APP_ARENA,  mem->arena,  mem->arena_size,  MPU_RW_NOEXEC);
+    set_region(MPU_RGN_APP_STACK,  mem ? mem->stack  : nullptr,
+                                   mem ? mem->stack_size  : 0, MPU_RW_NOEXEC);
+    set_region(MPU_RGN_APP_ARENA,  mem ? mem->arena  : nullptr,
+                                   mem ? mem->arena_size  : 0, MPU_RW_NOEXEC);
     mpu_sync();
-    g_app_active[c] = true;
+    g_app_active[c] = mem != nullptr;
 #endif
+    task_irq_restore(irq);
 }
 
 // --- reporting --------------------------------------------------------------
@@ -264,14 +322,19 @@ extern "C" void mpu_dump_live(unsigned sp) {
     // it looks like evidence.
     uint32_t ctrl;
     uint32_t rbar[8], rlar[8];
+    RegionShadow shadow[8];
+    uint8_t prog;
+    unsigned c = this_core();
     {
         uint32_t primask;
         __asm volatile ("mrs %0, primask \n cpsid i" : "=r"(primask) :: "memory");
         ctrl = mpu_hw->ctrl;
+        prog = g_prog[c];
         for (uint32_t r = 0; r < 8; r++) {
             mpu_hw->rnr = r;
             rbar[r] = mpu_hw->rbar;
             rlar[r] = mpu_hw->rlar;
+            shadow[r] = g_shadow[c][r];
         }
         if (!primask) __asm volatile ("cpsie i" ::: "memory");
     }
@@ -279,6 +342,15 @@ extern "C" void mpu_dump_live(unsigned sp) {
     printf("    mpu ctrl=0x%08lx  (enabled=%lu privdefena=%lu)\n",
            (unsigned long)ctrl, (unsigned long)(ctrl & 1u),
            (unsigned long)((ctrl >> 2) & 1u));
+
+    // Was a region mid-write when this happened? That single bit separates "the
+    // dump caught a half-finished write" from "this state was live while the
+    // package ran", and the two have completely different causes.
+    if (prog)
+        printf("    region %u WAS MID-WRITE — the state below is unfinished\n",
+               (unsigned)(prog - 1));
+    else
+        printf("    no region was mid-write: this state was live\n");
 
     bool covered = false;
     uint32_t hits = 0;
@@ -293,6 +365,18 @@ extern "C" void mpu_dump_live(unsigned sp) {
                (unsigned long)(limit - base + 1),
                (unsigned long)((rbar[r] >> 1) & 3u), (unsigned long)(rbar[r] & 1u),
                has ? "   <- sp is here" : "");
+        // What was asked for, when the hardware does not match it. This is the
+        // line that says whether the caller or the programming is at fault, and
+        // it is why the two are recorded separately.
+        if (rbar[r] != shadow[r].rbar || rlar[r] != shadow[r].rlar)
+            printf("      asked for 0x%08lx + %lu B  (rbar %08lx/%08lx rlar %08lx/%08lx)"
+                   "  MISMATCH\n",
+                   (unsigned long)shadow[r].base, (unsigned long)shadow[r].size,
+                   (unsigned long)shadow[r].rbar, (unsigned long)rbar[r],
+                   (unsigned long)shadow[r].rlar, (unsigned long)rlar[r]);
+        else if (shadow[r].size && shadow[r].size != limit - base + 1)
+            printf("      asked for 0x%08lx + %lu B  — THE CALLER PASSED THIS\n",
+                   (unsigned long)shadow[r].base, (unsigned long)shadow[r].size);
     }
     if (!covered)
         printf("    NO ENABLED REGION COVERS SP — that is the fault, not a size\n");

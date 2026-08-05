@@ -104,6 +104,23 @@ static uint32_t g_cores = 1;
 extern "C" bool sandbox_guard_stack(int slot, void **base, unsigned *size);
 
 static void arm_protection(Task *t) {
+    // ALL OF IT, OR NONE OF IT.
+    //
+    // Below this line a stack limit and five protection regions are programmed
+    // one register at a time, and every intermediate state describes a machine
+    // that does not exist: this task's stack guard against the last task's
+    // regions, or four regions from one package and one from another. An
+    // exception arriving inside that sequence is checked against whatever half
+    // has landed.
+    //
+    // reschedule already masks around its call, for the narrower window between
+    // the stack pointer changing and the regions following it. This is the same
+    // rule applied one level down, so the three callers that are NOT the
+    // scheduler — task_app_mem_set, task_app_mem_clear and the re-arm after a
+    // package returns — get it too. The pairs nest: task_irq_save returns the
+    // previous state and task_irq_restore only re-enables if it was enabled.
+    unsigned irq = task_irq_save();
+
     // A task inside a package is running on the PACKAGE's stack, not its own.
     //
     // Arming the guard against the task's stack there is not a missing check,
@@ -118,6 +135,8 @@ static void arm_protection(Task *t) {
     else if (t && t->stack) task_stack_guard_set(t->stack, t->info.stack_size);
     else                    task_stack_guard_set(nullptr, 0);
     task_app_mem_apply(t && t->app_mem_set ? &t->app_mem : nullptr);
+
+    task_irq_restore(irq);
 }
 
 static Task *slot_of(int pid) {
