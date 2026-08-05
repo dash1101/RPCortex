@@ -349,12 +349,18 @@ extern "C" void preempt_tick(uint32_t *frame) {
     // carries on into sandbox_return and app_leave exactly as it would have.
     if (sandbox_in_package() && sandbox_abandon_call(frame)) {
         g_acted = true;
+        // THE STALL IS OVER, so say so. Without this the watchdog reports it
+        // again a moment later — "stalled 6097 ms at 'havoc returned'" — which
+        // describes a problem that has just been dealt with and reads as a
+        // second failure.
+        bb_note_yield(task_now_ms());
         return;                 // apps.cpp says so, back in task context
     }
 
     // Not in a package: end the task, if it is one that may be ended.
     if (!should_force()) return;
     g_acted = true;
+    bb_note_yield(task_now_ms());       // dealt with; see above
     exc_frame_redirect(frame, (uint32_t)(uintptr_t)&task_forced_exit);
 }
 

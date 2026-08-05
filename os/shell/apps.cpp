@@ -560,7 +560,20 @@ void app_leave(const TaskAppMem *saved, bool had_saved) {
 // a package got. An RP2040 cannot afford the regions, and refusing to run
 // packages there would be a worse answer than running them the way they have
 // always run.
-int app_run_stack(const LoadedApp *app, int (*fn)(int), int arg, uint32_t stack_bytes) {
+// `require_sandbox` is true for a task a PACKAGE spawned.
+//
+// The foreground command keeps its fallback: somebody typed it, the warning is
+// on their screen, and refusing to run a package on a device that is merely
+// short of memory would be the worse trade.
+//
+// A spawned task is different. It exists because the package asked for a second
+// thread, and the whole reason apps_spawn_in_sandbox exists is that a task
+// started any other way runs privileged with no regions registered — which is
+// how a package used to escape its sandbox simply by asking for a thread.
+// Letting it run unsandboxed when the pool is empty re-opens exactly that, and
+// nobody is watching to read the warning.
+int app_run_stack(const LoadedApp *app, int (*fn)(int), int arg,
+                  uint32_t stack_bytes, bool require_sandbox) {
     TaskAppMem saved;
     bool had_saved = false;
     TaskAppMem m;
@@ -574,9 +587,17 @@ int app_run_stack(const LoadedApp *app, int (*fn)(int), int arg, uint32_t stack_
     // and did not is an event, and a silent one would be the worst kind: the
     // package runs with the OS's own privileges and nothing anywhere says the
     // protection it was supposed to have did not happen.
-    if (sandbox_supported() && app->veneer_gates && !boxed)
+    if (sandbox_supported() && app->veneer_gates && !boxed) {
+        if (require_sandbox) {
+            out_errp("apps", "'%s' asked for a task and there was no memory to "
+                             "sandbox it, so it was not started.",
+                     app->header.name);
+            app_leave(&saved, had_saved);
+            return -1;
+        }
         out_warnp("apps", "Not enough memory to sandbox '%s' — it is running "
                           "with full privileges.", app->header.name);
+    }
 
     had_saved = task_app_mem_get(&saved);
     task_app_mem_set(&m);
@@ -603,7 +624,7 @@ int app_run_stack(const LoadedApp *app, int (*fn)(int), int arg, uint32_t stack_
 }
 
 int app_run(const LoadedApp *app, int (*fn)(int), int arg) {
-    return app_run_stack(app, fn, arg, PKG_STACK_BYTES);
+    return app_run_stack(app, fn, arg, PKG_STACK_BYTES, /*require_sandbox*/false);
 }
 
 // --- tasks a package spawns --------------------------------------------------
@@ -634,7 +655,7 @@ static PkgTask g_pkg_tasks[8];
 static bool run_in_image(void *image, int (*fn)(int), int arg, uint32_t stack, int *ret) {
     for (int i = 0; i < APPS_MAX; i++) {
         if (!g_used[i] || g_apps[i].image != image) continue;
-        *ret = app_run_stack(&g_apps[i], fn, arg, stack);
+        *ret = app_run_stack(&g_apps[i], fn, arg, stack, /*require_sandbox*/true);
         return true;
     }
     return false;
