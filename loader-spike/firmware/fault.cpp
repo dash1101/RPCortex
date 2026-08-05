@@ -17,7 +17,13 @@
 
 // Supplied by the OS, which knows the task and sandbox layout. Weak so the
 // loader spike, which has neither, still links.
-extern "C" void __attribute__((weak)) fault_report_stacks(uint32_t sp) { (void)sp; }
+//
+// `quiet` asks for the log ring only. A contained fault does as little as
+// possible inside the handler and reports itself afterwards from task context,
+// so the printing half of this belongs to the fatal path alone.
+extern "C" void __attribute__((weak)) fault_report_stacks(uint32_t sp, int quiet) {
+    (void)sp; (void)quiet;
+}
 
 // Can this fault be contained rather than rebooted?
 //
@@ -42,6 +48,57 @@ struct FaultFrame {
 };
 
 extern "C" const char *apps_locate(uint32_t addr, uint32_t *offset, bool *in_veneer);
+
+// --- what a contained fault leaves behind ------------------------------------
+//
+// THE HANDLER RECORDS; TASK CONTEXT REPORTS.
+//
+// A fault that ends in a reset can afford to print from the handler, because
+// there is nothing else left to do with the device. A fault that is CONTAINED
+// cannot: the report is printed on the faulting package's own stack, which is
+// the stack the machine is about to carry on using, and printf is not a small
+// thing to run there. On this port it reaches the stdio mutex, the alarm pool's
+// spinlock, and TinyUSB's device task — thousands of instructions and a
+// kilobyte or two of stack, at a priority where no interrupt can service any of
+// it, on a stack whose remaining depth is exactly what is in question.
+//
+// So the contained path stores these plain words and returns. The values are
+// printed once, later, by whoever notices the package was stopped — where
+// printing is ordinary and safe.
+static struct {
+    bool     pending;
+    uint32_t cfsr, addr, pc, lr, sp;
+    bool     have_addr;
+    const char *what;          // a literal; safe to keep the pointer
+    char     where[40];        // "havoc+1b28", built by hand below
+} g_contained;
+
+static void copy_where(const char *src) {
+    unsigned n = 0;
+    while (n + 1 < sizeof(g_contained.where) && src[n]) {
+        g_contained.where[n] = src[n];
+        n++;
+    }
+    g_contained.where[n] = 0;
+}
+
+// Print the last contained fault, if there is one, and forget it. Called from
+// task context by the code that reports the package was stopped.
+int fault_report_contained(void) {
+    if (!g_contained.pending) return 0;
+    g_contained.pending = false;
+    printf("\n*** FAULT IN A PACKAGE — contained ***\n");
+    printf("    %s\n", g_contained.where);
+    printf("    %s\n", g_contained.what);
+    printf("    pc  = 0x%08lx   lr  = 0x%08lx   sp = 0x%08lx\n",
+           (unsigned long)g_contained.pc, (unsigned long)g_contained.lr,
+           (unsigned long)g_contained.sp);
+    printf("    cfsr= 0x%08lx", (unsigned long)g_contained.cfsr);
+    if (g_contained.have_addr)
+        printf("   faulting address = 0x%08lx", (unsigned long)g_contained.addr);
+    printf("\n    the package was stopped; the device is still running\n\n");
+    return 1;
+}
 
 // Returns non-zero when the fault was contained and execution may resume.
 int fault_report(FaultFrame *f, const char *kind) {
@@ -118,12 +175,15 @@ int fault_report(FaultFrame *f, const char *kind) {
     //                instruction that did it.
     //
     // Recorded as a second line so the first still names the package and offset.
+    uint32_t cfsr, addr;
+    bool have_addr;
+    const char *what;
     {
-        uint32_t cfsr = *(volatile uint32_t *)0xE000ED28;
+        cfsr = *(volatile uint32_t *)0xE000ED28;
         uint32_t hfsr = *(volatile uint32_t *)0xE000ED2C;
         uint32_t mmfar = *(volatile uint32_t *)0xE000ED34;
         uint32_t bfar  = *(volatile uint32_t *)0xE000ED38;
-        const char *what = "?";
+        what = "?";
         // Most specific first. A stack overflow is the one worth naming plainly,
         // because it is the failure that used to corrupt whatever the heap had
         // put below the stack and get blamed on something else entirely.
@@ -163,18 +223,64 @@ int fault_report(FaultFrame *f, const char *kind) {
 
         bool have_mm = (cfsr & (1u << 7)) != 0;      // MMARVALID
         bool have_bf = (cfsr & (1u << 15)) != 0;     // BFARVALID
-        printf("    cfsr=0x%08lx hfsr=0x%08lx sp=%p  %s\n",
-               (unsigned long)cfsr, (unsigned long)hfsr, (void *)f, what);
-        if (have_mm || have_bf)
-            printf("    faulting address = 0x%08lx\n",
-                   (unsigned long)(have_mm ? mmfar : bfar));
-        // And into the log ring, which survives to be read by logdump.
+        have_addr = have_mm || have_bf;
+        addr = have_mm ? mmfar : have_bf ? bfar : 0;
+        // Into the log ring, which survives to be read by logdump. This is the
+        // one line that is written either way, before anything is decided.
         log_addf(LOG_K_ERR, "fault %s cfsr=%08lx addr=%08lx sp=%08lx lr=%08lx",
-                 what, (unsigned long)cfsr,
-                 (unsigned long)(have_mm ? mmfar : have_bf ? bfar : 0),
+                 what, (unsigned long)cfsr, (unsigned long)addr,
                  (unsigned long)(uintptr_t)f, (unsigned long)f->lr);
     }
 
+    // DECIDE BEFORE PRINTING.
+    //
+    // Everything below this point runs on the way to a reset, and printing on
+    // the way to a reset is free. Printing on the way BACK is not: it happens
+    // on the faulting package's stack, which the machine is about to keep
+    // using, and on this port printf reaches the stdio mutex, the alarm pool's
+    // spinlock and TinyUSB's device task — none of which can be serviced at
+    // fault priority, and all of which want stack whose remaining depth is
+    // precisely the thing in doubt.
+    //
+    // So a contained fault records what happened and returns. The report is
+    // printed a moment later from task context by whoever notices the package
+    // was stopped, where printing is ordinary.
+    if (stack_intact && fault_try_contain((uint32_t *)f)) {
+        g_contained.cfsr = cfsr;
+        g_contained.addr = addr;
+        g_contained.have_addr = have_addr;
+        g_contained.pc = f->pc;
+        g_contained.lr = f->lr;
+        g_contained.sp = (uint32_t)(uintptr_t)f;
+        g_contained.what = what;
+        copy_where(note);
+        g_contained.pending = true;
+
+        // The two numbers that say whether this handler had room to run: how
+        // far the fault was from the bottom of the package's stack, and how
+        // deep anything ever went. Log only — see above.
+        fault_report_stacks((uint32_t)(uintptr_t)f, /*quiet*/1);
+
+        // CLEAR THE FAULT REGISTERS. CFSR bits are sticky and MMFAR keeps its
+        // last value, and nothing cleared them before because every fault ended
+        // in a reset. Now that one can be survived, the next report inherits
+        // them: a stack overflow was reported as "addr=10000000", the address
+        // from a DACCVIOL two commands earlier, which is a lie about the one
+        // number in that report that comes from hardware.
+        *(volatile uint32_t *)0xE000ED28 = *(volatile uint32_t *)0xE000ED28;  // CFSR, w1c
+        *(volatile uint32_t *)0xE000ED2C = *(volatile uint32_t *)0xE000ED2C;  // HFSR, w1c
+
+        // The last thing this handler does. If the next report stops here, the
+        // decision was right and the RESUME is what failed — a distinction
+        // worth having, because they are different bugs in different files.
+        bb_note_phase("fault: resuming into the unwind");
+        return 1;
+    }
+
+    printf("    cfsr=0x%08lx sp=%p  %s\n",
+           (unsigned long)cfsr, (void *)f, what);
+    if (have_addr)
+        printf("    faulting address = 0x%08lx\n", (unsigned long)addr);
     printf("\n");
     printf("*** %s ***\n", kind);
     if (g_current_app) printf("    in app: %s\n", (const char *)g_current_app);
@@ -196,50 +302,17 @@ int fault_report(FaultFrame *f, const char *kind) {
     // The regions come from the same table the protection unit is programmed
     // from, so this reports where the stack pointer ACTUALLY was rather than
     // where it was expected to be.
-    fault_report_stacks((uint32_t)(uintptr_t)f);
-
-    // CONTAIN IT IF IT BELONGS TO A PACKAGE.
-    //
-    // A sandboxed package faulting is the case the sandbox exists for. Taking
-    // the whole device down for it is the opposite of containment — and the
-    // report above has already been printed, so nothing is hidden by carrying
-    // on.
-    if (stack_intact && fault_try_contain((uint32_t *)f)) {
-        printf("    the package was stopped; the device is still running\n\n");
-
-        // CLEAR THE FAULT REGISTERS. CFSR bits are sticky and MMFAR keeps its
-        // last value, and nothing cleared them before because every fault ended
-        // in a reset. Now that one can be survived, the next report inherits
-        // them: a stack overflow was reported as "addr=10000000", the address
-        // from a DACCVIOL two commands earlier, which is a lie about the one
-        // number in that report that comes from hardware.
-        *(volatile uint32_t *)0xE000ED28 = *(volatile uint32_t *)0xE000ED28;  // CFSR, w1c
-        *(volatile uint32_t *)0xE000ED2C = *(volatile uint32_t *)0xE000ED2C;  // HFSR, w1c
-
-        // LET IT OUT BEFORE RESUMING. The reset path spends two seconds
-        // flushing; this one returned immediately, so the tail of the report
-        // was still in the USB buffer when the shell printed over it — the
-        // region dump ended mid-number.
-        //
-        // BUSY-WAIT, NOT sleep_ms. sleep_ms goes through the default alarm
-        // pool: a hardware spinlock, an alarm the IRQ for which cannot possibly
-        // fire at fault priority, and a WFE waiting for it. Whether that
-        // returns at all was never tested — a hang inside it and a successful
-        // reboot both arrive as "the watchdog reset the device", so the two
-        // have never been told apart. busy_wait_us_32 reads the timer and
-        // nothing else.
-        fflush(stdout);
-        busy_wait_us_32(300u * 1000u);
-        // The last thing this handler does. If the next report stops here, the
-        // decision was right and the RESUME is what failed — a distinction
-        // worth having, because they are different bugs in different files.
-        bb_note_phase("fault: resuming into the unwind");
-        return 1;
-    }
+    fault_report_stacks((uint32_t)(uintptr_t)f, /*quiet*/0);
 
     printf("    resetting in 2s\n\n");
     // Flush before the reset, or the report never leaves the USB buffer.
-    // Busy-waiting for the same reason as the contained path above.
+    //
+    // BUSY-WAIT, NOT sleep_ms. sleep_ms goes through the default alarm pool: a
+    // hardware spinlock, an alarm the IRQ for which cannot possibly fire at
+    // fault priority, and a WFE waiting for it. Whether it returned at all was
+    // never tested — a hang inside it and a successful reboot both arrive as
+    // "the watchdog reset the device", so the two were never told apart.
+    // busy_wait_us_32 reads the timer and nothing else.
     busy_wait_us_32(2000u * 1000u);
     watchdog_reboot(0, 0, 0);
     while (1) {}

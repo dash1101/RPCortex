@@ -27,6 +27,9 @@ bool storage_open_source(const char *, AppSource *, void **) { return false; }
 void storage_close_source(void *) {}
 extern "C" void api_set_current_app(void *) {}
 extern "C" volatile const char *g_current_app = nullptr;
+// The fault handler's half of the contained-fault report lives in fault.cpp,
+// which is device-only. Nothing here faults, so there is never one to read.
+extern "C" int fault_report_contained(void) { return 0; }
 
 static int checks = 0, fails = 0;
 static void ck(bool c, const char *m) { checks++; if (!c) { fails++; printf("  FAIL: %s\n", m); } }

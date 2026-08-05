@@ -19,6 +19,10 @@
 extern "C" void api_set_current_app(void *owner);
 extern "C" volatile const char *g_current_app;
 
+// A fault inside a package prints nothing from the handler — see the note in
+// fault.cpp — and this reads the report out afterwards, from task context.
+extern "C" int fault_report_contained(void);
+
 // Fixed table, no allocation for the bookkeeping itself. A device that somehow
 // loads 16 resident packages has a bigger problem than a full table.
 #define APPS_MAX 16
@@ -618,10 +622,14 @@ int app_run_stack(const LoadedApp *app, int (*fn)(int), int arg,
     bb_note_phase("apps: sandbox returned");
     app_leave(&saved, had_saved);
     // The alarm cannot print — it fires inside an arbitrary instruction — so it
-    // leaves a flag and this says what happened, back in task context.
-    if (sandbox_took_call_back())
+    // leaves a flag and this says what happened, back in task context. A fault
+    // handler cannot print either, for a different reason, and leaves its
+    // report the same way.
+    if (sandbox_took_call_back()) {
+        fault_report_contained();
         out_errp("apps", "'%s' was stopped. The shell is fine.",
                  app->header.name);
+    }
     return ret;
 }
 
@@ -768,9 +776,14 @@ bool app_run_owner(const void *owner, int (*fn)(int, char **), int argc,
         bb_note_phase("apps: sandbox released");
         app_leave(&saved, had_saved);
         bb_note_phase("apps: left the package");
-        if (sandbox_took_call_back())
+        if (sandbox_took_call_back()) {
+            // The handler recorded and returned; this is where it gets read
+            // out. Nothing was printed inside the fault itself, on purpose —
+            // see the note on fault_report_contained.
+            fault_report_contained();
             out_errp("apps", "'%s' was stopped. The shell is fine.",
                      a->header.name);
+        }
         return true;
     }
     return false;
@@ -1057,12 +1070,33 @@ extern "C" int fault_try_contain(uint32_t *frame) {
     return 1;
 }
 
-extern "C" void fault_report_stacks(uint32_t sp) {
+// `quiet` is a fault that is about to be CONTAINED: the device carries on, so
+// everything here runs on a stack that is still in use and printing is exactly
+// what must not happen. The two numbers go to the log ring and nothing else.
+extern "C" void fault_report_stacks(uint32_t sp, int quiet) {
+    TaskAppMem m;
+
+    if (quiet) {
+        if (!task_app_mem_get(&m) || !m.stack || !m.stack_size) return;
+        uint32_t base = (uint32_t)(uintptr_t)m.stack;
+        uint32_t top  = base + m.stack_size;
+        const uint8_t *p = (const uint8_t *)(uintptr_t)base;
+        uint32_t untouched = 0;
+        while (untouched < m.stack_size && p[untouched] == STACK_PAINT) untouched++;
+        log_addf(LOG_K_ERR,
+                 "stack %08lx..%08lx sp %s, %lu below, deepest %lu of %lu",
+                 (unsigned long)base, (unsigned long)top,
+                 (sp >= base && sp < top) ? "inside" : "OUTSIDE",
+                 (unsigned long)(sp >= base && sp < top ? sp - base : 0),
+                 (unsigned long)(m.stack_size - untouched),
+                 (unsigned long)m.stack_size);
+        return;
+    }
+
     // The hardware first, because what the MPU HELD is the question and
     // everything below is what it was supposed to hold.
     mpu_dump_live(sp);
 
-    TaskAppMem m;
     if (!task_app_mem_get(&m) || !m.stack || !m.stack_size) {
         printf("    stack: not inside a package (sp=0x%08lx)\n", (unsigned long)sp);
         return;
@@ -1094,15 +1128,12 @@ extern "C" void fault_report_stacks(uint32_t sp) {
     printf("    deepest used  : %lu of %lu bytes\n",
            (unsigned long)(m.stack_size - untouched), (unsigned long)m.stack_size);
 
-    // AND INTO THE LOG RING, which is the only half of this that is ever read.
+    // AND INTO THE LOG RING, because this half is the half that gets read.
     //
-    // Nothing printed above reaches a terminal. USB is drained by a task and
-    // this runs at fault priority, so the whole report sits in a buffer the
-    // device never gets to send — the console shows the board disappearing and
-    // that is all. Meanwhile these two numbers are exactly what decides whether
-    // the handler had room: room left below the fault, and how deep anything
-    // ever went. logdump survives the reset and has been the only thing that
-    // has moved this forward.
+    // Nothing printed above survives a reset. logdump does, and these two
+    // numbers are what decides whether the handler had room to run: how far the
+    // fault was from the bottom of the package's stack, and how deep anything
+    // ever went.
     log_addf(LOG_K_ERR, "stack %08lx..%08lx sp %s, %lu below, deepest %lu of %lu",
              (unsigned long)base, (unsigned long)top,
              (sp >= base && sp < top) ? "inside" : "OUTSIDE",
