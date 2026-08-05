@@ -616,6 +616,8 @@ int net_pkg_ip(char *out, unsigned cap);
 int net_pkg_resolve(const char *host, char *out, unsigned cap);
 int net_pkg_http_get(const char *url, void *buf, unsigned cap);
 int net_pkg_http_download(const char *url, const char *path);
+int net_pkg_http_measure(const char *url, uint32_t *bytes, uint32_t *ms);
+int net_pkg_ping(const char *host, uint32_t timeout_ms);
 bool net_is_connected(void);
 
 extern "C" int fw_net_connected(void) { return net_is_connected() ? 1 : 0; }
@@ -643,6 +645,20 @@ extern "C" int fw_http_download(const char *url, const char *path) {
     if (!ok_s(url) || !ok_s(path)) return -1;
     task_alive();
     return net_pkg_http_download(url, path);
+}
+extern "C" int fw_http_measure(const char *url, uint32_t *bytes, uint32_t *ms) {
+    // Both outputs are optional, so each is checked only if it was given —
+    // refusing a null here would make "just tell me the byte count" impossible.
+    if (!ok_s(url)) return -1;
+    if (bytes && !ok_w(bytes, sizeof(*bytes))) return -1;
+    if (ms    && !ok_w(ms,    sizeof(*ms)))    return -1;
+    task_alive();
+    return net_pkg_http_measure(url, bytes, ms);
+}
+extern "C" int fw_net_ping(const char *host, uint32_t timeout_ms) {
+    if (!ok_s(host)) return -1;
+    task_alive();
+    return net_pkg_ping(host, timeout_ms);
 }
 
 // --- SPI --------------------------------------------------------------------
@@ -1082,6 +1098,8 @@ static const ApiSymbol kSymbols[] = {
     SYM(fw_net_resolve),
     SYM(fw_http_get),
     SYM(fw_http_download),
+    SYM(fw_http_measure),
+    SYM(fw_net_ping),
     SYM(fw_spi_init),
     SYM(fw_spi_set_baud),
     SYM(fw_spi_write),

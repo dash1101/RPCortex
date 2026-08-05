@@ -117,6 +117,75 @@ static u8_t ping_recv(void *, struct raw_pcb *, struct pbuf *p, const ip_addr_t 
     return 1;                        // consumed
 }
 
+// Scoped form of the begin/end pair this file uses elsewhere. The function
+// below has several exits and a paired call at each one is a lock left held the
+// first time somebody adds another.
+struct LwipLock {
+    LwipLock()  { cyw43_arch_lwip_begin(); }
+    ~LwipLock() { cyw43_arch_lwip_end(); }
+};
+
+// One echo request, for a package rather than for the screen.
+//
+// v1's speedtest measured latency by timing a TCP connect, and said why in a
+// comment: MicroPython had no way to send an ICMP packet. This one does — the
+// raw PCB above is the real thing — so a package gets the same measurement the
+// `ping` command makes rather than an approximation of it.
+//
+// Returns the round trip in microseconds, or negative: -1 could not send, -2 no
+// reply before the timeout.
+int net_pkg_ping(const char *host, uint32_t timeout_ms) {
+    if (!host || !net_is_connected()) return -1;
+    if (!resolve_host(host, &g_ping.target)) return -1;
+
+    struct raw_pcb *pcb;
+    {
+        LwipLock lk;
+        pcb = raw_new(IP_PROTO_ICMP);
+        if (pcb) { raw_recv(pcb, ping_recv, nullptr); raw_bind(pcb, IP_ADDR_ANY); }
+    }
+    if (!pcb) return -1;
+
+    // A sequence number that moves, so a late reply to the PREVIOUS call is not
+    // counted as the answer to this one — which would report a round trip of
+    // almost nothing and make a slow link look fast.
+    static uint16_t seq;
+    seq++;
+
+    int rc = -1;
+    {
+        struct pbuf *p;
+        { LwipLock lk; p = pbuf_alloc(PBUF_IP,
+                                     sizeof(struct icmp_echo_hdr) + PING_DATA_LEN,
+                                     PBUF_RAM); }
+        if (p) {
+            auto *hdr = (struct icmp_echo_hdr *)p->payload;
+            ICMPH_TYPE_SET(hdr, ICMP_ECHO);
+            ICMPH_CODE_SET(hdr, 0);
+            hdr->chksum = 0;
+            hdr->id     = lwip_htons(PING_ID);
+            hdr->seqno  = lwip_htons(seq);
+            char *data = (char *)hdr + sizeof(struct icmp_echo_hdr);
+            for (int b = 0; b < PING_DATA_LEN; b++) data[b] = (char)('a' + b % 23);
+            hdr->chksum = inet_chksum(hdr, (u16_t)(sizeof(struct icmp_echo_hdr) +
+                                                   PING_DATA_LEN));
+
+            g_ping.got     = false;
+            g_ping.seq     = seq;
+            g_ping.sent_us = (uint32_t)time_us_64();
+
+            err_t e;
+            { LwipLock lk; e = raw_sendto(pcb, p, &g_ping.target); pbuf_free(p); }
+            if (e == ERR_OK)
+                rc = wait_for(g_ping.got, timeout_ms ? timeout_ms : 2000)
+                         ? (int)g_ping.rtt_us : -2;
+        }
+    }
+
+    { LwipLock lk; raw_remove(pcb); }
+    return rc;
+}
+
 static int cmd_ping(int argc, char **argv) {
     if (argc < 2) { out_multi("Usage: ping <host> [count]"); return 1; }
     if (!require_network()) return 1;
@@ -322,6 +391,8 @@ static int cmd_ntp(int argc, char **argv) {
 }
 
 #else   // no radio on this board
+
+int net_pkg_ping(const char *, uint32_t) { return -1; }
 
 static int cmd_ping(int, char **)     { out_err("This board has no wireless hardware."); return 1; }
 static int cmd_nslookup(int, char **) { out_err("This board has no wireless hardware."); return 1; }

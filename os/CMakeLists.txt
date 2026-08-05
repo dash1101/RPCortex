@@ -333,6 +333,7 @@ rpc_add_app(tuidemo)
 rpc_add_app(stress)
 rpc_add_app(bench)
 rpc_add_app(websearch)
+rpc_add_app(speedtest)
 
 # --- packages that ship installed -------------------------------------------
 #
@@ -371,6 +372,17 @@ if(RPC_DEV_PACKAGES)
             VERBATIM)
         add_custom_target(stock_${devpkg}_src DEPENDS ${CMAKE_BINARY_DIR}/stock_${devpkg}.cpp)
         target_sources(rpcortex_v2 PRIVATE ${CMAKE_BINARY_DIR}/stock_${devpkg}.cpp)
+        # ORDERED, not merely both required.
+        #
+        # app_${devpkg} and this target both depend on apps/${devpkg}.app, and
+        # with a Makefiles generator two independent targets that need the same
+        # custom-command output can each run its rule — at the same time, into
+        # the same file. It fails maybe one build in five, always on a different
+        # package, and reads as a compiler error in something untouched.
+        #
+        # Naming app_${devpkg} as a dependency of this target, rather than only
+        # as a second dependency of the firmware, is what serialises them.
+        add_dependencies(stock_${devpkg}_src app_${devpkg})
         add_dependencies(rpcortex_v2 stock_${devpkg}_src app_${devpkg})
     endforeach()
 endif()

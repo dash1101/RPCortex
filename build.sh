@@ -63,8 +63,13 @@ for board in "${BOARDS[@]}"; do
     # board directory refuses to configure while an existing one is fine. Point
     # every board at the copy the first build fetched instead of downloading it
     # again per board.
+    # --clean wipes every os/build_* directory, which is where the only copy
+    # used to live — so a clean build had nothing to find and fell back to
+    # fetching from git, which fails outright without a network. The spike's
+    # build directories are not cleaned by this script and hold the same
+    # version, so they are searched too.
     PT=""
-    for d in os/build_*/_deps/picotool; do
+    for d in os/build_*/_deps/picotool loader-spike/build*/_deps/picotool; do
         [ -x "$d/picotool" ] && PT="$(cd "$d" && pwd)" && break
     done
     if [ -n "$PT" ]; then

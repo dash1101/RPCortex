@@ -544,6 +544,49 @@ int net_pkg_http_get(const char *url, void *buf, unsigned cap) {
     return (int)m.len;
 }
 
+// Fetch and THROW AWAY, counting and timing.
+//
+// A throughput test wants a megabyte off the wire and has nowhere to put it:
+// the buffer form is bounded by the buffer, and the file form would need the
+// download to fit in flash — 596 KB free against a 1 MB test — and would be
+// measuring the filesystem as much as the link. v1 solved it by streaming and
+// discarding chunk by chunk, and this is the same idea with the loop already
+// written.
+//
+// The clock starts at the first byte, not at the call: DNS and the TLS
+// handshake are latency, and counting them as transfer time makes a fast link
+// look slow on a small file.
+struct CountSink { uint64_t bytes; uint32_t first_us; };
+
+static int count_sink(void *ctx, const uint8_t *, uint32_t len) {
+    CountSink *c = (CountSink *)ctx;
+    if (!c->bytes) c->first_us = (uint32_t)(time_us_64() & 0xFFFFFFFFu);
+    c->bytes += len;
+    return 0;
+}
+
+int net_pkg_http_measure(const char *url, uint32_t *bytes, uint32_t *ms) {
+    if (!url) return -1;
+    HttpTransport t;
+    if (!http_transport_get(&t)) return -1;
+
+    CountSink c{0, 0};
+    FetchOpts o{};
+    o.poll = poll_interrupt;
+
+    FetchResult r;
+    bool good = http_fetch(&t, url, count_sink, &c, &o, &r);
+    if (!good && c.bytes == 0) return -1;
+
+    uint32_t end_us = (uint32_t)(time_us_64() & 0xFFFFFFFFu);
+    uint32_t took   = c.bytes ? (end_us - c.first_us) : 0;
+    if (bytes) *bytes = (uint32_t)(c.bytes > 0xFFFFFFFFull ? 0xFFFFFFFFull : c.bytes);
+    // Never zero when anything arrived, so a caller dividing by it cannot fault
+    // on a transfer that finished inside one microsecond tick.
+    if (ms)    *ms    = took / 1000u ? took / 1000u : 1u;
+    return (int)(c.bytes > 0x7FFFFFFFull ? 0x7FFFFFFF : (uint32_t)c.bytes);
+}
+
 int net_pkg_http_download(const char *url, const char *path) {
     if (!url || !path) return -1;
     HttpTransport t;

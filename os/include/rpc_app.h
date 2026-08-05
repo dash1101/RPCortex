@@ -23,7 +23,7 @@ extern "C" {
 // MINOR: a symbol added — older-minor apps still run (everything they want is
 //        present); newer-minor apps refused (they may want something absent).
 #define RPC_API_MAJOR 1
-#define RPC_API_MINOR 12
+#define RPC_API_MINOR 13
 
 typedef struct {
     uint32_t magic;          // RPC_APP_MAGIC
@@ -378,6 +378,25 @@ int fw_http_get(const char *url, void *buf, unsigned cap);
 // Fetch a URL straight to a file, which is how anything larger than RAM is
 // handled. Returns bytes written, or negative.
 int fw_http_download(const char *url, const char *path);
+
+// Fetch a URL and throw it away, reporting how much arrived and how long it
+// took. Returns the byte count, or negative.
+//
+// For measuring a link rather than retrieving anything: the buffer form is
+// bounded by the buffer and the file form needs the whole download to fit in
+// flash, which a throughput test does not and should not. `ms` times the
+// TRANSFER — the clock starts at the first byte, so name lookup and the TLS
+// handshake are not counted against the rate — and is never zero when anything
+// arrived, so dividing by it is safe.
+int fw_http_measure(const char *url, uint32_t *bytes, uint32_t *ms);
+
+// Send one ICMP echo and time the reply. Returns the round trip in
+// MICROSECONDS, or negative: -1 could not send, -2 no reply in time.
+//
+// Real ICMP, the same as the `ping` command. v1's packages timed a TCP connect
+// instead and said why in a comment — MicroPython could not send an echo
+// request. This is the measurement itself rather than a stand-in for it.
+int fw_net_ping(const char *host, uint32_t timeout_ms);
 
 // --- SPI --------------------------------------------------------------------
 //
