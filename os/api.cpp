@@ -160,6 +160,12 @@ extern "C" int apps_spawn_in_sandbox(const char *name, int (*fn)(int), void *arg
 
 extern "C" int fw_task_spawn(const char *name, TaskFn fn, void *arg, uint32_t stack) {
     if (!ok_s(name)) return -1;
+    // A null entry point returned a live pid, and the task it made branched to
+    // address zero as soon as the scheduler reached it — a fault in a task the
+    // package spawned, blamed on the package, from a call that said it worked.
+    // task_spawn refuses this; apps_spawn_in_sandbox is reached first and did
+    // not. Found by havoc.
+    if (!fn) return -1;
 
     // Inside a sandboxed package, the new task goes into the SAME sandbox.
     //
@@ -867,6 +873,11 @@ extern "C" int fw_pio_load(int h, const unsigned short *prog, unsigned len,
                            unsigned wrap_target, unsigned wrap) {
     PioSlot *s = pio_slot(h);
     if (!s || !prog || len == 0 || len > 32) return -1;
+    // The instructions are READ by the firmware, so where they live has to be
+    // checked like any other pointer the ABI follows. Without this a package
+    // could name flash or a peripheral and have the OS read it on their behalf
+    // — havoc handed it 0x10000000 and got a program back.
+    if (!ok_r(prog, len * sizeof(prog[0]))) return -1;
     if (wrap >= len || wrap_target >= len) return -1;
 
     pio_program pp;
@@ -1335,6 +1346,9 @@ extern "C" void fw_tui_text(int x, int y, const char *s, unsigned char attr, uns
 extern "C" void fw_tui_box(int x, int y, int w, int h, const char *title,
                            unsigned char attr, unsigned char fg) {
     task_alive();
+    // A box may legitimately have no title, so null is allowed — but anything
+    // else has to be a string this package can actually see.
+    if (title && !ok_s(title)) return;
     if (g_app_screen) tui_box(g_app_screen, x, y, w, h, title, attr, fg);
 }
 

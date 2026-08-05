@@ -54,6 +54,23 @@ static void refused(int rc, const char *what) {
     }
 }
 
+// NOT EVERY CALL SIGNALS FAILURE THE SAME WAY, and the first run of this got
+// four verdicts wrong by assuming they did.
+//
+// fw_file_exists answers a question: 0 means "no such file", which for a bad
+// argument is exactly the right answer, not an acceptance. fw_task_kill and
+// fw_file_remove are the same shape — non-zero means it happened. Treating
+// "returned 0" as a failure to refuse turned four correct behaviours into
+// findings and buried the two that were real.
+static void denied(int rc, const char *what) {
+    g_checks++;
+    if (rc != 0) {
+        g_bad++;
+        fw_printf("    [!] %s ACCEPTED (returned %d) — it should have refused\n",
+                  what, rc);
+    }
+}
+
 // Some calls return void or a count; for those the check is simply that control
 // came back.
 static void survived(const char *what) {
@@ -69,8 +86,7 @@ static void group_ptr(void) {
     fw_printf("\n[ptr] pointers the firmware must refuse\n");
 
     step("null out-pointer");
-    refused(fw_file_read("/os/version", nullptr, 16) == 0 ? -1 : 0,
-            "fw_file_read(null)");
+    denied((int)fw_file_read("/os/version", nullptr, 16), "fw_file_read(null)");
     refused((int)fw_net_resolve("example.com", nullptr, 16), "fw_net_resolve(null)");
     refused(fw_net_ssid(nullptr, 16), "fw_net_ssid(null)");
 
@@ -80,8 +96,7 @@ static void group_ptr(void) {
     // whole reason ptrcheck exists.
     refused((int)fw_net_resolve("example.com", (char *)0x10000000u, 16),
             "resolve into flash");
-    refused(fw_file_read("/os/version", (void *)0x10000000u, 16) == 0 ? -1 : 0,
-            "read into flash");
+    denied((int)fw_file_read("/os/version", (void *)0x10000000u, 16), "read into flash");
 
     step("a pointer that is not ours (peripheral space)");
     refused((int)fw_net_resolve("example.com", (char *)0x40000000u, 16),
@@ -92,8 +107,8 @@ static void group_ptr(void) {
     // base alone would let this through.
     refused((int)fw_net_resolve("example.com", g_scratch, 0x7FFFFFFFu),
             "resolve with a huge cap");
-    refused(fw_file_read("/os/version", g_scratch, 0xFFFFFF00u) == 0 ? -1 : 0,
-            "read with a huge cap");
+    denied((int)fw_file_read("/os/version", g_scratch, 0xFFFFFF00u),
+           "read with a huge cap");
 
     step("length that overflows when added to the base");
     refused((int)fw_net_resolve("example.com", g_scratch, 0xFFFFFFFFu),
@@ -115,20 +130,20 @@ static void group_str(void) {
     fw_printf("\n[str] strings the firmware must refuse\n");
 
     step("null string");
-    refused(fw_file_exists(nullptr), "fw_file_exists(null)");
-    refused(fw_file_remove(nullptr), "fw_file_remove(null)");
+    denied(fw_file_exists(nullptr), "fw_file_exists(null)");
+    denied(fw_file_remove(nullptr), "fw_file_remove(null)");
     refused(fw_printf(nullptr), "fw_printf(null)");
     refused((int)fw_net_resolve(nullptr, g_scratch, sizeof(g_scratch)),
             "fw_net_resolve(null host)");
 
     step("a string in memory that is not ours");
-    refused(fw_file_exists((const char *)0x10000000u), "exists() on flash");
+    denied(fw_file_exists((const char *)0x10000000u), "exists() on flash");
 
     step("an UNTERMINATED string that runs to the end of our region");
     // Filled with no zero anywhere. A firmware that walks this looking for a
     // terminator must stop at the region boundary and refuse, not read on.
     for (unsigned i = 0; i < sizeof(g_scratch); i++) g_scratch[i] = 'A';
-    refused(fw_file_exists(g_scratch), "exists() on an unterminated string");
+    denied(fw_file_exists(g_scratch), "exists() on an unterminated string");
     g_scratch[sizeof(g_scratch) - 1] = 0;
 
     step("a format string with more specifiers than arguments");
@@ -255,12 +270,12 @@ static void group_task(void) {
             "spawn(name in flash)");
 
     step("kill things that are not ours to kill");
-    refused(fw_task_kill(-1),     "kill(-1)");
-    refused(fw_task_kill(0),      "kill(0)");
-    refused(fw_task_kill(999999), "kill(999999)");
+    denied(fw_task_kill(-1),     "kill(-1)");
+    denied(fw_task_kill(0),      "kill(0)");
+    denied(fw_task_kill(999999), "kill(999999)");
     // pid 1 is the idle task. A package killing it would take the scheduler
     // down with it.
-    refused(fw_task_kill(1), "kill(init)");
+    denied(fw_task_kill(1), "kill(init)");
 
     step("spawn until it says no, and let them all finish");
     int n = 0;
@@ -276,7 +291,12 @@ static void group_task(void) {
     // A package killing its own task from inside an ABI call: the call has to
     // return before the task can be taken apart, or the unwind runs on a stack
     // that has been handed back.
-    refused(fw_task_kill(fw_task_self()) == 1 ? -1 : 0, "kill(self) was accepted");
+    // Killing our own task from inside an ABI call: the call has to return
+    // before the task is taken apart, or the unwind runs on a stack that has
+    // already been handed back. Either answer is defensible; what is not is a
+    // fault, so this only checks that control came back.
+    fw_task_kill(fw_task_self());
+    survived("kill(self) returned");
 }
 
 // --- hardware ----------------------------------------------------------------
