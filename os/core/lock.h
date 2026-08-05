@@ -109,8 +109,14 @@ void lock_hw_exit(void);
 // Symmetric by construction. Every context masks before it switches out and
 // unmasks after it has armed itself on the way back in, so the state carries
 // across the switch without being saved anywhere.
-void task_irq_off(void);
-void task_irq_on(void);
+// Returns what the state WAS, so it can be put back rather than forced.
+//
+// Forcing interrupts on after the switch would be wrong for any caller that
+// had them off for its own reasons, and each context restores its own saved
+// value from its own stack frame — which is what makes this work across a
+// switch without storing anything globally.
+unsigned task_irq_save(void);
+void     task_irq_restore(unsigned state);
 }
 
 #endif  // RPC_LOCK_H

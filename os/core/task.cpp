@@ -265,7 +265,11 @@ static void task_trampoline(void) {
     // to it masked them and this context never had a switch of its own to
     // unmask after. So it completes the pair.
     arm_protection(t);
-    task_irq_on();
+    // A brand-new task arrives with interrupts masked, because whichever
+    // context switched to it masked them and this one had no switch of its own
+    // to restore after. Unmasking is right here: a task always begins with them
+    // enabled.
+    task_irq_restore(0);
     int rc = t->fn ? t->fn(t->arg) : 0;
     task_exit(rc);
 }
@@ -589,7 +593,7 @@ static void reschedule(TaskState park_as) {
     // switch on its own. A brand-new task does the same in task_trampoline,
     // which is the one place execution arrives without having switched out
     // first.
-    task_irq_off();
+    unsigned irq = task_irq_save();
     if (me) {
         task_ctx_switch(&me->sp, next->sp, &me->live);
         arm_protection(me);
@@ -597,7 +601,7 @@ static void reschedule(TaskState park_as) {
         task_ctx_switch(&g_sched_sp[core], next->sp, nullptr);
         arm_protection(nullptr);
     }
-    task_irq_on();
+    task_irq_restore(irq);
 }
 
 void task_yield(void) { reschedule(TASK_READY); }

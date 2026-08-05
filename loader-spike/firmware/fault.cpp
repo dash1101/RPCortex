@@ -214,6 +214,19 @@ extern "C" const char *apps_locate(uint32_t addr, uint32_t *offset, bool *in_ven
 __attribute__((naked)) void isr_hardfault(void) {
     __asm volatile(
         FAULT_RELEASE_STACK_LIMIT
+        // Interrupts back on, whatever the faulting code had done.
+        //
+        // The report goes out over USB, and USB is serviced by a task — so with
+        // interrupts masked the console stalls after the first buffered flush
+        // and the watchdog resets the board before the rest is printed. That is
+        // why some of these crashes arrived as a single line and some as
+        // nothing at all: not that the handler failed, but that it could not
+        // get its words out.
+        //
+        // Nothing is being protected here. The device is two seconds from a
+        // reset either way, and a fault nobody can read is worth less than the
+        // small chance of a second one while reading it.
+        "cpsie i            \n"
         "movs r0, #4        \n"
         "mov  r1, lr        \n"
         "tst  r0, r1        \n"

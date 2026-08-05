@@ -48,7 +48,7 @@ void task_slot_recycled(int) {}
 extern "C" bool sandbox_guard_stack(int, void **, unsigned *) { return false; }
 
 // No interrupts to mask on the host, and no protection unit to race with.
-extern "C" void task_irq_off(void) {}
-extern "C" void task_irq_on(void) {}
+extern "C" unsigned task_irq_save(void) { return 0; }
+extern "C" void task_irq_restore(unsigned) {}
 
 }
