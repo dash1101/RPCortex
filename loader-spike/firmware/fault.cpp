@@ -222,6 +222,10 @@ int fault_report(FaultFrame *f, const char *kind) {
         // region dump ended mid-number.
         fflush(stdout);
         for (int i = 0; i < 30; i++) sleep_ms(10);
+        // The last thing this handler does. If the next report stops here, the
+        // decision was right and the RESUME is what failed — a distinction
+        // worth having, because they are different bugs in different files.
+        bb_note_phase("fault: resuming into the unwind");
         return 1;
     }
 

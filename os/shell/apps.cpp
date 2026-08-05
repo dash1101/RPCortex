@@ -615,6 +615,7 @@ int app_run_stack(const LoadedApp *app, int (*fn)(int), int arg,
     }
 
     if (boxed) { task_arena_set(nullptr); sandbox_return(&sa, pooled); }
+    bb_note_phase("apps: sandbox returned");
     app_leave(&saved, had_saved);
     // The alarm cannot print — it fires inside an arbitrary instruction — so it
     // leaves a flag and this says what happened, back in task context.

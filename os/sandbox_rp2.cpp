@@ -36,6 +36,7 @@
 #include "sandbox.h"
 #include "api.h"
 #include "loader.h"
+#include "core/blackbox.h"
 
 #include <stdint.h>
 #include <string.h>
@@ -219,6 +220,10 @@ int sandbox_enter(void *fn, int arg0, void *arg1, void *stack_top,
     // the exit gate, the return gate branches to LR.
     int ret = app_call_unpriv(fn, arg0, arg1, stack_top, exit_gate,
                               &s->kernel_sp, enter_gate);
+    // Reached whether the package returned normally or was unwound out of by
+    // the fault handler. A contained fault that never gets here died in the
+    // tail, on the firmware stack, between the exception return and this line.
+    bb_note_phase("sandbox: back on the firmware stack");
     // The shim let go of the stack limit to stand on the package's stack. This
     // task is back on its own now, so the guard describes it again.
     task_rearm_protection();
