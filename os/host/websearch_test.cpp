@@ -133,8 +133,8 @@ int main(void) {
             "[\"pico\",[\"Raspberry Pi Pico\",\"Pico de Orizaba\",\"Picometre\"],"
             "[\"\",\"\",\"\"],"
             "[\"https://en.wikipedia.org/wiki/Raspberry_Pi_Pico\",\"\",\"\"]]";
-        static char titles[4][FIELD_MAX];
-        int n = wiki_titles(os_reply, titles, 4);
+        static char titles[TITLE_N][TITLE_MAX];
+        int n = wiki_titles(os_reply, titles, TITLE_N);
         ck(n == 3, "all three titles are found");
         ck(strcmp(titles[0], "Raspberry Pi Pico") == 0, "the first is right");
         ck(strcmp(titles[2], "Picometre") == 0, "and so is the last");
@@ -145,16 +145,20 @@ int main(void) {
 
         // No matches: an empty titles array.
         const char *empty = "[\"zzzz\",[],[],[]]";
-        ck(wiki_titles(empty, titles, 4) == 0, "an empty result reads as none");
+        ck(wiki_titles(empty, titles, TITLE_N) == 0, "an empty result reads as none");
+        // Slot 0 was used as scratch for the query that gets skipped over, so a
+        // run with no matches must clear it — printing the search term back as
+        // its own top result is the exact wrong answer.
+        ck(titles[0][0] == 0, "and does not leave the query sitting in slot 0");
 
         // More results than there is room for: take what fits, do not overrun.
         const char *many =
             "[\"a\",[\"t1\",\"t2\",\"t3\",\"t4\",\"t5\",\"t6\"],[],[]]";
-        ck(wiki_titles(many, titles, 4) == 4, "more results than slots fills the slots");
+        ck(wiki_titles(many, titles, TITLE_N) == TITLE_N, "more results than slots fills the slots");
 
         // A query containing a bracket must not be mistaken for the array.
         const char *tricky = "[\"a[b\",[\"real\"],[],[]]";
-        ck(wiki_titles(tricky, titles, 4) == 1 && strcmp(titles[0], "real") == 0,
+        ck(wiki_titles(tricky, titles, TITLE_N) == 1 && strcmp(titles[0], "real") == 0,
            "a bracket inside the query does not shift the parse");
     }
 

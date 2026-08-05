@@ -103,10 +103,28 @@ static void describe(const LoadedApp *a, TaskAppMem *m) {
 // high-water mark reported by `mpu`, so the right number is an observation
 // instead of a third guess.
 //
-// Four kilobytes covers vsnprintf (over one), littlefs's write path, the
+// Four kilobytes covered vsnprintf (over one), littlefs's write path, the
 // storage frames under it, and an exception frame arriving at the deepest
 // point — which on a part with an FPU is 104 bytes, not 32.
-#define FW_CALL_RESERVE  4096
+//
+// It did not cover TLS, and that list is why: it was written before any package
+// could reach one. `websearch` is the first to call fw_http_get with an https
+// URL, which runs the whole handshake HERE — certificate parsing, chain
+// verification, the bignum and elliptic-curve work under the signature check,
+// and the hash functions under that. Adding up the largest frames along that
+// path in the shipped image gives well over three kilobytes before any of the
+// lwIP or fetch frames beneath it, against a reserve of four that also has to
+// hold everything else.
+//
+// Eight, then. The cost is real — the pool holds four of these — and it is
+// still the right trade: the alternative is that any package touching HTTPS
+// faults somewhere inside mbedtls, which tells its author nothing.
+//
+// DEVICE-UNCONFIRMED as a number. The stack is painted and `mpu` prints the
+// high-water mark, so running the deepest thing a package can do and reading it
+// back is what turns this into a measurement. That is the check to make before
+// trusting it, not a rebuild with a bigger guess.
+#define FW_CALL_RESERVE  8192
 
 // What an untouched byte of sandbox stack looks like.
 #define STACK_PAINT      0xA5

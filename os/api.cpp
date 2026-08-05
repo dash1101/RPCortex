@@ -637,16 +637,25 @@ extern "C" int fw_net_resolve(const char *host, char *out, unsigned cap) {
     return net_pkg_resolve(host, out, cap);
 }
 extern "C" int fw_http_get(const char *url, void *buf, unsigned cap) {
+    // Noted, because the gap used to be invisible.
+    //
+    // A package that faults during a fetch left "entered fw_printf" as the last
+    // recorded phase — from whatever it printed BEFORE the call — and the crash
+    // then had to be placed by elimination. These three are the longest, deepest
+    // things a package can ask for, so they are the ones worth naming.
+    bb_note_phase("entered fw_http_get");
     if (!ok_s(url) || !ok_w(buf, cap)) return -1;
     task_alive();
     return net_pkg_http_get(url, buf, cap);
 }
 extern "C" int fw_http_download(const char *url, const char *path) {
+    bb_note_phase("entered fw_http_download");
     if (!ok_s(url) || !ok_s(path)) return -1;
     task_alive();
     return net_pkg_http_download(url, path);
 }
 extern "C" int fw_http_measure(const char *url, uint32_t *bytes, uint32_t *ms) {
+    bb_note_phase("entered fw_http_measure");
     // Both outputs are optional, so each is checked only if it was given —
     // refusing a null here would make "just tell me the byte count" impossible.
     if (!ok_s(url)) return -1;
@@ -656,6 +665,7 @@ extern "C" int fw_http_measure(const char *url, uint32_t *bytes, uint32_t *ms) {
     return net_pkg_http_measure(url, bytes, ms);
 }
 extern "C" int fw_net_ping(const char *host, uint32_t timeout_ms) {
+    bb_note_phase("entered fw_net_ping");
     if (!ok_s(host)) return -1;
     task_alive();
     return net_pkg_ping(host, timeout_ms);

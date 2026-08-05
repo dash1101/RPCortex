@@ -21,7 +21,7 @@
 // never holds two.
 #include "rpc_app.h"
 
-RPC_APP_VER("websearch", "2.0");
+RPC_APP_VER("websearch", "2.1");
 
 // One response at a time, and never more than this. Wikipedia summaries run to
 // two or three kilobytes and DuckDuckGo's answers to rather more; anything that
@@ -30,7 +30,26 @@ RPC_APP_VER("websearch", "2.0");
 #define REPLY_MAX   6144
 // Long enough for a percent-encoded query plus the longest endpoint.
 #define URL_MAX      512
-#define FIELD_MAX    768
+// An extract or an instant answer. Titles are much shorter and get their own
+// size, because four of them at the size of a paragraph is most of the budget.
+#define FIELD_MAX    640
+#define TITLE_MAX    128
+#define TITLE_N        4
+
+// NOT ON THE STACK, and that is the whole point.
+//
+// A package gets three kilobytes of stack before the firmware's own reserve —
+// and an ABI call does not switch stacks, so fw_http_get runs the TLS handshake
+// and certificate verification on THIS one. A frame holding two kilobytes of
+// buffers that then calls out to HTTPS is the difference between working and
+// faulting somewhere inside mbedtls, which is nobody's idea of a clue.
+//
+// One command runs at a time, so sharing these is safe and costs .bss the
+// package was going to need for the titles anyway.
+static char g_url[URL_MAX];
+static char g_query[URL_MAX];
+static char g_field[FIELD_MAX];
+static char g_titles[TITLE_N][TITLE_MAX];
 
 // --- small string helpers ----------------------------------------------------
 
@@ -182,13 +201,24 @@ static bool json_get(const char *j, const char *key, char *out, unsigned cap) {
 // every terminal wide enough to run the shell at all.
 #define WRAP_COLS 72
 
+// ONE CALL PER LINE, not one per character.
+//
+// The first version printed each character with its own fw_printf, and every
+// one of those is a supervisor call: an exception in, the firmware's vsnprintf
+// running on the package's own stack, and an exception out, to move one byte.
+// A three-hundred-character summary cost three hundred round trips across the
+// sandbox boundary — slow enough to watch, and three hundred separate moments
+// of being deep inside the firmware.
+//
+// The line is built here and handed over whole.
 static void print_wrapped(const char *text, const char *indent) {
-    unsigned col = 0;
-    unsigned i = 0;
-    fw_printf("%s", indent);
+    char line[WRAP_COLS + 8];
+    unsigned col = 0, i = 0;
+
     while (text[i]) {
         if (text[i] == '\n') {
-            fw_printf("\n%s", indent);
+            line[col] = 0;
+            fw_printf("%s%s\n", indent, line);
             col = 0;
             i++;
             while (text[i] == ' ') i++;        // no leading space on a new line
@@ -197,19 +227,24 @@ static void print_wrapped(const char *text, const char *indent) {
         // Measure the next word so it can be moved down whole.
         unsigned w = 0;
         while (text[i + w] && text[i + w] != ' ' && text[i + w] != '\n') w++;
+
+        // A word wider than the whole column cannot be wrapped anywhere, so it
+        // is broken rather than allowed to run off the end of `line`.
+        if (w > WRAP_COLS) w = WRAP_COLS;
+
         if (col && col + 1 + w > WRAP_COLS) {
-            fw_printf("\n%s", indent);
+            line[col] = 0;
+            fw_printf("%s%s\n", indent, line);
             col = 0;
         } else if (col) {
-            fw_printf(" ");
-            col++;
+            line[col++] = ' ';
         }
-        for (unsigned k = 0; k < w; k++) fw_printf("%c", text[i + k]);
-        col += w;
+        for (unsigned k = 0; k < w; k++) line[col++] = text[i + k];
         i += w;
         while (text[i] == ' ') i++;
     }
-    fw_printf("\n");
+    line[col] = 0;
+    fw_printf("%s%s\n", indent, line);
 }
 
 // --- fetching ----------------------------------------------------------------
@@ -242,7 +277,13 @@ static bool fetch(const char *url, char *buf, unsigned cap) {
 // OpenSearch returns ["query", ["title", ...], ["desc", ...], ["url", ...]].
 // The titles are the second array, so the scan skips the first bracket pair and
 // then reads strings until the array closes.
-static int wiki_titles(const char *json, char titles[][FIELD_MAX], int max) {
+//
+// The query string it skips over is decoded into the first title slot and then
+// overwritten, rather than into a buffer of its own — this runs just before an
+// HTTPS fetch, and a spare 640 bytes of frame here is 640 bytes the TLS
+// handshake does not get.
+static int wiki_titles(const char *json, char titles[][TITLE_MAX], int max) {
+    if (max < 1) return 0;
     unsigned i = 0;
     // Past the query string: the first '[' then the first '"..."' pair.
     while (json[i] && json[i] != '[') i++;
@@ -250,8 +291,7 @@ static int wiki_titles(const char *json, char titles[][FIELD_MAX], int max) {
     i++;
     while (json[i] && json[i] != '"') i++;
     if (!json[i]) return 0;
-    char skip[FIELD_MAX];
-    i = json_string_at(json, i + 1, skip, sizeof(skip));
+    i = json_string_at(json, i + 1, titles[0], TITLE_MAX);
     if (!i) return 0;
     // Now the titles array.
     while (json[i] && json[i] != '[') i++;
@@ -261,63 +301,62 @@ static int wiki_titles(const char *json, char titles[][FIELD_MAX], int max) {
     while (json[i] && json[i] != ']' && n < max) {
         while (json[i] == ' ' || json[i] == ',') i++;
         if (json[i] != '"') break;
-        i = json_string_at(json, i + 1, titles[n], FIELD_MAX);
+        i = json_string_at(json, i + 1, titles[n], TITLE_MAX);
         if (!i) break;
         n++;
     }
+    // Nothing matched: slot 0 still holds the query that was skipped over, and
+    // printing that back as a result is exactly the wrong answer.
+    if (n == 0) titles[0][0] = 0;
     return n;
 }
 
 static int wiki_summary(const char *topic_encoded, char *buf, unsigned cap) {
-    char url[URL_MAX];
     unsigned len = 0;
-    url[0] = 0;
-    if (!s_add(url, sizeof(url), &len, "https://en.wikipedia.org/api/rest_v1/page/summary/") ||
-        !s_add(url, sizeof(url), &len, topic_encoded)) {
+    g_url[0] = 0;
+    if (!s_add(g_url, URL_MAX, &len, "https://en.wikipedia.org/api/rest_v1/page/summary/") ||
+        !s_add(g_url, URL_MAX, &len, topic_encoded)) {
         fw_printf("That topic is too long.\n");
         return 1;
     }
-    if (!fetch(url, buf, cap)) return 1;
+    if (!fetch(g_url, buf, cap)) return 1;
 
-    char field[FIELD_MAX];
-    if (!json_get(buf, "extract", field, sizeof(field))) {
+    if (!json_get(buf, "extract", g_field, FIELD_MAX)) {
         // The REST endpoint answers 404 with a JSON body carrying a title.
-        if (json_get(buf, "title", field, sizeof(field)))
-            fw_printf("No article for that. (%s)\n", field);
+        if (json_get(buf, "title", g_field, FIELD_MAX))
+            fw_printf("No article for that. (%s)\n", g_field);
         else
             fw_printf("No article for that.\n");
         return 1;
     }
-    char title[FIELD_MAX];
-    if (json_get(buf, "title", title, sizeof(title))) fw_printf("\n  %s\n\n", title);
-    else                                              fw_printf("\n");
-    print_wrapped(field, "  ");
+    // The title is read into a title slot rather than a second field buffer,
+    // and printed before the extract is touched again.
+    if (json_get(buf, "title", g_titles[0], TITLE_MAX)) fw_printf("\n  %s\n\n", g_titles[0]);
+    else                                                fw_printf("\n");
+    print_wrapped(g_field, "  ");
     fw_printf("\n");
     return 0;
 }
 
 static int wiki_list(const char *query_encoded, char *buf, unsigned cap) {
-    char url[URL_MAX];
     unsigned len = 0;
-    url[0] = 0;
-    if (!s_add(url, sizeof(url), &len, "https://en.wikipedia.org/w/api.php?action=opensearch&limit=8&format=json&search=") ||
-        !s_add(url, sizeof(url), &len, query_encoded)) {
+    g_url[0] = 0;
+    if (!s_add(g_url, URL_MAX, &len, "https://en.wikipedia.org/w/api.php?action=opensearch&limit=8&format=json&search=") ||
+        !s_add(g_url, URL_MAX, &len, query_encoded)) {
         fw_printf("That query is too long.\n");
         return 1;
     }
-    if (!fetch(url, buf, cap)) return 1;
+    if (!fetch(g_url, buf, cap)) return 1;
 
-    // Eight titles at 768 bytes each would be six kilobytes of arena on top of
-    // the reply still being held, which is the whole budget. Four is what fits,
-    // and four articles is enough to choose from.
-    static char titles[4][FIELD_MAX];
-    int n = wiki_titles(buf, titles, 4);
+    // Four, not the eight asked for: four is enough to choose from, and the
+    // slots are held for the life of the package rather than borrowed.
+    int n = wiki_titles(buf, g_titles, TITLE_N);
     if (n <= 0) {
         fw_printf("Nothing matched.\n");
         return 1;
     }
     fw_printf("\n  Articles:\n");
-    for (int i = 0; i < n; i++) fw_printf("    %s\n", titles[i]);
+    for (int i = 0; i < n; i++) fw_printf("    %s\n", g_titles[i]);
     fw_printf("\n  'wiki <title>' reads one.\n\n");
     return 0;
 }
@@ -327,32 +366,32 @@ static int wiki_list(const char *query_encoded, char *buf, unsigned cap) {
 static int instant_answer(const char *query_encoded, char *buf, unsigned cap,
                           bool *answered) {
     *answered = false;
-    char url[URL_MAX];
     unsigned len = 0;
-    url[0] = 0;
-    if (!s_add(url, sizeof(url), &len, "https://api.duckduckgo.com/?format=json&no_html=1&skip_disambig=1&q=") ||
-        !s_add(url, sizeof(url), &len, query_encoded)) {
+    g_url[0] = 0;
+    if (!s_add(g_url, URL_MAX, &len, "https://api.duckduckgo.com/?format=json&no_html=1&skip_disambig=1&q=") ||
+        !s_add(g_url, URL_MAX, &len, query_encoded)) {
         fw_printf("That query is too long.\n");
         return 1;
     }
-    if (!fetch(url, buf, cap)) return 1;
+    if (!fetch(g_url, buf, cap)) return 1;
 
-    char field[FIELD_MAX];
     // AbstractText is the prose answer; Answer is the computed one (a sum, a
     // conversion). Either counts, neither is guaranteed.
-    if (json_get(buf, "Answer", field, sizeof(field)) && field[0]) {
+    if (json_get(buf, "Answer", g_field, FIELD_MAX) && g_field[0]) {
         fw_printf("\n");
-        print_wrapped(field, "  ");
+        print_wrapped(g_field, "  ");
         fw_printf("\n");
         *answered = true;
         return 0;
     }
-    if (json_get(buf, "AbstractText", field, sizeof(field)) && field[0]) {
-        char src[FIELD_MAX];
+    if (json_get(buf, "AbstractText", g_field, FIELD_MAX) && g_field[0]) {
         fw_printf("\n");
-        print_wrapped(field, "  ");
-        if (json_get(buf, "AbstractSource", src, sizeof(src)) && src[0])
-            fw_printf("\n  — %s\n", src);
+        print_wrapped(g_field, "  ");
+        // The source goes into a title slot, AFTER the extract has been
+        // printed — g_field is the only field buffer and it is still holding
+        // the answer until this point.
+        if (json_get(buf, "AbstractSource", g_titles[0], TITLE_MAX) && g_titles[0][0])
+            fw_printf("\n  - %s\n", g_titles[0]);
         fw_printf("\n");
         *answered = true;
         return 0;
@@ -379,10 +418,10 @@ static int search_cmd(int argc, char **argv) {
     if (argc <= first) { usage(); return 1; }
     if (!online()) return 1;
 
-    char q[URL_MAX];
+    // Static, like the rest: this frame is live across two HTTPS fetches.
     unsigned qlen = 0;
-    q[0] = 0;
-    if (!build_query(q, sizeof(q), &qlen, argc, argv, first)) {
+    g_query[0] = 0;
+    if (!build_query(g_query, URL_MAX, &qlen, argc, argv, first)) {
         fw_printf("That query is too long.\n");
         return 1;
     }
@@ -393,12 +432,12 @@ static int search_cmd(int argc, char **argv) {
     int rc = 0;
     if (!wiki_only) {
         bool answered = false;
-        rc = instant_answer(q, buf, REPLY_MAX, &answered);
+        rc = instant_answer(g_query, buf, REPLY_MAX, &answered);
         if (rc == 0 && answered) { fw_free(buf); return 0; }
         if (rc == 0) fw_printf("\n  No direct answer. Looking for articles...\n");
     }
     // Either asked for, or nothing better was found.
-    if (rc == 0) rc = wiki_list(q, buf, REPLY_MAX);
+    if (rc == 0) rc = wiki_list(g_query, buf, REPLY_MAX);
     fw_free(buf);
     return rc;
 }
@@ -409,12 +448,11 @@ static int wiki_cmd(int argc, char **argv) {
 
     // Underscores, not %20: the REST path wants a page title, and a title with
     // a space in it is written with an underscore there.
-    char topic[URL_MAX];
     unsigned len = 0;
-    topic[0] = 0;
+    g_query[0] = 0;
     for (int i = 1; i < argc; i++) {
-        if (i > 1 && !url_encode(topic, sizeof(topic), &len, "_")) break;
-        if (!url_encode(topic, sizeof(topic), &len, argv[i])) {
+        if (i > 1 && !url_encode(g_query, URL_MAX, &len, "_")) break;
+        if (!url_encode(g_query, URL_MAX, &len, argv[i])) {
             fw_printf("That topic is too long.\n");
             return 1;
         }
@@ -423,7 +461,7 @@ static int wiki_cmd(int argc, char **argv) {
 
     char *buf = (char *)fw_malloc(REPLY_MAX);
     if (!buf) { fw_printf("Not enough memory for the reply.\n"); return 1; }
-    int rc = wiki_summary(topic, buf, REPLY_MAX);
+    int rc = wiki_summary(g_query, buf, REPLY_MAX);
     fw_free(buf);
     return rc;
 }
