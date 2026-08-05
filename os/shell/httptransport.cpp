@@ -58,7 +58,14 @@ bool http_tls_available(void);       // the shell's working directory (fs.cpp)
 #include "lwip/dns.h"
 #include "lwip/ip_addr.h"
 
-#define CONNECT_MS    10000
+// Under the 8 s watchdog, deliberately.
+//
+// These waits yield, so they do feed it and a long one is not supposed to
+// reboot anything. But a handshake that cannot complete held the line for ten
+// seconds against a watchdog that fires at eight, and every reboot in that
+// window arrived with no explanation. Giving up first means the failure is
+// reported by the code that knows what failed.
+#define CONNECT_MS    6000
 #define READ_MS       15000
 #define SEND_MS       10000
 

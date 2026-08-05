@@ -65,6 +65,24 @@
 /* TLS 1.2 */
 #define MBEDTLS_SSL_PROTO_TLS1_2
 #define MBEDTLS_KEY_EXCHANGE_ECDHE_ECDSA_ENABLED
+
+// ECDHE with an RSA CERTIFICATE, which is most of the web.
+//
+// Without this the client offers exactly two families: static RSA, which every
+// modern server refuses because it has no forward secrecy and is gone in TLS
+// 1.3, and ECDHE_ECDSA, which needs the server to present an ECDSA
+// certificate. So the OS could talk to hosts serving ECDSA and to nothing
+// else — raw.githubusercontent.com and api.duckduckgo.com worked, and
+// en.wikipedia.org, which serves RSA, had no cipher suite in common and the
+// handshake never completed.
+//
+// That looked like a package bug for four rounds because `search` was the only
+// thing reaching an RSA host. `curl` on the same URL from the shell hangs
+// identically, which is what finally placed it here rather than in the sandbox.
+//
+// Everything it needs was already on: ECDH_C, RSA_C, PKCS1_V15,
+// X509_CRT_PARSE_C. It is one line because it was one line missing.
+#define MBEDTLS_KEY_EXCHANGE_ECDHE_RSA_ENABLED
 #define MBEDTLS_GCM_C
 #define MBEDTLS_ECDH_C
 #define MBEDTLS_ECP_C
