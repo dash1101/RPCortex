@@ -29,6 +29,7 @@
 #include "core/mpu.h"
 #include "core/task.h"
 #include "core/lock.h"      // task_irq_save / task_irq_restore
+#include "core/logring.h"   // the fault dump's findings have to outlive the console
 
 #include <stdint.h>
 #include <string.h>
@@ -383,5 +384,29 @@ extern "C" void mpu_dump_live(unsigned sp) {
     if (hits > 1)
         printf("    %lu REGIONS OVERLAP AT SP — ARMv8-M calls that UNPREDICTABLE\n",
                (unsigned long)hits);
+
+    // AND THE THREE FACTS THAT DECIDE IT, WHERE THEY SURVIVE.
+    //
+    // Everything above is printf, and a fault is where the console is lost —
+    // the report goes out over USB, USB is drained by a task, and the device is
+    // two seconds from a reset. That has cost several rounds on this bug
+    // already. These are the answers `os/STRESS-CRASH.md` says the next crash
+    // has to give, so they go in the log ring, which survives to be read by
+    // logdump afterwards.
+    //
+    // Deliberately one line: log_addf formats, and formatting is not free on a
+    // stack that has just refused an exception frame.
+    {
+        uint32_t bad = 8;                       // the region that disagrees, if any
+        for (uint32_t r = 0; r < 8; r++) {
+            if (!(rlar[r] & 1u)) continue;
+            if (rbar[r] != shadow[r].rbar || rlar[r] != shadow[r].rlar) { bad = r; break; }
+        }
+        log_addf(LOG_K_ERR, "mpu %s, %lu region(s) at sp%s%s",
+                 prog ? "MID-WRITE" : "settled",
+                 (unsigned long)hits,
+                 hits > 1 ? ", OVERLAP" : (covered ? "" : ", NONE COVER SP"),
+                 bad < 8 ? ", hardware != asked" : "");
+    }
 #endif
 }
