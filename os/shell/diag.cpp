@@ -28,6 +28,9 @@
 #include "ptrcheck.h"
 
 void apps_stack_peak(uint32_t *used, uint32_t *size);
+// The fault handler's own stack, one per core. See fault.cpp.
+extern "C" uint32_t fault_stack_used(int core);
+extern "C" uint32_t fault_stack_size(void);
 #include "perms.h"
 #include "users.h"
 #include "session.h"
@@ -508,6 +511,29 @@ static int cmd_mpu(int, char **) {
         if (bad)
             out_warn("  %lu call%s refused for pointing outside the package.",
                      (unsigned long)bad, bad == 1 ? " was" : "s were");
+    }
+
+    // THE FAULT HANDLER'S OWN STACK.
+    //
+    // It has one so that a stack overflow can be reported and survived without
+    // the report itself running off the bottom of the stack that just ran out.
+    // How much it costs is the question that decides the size, and guessing at
+    // it is what this whole area has been punished for, so it is measured: the
+    // buffers are painted at boot and this is the high-water mark.
+    {
+        uint32_t fsz = fault_stack_size();
+        uint32_t deepest = 0;
+        for (unsigned c = 0; c < task_core_count() && c < 2; c++) {
+            uint32_t u = fault_stack_used((int)c);
+            if (u > deepest) deepest = u;
+        }
+        if (fsz)
+            out_multi("    Fault handler     : %lu of %lu bytes at its deepest%s",
+                      (unsigned long)deepest, (unsigned long)fsz,
+                      deepest ? "" : "   (nothing has faulted)");
+        if (deepest * 10 > fsz * 8)
+            out_warn("  Over 80%% — a crash report is close to outgrowing the "
+                     "stack reserved for it.");
     }
     out_blank();
 

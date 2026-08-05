@@ -125,6 +125,32 @@ app_call_unpriv_tail:
     mov     sp, r0                  // back onto the firmware's stack
     mov     r0, r4
     pop     {r3, r4-r11, pc}
+
+// --- unwinding out of a package that is not going to return ------------------
+//
+// Where a fault or the preemption alarm sends the exception return when a call
+// has to be ABANDONED rather than finished.
+//
+// The difference from the tail above is that this touches the package's stack
+// not at all. The firmware stack pointer arrives in r1, put there by
+// sandbox_abandon_call and restored by the exception return, so there is no
+// call to make and nothing to push.
+//
+// That matters for exactly one case, and it is the case that made this
+// necessary: a package that overflowed its OWN stack. There, the four words a
+// `bl` costs would be written past the bottom of its stack and into whatever
+// the heap put below — which is the corruption the containment exists to
+// avoid, arriving through the code doing the containing.
+//
+// r0 is the exit code the abandon wrote, and it survives untouched.
+    .global app_call_unpriv_abandon
+    .type   app_call_unpriv_abandon, %function
+    .thumb_func
+app_call_unpriv_abandon:
+    movs    r2, #0
+    msr     msplim, r2              // released before SP moves; see above
+    mov     sp, r1                  // straight onto the firmware's stack
+    pop     {r3, r4-r11, pc}
     .size   app_call_unpriv, . - app_call_unpriv
 
 // --- coming back from an ABI call --------------------------------------------

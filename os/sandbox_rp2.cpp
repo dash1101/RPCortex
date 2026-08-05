@@ -136,12 +136,6 @@ extern "C" uint32_t sandbox_return_gate(void) {
 // tail, which arrives back on the PACKAGE's stack and has to stand on the
 // firmware's again before it can pop the frame it pushed.
 extern "C" uint32_t sandbox_kernel_sp(void) {
-    // The only checkpoint available INSIDE the shim's tail, which is assembly
-    // and cannot note anything itself. Reaching this means the exception return
-    // landed where it was aimed and the tail is running; what is left after it
-    // is three instructions and a pop. Cheap enough for the hot path now that a
-    // note is a bounded copy rather than a vfprintf.
-    bb_note_phase("tail: asked for the kernel stack");
     SandboxState *s = state_of_current();
     return s ? s->kernel_sp : 0;
 }
@@ -260,24 +254,37 @@ bool sandbox_in_package(void) {
 // takes the session with it — which is why the shell was exempt, and why
 // `havoc spin` rebooted the board instead of losing one command.
 //
-// This is the same unwind `svc #1` performs when a package returns normally.
-// The exception return goes into the shim's tail, which puts the firmware's
-// stack back and returns out of app_call_unpriv; sandbox_enter then re-arms the
-// guard and its caller carries on into sandbox_return and app_leave exactly as
-// it would have. The task never notices it was interrupted, because from its
-// point of view the package simply returned.
+// This is nearly the unwind `svc #1` performs when a package returns normally:
+// the exception return goes into the shim, which puts the firmware's stack back
+// and returns out of app_call_unpriv; sandbox_enter then re-arms the guard and
+// its caller carries on into sandbox_return and app_leave exactly as it would
+// have. The task never notices it was interrupted, because from its point of
+// view the package simply returned.
 //
-// r0 is set to -1 first, so the command reports a failure rather than whatever
-// the package happened to leave in the register.
+// The one difference is which entry point. A call being ABANDONED goes to
+// app_call_unpriv_abandon, which is handed the firmware stack pointer in r1
+// rather than calling sandbox_kernel_sp to ask for it. The ordinary tail's
+// `bl` costs four words of the PACKAGE's stack, and one of the things being
+// unwound out of here is a package that just ran out of exactly that — where
+// those four words land below its stack, in the heap. The abandon path touches
+// the package's stack not at all.
+//
+// r0 is set to -1 so the command reports a failure rather than whatever the
+// package happened to leave in the register; r1 carries the way home.
 static volatile bool g_abandoned;
 
 extern "C" bool sandbox_abandon_call(uint32_t *frame) {
     SandboxState *s = state_of_current();
     if (!s || !s->depth || !frame) return false;
+    // No parked stack pointer is no way back. Refusing here means the fault
+    // stays fatal and says so, which is better than an exception return into a
+    // `mov sp, #0`.
+    if (!s->kernel_sp) return false;
     s->depth = 0;
     control_set(control_get() & ~CONTROL_NPRIV);
     frame[EXC_R0_WORD] = (uint32_t)-1;
-    exc_frame_redirect(frame, (uint32_t)(uintptr_t)&app_call_unpriv_tail);
+    frame[EXC_R1_WORD] = s->kernel_sp;
+    exc_frame_redirect(frame, (uint32_t)(uintptr_t)&app_call_unpriv_abandon);
     g_abandoned = true;
     return true;
 }

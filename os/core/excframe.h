@@ -18,6 +18,7 @@
 
 #define EXC_FRAME_WORDS  8
 #define EXC_R0_WORD      0
+#define EXC_R1_WORD      1
 #define EXC_R12_WORD     4
 #define EXC_LR_WORD      5
 #define EXC_PC_WORD      6

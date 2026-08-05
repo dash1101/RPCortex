@@ -40,6 +40,63 @@ extern "C" int __attribute__((weak)) fault_try_contain(uint32_t *frame) {
 
 extern "C" {
 
+// --- a stack of the handler's own --------------------------------------------
+//
+// This handler used to run on the stack of whatever faulted. For a fault that
+// ends in a reset that is only untidy; for a STACK OVERFLOW it is the reason
+// the overflow could not be survived. The guard is MSPLIM, the handler has to
+// clear it to run at all, and everything it does from then on writes below a
+// stack that had already run out — into whatever the heap put there. Resetting
+// two seconds later hid the damage. Carrying on would not.
+//
+// So the handler stands on its own memory instead. One per core, because both
+// can fault, indexed by CPUID straight out of SIO. Nothing else uses these, so
+// the depth reached is a true measure of what a fault report costs, and it is
+// reported rather than assumed — see fault_stack_used below.
+#define FAULT_STACK_WORDS  1024                 // 4 KB per core
+#define FAULT_PAINT        0xA5A5A5A5u
+
+static uint32_t g_fault_stack[2][FAULT_STACK_WORDS] __attribute__((aligned(8)));
+
+// Read by the assembly below. Pointers rather than integers so each is a
+// link-time constant in .rodata and needs no startup code to be correct — a
+// fault before main() must still land somewhere valid.
+//
+// TWO SYMBOLS RATHER THAN AN ARRAY. Indexing one would mean scaling the core
+// number, and every Thumb-1 way of writing that (`lsls`, `adds`) is UAL-only
+// while inline assembly is assembled in divided syntax — so the RP2040 build
+// refuses it. A compare and a branch pick between two names instead, which is
+// plain Thumb in either syntax and needs no directive that would leak into
+// everything the compiler emits afterwards.
+//
+// Explicitly `extern`, for the same reason fault_kind_hard is: a `const` at
+// namespace scope has INTERNAL linkage in C++, so the assembly cannot see a
+// symbol that is plainly right there in the same file.
+extern uint32_t * const g_fault_stack_top0;
+extern uint32_t * const g_fault_stack_top1;
+extern uint32_t * const g_fault_stack_top0 = &g_fault_stack[0][FAULT_STACK_WORDS];
+extern uint32_t * const g_fault_stack_top1 = &g_fault_stack[1][FAULT_STACK_WORDS];
+
+// Painted at boot so the high-water mark can be read afterwards. Deliberately
+// not a static initialiser: 8 KB of 0xA5 in .data is 8 KB of flash, and this
+// firmware is watching its flash.
+void fault_stack_init(void) {
+    for (int c = 0; c < 2; c++)
+        for (uint32_t i = 0; i < FAULT_STACK_WORDS; i++)
+            g_fault_stack[c][i] = FAULT_PAINT;
+}
+
+// How deep any fault report has ever gone, in bytes. Zero before the first one.
+uint32_t fault_stack_used(int core) {
+    if (core < 0 || core > 1) return 0;
+    uint32_t untouched = 0;
+    while (untouched < FAULT_STACK_WORDS &&
+           g_fault_stack[core][untouched] == FAULT_PAINT) untouched++;
+    return (FAULT_STACK_WORDS - untouched) * 4;
+}
+
+uint32_t fault_stack_size(void) { return FAULT_STACK_WORDS * 4; }
+
 // Set while an app is running, so a fault can say WHOSE fault it was.
 volatile const char *g_current_app = nullptr;
 
@@ -205,21 +262,26 @@ int fault_report(FaultFrame *f, const char *kind) {
         else if (cfsr & (1u << 8))  what = "IBUSERR";
         else if (hfsr & (1u << 30)) what = "FORCED escalated";
 
-        // The ADDRESS, when there is one. Without it a protection fault says
-        // only that something was refused, and the whole reason to configure the
-        // hardware was to be told what.
-        // A STACK OVERFLOW CANNOT BE CONTAINED, and the comment on
-        // FAULT_RELEASE_STACK_LIMIT is why: this handler clears MSPLIM so it
-        // can run at all, and everything it prints then runs off the bottom of
-        // the exhausted stack into whatever the heap put below it. That was an
-        // acceptable trade against "no report at all" on a device two seconds
-        // from a reset — and it stops being acceptable the moment the device
-        // carries on, because the corruption carries on with it.
+        // CAN THE FRAME BE TRUSTED? That, and not the kind of fault, is what
+        // decides whether this may be contained.
         //
-        // So an overflow still resets. The report is the same and it names the
-        // package; what is not offered is a machine that keeps running on
-        // memory this handler has already written through.
-        stack_intact = !(cfsr & (1u << 4)) && !(cfsr & (1u << 20));  // MSTKERR, STKOF
+        // Containing means reading eight words the hardware pushed and writing
+        // two of them back. MSTKERR says that push FAILED — the memory under
+        // the stack pointer was not writable — so those eight words are not
+        // the frame, they are whatever was already there. Rewriting them aims
+        // an exception return at a value nobody chose. That stays fatal.
+        //
+        // STKOF is a different failure wearing the same word. The stack pointer
+        // went below its limit, the instruction that did it was REFUSED, and
+        // the frame was stacked normally. Only the room BELOW it is gone —
+        // which is survivable now that the handler runs on a stack of its own
+        // and the unwind out of a package uses none of the package's.
+        //
+        // Until both of those were true this had to refuse an overflow as well,
+        // because everything it did ran off the bottom of the exhausted stack
+        // into whatever the heap put there. Resetting hid that; carrying on
+        // would not have.
+        stack_intact = !(cfsr & (1u << 4));      // MSTKERR
 
         bool have_mm = (cfsr & (1u << 7)) != 0;      // MMARVALID
         bool have_bf = (cfsr & (1u << 15)) != 0;     // BFARVALID
@@ -245,13 +307,22 @@ int fault_report(FaultFrame *f, const char *kind) {
     // So a contained fault records what happened and returns. The report is
     // printed a moment later from task context by whoever notices the package
     // was stopped, where printing is ordinary.
+    //
+    // The frame is read BEFORE the attempt, because containing rewrites it.
+    // sandbox_abandon_call points the stacked PC at app_call_unpriv_tail, so
+    // reading f->pc afterwards reported the address the unwind was aimed at
+    // rather than the instruction that faulted — "pc = 0x100064cb" under a
+    // heading that correctly said "havoc+1b28". Two different answers to the
+    // same question in the same report, one of them wrong.
+    uint32_t pc = f->pc, lr = f->lr, sp = (uint32_t)(uintptr_t)f;
+
     if (stack_intact && fault_try_contain((uint32_t *)f)) {
         g_contained.cfsr = cfsr;
         g_contained.addr = addr;
         g_contained.have_addr = have_addr;
-        g_contained.pc = f->pc;
-        g_contained.lr = f->lr;
-        g_contained.sp = (uint32_t)(uintptr_t)f;
+        g_contained.pc = pc;
+        g_contained.lr = lr;
+        g_contained.sp = sp;
         g_contained.what = what;
         copy_where(note);
         g_contained.pending = true;
@@ -378,14 +449,39 @@ __attribute__((naked)) void isr_hardfault(void) {
         "1:                 \n"
         "mrs  r0, msp       \n"
         "2:                 \n"
+        // STAND SOMEWHERE ELSE BEFORE DOING ANYTHING.
+        //
+        // Nothing has been pushed yet, so SP is still exactly the frame the
+        // hardware stacked — which is what the exception return needs it to be,
+        // and why it is saved rather than recomputed. EXC_RETURN goes with it:
+        // this used to ride home in a stacked LR, and there is no stack to
+        // stack it on any more.
+        //
+        // r4 and r5 are safe to lose. The only path that comes back from here
+        // is a contained fault, which returns through app_call_unpriv_abandon
+        // and its `pop {r3, r4-r11, pc}`; everything else reboots.
+        "mov  r4, lr        \n"
+        "mov  r5, sp        \n"
+        // Which core, and therefore which of the two stacks. See the note on
+        // the symbols for why this is a branch and not an indexed load.
+        "ldr  r2, =0xd0000000 \n"       // SIO. CPUID is the first word.
+        "ldr  r2, [r2]      \n"
+        "cmp  r2, #0        \n"
+        "beq  3f            \n"
+        "ldr  r3, =g_fault_stack_top1 \n"
+        "b    4f            \n"
+        "3:                 \n"
+        "ldr  r3, =g_fault_stack_top0 \n"
+        "4:                 \n"
+        "ldr  r3, [r3]      \n"
+        "mov  sp, r3        \n"
         "ldr  r1, =fault_kind_hard \n"
         // Was a tail branch, because the reporter never came back. It can now:
         // a fault inside a package is contained rather than fatal, and then the
-        // exception return has to happen. r4 rides along only to keep the stack
-        // eight-byte aligned across the call.
-        "push {r4, lr}      \n"
+        // exception return has to happen.
         "bl   fault_report  \n"
-        "pop  {r4, pc}      \n"
+        "mov  sp, r5        \n"
+        "bx   r4            \n"
         ".align 2           \n"
     );
 }

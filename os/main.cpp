@@ -29,6 +29,7 @@
 #include "sandbox.h"
 #include "pico/flash.h"
 
+extern "C" void fault_stack_init(void);
 void net_autoconnect(void);
 void task_start_core1(void);
 extern "C" void usb_task_start(void);
@@ -118,6 +119,9 @@ int main(void) {
     // that no longer exists — and anything reading them in between is reading
     // the future.
     bb_init();
+    // Paint the fault handler's own stacks, so how deep a crash report actually
+    // goes is a measurement and not a guess. `mpu` reports it.
+    fault_stack_init();
     task_watchdog_start();
     task_preempt_start();   // force-terminate a task that stops yielding entirely
 

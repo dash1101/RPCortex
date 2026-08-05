@@ -362,14 +362,17 @@ static int burn_stack(int depth) {
 
 static void group_stack(void) {
     fw_printf("\n[stack] deliberate stack exhaustion\n");
-    fw_printf("  This one still RESETS the device, and that is the honest\n");
-    fw_printf("  answer rather than a missing feature. The fault handler has\n");
-    fw_printf("  to release the stack guard to run at all, so everything it\n");
-    fw_printf("  prints runs off the bottom of the exhausted stack into the\n");
-    fw_printf("  heap. Carrying on would mean carrying that corruption with\n");
-    fw_printf("  it. Other faults inside a package ARE contained.\n\n");
-    fw_printf("  What to check: the report names havoc, and the reset is\n");
-    fw_printf("  explained rather than silent.\n\n");
+    fw_printf("  Recursion until the guard fires. The guard is a hardware\n");
+    fw_printf("  stack limit, and the fault handler has to release it to run\n");
+    fw_printf("  at all - which is why this used to reset the device: the\n");
+    fw_printf("  report itself ran off the bottom of the exhausted stack and\n");
+    fw_printf("  into the heap. The handler now stands on a stack of its own\n");
+    fw_printf("  and the unwind out of a package uses none of the package's,\n");
+    fw_printf("  so there is nothing left to corrupt.\n\n");
+    fw_printf("  Expected: a report naming havoc, the command ends, the shell\n");
+    fw_printf("  survives. A reset is a finding - and if the exception frame\n");
+    fw_printf("  landed below the stack it is declined on purpose, which\n");
+    fw_printf("  logdump says in as many words.\n\n");
     step("recursing until the stack runs out");
     fw_printf("    returned %d — the guard did not fire, which is its own finding\n",
               burn_stack(0));
