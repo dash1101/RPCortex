@@ -103,12 +103,13 @@ This is the base the Nova D1 gets ported onto.
   decided. `probe` still times 20,000 calls against an empty loop and the
   figure is still worth reading on a board.
 - ~~`meminfo`'s fragmentation figure (#79)~~ — confirmed against a long uptime.
-- **A package that exhausts its own stack still restarts the device.** Every
-  other package fault is contained (#87) and a wedged one loses only its call
-  (#86), both confirmed on hardware. An exception pushes its frame BELOW the
-  stack pointer, so a stack with nothing left has nowhere to put one — the
-  frame is never written, and a frame that was never written cannot be
-  redirected somewhere survivable. Architecture rather than a gap.
+- ~~A package that exhausts its own stack restarts the device (#88)~~ — no
+  longer. All three destructive cases are contained and confirmed on hardware:
+  a bad pointer (#87), a package that stops responding (#86), and a stack
+  overflow (#88). The overflow needed the fault handler on a stack of its own
+  AND the stack limit armed above the bottom of the package's, so the
+  overflowing instruction is refused with SP intact and there is room to take
+  the exception. `havoc fault`, `havoc spin` and `havoc stack` are the tests.
 - ~~Drag-and-drop file transfer (#69)~~ — done and confirmed in both
   directions. `download` presents a transfer area over USB alongside the
   console: a real FAT volume the host owns outright and may create, edit,

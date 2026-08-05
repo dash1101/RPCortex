@@ -62,10 +62,16 @@ and a heap of its own. A bad pointer costs the command and names the package; a
 package that stops responding has the call taken back at a timer interrupt and
 the shell survives. Both are confirmed on hardware with `havoc`.
 
-The exception is a package exhausting its own stack, which still restarts the
-device — an exception pushes its frame BELOW the stack pointer, so a stack with
-nothing left has nowhere to put one, and a frame that was never written cannot
-be redirected somewhere survivable. Architecture, not a gap.
+A package exhausting its own stack is contained too, which took two things and
+is worth writing down because the first attempt reasoned its way to the wrong
+answer. The fault handler stands on 4 KB of its own per core, because it has to
+release the stack guard to run at all and would otherwise write past the bottom
+of the stack that just ran out. And the guard is armed on the package's own
+stack a little ABOVE the bottom — so the overflowing instruction is refused with
+the stack pointer intact, and there is room left to take the exception. With the
+guard at zero, which is how it was, `sub sp` is not a memory access and nothing
+stops the stack pointer leaving the region entirely; the frame then lands in the
+heap and there is nothing valid to redirect.
 
 **The RP2040 does not fit yet.** v1.0 dropped the Pico 1 and 1 W because the
 multitasking build did not fit in 264 KB of RAM, and without an interpreter it
@@ -123,7 +129,7 @@ Wireless (`wifi` join and scan, `ping`, `nslookup`, `ntp`), HTTPS through
 installing and loading real `.app` files, `httpd` serving both a directory
 listing and a site root, the USB transfer drive in both directions, `rm` with
 wildcards and recursion, the editor, and both halves of package containment
-(`havoc fault` and `havoc spin`).
+(`havoc fault`, `havoc spin` and `havoc stack`).
 
 The HTTPS deadlock that made downloads larger than a few KB hang is fixed — the
 receive window was smaller than one TLS record, so mbedtls could not decrypt a
@@ -145,9 +151,11 @@ firmware image did not.
   matching `tools/bench.py` on a v1 device and `probe` times 20,000 supervisor
   calls against an empty loop. Both run; neither number has been looked at, so
   every performance claim here is an argument rather than a measurement.
-- **The fault handler's own stack is DEVICE-UNCONFIRMED.** It has 4 KB per core
-  and `mpu` reports the high-water mark after a contained fault, but the size is
-  a guess until that figure is read.
+- **The fault handler's stack is sized off ONE measurement.** 4 KB per core, of
+  which a contained fault used 644 bytes. That is the cheap path — it records
+  and returns. The FATAL path still prints a full register and region dump, and
+  nobody has read that figure, so the headroom is only proven for the case that
+  does not reset.
 - **The `stress` MPU crash is not closed.** It has not reproduced since the
   region write-ordering fix, which is not the same as being fixed. Evidence in
   `os/STRESS-CRASH.md`.

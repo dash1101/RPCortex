@@ -362,16 +362,17 @@ static int burn_stack(int depth) {
 
 static void group_stack(void) {
     fw_printf("\n[stack] deliberate stack exhaustion\n");
-    fw_printf("  This one RESETS the device, and unlike the other faults that\n");
-    fw_printf("  is the architecture rather than a missing feature. An\n");
-    fw_printf("  exception pushes its frame BELOW the stack pointer, so a\n");
-    fw_printf("  stack with nothing left has nowhere to put it: the frame is\n");
-    fw_printf("  not written, and a frame that was never written cannot be\n");
-    fw_printf("  redirected somewhere survivable. Every other fault inside a\n");
-    fw_printf("  package IS contained.\n\n");
-    fw_printf("  What to check: the report names havoc, the fault is STKOF or\n");
-    fw_printf("  MSTKERR at an address INSIDE the package's stack, and the\n");
-    fw_printf("  reset is explained rather than silent.\n\n");
+    fw_printf("  Recursion until the guard fires. This used to reset the\n");
+    fw_printf("  device and no longer does, which took two things: the fault\n");
+    fw_printf("  handler stands on a stack of its own rather than the one\n");
+    fw_printf("  that just ran out, and the stack limit is armed on the\n");
+    fw_printf("  package's own stack a little above the bottom - so the\n");
+    fw_printf("  instruction is REFUSED with the stack pointer intact and\n");
+    fw_printf("  there is still room to take the exception.\n\n");
+    fw_printf("  Expected: STKOF, at an address INSIDE the package's stack,\n");
+    fw_printf("  the command ends, the shell survives. A reset is a finding,\n");
+    fw_printf("  and so is MSTKERR - that means the frame could not be\n");
+    fw_printf("  written and there was nothing to redirect.\n\n");
     step("recursing until the stack runs out");
     fw_printf("    returned %d — the guard did not fire, which is its own finding\n",
               burn_stack(0));
