@@ -376,13 +376,40 @@ extern "C" void lock_hw_init(void) {
     if (!g_hw) g_hw = spin_lock_instance(spin_lock_claim_unused(true));
 }
 
+// Whether THIS core is already inside. Only ever read and written by its own
+// core, so it needs no protection of its own.
+static volatile bool g_hw_held[2];
+
 extern "C" void lock_hw_enter(void) {
     if (!g_hw) lock_hw_init();          // fallback: a lock taken before init
-    g_hw_save[get_core_num() & 1] = spin_lock_blocking(g_hw);
+    unsigned c = get_core_num() & 1;
+
+    // TAKING IT TWICE ON ONE CORE IS A HANG, NOT A WAIT.
+    //
+    // This is a hardware spinlock and it is not recursive, so a core that asks
+    // for it while already holding it spins against itself forever — with
+    // interrupts masked, so nothing else on that core can run either. There is
+    // no fault and no output: the board simply stops, and the watchdog reboots
+    // it some seconds later with nothing at all to say about why.
+    //
+    // That is not hypothetical. The sandbox pool was given this lock, and the
+    // scheduler calls the pool's slot-recycled hook while already holding it —
+    // one flash cycle spent on a silent reboot to find a two-line cause.
+    //
+    // The note is written before blocking, into memory a reset does not clear,
+    // so the next boot names it. It costs one byte and a branch on a path that
+    // should never be taken.
+    if (g_hw_held[c]) bb_note_phase("hw lock taken twice - deadlock");
+
+    g_hw_save[c] = spin_lock_blocking(g_hw);
+    g_hw_held[c] = true;
 }
 
 extern "C" void lock_hw_exit(void) {
-    if (g_hw) spin_unlock(g_hw, g_hw_save[get_core_num() & 1]);
+    if (!g_hw) return;
+    unsigned c = get_core_num() & 1;
+    g_hw_held[c] = false;
+    spin_unlock(g_hw, g_hw_save[c]);
 }
 
 // --- core 1 -----------------------------------------------------------------

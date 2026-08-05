@@ -302,6 +302,9 @@ int task_spawn(const char *name, const char *path, TaskFn fn, void *arg,
     // Claim a slot under the guard so two cores cannot take the same one. The
     // allocation happens after, outside it: malloc can be slow and the guard
     // masks interrupts.
+    void *freeing  = nullptr;    // a reclaimed stack, released after the guard
+    int   recycled = -1;         // the slot whose owner has gone, likewise
+
     lock_hw_enter();
     Task *t = nullptr;
     for (uint32_t i = 0; i < TASK_MAX; i++)
@@ -329,18 +332,37 @@ int task_spawn(const char *name, const char *path, TaskFn fn, void *arg,
             if (!oldest || c->info.pid < oldest->info.pid) oldest = c;
         }
         if (oldest) {
-            if (oldest->stack_raw) free(oldest->stack_raw);
-            oldest->stack = oldest->stack_raw = nullptr;
+            oldest->stack = nullptr;
             oldest->info.state = TASK_BLOCKED;   // straight to reserved
             oldest->live = false;
             oldest->crit = 0;
             oldest->app_mem_set = false;
             oldest->arena = nullptr;
-            task_slot_recycled((int)(oldest - g_tasks));
+            // Taken out of the slot here, released below. Nothing that can wait
+            // on another lock runs while this one is held.
+            freeing    = oldest->stack_raw;
+            recycled   = (int)(oldest - g_tasks);
+            oldest->stack_raw = nullptr;
             t = oldest;
         }
     }
     lock_hw_exit();
+
+    // OUTSIDE THE GUARD, for the reason the allocation below is.
+    //
+    // lock_hw_enter is a hardware spinlock held with interrupts masked, and it
+    // is not recursive. free() takes the allocator's lock, and the recycle hook
+    // reaches the sandbox pool, which has a lock of its own — so doing either
+    // one inside meant a core could sit spinning on a lock whose holder needs
+    // this one, or on this one while already holding it. The second is not a
+    // race: it hangs every time the path is taken, with interrupts off, and the
+    // watchdog reboots the board with no fault to report.
+    //
+    // Safe to do after the release because the slot is already reserved
+    // (TASK_BLOCKED) — no other core can claim it in between.
+    if (freeing)      free(freeing);
+    if (recycled >= 0) task_slot_recycled(recycled);
+
     if (!t) return -1;
 
     // Room for the alignment on top of the stack itself. The hardware guard has

@@ -143,6 +143,23 @@ prints both:
   - neither line printed — region 5 matches what was last asked for and the
     reading of these dumps is wrong somewhere.
 
+## Two failure signatures — do not confuse them
+
+This bug is a HARD FAULT. The report has `cfsr=`, an MPU dump, and a matching
+`[!] fault ...` line in `logdump`.
+
+A run that ends with none of those, a `[POST] Last restart was the WATCHDOG`
+line and a blackbox phase from much earlier than the console reached, is a
+HANG, not this. Something stopped responding and the watchdog rebooted it.
+
+That happened once, on the first build carrying the pool lock: the scheduler
+calls the slot-recycled hook while holding `lock_hw`, the hook now reached the
+pool, and the pool asked for the same non-recursive spinlock. `task_spawn` does
+its `free()` and its recycle call outside the guard now, which is what the
+comment above it always claimed. `lock_hw_enter` also records a note when a
+core asks for a lock it already holds, so the next one of these names itself
+instead of arriving as a silent reboot.
+
 ## Ruled out
 
 - **Stack sizes.** Three separate fixes (firmware reserve 2 KB, then 4 KB;
