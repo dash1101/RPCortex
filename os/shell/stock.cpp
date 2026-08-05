@@ -59,7 +59,22 @@ static const StockPkg *const kStock = nullptr;
 #endif
 
 // Write one out and install it. Returns false if it could not be written.
+bool apps_unload(const char *name);
+int  apps_busy_pid(const char *name);
+
 static bool stock_place(const StockPkg &p, bool quiet) {
+    // DROP THE RESIDENT COPY FIRST.
+    //
+    // Replacing a built-in that is already loaded left the old one holding its
+    // command name, so the new one loaded and then could not register - and
+    // said so as though the command table were full, which it was nowhere near.
+    // The version on disk was the new one and the version answering the prompt
+    // was the old one, which is the confusing half.
+    //
+    // Not while it is running: a package mid-command is unloaded from under
+    // itself, and the update can wait for the next boot.
+    if (apps_busy_pid(p.name) < 0) apps_unload(p.name);
+
     char path[48];
     snprintf(path, sizeof(path), "/%s.app", p.name);
     if (!storage_write_file(path, p.data, *p.len)) {

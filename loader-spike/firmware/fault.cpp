@@ -206,6 +206,22 @@ int fault_report(FaultFrame *f, const char *kind) {
     // on.
     if (stack_intact && fault_try_contain((uint32_t *)f)) {
         printf("    the package was stopped; the device is still running\n\n");
+
+        // CLEAR THE FAULT REGISTERS. CFSR bits are sticky and MMFAR keeps its
+        // last value, and nothing cleared them before because every fault ended
+        // in a reset. Now that one can be survived, the next report inherits
+        // them: a stack overflow was reported as "addr=10000000", the address
+        // from a DACCVIOL two commands earlier, which is a lie about the one
+        // number in that report that comes from hardware.
+        *(volatile uint32_t *)0xE000ED28 = *(volatile uint32_t *)0xE000ED28;  // CFSR, w1c
+        *(volatile uint32_t *)0xE000ED2C = *(volatile uint32_t *)0xE000ED2C;  // HFSR, w1c
+
+        // LET IT OUT BEFORE RESUMING. The reset path spends two seconds
+        // flushing; this one returned immediately, so the tail of the report
+        // was still in the USB buffer when the shell printed over it — the
+        // region dump ended mid-number.
+        fflush(stdout);
+        for (int i = 0; i < 30; i++) sleep_ms(10);
         return 1;
     }
 

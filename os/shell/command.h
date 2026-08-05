@@ -53,6 +53,9 @@ struct Command {
 // Register a command. Returns false if the table is full or the name collides
 // with an existing one — a silent overwrite would let an app shadow `reboot`.
 bool cmd_register(const Command *cmd);
+// Whether the table itself is out of room, as opposed to a name being taken.
+// Those two failures need different words and used to share one message.
+bool cmd_full(void);
 
 // Remove every command owned by `owner` (an unloading app). Built-ins, whose
 // owner is nullptr, are never touched.

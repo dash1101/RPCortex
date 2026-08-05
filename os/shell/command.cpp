@@ -30,6 +30,11 @@ bool cmd_register(const Command *cmd) {
     return true;
 }
 
+bool cmd_full(void) {
+    LockGuard _c(&g_cmd_lock);
+    return g_count >= CMD_MAX;
+}
+
 void cmd_remove_owner(void *owner) {
     LockGuard _c(&g_cmd_lock);
     if (!owner) return;                      // never sweep the built-ins

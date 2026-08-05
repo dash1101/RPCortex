@@ -875,13 +875,20 @@ int apps_launch(const char *file, int arg, bool quiet) {
             if (!quiet) out_err("'%s' could not stay resident.", app.header.name);
         }
     } else if (cmd_refused() != refused_before) {
-        // It asked for a command and did not get one. Almost always the table
-        // being full, which is a limit rather than a mistake in the package.
+        // It asked for a command and did not get one. TWO different reasons,
+        // and they used to share one message that guessed at the table being
+        // full — which sent people looking for a limit they were nowhere near
+        // when a name was simply already registered.
+        bool full = cmd_full();
         app_unload(&app);
         out_errp("apps", "'%s' could not register its command%s.",
                  app.header.name,
                  cmd_refused() - refused_before > 1 ? "s" : "");
-        out_multi("  The command table is full (%d), or the name is taken.", CMD_MAX);
+        if (full)
+            out_multi("  The command table is full (%d).", CMD_MAX);
+        else
+            out_multi("  A name it wanted is already taken — most likely by a "
+                      "copy of itself that is still loaded.");
         return -1;
     } else {
         app_unload(&app);
