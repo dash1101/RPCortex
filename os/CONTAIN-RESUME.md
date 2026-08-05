@@ -22,9 +22,7 @@ takes the CALL back and the shell carries on. Confirmed on a board.
 The device then dies before reaching the end of `app_run_owner`. The proof is a
 negative: `'havoc' was stopped. The shell is fine.` is printed there and reaches
 the log ring, and it is **not** in the report. The watchdog takes the device
-some seconds later.
-
-So the failure is between the exception return and `app_run_owner`'s tail.
+some seconds later — so it HANGS, it does not fault a second time.
 
 ## The three candidates
 
@@ -40,14 +38,33 @@ In order along the path:
 
 ## How the next report tells them apart
 
-Three phase notes are in place. Whichever is LAST in the crash header's
-`Reached:` line names the step that failed:
+Six phase notes are in place. Whichever is LAST in the crash header's `Reached:`
+line names the step that failed:
 
 | `Reached:` | meaning |
 |---|---|
-| `fault: resuming into the unwind` | died in the shim's tail — the assembly |
-| `sandbox: back on the firmware stack` | the tail worked; died in or after `sandbox_enter` |
-| `apps: sandbox returned` | almost home; the teardown is wrong |
+| `fault: resuming into the unwind` | never left the handler, or the exception return itself failed |
+| `tail: asked for the kernel stack` | the tail is running; what is left is `msr MSPLIM`, `mov sp`, `pop` |
+| `sandbox: back on the firmware stack` | the tail worked; died in or after `task_rearm_protection` |
+| `apps: the command returned` | died in `task_arena_set` / `sandbox_return` |
+| `apps: sandbox released` | died in `app_leave` |
+| `apps: left the package` | almost home; died in the report itself |
+
+`havoc fault` is a REGISTERED COMMAND, so it unwinds through `app_run_owner` and
+not `app_run_stack`. Every note above `sandbox:` used to be in the wrong
+function, which is why the first attempt at this table could not distinguish
+anything past `sandbox_enter`.
+
+Also new in `logdump`, written before the resume is attempted:
+
+```
+stack <base>..<top> sp inside, N below, deepest M of S
+```
+
+`N` is how far the fault was from the BOTTOM of the package's stack — the room
+the handler had to work in. The compiled tail needs about 40 bytes of it
+(`sandbox_kernel_sp` is `push {r3, lr}` plus a 16-byte `bb_note_phase`), so an
+`N` of any size at all rules out candidate 1 running out of room.
 
 ## Things already ruled out
 
@@ -58,22 +75,41 @@ Three phase notes are in place. Whichever is LAST in the crash header's
 - **Stale fault registers.** CFSR and HFSR are sticky and nothing cleared them,
   so a later report inherited an earlier address. Fixed.
 - **The report being cut off.** The contained path returned without flushing.
-  Fixed.
+  Now moot: nothing is printed from the handler at all.
+- **`bb_note_phase` costing a kilobyte.** It was `snprintf(dst, cap, "%s", src)`,
+  a full vfprintf, in the scheduler and on package stacks. Now a bounded copy,
+  16 bytes of stack, verified in the disassembly.
+- **`sleep_ms` in the handler.** It goes through the alarm pool: a spinlock and
+  a WFE for an interrupt that cannot fire at fault priority. Whether it returned
+  at all was never established — a hang there and a successful reboot both
+  arrive as "the watchdog reset the device". Replaced with `busy_wait_us_32`.
+- **printf on the contained path.** The stdio mutex, the alarm pool and
+  TinyUSB's device task all ran inside the fault, on the package's stack, to
+  produce output nobody could read. The handler now stores eight words and the
+  report is printed from task context.
 
 ## Untested suspicions, in the order worth checking
 
 Not evidence. Written down so they are not re-derived.
 
-- `app_call_unpriv_tail` calls `sandbox_kernel_sp` **while still on the package
-  stack**. A fault taken near the bottom of that stack leaves little room for
-  the call, and the fault handler has already run `printf` down there.
 - `sandbox_abandon_call` sets `depth = 0` before the return, so anything in the
   tail that asks `sandbox_in_package()` now gets a different answer than the
   code was written against.
 - The handler clears MSPLIM and nothing re-arms it until
   `task_rearm_protection()`, several steps later.
+- The preemption alarm goes PENDING while the handler runs and is taken the
+  instant the exception returns, before the tail's first instruction.
 - A lock held by firmware at the moment of the fault is never released. That
   cannot explain a death this fast, but it can explain a later wedge.
+
+## Next, once this is located
+
+Give the fault handler a stack of its own — a per-core buffer, switched into in
+the naked handler and switched back before the exception return. That is what
+would let a STACK OVERFLOW be contained as well: the reason `havoc stack` still
+resets is that this handler releases MSPLIM and then runs the whole report on
+the stack that just ran out. Deliberately not bundled with the diagnosis above,
+because wrong assembly there costs all crash reporting at once.
 
 ## The fallback if this is not worth more time
 
