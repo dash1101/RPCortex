@@ -222,9 +222,61 @@ uint32_t storage_mtime(const char *path) {
     return t;
 }
 
+// --- the full-disk guard ----------------------------------------------------
+//
+// A littlefs with no room left is how a device stops booting. It needs free
+// blocks to commit metadata, so the last few per cent are not storage — they
+// are the space the filesystem uses to remain a filesystem, and spending them
+// turns a full disk into a broken one.
+//
+// The rule, and the asymmetry is the whole point: past the limit, anything that
+// CREATES OR GROWS is refused, and anything that FREES is always allowed. A
+// guard that stops you deleting files to recover is worse than no guard —
+// leaving the only exit through a reflash.
+#define FS_BLOCK_WARN 95      // per cent: say something
+#define FS_BLOCK_STOP 98      // per cent: refuse to add anything more
+
+// Computed without the lock, because every caller already holds it.
+static uint32_t used_percent_locked(void) {
+    if (!g_mounted) return 0;
+    lfs_ssize_t used = lfs_fs_size(&g_lfs);
+    if (used < 0) return 0;
+    uint32_t blocks = g_cfg_live.block_count;
+    if (!blocks) return 100;
+    return (uint32_t)((uint64_t)used * 100u / blocks);
+}
+
+// Would adding `bytes` cross the line?
+//
+// Checked BEFORE the write rather than reported after it, because littlefs
+// discovers it has run out partway through and leaves a half-written file.
+static bool room_for(uint32_t bytes) {
+    if (!g_mounted) return false;
+    uint32_t pct = used_percent_locked();
+    if (pct >= FS_BLOCK_STOP) return false;
+    // Blocks needed, rounded up, plus one for the metadata the commit costs.
+    uint32_t need = (bytes + FS_BLOCK_SIZE - 1) / FS_BLOCK_SIZE + 1;
+    uint32_t blocks = g_cfg_live.block_count;
+    lfs_ssize_t used = lfs_fs_size(&g_lfs);
+    if (used < 0) return false;
+    uint32_t after = (uint32_t)used + need;
+    return after * 100u / (blocks ? blocks : 1u) < FS_BLOCK_STOP;
+}
+
+uint32_t storage_used_percent(void) {
+    LockGuard _fs(&g_fs_lock);
+    return used_percent_locked();
+}
+
+bool storage_would_fit(uint32_t bytes) {
+    LockGuard _fs(&g_fs_lock);
+    return room_for(bytes);
+}
+
 bool storage_write_file(const char *name, const uint8_t *data, uint32_t len) {
     LockGuard _fs(&g_fs_lock);
     if (!g_mounted) return false;
+    if (!room_for(len)) return false;
     lfs_file_t f;
     if (lfs_file_open(&g_lfs, &f, name, LFS_O_WRONLY | LFS_O_CREAT | LFS_O_TRUNC) < 0)
         return false;
@@ -239,6 +291,7 @@ bool storage_write_file(const char *name, const uint8_t *data, uint32_t len) {
 bool storage_append_file(const char *name, const uint8_t *data, uint32_t len) {
     LockGuard _fs(&g_fs_lock);
     if (!g_mounted) return false;
+    if (!room_for(len)) return false;
     lfs_file_t f;
     if (lfs_file_open(&g_lfs, &f, name, LFS_O_WRONLY | LFS_O_CREAT | LFS_O_APPEND) < 0)
         return false;
@@ -316,6 +369,9 @@ static bool sink_flush(SinkHandle *h) {
 void *storage_open_sink(const char *name) {
     LockGuard _fs(&g_fs_lock);
     if (!g_mounted) return nullptr;
+    // The length is not known here, so this only refuses a filesystem that is
+    // already past the line. Each sink_write checks again as it goes.
+    if (!room_for(0)) return nullptr;
     SinkHandle *h = (SinkHandle *)malloc(sizeof(SinkHandle));
     if (!h) return nullptr;
     snprintf(h->name, sizeof(h->name), "%s", name);
@@ -334,6 +390,7 @@ bool storage_sink_write(void *handle, const uint8_t *data, uint32_t len) {
     LockGuard _fs(&g_fs_lock);
     if (!g_mounted) { h->ok = false; return false; }
 
+    if (!room_for(len)) { h->ok = false; return false; }
     while (len && h->ok) {
         uint32_t room = SINK_BUF - h->held;
         uint32_t n = len < room ? len : room;
@@ -389,7 +446,8 @@ void storage_list(void) {
 
 bool storage_mkdir(const char *path) {
     LockGuard _fs(&g_fs_lock);
-    if (!g_mounted || lfs_mkdir(&g_lfs, path) < 0) return false;
+    // A directory is metadata, so it costs a block like anything else.
+    if (!g_mounted || !room_for(0) || lfs_mkdir(&g_lfs, path) < 0) return false;
     touch(path);
     bump();
     return true;

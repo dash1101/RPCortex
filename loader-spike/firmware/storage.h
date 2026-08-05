@@ -45,6 +45,16 @@ bool     storage_copy(const char *from, const char *to);  // streamed, no whole-
 typedef void (*StorageWalkFn)(void *ctx, const char *name, bool is_dir, uint32_t size);
 bool     storage_walk(const char *path, StorageWalkFn cb, void *ctx);
 uint32_t storage_free_bytes(void);
+
+// How full the filesystem is, and whether something would still fit.
+//
+// littlefs needs free blocks to commit metadata, so the last few per cent are
+// not storage — they are what keeps it a filesystem. Past the limit anything
+// that creates or grows is refused; anything that FREES is always allowed,
+// because a guard that stops you deleting files to recover leaves the only way
+// out through a reflash.
+uint32_t storage_used_percent(void);
+bool     storage_would_fit(uint32_t bytes);
 uint32_t storage_total_bytes(void);   // the whole filesystem partition, for df
 
 // Shorten a file to `size` bytes. Fails if the file is absent or shorter.

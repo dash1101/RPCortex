@@ -282,11 +282,25 @@ static int cmd_rename(int argc, char **argv) {
 static int cmd_df(int, char **) {
     uint32_t total = storage_total_bytes();
     uint32_t free  = storage_free_bytes();
+    uint32_t pct   = storage_used_percent();
     uint32_t used  = total - free;
     out_multi("  Total : %u KB", (unsigned)(total / 1024));
     out_multi("  Used  : %u KB  (%u%%)", (unsigned)(used / 1024),
               (unsigned)(total ? used * 100 / total : 0));
     out_multi("  Free  : %u KB", (unsigned)(free / 1024));
+    // Said here rather than discovered at the moment a write fails.
+    //
+    // The last few per cent of a littlefs are not storage: it needs free blocks
+    // to commit metadata, and a filesystem with none left is one that cannot be
+    // repaired in place. So writes are refused before that point, and this is
+    // where somebody finds out while there is still room to act.
+    if (pct >= 98)
+        out_err("Full. New files are refused — delete something. "
+                "Removing files always works.");
+    else if (pct >= 95)
+        out_warn("%u%% full. Writes stop at 98%%, which is where littlefs "
+                 "needs the remaining blocks for itself.", (unsigned)pct);
+
     return 0;
 }
 
