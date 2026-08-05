@@ -158,6 +158,7 @@ static int cmd_sysinfo(int, char **) {
 }
 
 uint32_t apps_pool_bytes(void);
+uint32_t apps_pool_reclaim(void);
 
 // Everything statically allocated: bss and initialised data together. The
 // linker knows, so nothing here has to be kept in step by hand.
@@ -234,6 +235,13 @@ static int cmd_freeup(int, char **) {
     // There is no GC to run. What CAN be reclaimed is the fragmentation malloc
     // itself can coalesce, so this reports honestly rather than pretending to
     // sweep: the number that matters is the largest run, not the total.
+    // The package pool first: it is the one thing the OS holds that it can give
+    // back on request, and it is fifteen kilobytes a task.
+    uint32_t pooled = apps_pool_reclaim();
+    if (pooled)
+        out_multi("  Released %u KB that was being kept for packages.",
+                  (unsigned)(pooled / 1024));
+
     uint32_t before = largest_block();
     uint32_t free   = heap_free();
     out_ok("Heap: %u KB free, largest run %u KB.",

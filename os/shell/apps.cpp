@@ -176,6 +176,8 @@ static void sandbox_describe_from(const SandboxAlloc *sa, TaskAppMem *m) {
 // that arrives when every slot is taken still gets a sandbox, just a transient
 // one. Refusing to sandbox because a table is full would be the wrong trade —
 // the protection matters more than the churn it was costing.
+uint32_t apps_pool_reclaim(void);
+
 static bool sandbox_acquire(SandboxAlloc *sa, TaskAppMem *m, bool *pooled) {
     int slot = task_slot_index();
     *pooled = false;
@@ -195,7 +197,14 @@ static bool sandbox_acquire(SandboxAlloc *sa, TaskAppMem *m, bool *pooled) {
         return true;
     }
 
-    if (!sandbox_alloc(sa, m)) return false;
+    if (!sandbox_alloc(sa, m)) {
+        // Out of memory with idle slots still held is the one case the pool
+        // must never cause. Give them all back and try once more before
+        // reporting failure, since failing here means running a package
+        // unprotected.
+        if (!apps_pool_reclaim()) return false;
+        if (!sandbox_alloc(sa, m)) return false;
+    }
 
     for (int i = 0; i < SANDBOX_POOL; i++) {
         if (g_pool[i].used) continue;
@@ -209,11 +218,48 @@ static bool sandbox_acquire(SandboxAlloc *sa, TaskAppMem *m, bool *pooled) {
     return true;
 }
 
+// Below this share of the heap, the pool stops being worth having.
+//
+// Keeping a package's stack and heap between calls is a LUXURY: it saves a
+// fifteen-kilobyte allocation cycle, which is worth having when there is room
+// and worth nothing at all when there is not. So it evaporates under pressure
+// rather than needing anyone to ask — a cache that has to be managed by hand is
+// a cache that is still full when it matters.
+//
+// A share rather than a fixed number, because the part this has to survive on
+// next has half the memory and a fixed threshold tuned here would be either
+// meaningless or fatal there.
+#define POOL_KEEP_ABOVE_FRACTION 4      // keep only while a quarter of the heap is free
+
+static bool memory_is_tight(void) {
+    uint32_t total = heap_total();
+    return total && heap_free() < total / POOL_KEEP_ABOVE_FRACTION;
+}
+
+// Give back every slot nobody is inside. Returns the bytes released.
+uint32_t apps_pool_reclaim(void) {
+    uint32_t before = heap_free();
+    for (int i = 0; i < SANDBOX_POOL; i++) {
+        if (!g_pool[i].used || g_pool[i].lent) continue;
+        sandbox_free(&g_pool[i].sa);
+        memset(&g_pool[i], 0, sizeof(g_pool[i]));
+    }
+    uint32_t after = heap_free();
+    return after > before ? after - before : 0;
+}
+
 static void sandbox_return(SandboxAlloc *sa, bool pooled) {
     if (!pooled) { sandbox_free(sa); return; }
     for (int i = 0; i < SANDBOX_POOL; i++) {
         if (!g_pool[i].lent || g_pool[i].sa.stack_raw != sa->stack_raw) continue;
         g_pool[i].lent = false;
+        // Held only while there is room to spare. Under pressure the block goes
+        // straight back, which costs the next call an allocation and is exactly
+        // the right trade at that point.
+        if (memory_is_tight()) {
+            sandbox_free(&g_pool[i].sa);
+            memset(&g_pool[i], 0, sizeof(g_pool[i]));
+        }
         return;
     }
     // Lent from no slot: it was transient after all.

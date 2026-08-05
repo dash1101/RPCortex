@@ -146,7 +146,7 @@ static int cmd_bench(int argc, char **argv) {
 
     fw_printf("  ------------------------------\n");
     fw_printf("  %-12s %9s   \033[96m\033[1m%5u\033[0m\n", "TOTAL", "", (unsigned)total);
-    fw_printf("\n  \033[90mA v1.0 device scores about 1000. Run tools/bench.py there.\033[0m\n\n");
+    fw_printf("\n  \033[90mA v1.0 device scores around 5000-6000. Run tools/bench.py there.\033[0m\n\n");
     return 0;
 }
 

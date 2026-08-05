@@ -299,8 +299,54 @@ void calc_format_int(long long n, const char *base, char *out, unsigned cap) {
 // Format a result the way v1's _fmt did: a whole number prints without a
 // fractional part, everything else keeps ten significant digits.
 void calc_format_num(double v, char *out, unsigned cap) {
+    // Too large to write out digit by digit, and casting it to a long long
+    // first is undefined — which is how `calc 2^99` came to print
+    // 9223372036854775807.9999999999. That is not a rounding error, it is
+    // LLONG_MAX with a fractional part bolted on, and it looks precise enough
+    // to be believed.
+    //
+    // A double carries about sixteen significant digits, so past 1e15 the extra
+    // digits would be invented anyway. Scientific notation says the same number
+    // without claiming to know more of it than there is.
+    if (!(d_abs(v) < 1e15)) {          // written so a NaN takes this branch too
+        unsigned k = 0;
+        if (v != v) { const char *nan = "not a number";
+                      while (*nan && k < cap - 1) out[k++] = *nan++; out[k] = 0; return; }
+        bool neg = v < 0;
+        if (neg) v = -v;
+        if (v > 1e308) { const char *inf = "too large to represent";
+                         if (neg && cap > 1) out[k++] = '-';
+                         while (*inf && k < cap - 1) out[k++] = *inf++; out[k] = 0; return; }
+
+        int exp = 0;
+        while (v >= 10.0 && exp < 308) { v /= 10.0; exp++; }
+        while (v < 1.0 && exp > -308) { v *= 10.0; exp--; }
+
+        if (neg && k < cap - 1) out[k++] = '-';
+        long long lead = (long long)v;
+        if (k < cap - 1) out[k++] = (char)('0' + (int)lead);
+        if (k < cap - 1) out[k++] = '.';
+        double fr = v - (double)lead;
+        for (int d = 0; d < 6 && k < cap - 1; d++) {
+            fr *= 10.0;
+            int digit = (int)fr;
+            if (digit < 0) digit = 0;
+            if (digit > 9) digit = 9;
+            out[k++] = (char)('0' + digit);
+            fr -= digit;
+        }
+        if (k < cap - 1) out[k++] = 'e';
+        if (exp < 0) { if (k < cap - 1) out[k++] = '-'; exp = -exp; }
+        char eb[8]; unsigned en = 0;
+        if (!exp) eb[en++] = '0';
+        while (exp) { eb[en++] = (char)('0' + exp % 10); exp /= 10; }
+        while (en && k < cap - 1) out[k++] = eb[--en];
+        out[k] = 0;
+        return;
+    }
+
     long long whole = (long long)v;
-    if ((double)whole == v && d_abs(v) < 1e15) {
+    if ((double)whole == v) {
         unsigned k = 0;
         char digits[24];
         unsigned n = 0;

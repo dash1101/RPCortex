@@ -11,6 +11,12 @@
 #include "command.h"
 #include "out.h"
 #include "tui.h"
+
+#include <stdlib.h>
+
+// Gives the screen back however the command returns -- and these return from
+// several places.
+namespace { struct ScreenFree { void *p; ~ScreenFree() { free(p); } }; }
 #include "tuilist.h"
 #include "tuiterm.h"
 #include "registry.h"
@@ -114,7 +120,17 @@ static int cmd_settings(int, char **) {
         return 1;
     }
 
-    static TuiScreen s;
+    // On the heap, not in bss.
+    //
+    // A TuiScreen is twelve kilobytes, and holding it statically meant every
+    // device paid for the editor and the settings panel whether or not either
+    // was ever opened — twenty-four kilobytes of RAM reserved at build time for
+    // two screens that are open for seconds at a time. Allocated here, it costs
+    // nothing until it is used and comes back when the screen closes.
+    TuiScreen *sp = (TuiScreen *)malloc(sizeof(TuiScreen));
+    if (!sp) { out_err("Not enough memory to open this screen."); return 1; }
+    TuiScreen &s = *sp;
+    ScreenFree _sf{sp};
     tuiterm_begin();
     if (!tuiterm_active()) { out_err("Could not start the settings panel."); return 1; }
 

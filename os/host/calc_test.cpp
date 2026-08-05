@@ -151,6 +151,45 @@ int main(void) {
         fails++;
     }
 
+        // Numbers past what a double can hold exactly.
+    //
+    // `calc 2^99` printed 9223372036854775807.9999999999 -- LLONG_MAX with a
+    // fraction bolted on, because the value was cast to a long long first and
+    // that is undefined. It looked precise enough to be believed, which is the
+    // worst way for a calculator to be wrong.
+    {
+        char b[48];
+        auto has = [&](double v, const char *needle) {
+            checks++;
+            calc_format_num(v, b, sizeof(b));
+            if (!strstr(b, needle)) {
+                printf("  FAIL: format %.10g -> '%s', wanted '%s' in it\n", v, b, needle);
+                fails++;
+            }
+        };
+        auto lacks = [&](double v, const char *needle) {
+            checks++;
+            calc_format_num(v, b, sizeof(b));
+            if (strstr(b, needle)) {
+                printf("  FAIL: format %.10g -> '%s', should not contain '%s'\n", v, b, needle);
+                fails++;
+            }
+        };
+
+        has(1e30, "e30");
+        lacks(1e30, "9223372036854775807");
+        has(-1e30, "-");
+        // Small numbers are NOT captured by this: 0.000000001 is perfectly
+        // readable and turning it into an exponent would help nobody.
+        lacks(1e-9, "e-");
+
+        // The ordinary range must not be captured by this path: these were
+        // already printing correctly.
+        fmt(4, "4");
+        fmt(1.5, "1.5");
+        lacks(999999999999.0, "e");
+    }
+
     printf("\n  %d checks, %d failed\n", checks, fails);
     return fails ? 1 : 0;
 }
