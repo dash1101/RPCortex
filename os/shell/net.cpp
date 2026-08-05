@@ -1234,7 +1234,13 @@ bool net_resolve(const char *host, ip_addr_t *out) {
         return false;
     }
 
-    dns_wait(w->done, 8000);
+    // Six seconds, not eight. The watchdog reboots at eight, and although this
+    // wait yields — so it does feed it — a network timeout that lands on the
+    // same number as the reboot threshold is a coincidence waiting to be
+    // debugged. Giving up here costs nothing anyway: the record is abandoned
+    // rather than freed, so lwIP finishes its own retries in its own time and
+    // the answer lands in a cache the next attempt reads.
+    dns_wait(w->done, 6000);
 
     // Re-read under the lock: the callback can land between the wait giving up
     // and this line, and an answer that arrived is still an answer.

@@ -271,6 +271,9 @@ void http_tls_reset(void) {
     g_tls_why[0] = 0;
 }
 
+// Defined with lw_close, which is the other half of the same idea.
+static void conn_detach(TcpConn *c);
+
 static int lw_open(void *ctx, const char *host, uint16_t port, bool tls) {
     TcpConn *c = (TcpConn *)ctx;
     // Taken here and released in lw_close, which the fetch driver always calls
@@ -292,6 +295,11 @@ static int lw_open(void *ctx, const char *host, uint16_t port, bool tls) {
         if (!cfg) { net_op_release(); return -1; }   // no roots: refuse, never downgrade
     }
 
+    // Anything still attached from a previous transfer goes now, BEFORE the
+    // memset that would orphan it. Every path that abandons a connection is
+    // supposed to have detached it already; this is what makes "supposed to"
+    // not matter.
+    conn_detach(c);
     memset(c, 0, sizeof(*c));
 
     ip_addr_t addr;
@@ -315,8 +323,16 @@ static int lw_open(void *ctx, const char *host, uint16_t port, bool tls) {
     err_t e = c->pcb ? altcp_connect(c->pcb, &addr, port, on_connected) : ERR_MEM;
     cyw43_arch_lwip_end();
 
-    if (!c->pcb || e != ERR_OK) { net_op_release(); return -1; }
-    if (!wait_flag(c->connected, CONNECT_MS, &c->failed)) { net_op_release(); return -1; }
+    // From here on the pcb exists and its callbacks point at `c`, so no exit may
+    // simply return: the connection has to be taken apart first. lw_close is not
+    // called for an open that failed — the driver only closes what it opened —
+    // which is why these say so themselves.
+    if (!c->pcb || e != ERR_OK)  { conn_detach(c); net_op_release(); return -1; }
+    if (!wait_flag(c->connected, CONNECT_MS, &c->failed)) {
+        conn_detach(c);
+        net_op_release();
+        return -1;
+    }
     return 0;
 }
 
@@ -412,8 +428,18 @@ static int lw_recv(void *ctx, uint8_t *buf, uint32_t cap) {
     return (int)n;
 }
 
-static void lw_close(void *ctx) {
-    TcpConn *c = (TcpConn *)ctx;
+// Detach and drop the pcb. Everything that abandons a connection goes through
+// here, which is the whole point: the callbacks below reference `c`, and `c` is
+// one static reused by every transfer.
+//
+// Leaving a pcb attached is not a leak that shows up as memory. lw_open memsets
+// the connection at the start of the NEXT transfer, so a callback belonging to
+// the abandoned one then writes into the live one: on_err clears its pcb,
+// on_connected sets its connected flag before it is, on_recv appends somebody
+// else's bytes to its buffer. A failed fetch quietly breaks the fetch after it.
+//
+// Caller must NOT hold the lwIP lock.
+static void conn_detach(TcpConn *c) {
     cyw43_arch_lwip_begin();
     if (c->rx) { pbuf_free(c->rx); c->rx = nullptr; }
     if (c->pcb) {
@@ -422,12 +448,16 @@ static void lw_close(void *ctx) {
         altcp_err(c->pcb, nullptr);
         altcp_sent(c->pcb, nullptr);
         // altcp_close can fail when memory is tight; abort then, because leaving
-        // a pcb with our (stack) arg attached is how a later callback writes
-        // into a connection that no longer exists.
+        // a pcb with our arg attached is how a later callback writes into a
+        // connection that no longer exists.
         if (altcp_close(c->pcb) != ERR_OK) altcp_abort(c->pcb);
         c->pcb = nullptr;
     }
     cyw43_arch_lwip_end();
+}
+
+static void lw_close(void *ctx) {
+    conn_detach((TcpConn *)ctx);
     net_op_release();
 }
 
