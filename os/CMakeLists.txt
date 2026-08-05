@@ -336,6 +336,7 @@ rpc_add_app(bench)
 rpc_add_app(websearch)
 rpc_add_app(speedtest)
 rpc_add_app(havoc)
+rpc_add_app(httpd)
 
 # --- packages that ship installed -------------------------------------------
 #

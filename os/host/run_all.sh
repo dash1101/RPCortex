@@ -28,6 +28,7 @@ declare -A SRC=(
     # The package source is INCLUDED by the test rather than linked: its scanners
     # are static, and they are the part that fails without saying so.
     [websearch_test]=""
+    [httpd_test]=""
     [arena_test]="$CORE/arena.cpp"
     [fatview_test]="$CORE/fatview.cpp"
     [fatimage_test]="$CORE/fatview.cpp"
