@@ -330,6 +330,23 @@ bool usbmsc_open(void) {
     return true;
 }
 
+// Tell the host to look again, once whatever is being put on the drive is
+// actually there.
+//
+// usbmsc_open raises this as part of wiping, which is too early: the shell then
+// spends time exporting /usb onto the drive, and a host that polls inside that
+// window consumes the notification, reads a volume that is still being filled,
+// and is never told again. What it shows afterwards is whatever it happened to
+// catch — which is how a file deleted between sessions could still be on
+// screen.
+//
+// So the shell says when it has finished, and that is the picture the host is
+// asked to take.
+void usbmsc_changed(void) {
+    LockGuard _lk(&g_usb_lock);
+    g_media_changed = true;
+}
+
 void usbmsc_close(void) {
     LockGuard _lk(&g_usb_lock);
     g_open = false;

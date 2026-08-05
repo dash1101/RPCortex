@@ -47,6 +47,7 @@ void     usbmsc_close(void);
 bool     usbmsc_full(void);
 uint32_t usbmsc_import_all(bool *refused);
 bool     usbmsc_settled(void);
+void     usbmsc_changed(void);
 bool     usbdrv_list(F12WalkFn cb, void *ctx);
 bool     usbdrv_find(const char *name, F12Entry *out);
 bool     usbdrv_export(const char *path, const char *name);
@@ -200,6 +201,12 @@ static int cmd_download(int argc, char **argv) {
         if (usbdrv_export(src, basename_of(src))) offered++;
         else out_warn("Skipped %s -- could not copy it.", basename_of(src));
     }
+
+    // EVERYTHING IS ON THE DRIVE NOW, so this is the moment to have the host
+    // read it. usbmsc_open raised the same flag while wiping, before any of the
+    // exports above had run — a host polling in that window took its picture of
+    // a half-filled volume and was never told to look again.
+    usbmsc_changed();
 
     out_blank();
     out_multi("  %s%sDOWNLOAD MODE%s", C_BOLD, C_CYAN, C_RESET);
