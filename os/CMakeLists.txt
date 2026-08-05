@@ -335,6 +335,7 @@ rpc_add_app(stress)
 rpc_add_app(bench)
 rpc_add_app(websearch)
 rpc_add_app(speedtest)
+rpc_add_app(havoc)
 
 # --- packages that ship installed -------------------------------------------
 #
@@ -344,9 +345,14 @@ rpc_add_app(speedtest)
 # package's clothes.
 # --- the development test suite ---------------------------------------------
 #
-# bench, probe and stress exist to exercise THIS build. They measure what the
+# bench, probe, stress and havoc exist to exercise THIS build. They measure what the
 # host tests cannot — real cores, real interrupt jitter, real timing — and a
 # device with none of them attached cannot tell whether it is healthy.
+#
+# havoc is the odd one: the other three check that things WORK, and it checks
+# that bad input FAILS SAFELY. It belongs here for the same reason as the rest,
+# and one more — a package that hunts for ways to crash the device is not
+# something to publish to a repo people install from.
 #
 # They are baked in rather than published, for three reasons. They are of no use
 # to anyone who just wants the OS; publishing each one costs a build, a checksum
@@ -363,7 +369,7 @@ option(RPC_DEV_PACKAGES "Bake the development test suite into the image" ON)
 
 if(RPC_DEV_PACKAGES)
     target_compile_definitions(rpcortex_v2 PRIVATE RPC_DEV_PACKAGES=1)
-    foreach(devpkg bench stress probe)
+    foreach(devpkg bench stress probe havoc)
         add_custom_command(
             OUTPUT ${CMAKE_BINARY_DIR}/stock_${devpkg}.cpp
             COMMAND ${CMAKE_COMMAND} -E env python3 ${OS_ROOT}/tools_bin2c.py

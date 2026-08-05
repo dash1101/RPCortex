@@ -38,11 +38,14 @@ extern "C" const unsigned char stock_bench_data[];
 extern "C" const unsigned int  stock_bench_len;
 extern "C" const unsigned char stock_probe_data[];
 extern "C" const unsigned int  stock_probe_len;
+extern "C" const unsigned char stock_havoc_data[];
+extern "C" const unsigned int  stock_havoc_len;
 
 static const StockPkg kStock[] = {
     {"stress", stock_stress_data, &stock_stress_len},
     {"bench",  stock_bench_data,  &stock_bench_len},
     {"probe",  stock_probe_data,  &stock_probe_len},
+    {"havoc",  stock_havoc_data,  &stock_havoc_len},
 };
 #else
 // An empty array is not valid C++, and a table of one null entry would be
