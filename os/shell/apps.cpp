@@ -7,6 +7,7 @@
 #include "mpu.h"
 #include "arena.h"
 #include "sandbox.h"
+#include "lock.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -172,6 +173,24 @@ struct SandboxSlot {
 };
 static SandboxSlot g_pool[SANDBOX_POOL];
 
+// EVERY read-then-write of the table above is atomic across cores.
+//
+// `stress` runs three filesystem workers with AFFINITY_ANY, so two cores are
+// genuinely inside these functions at the same instant — and "is this entry
+// free?" followed by "then it is mine" is the classic pair that has to be one
+// step. Split, two cores both saw a free entry and both claimed it: the first
+// to finish cleared `lent` on a block the second was still running on, and
+// apps_pool_reclaim was then free to hand that stack and arena back to the
+// heap while a package was standing on them.
+//
+// lock_hw_enter is the right lock here and the only one that is: it is brief,
+// it does not yield, and it excludes the other core rather than only other
+// tasks. It is NOT recursive and it masks interrupts, so nothing below holds it
+// across malloc, free or a heap query — the blocks are collected under the
+// lock and released after it.
+#define POOL_LOCK   lock_hw_enter()
+#define POOL_UNLOCK lock_hw_exit()
+
 static bool sandbox_alloc(SandboxAlloc *sa, TaskAppMem *m, uint32_t stack_bytes) {
     memset(sa, 0, sizeof(*sa));
     MpuBlockPlan sp, ap;
@@ -256,14 +275,24 @@ static bool sandbox_acquire(SandboxAlloc *sa, TaskAppMem *m, bool *pooled,
     // scheduler does not know. Transient, as it always was.
     if (slot < 0) return sandbox_alloc(sa, m, PKG_STACK_BYTES);
 
+    // This task's own entry, if it has one. The test and the claim are one
+    // step: two cores reaching the same entry together must not both take it.
+    bool mine = false;
+    POOL_LOCK;
     for (int i = 0; i < SANDBOX_POOL; i++) {
         if (!g_pool[i].used || g_pool[i].slot != slot || g_pool[i].lent) continue;
         g_pool[i].lent = true;
         *sa = g_pool[i].sa;
+        mine = true;
+        break;
+    }
+    POOL_UNLOCK;
+    if (mine) {
         sandbox_describe_from(sa, m);
-        // Fresh arena, same memory. See the note above.
+        // Fresh arena, same memory. See the note above. Only the caller's copy
+        // needs it: the pool holds the BLOCKS, and the next acquire initialises
+        // the arena again from them, so there is nothing to write back.
         arena_init(&sa->arena, sa->arena_mem, m->arena_size);
-        g_pool[i].sa = *sa;
         *pooled = true;
         return true;
     }
@@ -277,6 +306,7 @@ static bool sandbox_acquire(SandboxAlloc *sa, TaskAppMem *m, bool *pooled,
         if (!sandbox_alloc(sa, m, PKG_STACK_BYTES)) return false;
     }
 
+    POOL_LOCK;
     for (int i = 0; i < SANDBOX_POOL; i++) {
         if (g_pool[i].used) continue;
         g_pool[i].used = true;
@@ -286,6 +316,9 @@ static bool sandbox_acquire(SandboxAlloc *sa, TaskAppMem *m, bool *pooled,
         *pooled = true;
         break;
     }
+    POOL_UNLOCK;
+    // No free entry: the sandbox is real, just transient. `pooled` stays false
+    // so the caller frees it rather than looking for a slot that never existed.
     return true;
 }
 
@@ -310,10 +343,23 @@ static bool memory_is_tight(void) {
 // Give back every slot nobody is inside. Returns the bytes released.
 uint32_t apps_pool_reclaim(void) {
     uint32_t before = heap_free();
-    for (int i = 0; i < SANDBOX_POOL; i++) {
-        if (!g_pool[i].used || g_pool[i].lent) continue;
-        sandbox_free(&g_pool[i].sa);
-        memset(&g_pool[i], 0, sizeof(g_pool[i]));
+    // One at a time: the entry is taken out of the table under the lock and
+    // freed outside it, so the allocator is never called with interrupts masked
+    // and the other core can never find a half-released entry.
+    for (;;) {
+        SandboxAlloc dead{};
+        bool got = false;
+        POOL_LOCK;
+        for (int i = 0; i < SANDBOX_POOL; i++) {
+            if (!g_pool[i].used || g_pool[i].lent) continue;
+            dead = g_pool[i].sa;
+            memset(&g_pool[i], 0, sizeof(g_pool[i]));
+            got = true;
+            break;
+        }
+        POOL_UNLOCK;
+        if (!got) break;
+        sandbox_free(&dead);
     }
     uint32_t after = heap_free();
     return after > before ? after - before : 0;
@@ -344,20 +390,30 @@ void apps_stack_peak(uint32_t *used, uint32_t *size) {
 static void sandbox_return(SandboxAlloc *sa, bool pooled) {
     note_stack_peak(sa);
     if (!pooled) { sandbox_free(sa); return; }
+    // Held only while there is room to spare. Under pressure the block goes
+    // straight back, which costs the next call an allocation and is exactly the
+    // right trade at that point. Asked before the lock, because it reads the
+    // heap and the lock is for the table only.
+    bool tight = memory_is_tight();
+
+    SandboxAlloc dead{};
+    bool found = false, release = false;
+    POOL_LOCK;
     for (int i = 0; i < SANDBOX_POOL; i++) {
         if (!g_pool[i].lent || g_pool[i].sa.stack_raw != sa->stack_raw) continue;
+        found = true;
         g_pool[i].lent = false;
-        // Held only while there is room to spare. Under pressure the block goes
-        // straight back, which costs the next call an allocation and is exactly
-        // the right trade at that point.
-        if (memory_is_tight()) {
-            sandbox_free(&g_pool[i].sa);
+        if (tight) {
+            dead = g_pool[i].sa;
+            release = true;
             memset(&g_pool[i], 0, sizeof(g_pool[i]));
         }
-        return;
+        break;
     }
-    // Lent from no slot: it was transient after all.
-    sandbox_free(sa);
+    POOL_UNLOCK;
+
+    if (release)     sandbox_free(&dead);
+    else if (!found) sandbox_free(sa);      // lent from no slot: transient after all
 }
 
 // The scheduler is reusing a task slot, so whatever it held is nobody's now.
@@ -365,14 +421,25 @@ static void sandbox_return(SandboxAlloc *sa, bool pooled) {
 // Without this the pool would hand a dead task's stack to whatever pid landed
 // in the same slot next, and hold the memory for the life of the device.
 extern "C" void apps_task_ended(int slot) {
-    for (int i = 0; i < SANDBOX_POOL; i++) {
-        if (!g_pool[i].used || g_pool[i].slot != slot) continue;
-        // Still lent means the task died inside a call. The memory cannot be
-        // freed from here — the call may still be unwinding on another core —
-        // so the slot is disowned and the block leaks rather than being handed
-        // to somebody still using it. Rare, and the safe direction.
-        if (!g_pool[i].lent) sandbox_free(&g_pool[i].sa);
-        memset(&g_pool[i], 0, sizeof(g_pool[i]));
+    for (;;) {
+        SandboxAlloc dead{};
+        bool got = false, release = false;
+        POOL_LOCK;
+        for (int i = 0; i < SANDBOX_POOL; i++) {
+            if (!g_pool[i].used || g_pool[i].slot != slot) continue;
+            // Still lent means the task died inside a call. The memory cannot
+            // be freed from here — the call may still be unwinding on another
+            // core — so the slot is disowned and the block leaks rather than
+            // being handed to somebody still using it. Rare, and the safe
+            // direction.
+            if (!g_pool[i].lent) { dead = g_pool[i].sa; release = true; }
+            memset(&g_pool[i], 0, sizeof(g_pool[i]));
+            got = true;
+            break;
+        }
+        POOL_UNLOCK;
+        if (!got) break;
+        if (release) sandbox_free(&dead);
     }
 }
 

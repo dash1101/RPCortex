@@ -172,12 +172,16 @@ Masking interrupts across the context switch — the window between
 the regions — took it from roughly one crash in six runs to one in twelve. That
 window was real and the fix should stay. It is not the whole story.
 
-## Also found while looking, and not the cause
+## Also found while looking, and fixed — but not the cause
 
-`g_pool` in `os/shell/apps.cpp` is read and written from both cores with no
+`g_pool` in `os/shell/apps.cpp` was read and written from both cores with no
 lock, and `stress` runs three filesystem workers with `AFFINITY_ANY`. Two cores
-can claim the same free slot, after which the winner's `sandbox_return` clears
-`lent` on a block the loser is still running on — and `apps_pool_reclaim` is
-then free to hand that stack and arena back to the heap. A use-after-free worth
-closing on its own account, but it cannot change an MPU region's bounds, so it
-does not explain any of the numbers above.
+could claim the same free entry, after which the winner's `sandbox_return`
+cleared `lent` on a block the loser was still running on — and
+`apps_pool_reclaim` was then free to hand that stack and arena back to the heap
+while a package stood on them.
+
+Now under `lock_hw_enter`, with the blocks collected inside the lock and freed
+outside it. A real use-after-free, worth closing on its own account, but it
+cannot change an MPU region's bounds — so it does not explain any of the
+numbers above and it is not being claimed as the fix.
