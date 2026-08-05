@@ -142,6 +142,13 @@ static void load_cb(void *, const char *name, const char *) {
         out_warnp("pkg", "'%s' is disabled and was not loaded.", name);
         return;
     }
+    // ALREADY LOADED IS NOT A REASON TO LOAD IT AGAIN. pkg_install_file loads
+    // what it installs, so anything the stock updater placed a moment ago is
+    // resident before this walk reaches it. Loading a second copy cannot
+    // register the commands the first already owns, and the failure reads as
+    // the package being broken rather than as this having asked twice.
+    if (apps_resident(name)) return;
+
     char path[40]; pkg_path(name, path, sizeof(path));
     apps_launch(path, 0, /*quiet*/true);
 }

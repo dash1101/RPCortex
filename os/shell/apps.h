@@ -53,6 +53,13 @@ LoadedApp *apps_store(const LoadedApp *app);
 // currently executing it — ask apps_busy_pid to tell the two apart.
 bool apps_unload(const char *name);
 
+// Is a package by this name already loaded? pkg_install_file loads what it
+// installs, so the boot walk over the index would otherwise load it a second
+// time — and the second copy cannot register the commands the first already
+// owns, which reads as four packages failing when nothing is wrong with any of
+// them.
+bool apps_resident(const char *name);
+
 // The pid of a task sitting inside this package right now, or -1.
 //
 // A package's command yields on every ABI call it makes, so the shell can be

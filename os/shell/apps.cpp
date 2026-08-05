@@ -789,6 +789,10 @@ LoadedApp *apps_store(const LoadedApp *app) {
     return nullptr;
 }
 
+bool apps_resident(const char *name) {
+    return name && find(name) != nullptr;
+}
+
 bool apps_unload(const char *name) {
     LoadedApp *a = find(name);
     if (!a) return false;
@@ -998,16 +1002,35 @@ extern "C" void mpu_dump_live(unsigned sp);
 extern "C" bool sandbox_abandon_call(uint32_t *frame);
 
 extern "C" int fault_try_contain(uint32_t *frame) {
-    if (!frame || !sandbox_in_package()) return 0;
+    // DECLINING IS SAID OUT LOUD. A reset that could have been contained and
+    // was not is the interesting case, and it used to be indistinguishable
+    // from one that was never containable. The report is already on screen by
+    // the time this runs, so one more line costs nothing.
+    if (!frame) return 0;
+    if (!sandbox_in_package()) {
+        printf("    not contained: no package was running\n");
+        return 0;
+    }
 
     TaskAppMem m;
-    if (!task_app_mem_get(&m) || !m.stack || !m.stack_size) return 0;
+    if (!task_app_mem_get(&m) || !m.stack || !m.stack_size) {
+        printf("    not contained: the package has no sandbox stack\n");
+        return 0;
+    }
 
     uint32_t sp   = (uint32_t)(uintptr_t)frame;
     uint32_t base = (uint32_t)(uintptr_t)m.stack;
-    if (sp < base || sp >= base + m.stack_size) return 0;   // not the package's
+    if (sp < base || sp >= base + m.stack_size) {
+        printf("    not contained: sp 0x%08lx is outside the package stack "
+               "0x%08lx..0x%08lx\n", (unsigned long)sp, (unsigned long)base,
+               (unsigned long)(base + m.stack_size));
+        return 0;
+    }
 
-    if (!sandbox_abandon_call(frame)) return 0;
+    if (!sandbox_abandon_call(frame)) {
+        printf("    not contained: the package was not inside a call\n");
+        return 0;
+    }
     // apps.cpp says which package once it is back in task context; see
     // sandbox_took_call_back below.
     return 1;
