@@ -28,7 +28,7 @@ shell that reads like RPCortex Vela on the same terminal.
 | **transfer area** | a real FAT12 volume over USB, off by default; `download` opens it and takes what lands into /usb | usb download |
 | **shell** | full line editing, tab completion, pipes, `&&` / `\|\|` / `;`, `>` / `>>`, quoting | help |
 
-Roughly 50 commands plus ~30 aliases (`ll`, `dir`, `more`, `del`, `free`, `gc`,
+Roughly 96 commands plus ~30 aliases (`ll`, `dir`, `more`, `del`, `free`, `gc`,
 `id`, `exit`, …) in a separate table, so a second spelling costs two pointers
 rather than a registry slot and a help line.
 
@@ -36,7 +36,7 @@ An installed package's commands go live at boot; an app registers commands via
 the ABI (the `greet` app demonstrates it). That is the package system the Nova
 D1 will sit inside.
 
-**Tests** — 46 host suites, all green under ASan/UBSan: `os/host/run_all.sh`.
+**Tests** — 48 host suites, all green under ASan/UBSan: `os/host/run_all.sh`.
 One of them, `fatimage_test`, is not a test of this code against its author's
 reading of a specification — it synthesises a whole FAT volume and hands it to
 `fsck.fat`, because a filesystem this device only ever writes and never reads
@@ -49,8 +49,9 @@ firmware-writer touches is already in RAM) and `check-stackswitch.py` (every
 stack switch releases the stack limit before it moves SP, and privilege is only
 ever dropped in the veneer-pool gate).
 
-**Footprint** — 961 KB on RP2350, 1007 KB on RP2040, of a 1024 KB slot. The
-RP2040 build is over it and not shippable as it stands. Most of
+**Footprint** — 954 KB on RP2350 (`pico2_w`), 1002 KB on RP2040 (`pico_w`), of
+a 1024 KB slot. The wireless RP2040 build has 22 KB of headroom left and is not
+shippable as it stands. The non-wireless builds are far under: 358 KB and 372 KB. Most of
 the jump from ~290 KB is the CYW43 firmware blob (225 KB) plus lwIP. Task #72
 holds the notes for getting it back down; `./build.sh --no-dev-packages` already
 takes 23 KB off by leaving out bench, probe and stress.
@@ -94,25 +95,24 @@ This is the base the Nova D1 gets ported onto.
   and aligned to their own size, so the five a package needs would cost more RAM
   than an RP2040 has. There it runs packages privileged, as every build did
   before, and `mpu` says which a board is doing. Stack guards work on both.
-- **A stack and a heap are allocated per call into package code** — 3 KB and
-  12 KB, taken and given back around every package command. That is churn on a
-  device where fragmentation has been a hard-stop before, and holding the pair
-  per task instead is the obvious answer if it shows. Notes in
-  `os/UNPRIV-DESIGN.md`.
-- **The supervisor call is measured but the figure has never been read.**
-  `probe` times 20,000 calls against an empty loop and reports nanoseconds and
-  cycles; nobody has run it on a board yet.
-- **`meminfo`'s fragmentation figure is DEVICE-UNCONFIRMED.** `heap_free()`
-  reports the arena minus live allocations, which is honest rather than a
-  high-water mark, and `largest_block()` probes with real `malloc` calls — but
-  the two have never been compared over a long uptime. If they disagree, a
-  healthy device reports high fragmentation, which is exactly the "diagnostic
-  that invents a problem" failure v1 hit.
-- **Drag-and-drop file transfer** (#69) — **built, untested on hardware.** The
-  device presents a 1 MB transfer area over USB alongside the console: a real
-  FAT12 volume in its own flash region, which the host owns outright and may
-  create, edit, rename and delete in. `usb get` and `usb put` move files between
-  it and the filesystem. `usb off` withholds it.
+- ~~A stack and a heap allocated per CALL into package code (#77)~~ — done.
+  Held per task and taken from a pool, so a package command no longer churns
+  the heap on a device where fragmentation has been a hard-stop before. Notes
+  in `os/UNPRIV-DESIGN.md`.
+- ~~The supervisor call is measured but never read (#78)~~ — the exemption is
+  decided. `probe` still times 20,000 calls against an empty loop and the
+  figure is still worth reading on a board.
+- ~~`meminfo`'s fragmentation figure (#79)~~ — confirmed against a long uptime.
+- **A package that exhausts its own stack still restarts the device.** Every
+  other package fault is contained (#87) and a wedged one loses only its call
+  (#86), both confirmed on hardware. An exception pushes its frame BELOW the
+  stack pointer, so a stack with nothing left has nowhere to put one — the
+  frame is never written, and a frame that was never written cannot be
+  redirected somewhere survivable. Architecture rather than a gap.
+- ~~Drag-and-drop file transfer (#69)~~ — done and confirmed in both
+  directions. `download` presents a transfer area over USB alongside the
+  console: a real FAT volume the host owns outright and may create, edit,
+  rename and delete in. `/usb` goes out, whatever lands comes back.
 
   It replaced a view synthesised over littlefs, which was built, shipped and
   abandoned — the reasoning is in `os/USBMSC-DESIGN.md` and is worth reading
@@ -123,8 +123,13 @@ This is the base the Nova D1 gets ported onto.
 - ~~The site oversells all of this (#73)~~ — done. The landing page now names
   v1.0 as the release to run and v2 as early alpha, and the two wrong hero
   statistics are corrected.
-- **Missing v1 commands** — `watch`, `edit`/`nano`, `task`/`service`/`startup`,
-  `alias`/`unalias` at runtime, `wget`/`curl`. `edit` is a TUI, not an afternoon.
+- ~~Missing v1 commands (#80)~~ — done. `watch`, `edit`/`nano`/`vi`,
+  `task`/`service`/`startup`, `alias`/`unalias`, `wget`/`curl`.
+- **RP2040 boards have no filesystem** (#81). `RPC_FW_RESERVE` is 2 MB and a
+  Pico has 2 MB of flash, so `FS_SIZE` is zero: the image boots, the shell
+  runs, nothing can be saved. A reserve sized for a 2 MB part is the fix.
+- **The `update` write path is the largest thing no board has run.** Everything
+  before the write shares code with the package manager, which now has.
 - **Nova D1 in C++** — Tier 3, the big one.
 - **A MicroPython port for running .py apps** — wanted, deferred. Worth knowing
   before it starts: embedding MicroPython puts its GC-managed heap alongside
@@ -137,7 +142,7 @@ This is the base the Nova D1 gets ported onto.
 ## Building
 
 ```
-./build.sh                 # both boards -> out/, then the host tests
+./build.sh                 # all four boards -> out/, then the host tests
 ./build.sh pico2_w         # one board
 ./build.sh --clean         # wipe the build directories first
 ```

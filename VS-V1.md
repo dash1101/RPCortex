@@ -15,8 +15,9 @@ memory.
 | Commands | 113 names | 105 names |
 | Shared with v1 | — | 82 |
 | Multitasking | cooperative, one core | cooperative, **both cores** |
-| Boards | Pico 2 W, ESP32-S3 | Pico 2 W, Pico W, **Pico 2, Pico** |
-| Filesystem | 512 KB | **3 MB** (Pico 2 W) |
+| Boards | Pico 2 W, ESP32-S3 | Pico 2 W, Pico 2 (RP2040 builds, see below) |
+| Filesystem | 512 KB | **2 MB** on RP2350, **none** on RP2040 |
+| Package isolation | none | unprivileged, MPU-enforced |
 | Install | firmware + paste files | **one .uf2, drag and drop** |
 | Packages | `.py`/`.mpy` archives | compiled `.app`, loaded at runtime |
 
@@ -50,11 +51,28 @@ it stopped. v1 lost everything on reboot.
 **A filesystem that repairs itself.** Missing directories are recreated at boot;
 three failed boots rebuild the filesystem rather than needing another computer.
 
-**The RP2040 is back.** v1.0 had to drop the Pico 1 and 1 W — the multitasking
-build did not fit in 264 KB. Without an interpreter it does.
-
 **Memory that is not a lottery.** No collector, so no fragmentation of the kind
 that broke HTTPS on v1 and needed a reserved block held from boot to work around.
+
+**A package cannot take the device down.** This is the largest gain over v1 and
+the one with no equivalent there at all. On RP2350 a package runs unprivileged
+with five protection regions describing everything it may touch, every pointer
+it hands the firmware is range-checked against those regions, and it has a stack
+and a heap of its own. A bad pointer costs the command and names the package; a
+package that stops responding has the call taken back at a timer interrupt and
+the shell survives. Both are confirmed on hardware with `havoc`.
+
+The exception is a package exhausting its own stack, which still restarts the
+device — an exception pushes its frame BELOW the stack pointer, so a stack with
+nothing left has nowhere to put one, and a frame that was never written cannot
+be redirected somewhere survivable. Architecture, not a gap.
+
+**The RP2040 does not fit yet.** v1.0 dropped the Pico 1 and 1 W because the
+multitasking build did not fit in 264 KB of RAM, and without an interpreter it
+does. FLASH is the problem instead: `RPC_FW_RESERVE` is 2 MB — a megabyte to run
+from and a megabyte to stage an update in — and a Pico has 2 MB in total, so
+`FS_SIZE` computes to zero. The image boots and the shell runs and nothing can
+be saved. A smaller RP2040-specific reserve is the fix and is planned (#81).
 
 ## What matches v1
 
@@ -73,9 +91,10 @@ original escape sequences.
 
 | What | Needs |
 |---|---|
-| `curl` `runurl` | nothing; the HTTP client is there |
 | `sd` card support | a driver |
 | ESP32-S3 | a port: core/ moves unchanged, the context switch, storage and network layers do not |
+| A filesystem on RP2040 | a reserve sized for a 2 MB part (#81) |
+| The rest of v1's packages | rewriting in C; four are done |
 
 ## Different on purpose
 
@@ -93,32 +112,45 @@ who is already an admin.
 **`rawrepl` is `bootloader`.** v1 dropped to the MicroPython REPL so a host tool
 could reflash. The equivalent here is handing USB back to the boot ROM.
 
+## Confirmed on hardware
+
+Everything below has been run on a Pico 2 W. Listed because most of it spent a
+long time in the section under this one, and knowing what has actually executed
+is the point of this document.
+
+Wireless (`wifi` join and scan, `ping`, `nslookup`, `ntp`), HTTPS through
+`wget`, `curl` and the `websearch` and `speedtest` packages, the package manager
+installing and loading real `.app` files, `httpd` serving both a directory
+listing and a site root, the USB transfer drive in both directions, `rm` with
+wildcards and recursion, the editor, and both halves of package containment
+(`havoc fault` and `havoc spin`).
+
+The HTTPS deadlock that made downloads larger than a few KB hang is fixed — the
+receive window was smaller than one TLS record, so mbedtls could not decrypt a
+partial record and lwIP would not acknowledge what mbedtls had not consumed.
+Small responses were unaffected, which is why the package index worked and a
+firmware image did not.
+
 ## Known unstable
 
-- **HTTPS downloads larger than a few KB needed a wider TCP window.** The
-  receive window was smaller than one TLS record, which deadlocks: mbedtls
-  cannot decrypt a partial record, and lwIP does not acknowledge what mbedtls
-  has not consumed. Small responses were unaffected, which is why the package
-  index worked and a firmware image did not.
 - **`update` writes flash and is DEVICE-UNCONFIRMED.** Everything up to the
   write — manifest, download, checksum, size and board checks — uses the same
-  code the package manager does and fails safely. The write itself can only be
-  proven by doing it, and `update from-file` on a locally built image is the way
-  to try it with nothing depending on the network.
-- **`wifi`, `ping`, `ntp` are unproven on hardware.** They build and the lwIP
-  locking is right by construction, but none has been run against a real network.
-- **Forced termination is new and DEVICE-UNCONFIRMED.** A task that stops
-  yielding entirely is now ended rather than left for the watchdog to reboot
-  around. The policy deciding when is host-tested; the stack write that does it
-  is ARM and can only be proven on hardware.
-- **The package manager is complete but DEVICE-UNCONFIRMED.** `pkg update /
-  search / info / install <name> / upgrade` are written, and the index parser is
-  host-tested against the real `index.json` from both repos. No board has run a
-  real install.
-- **`wget` is new and DEVICE-UNCONFIRMED.** The half that decides what happens —
-  redirects, size caps, truncation, a full filesystem — is host-tested against
-  both a fake transport and a real `python3 -m http.server`. The lwIP socket
-  layer under it has never run on hardware. It is deliberately the small half.
+  code the package manager does, which now has run on a board, and fails safely.
+  The write itself can only be proven by doing it, and `update from-file` on a
+  locally built image is the way to try it with nothing depending on the network.
+  This is the largest untested path in the system.
+- **The RP2040 build is untested beyond compiling.** With no filesystem there is
+  little to test, and what a board does with a zero-length littlefs is not known.
+- **`bench` and `probe` have never been read.** `bench` compares against the
+  matching `tools/bench.py` on a v1 device and `probe` times 20,000 supervisor
+  calls against an empty loop. Both run; neither number has been looked at, so
+  every performance claim here is an argument rather than a measurement.
+- **The fault handler's own stack is DEVICE-UNCONFIRMED.** It has 4 KB per core
+  and `mpu` reports the high-water mark after a contained fault, but the size is
+  a guess until that figure is read.
+- **The `stress` MPU crash is not closed.** It has not reproduced since the
+  region write-ordering fix, which is not the same as being fixed. Evidence in
+  `os/STRESS-CRASH.md`.
 
 ## Why no package command ever ran
 
@@ -168,15 +200,27 @@ the next port will hit the same ground.
 - Built-in packages installing once and never updating with the firmware, so
   several passes of debugging checkpoints never actually ran.
 
-Two more are fixed and reproduced on the host, but **DEVICE-UNCONFIRMED** — no
-board has run them, because the fault below stopped every package command before
-either could be reached:
+Two more were fixed and reproduced on the host before any board could run a
+package command at all. Both are now confirmed — packages install, load and run:
 
-- The loader adding a Thumb bit the symbol already carried. Reverting the fix
-  reproduces the exact offsets the board reported, so the diagnosis is solid;
-  what is unproven is only that nothing *else* waits behind it.
+- The loader adding a Thumb bit the symbol already carried.
 - Long package commands killed for working: neither `bench` nor `stress` yields,
-  so nothing fed the watchdog once the command started. Liveness now comes from
-  the ABI entry points, which a working package calls constantly. This one has
-  never been observed working, only reasoned about — the first clean `bench` run
-  is what confirms it.
+  so nothing fed the watchdog once the command started. Liveness comes from the
+  ABI entry points, which a working package calls constantly.
+
+And since:
+
+- Firmware writes issued from core 1 failed silently for months, because only
+  core 1 had registered for the flash lockout.
+- The preemption interrupt wrote a program counter into an alarm dispatcher's
+  locals. An SDK alarm callback runs several frames below the exception, so `lr`
+  is an ordinary return address and `mrs r0, msp` gives the callback's stack
+  rather than the frame. It is a naked handler on the alarm's own IRQ vector now.
+- A fault handler that printed on the stack it was about to resume on. `printf`
+  reaches the stdio mutex, the alarm pool's spinlock and TinyUSB's device task,
+  none of which can be serviced at fault priority — all on the faulting
+  package's stack, whose remaining depth is the thing in question. The handler
+  records and returns; task context prints.
+- A package's stack limit left at zero for the whole time it ran, so a stack
+  pointer could walk past the bottom of its region and into the heap before any
+  write faulted.
