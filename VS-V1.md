@@ -139,12 +139,12 @@ firmware image did not.
 
 ## Known unstable
 
-- **`update` writes flash and is DEVICE-UNCONFIRMED.** Everything up to the
-  write — manifest, download, checksum, size and board checks — uses the same
-  code the package manager does, which now has run on a board, and fails safely.
-  The write itself can only be proven by doing it, and `update from-file` on a
-  locally built image is the way to try it with nothing depending on the network.
-  This is the largest untested path in the system.
+- ~~`update` writes flash and is DEVICE-UNCONFIRMED~~ — confirmed. A 955 KB
+  image staged, verified, was written over the running firmware, and the device
+  came back reporting the version it had moved to. What remains untested is the
+  NETWORK half of it: `update install` fetches a manifest and an image over
+  HTTPS, which is the same code the package manager uses, but no board has run
+  the whole thing end to end from a published release.
 - **The RP2040 build is untested beyond compiling.** With no filesystem there is
   little to test, and what a board does with a zero-length littlefs is not known.
 - **`bench` and `probe` have never been read.** `bench` compares against the

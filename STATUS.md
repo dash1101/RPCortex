@@ -129,8 +129,9 @@ This is the base the Nova D1 gets ported onto.
 - **RP2040 boards have no filesystem** (#81). `RPC_FW_RESERVE` is 2 MB and a
   Pico has 2 MB of flash, so `FS_SIZE` is zero: the image boots, the shell
   runs, nothing can be saved. A reserve sized for a 2 MB part is the fix.
-- **The `update` write path is the largest thing no board has run.** Everything
-  before the write shares code with the package manager, which now has.
+- ~~The `update` write path~~ — confirmed on a Pico 2 W with `update
+  from-file`. `update install`, which fetches from a published release over
+  HTTPS first, has not been run end to end.
 - **Nova D1 in C++** — Tier 3, the big one.
 - **A MicroPython port for running .py apps** — wanted, deferred. Worth knowing
   before it starts: embedding MicroPython puts its GC-managed heap alongside

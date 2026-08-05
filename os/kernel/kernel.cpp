@@ -70,13 +70,35 @@ uint32_t heap_free(void) {
 // which is what makes the three-strikes rebuild safe.
 void kboot_succeeded(void) { watchdog_hw->scratch[4] = 0; }
 
+// --- a restart that was asked for -------------------------------------------
+//
+// EVERY deliberate restart here goes through watchdog_reboot, because that is
+// how a Cortex-M reboots itself on this part. So the hardware records "the
+// watchdog did it" for `reboot`, `safeboot`, `factoryreset` and a firmware
+// update alike — and the next boot announced that something had stopped
+// responding, on a device that had done exactly what it was told.
+//
+// A scratch register survives the reset, which is the whole trick. Set on the
+// way out, read and cleared on the way in. Deliberately NOT the same one the
+// boot-strike counter uses: that one is cleared when the shell comes up, and a
+// flag that outlives its own reason is worse than no flag.
+#define REBOOT_MAGIC 0x52504352u        // 'RPCR'
+
+void kboot_expect_reboot(void) { watchdog_hw->scratch[5] = REBOOT_MAGIC; }
+
+static bool asked_for_it(void) {
+    bool yes = watchdog_hw->scratch[5] == REBOOT_MAGIC;
+    watchdog_hw->scratch[5] = 0;        // once, so the boot after it is honest
+    return yes;
+}
+
 bool kboot(void) {
     // stdio + USB are already up (main brought them up so boot messages are
     // visible). Here: mount storage, and report the machine.
     // Why the device restarted. The single most useful line after a failure,
     // and it is free: the watchdog hardware remembers whether it was the one
     // that did it.
-    if (watchdog_caused_reboot()) {
+    if (watchdog_caused_reboot() && !asked_for_it()) {
         klog(LOG_WARN, "Last restart was the WATCHDOG - something stopped responding.");
         klog(LOG_WARN, "'logdump' has what was happening before it.");
     }

@@ -16,9 +16,10 @@
 // because every decision is a chance to get it wrong while the device has no
 // working firmware.
 //
-// DEVICE-UNCONFIRMED. The download, the hash and the checks are exercised by
-// the same code the package manager uses. Writing the firmware region can only
-// be proven by doing it.
+// CONFIRMED ON HARDWARE, 2026-08-05, on a Pico 2 W: staged, verified, wrote a
+// 955 KB image over the running firmware and came back up reporting the version
+// it had moved to. `update from-file` on a locally built image is the way to
+// exercise step 5 with nothing depending on the network.
 
 #include "command.h"
 #include "out.h"
@@ -28,6 +29,7 @@
 #include "sha256.h"
 #include "interrupt.h"
 #include "kernel.h"
+#include "blackbox.h"
 #include "registry.h"
 #include "persist.h"
 #include "task.h"
@@ -492,6 +494,24 @@ bool update_apply_file(const char *path, const char *to_version) {
         sleep_ms(600);
     }
     out_progress_done();
+    // THIS RESTART IS ON PURPOSE, so the next boot must not report it as a
+    // crash. Without this, the first thing anyone sees after their first
+    // successful update is
+    //
+    //   [!] [Crash] Last run stopped while running 'shell' (pid 3, core 0)
+    //       Command : update from-file ...
+    //       Reached : app_main returned
+    //
+    // — a crash report, a stale phase left by some package, and a watchdog
+    // notice, all describing an update that worked. `reboot` already had this
+    // problem and this is the same fix: a crash detector that cries wolf on
+    // every restart is how a real crash gets scrolled past.
+    //
+    // Before the write rather than after, because there is no after: the code
+    // that would run it has been erased by then.
+    bb_note_clean_exit();
+    kboot_expect_reboot();
+
     out_info("Writing firmware...");
     out_flush();
     sleep_ms(150);                     // let the serial buffer actually drain

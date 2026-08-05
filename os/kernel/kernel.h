@@ -31,6 +31,11 @@ bool kboot(void);
 // than leaving a device that needs another machine to recover.
 void kboot_succeeded(void);
 
+// Say that the restart about to happen was asked for, so the next boot does not
+// announce it as a watchdog reset. Every deliberate restart on this part goes
+// through the watchdog, so without this they are indistinguishable from a hang.
+void kboot_expect_reboot(void);
+
 // Free heap right now. The single number that mattered most in v1 — here it is
 // honest (no GC to lie about fragmentation) and cheap.
 uint32_t heap_free(void);
