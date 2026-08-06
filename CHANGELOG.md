@@ -89,6 +89,11 @@ byte for byte against the original escape sequences.
 | Pico W | 748 KB | 384 KB | no |
 | Pico | 247 KB | 1.25 MB | no |
 
+**The RP2040 images have not been booted.** They build, both image checks pass
+on them, and the flash layout was verified by reading the constant back out of
+the compiled firmware — but no Pico or Pico W has run one. Every hardware
+result quoted above is from a Pico 2 W.
+
 The RP2040 boards are back. v1.0 had to drop them because the multitasking
 build did not fit in 264 KB of RAM; without an interpreter it does. They have no
 package sandbox — ARMv6-M protection regions are power-of-two sized and aligned
