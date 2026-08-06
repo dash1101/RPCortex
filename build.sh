@@ -147,15 +147,11 @@ for board in "${BOARDS[@]}"; do
         # needs room left over for a filesystem. Kept in step with
         # loader-spike/firmware/storage.cpp by hand; there is one definition
         # there and this is the only other place that needs the number.
-        # Sized to the image plus room to grow, not to the part — a slot bigger
-        # than the firmware needs is storage nobody gets, doubled. Kept in step
-        # with loader-spike/firmware/storage.cpp by hand.
-        case "$board" in
-            pico_w)  reserve=$((1664 * 1024)) ;;   # 832 KB slot
-            pico)    reserve=$((768 * 1024))  ;;   # 384 KB slot
-            pico2_w) reserve=$((2048 * 1024)) ;;   # 1024 KB slot
-            *)       reserve=$((1024 * 1024)) ;;   # pico2: 512 KB slot
-        esac
+        # READ FROM THE BUILD, not from a table here. os/CMakeLists.txt owns the
+        # number and writes it out; a second copy in this script could disagree
+        # with the firmware and nothing would notice — which is the exact
+        # failure this check exists to catch.
+        reserve=$(cat "$dir/fw_reserve.txt")
         slot=$((reserve / 2))
         fs=$(( (board_flash_kb * 1024) - reserve ))
         left=$((slot - bsize))

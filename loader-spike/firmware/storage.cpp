@@ -103,21 +103,17 @@ RpcLock g_fs_lock;
 //
 // The wireless images carry the 227 KB CYW43 blob and cannot be made much
 // smaller; the plain ones have no radio and no business reserving room for one.
-// Spare is measured against the DEVELOPMENT build (--dev-packages), which is
-// the largest an image gets, so a debugging build never fails to fit.
+//
+// os/CMakeLists.txt OWNS the number and writes it out, so build.sh checks each
+// image against what the firmware actually holds rather than a second copy of
+// the table. A slot check reading its own guess is not a check. What follows is
+// only the fallback for a build that does not set it — the loader spike, and
+// anyone compiling this file alone.
 #ifndef RPC_FW_RESERVE
   #if PICO_RP2040
-    #ifdef CYW43_LWIP
-      #define RPC_FW_RESERVE (1664 * 1024)      // 832 KB slot
-    #else
-      #define RPC_FW_RESERVE (768 * 1024)       // 384 KB slot
-    #endif
+    #define RPC_FW_RESERVE (768 * 1024)
   #else
-    #ifdef CYW43_LWIP
-      #define RPC_FW_RESERVE (2048 * 1024)      // 1024 KB slot
-    #else
-      #define RPC_FW_RESERVE (1024 * 1024)      // 512 KB slot
-    #endif
+    #define RPC_FW_RESERVE (1024 * 1024)
   #endif
 #endif
 

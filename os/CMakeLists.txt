@@ -293,6 +293,40 @@ target_compile_definitions(rpcortex_v2 PRIVATE
 #
 # This is a documented switch, not a workaround: the SDK guards its descriptor
 # file with exactly this flag, for exactly this case.
+# --- how the flash is divided -------------------------------------------------
+#
+# ONE definition, here, because two would drift. The firmware runs from the
+# first half of this and an update is assembled in the second, and the
+# filesystem is whatever the part has left over — so a slot larger than the
+# image needs is storage nobody gets, doubled.
+#
+# Sized against the DEVELOPMENT build (--dev-packages), which is the largest an
+# image gets, so a debugging build never fails to fit.
+#
+#   board     image   slot    spare   filesystem
+#   pico2_w    916     1024     108       2048
+#   pico_w     748      832      83        384
+#   pico2      320      512     191       3072
+#   pico       247      384     136       1280
+#
+# The wireless images carry the 227 KB CYW43 blob and cannot be made much
+# smaller. The plain ones have no radio and no business reserving room for one.
+#
+# Written out as well as compiled in, so build.sh checks the image against what
+# the firmware ACTUALLY holds rather than against a second copy of this table.
+# A slot check that reads its own guess is not a check.
+if(PICO_BOARD STREQUAL "pico_w")
+    set(RPC_FW_RESERVE 1703936)      #  832 KB slot, 384 KB filesystem
+elseif(PICO_BOARD STREQUAL "pico")
+    set(RPC_FW_RESERVE 786432)       #  384 KB slot, 1280 KB filesystem
+elseif(PICO_BOARD STREQUAL "pico2_w")
+    set(RPC_FW_RESERVE 2097152)      # 1024 KB slot, 2048 KB filesystem
+else()
+    set(RPC_FW_RESERVE 1048576)      #  512 KB slot, 3072 KB filesystem
+endif()
+target_compile_definitions(rpcortex_v2 PRIVATE RPC_FW_RESERVE=${RPC_FW_RESERVE})
+file(WRITE ${CMAKE_BINARY_DIR}/fw_reserve.txt "${RPC_FW_RESERVE}")
+
 target_compile_definitions(rpcortex_v2 PRIVATE PICO_STDIO_USB_USE_DEFAULT_DESCRIPTORS=0)
 
 # Where tud_task() runs. The whole reasoning is in os/usbdev.cpp; the short
