@@ -141,10 +141,8 @@ firmware image did not.
 
 - ~~`update` writes flash and is DEVICE-UNCONFIRMED~~ — confirmed. A 955 KB
   image staged, verified, was written over the running firmware, and the device
-  came back reporting the version it had moved to. What remains untested is the
-  NETWORK half of it: `update install` fetches a manifest and an image over
-  HTTPS, which is the same code the package manager uses, but no board has run
-  the whole thing end to end from a published release.
+  came back reporting the version it had moved to. `update install`, the
+  network half, has also been run end to end on a Pico 2 W.
 - **The RP2040 build is untested beyond compiling.** With no filesystem there is
   little to test, and what a board does with a zero-length littlefs is not known.
 - **`bench` and `probe` have never been read.** `bench` compares against the

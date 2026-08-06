@@ -1,6 +1,17 @@
-# The stress crash: what is established, and what is not
+# The stress crash: CLOSED, and what it taught
 
-Working notes for an open bug. Delete when it is closed.
+Closed on 2026-08-05 by observation, not by proof. It has not reproduced across
+repeated `stress` runs on any build since the region write-ordering fix, at a
+bug that was roughly one run in twelve at its worst.
+
+Kept rather than deleted, because the mechanism was never demonstrated end to
+end and the instrumentation left behind is the fastest way to reopen it. If a
+board ever reports MSTKERR with the stack pointer inside a package's own stack
+again, one `logdump` line names which of the three explanations it is:
+
+    mpu MID-WRITE|settled, N region(s) at sp[, OVERLAP][, hardware != asked]
+
+What follows is the evidence as it stood.
 
 ## The fault
 

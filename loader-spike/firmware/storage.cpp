@@ -82,9 +82,22 @@ RpcLock g_fs_lock;
 // wireless, Bluetooth, TLS and over-the-air updates all still in. It only fits
 // because the build moved from -O3 to -Os; at -O3 the image was 1002 KB and
 // there was no arrangement of two slots and a filesystem that worked.
+// AND PER BOARD WITHIN A PART, because the wireless image is three times the
+// size of the plain one. Almost all of that difference is the CYW43 firmware
+// blob, which is 227 KB of the 788 and cannot be made smaller.
+//
+//   pico_w   788 KB image   832 KB slot    384 KB filesystem
+//   pico     288 KB image   512 KB slot   1024 KB filesystem
+//
+// Giving the non-wireless board the wireless board's slot cost it a megabyte
+// of storage to reserve room for a radio it does not have.
 #ifndef RPC_FW_RESERVE
   #if PICO_RP2040
-    #define RPC_FW_RESERVE (1664 * 1024)
+    #ifdef CYW43_LWIP
+      #define RPC_FW_RESERVE (1664 * 1024)      // 832 KB slot: 788 KB image
+    #else
+      #define RPC_FW_RESERVE (1024 * 1024)      // 512 KB slot: 288 KB image
+    #endif
   #else
     #define RPC_FW_RESERVE (2048 * 1024)
   #endif

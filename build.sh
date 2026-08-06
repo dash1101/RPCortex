@@ -4,7 +4,7 @@
 #   ./build.sh              both boards
 #   ./build.sh pico2_w      one board
 #   ./build.sh --clean      wipe the build directories first
-#   ./build.sh --no-dev-packages   leave out bench, probe and stress
+#   ./build.sh --dev-packages      bake bench, probe, stress and havoc in
 #   ./build.sh --release           what gets published: no dev packages
 #   ./build.sh --fast              -O3 on every board, for comparison
 #   ./build.sh --small             -Os on every board, for comparison
@@ -33,7 +33,12 @@ for sub in lib/cyw43-driver lib/lwip; do
 done
 
 CLEAN=0
-DEVPKGS=ON
+# OFF by default. bench, probe, stress and havoc are development tools: they
+# exist to break the OS and to measure it, and they are of no use to somebody
+# who wants an operating system. Baked in they cost 42 KB of an image that has
+# 43 KB of headroom on a Pico W. They are published to the package repository
+# instead, so a board that wants them installs them.
+DEVPKGS=OFF
 BUILDTYPE=""              # empty: os/CMakeLists.txt picks per part
 BOARDS=()
 for arg in "$@"; do
@@ -43,12 +48,13 @@ for arg in "$@"; do
         # diagnosed before it has a network. They are of no use to somebody who
         # just wants the OS, so a shipping build leaves them out — and this is
         # the whole of doing that, rather than picking them out of the build.
-        --no-dev-packages) DEVPKGS=OFF ;;
+        --no-dev-packages) DEVPKGS=OFF ;;      # the default; kept so scripts do not break
+        --dev-packages)    DEVPKGS=ON ;;       # bake bench/probe/stress/havoc in
         # What a published image is: no dev packages, built for size. Passed
         # explicitly rather than left to the cache, because a build directory
         # configured once keeps whatever it was configured with — which is how
         # a -Os default went unnoticed for a whole rebuild.
-        --release) DEVPKGS=OFF ;;
+        --release) DEVPKGS=OFF ;;   # the default now; kept for clarity at a release
         --fast) BUILDTYPE=Release ;;      # -O3 everywhere, for comparing
         --small) BUILDTYPE=MinSizeRel ;;  # -Os everywhere, for comparing
         -*)      echo "unknown option: $arg" >&2; exit 1 ;;
@@ -142,8 +148,9 @@ for board in "${BOARDS[@]}"; do
         # loader-spike/firmware/storage.cpp by hand; there is one definition
         # there and this is the only other place that needs the number.
         case "$board" in
-            pico|pico_w) reserve=$((1664 * 1024)) ;;
-            *)           reserve=$((2048 * 1024)) ;;
+            pico_w) reserve=$((1664 * 1024)) ;;   # 788 KB image, radio blob and all
+            pico)   reserve=$((1024 * 1024)) ;;   # 288 KB image, no radio
+            *)      reserve=$((2048 * 1024)) ;;   # RP2350: 4 MB, room either way
         esac
         slot=$((reserve / 2))
         fs=$(( (board_flash_kb * 1024) - reserve ))
