@@ -25,9 +25,31 @@ endif()
 # unrolled loop that has to be fetched. `probe` measures busy_wait accuracy and
 # jitter, which is where any regression would show.
 #
-# Overridable: -DCMAKE_BUILD_TYPE=Release restores -O3 for anyone comparing.
+# WHICH PART, THOUGH. The trade is not the same on both.
+#
+# RP2040 holds 2 MB and has no room to spare, so it takes -Os and the 214 KB
+# that buys. RP2350 holds 4 MB: at -O3 the image is 955 KB, which still leaves
+# 2 MB of filesystem and 68 KB of slot headroom, so it pays nothing at all for
+# the speed.
+#
+# And the speed is not theoretical. `probe` times 20,000 supervisor calls, and
+# that is the one number a package feels on every ABI call it makes:
+#
+#     -O3   296 cycles        -Os   405 cycles
+#
+# 37% on the path Nova D1 will live in, for size a 4 MB board does not need.
+# The rest of the workload barely noticed — RPCMark came out slightly HIGHER at
+# -Os — so this is specifically about the supervisor call, not about speed in
+# general.
+#
+# Overridable either way: -DCMAKE_BUILD_TYPE= on the command line wins, and
+# ./build.sh --fast forces -O3 everywhere for comparing.
 if(NOT CMAKE_BUILD_TYPE)
-    set(CMAKE_BUILD_TYPE MinSizeRel CACHE STRING "" FORCE)
+    if(PICO_BOARD STREQUAL "pico" OR PICO_BOARD STREQUAL "pico_w")
+        set(CMAKE_BUILD_TYPE MinSizeRel CACHE STRING "" FORCE)   # -Os: 2 MB of flash
+    else()
+        set(CMAKE_BUILD_TYPE Release CACHE STRING "" FORCE)      # -O3: 4 MB, spend it
+    endif()
 endif()
 
 include($ENV{PICO_SDK_PATH}/pico_sdk_init.cmake)

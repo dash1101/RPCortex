@@ -6,7 +6,8 @@
 #   ./build.sh --clean      wipe the build directories first
 #   ./build.sh --no-dev-packages   leave out bench, probe and stress
 #   ./build.sh --release           what gets published: no dev packages
-#   ./build.sh --fast              -O3 instead of -Os, for comparison
+#   ./build.sh --fast              -O3 on every board, for comparison
+#   ./build.sh --small             -Os on every board, for comparison
 #
 # Output lands in out/rpcortex-v2-<board>.uf2. Flashing is drag-and-drop: hold
 # BOOTSEL, plug in, copy the .uf2 onto the RPI-RP2 drive. There is no rawrepl
@@ -33,7 +34,7 @@ done
 
 CLEAN=0
 DEVPKGS=ON
-BUILDTYPE=MinSizeRel      # -Os; see the note in os/CMakeLists.txt
+BUILDTYPE=""              # empty: os/CMakeLists.txt picks per part
 BOARDS=()
 for arg in "$@"; do
     case "$arg" in
@@ -48,7 +49,8 @@ for arg in "$@"; do
         # configured once keeps whatever it was configured with — which is how
         # a -Os default went unnoticed for a whole rebuild.
         --release) DEVPKGS=OFF ;;
-        --fast) BUILDTYPE=Release ;;      # -O3, for comparing
+        --fast) BUILDTYPE=Release ;;      # -O3 everywhere, for comparing
+        --small) BUILDTYPE=MinSizeRel ;;  # -Os everywhere, for comparing
         -*)      echo "unknown option: $arg" >&2; exit 1 ;;
         *)       BOARDS+=("$arg") ;;
     esac
@@ -87,10 +89,10 @@ for board in "${BOARDS[@]}"; do
     done
     if [ -n "$PT" ]; then
         cmake -S os -B "$dir" -DPICO_BOARD="$board" -DRPC_DEV_PACKAGES="$DEVPKGS" \
-              -DCMAKE_BUILD_TYPE="$BUILDTYPE" -Dpicotool_DIR="$PT" >/dev/null
+              ${BUILDTYPE:+-DCMAKE_BUILD_TYPE="$BUILDTYPE"} -Dpicotool_DIR="$PT" >/dev/null
     else
         cmake -S os -B "$dir" -DPICO_BOARD="$board" -DRPC_DEV_PACKAGES="$DEVPKGS" \
-              -DCMAKE_BUILD_TYPE="$BUILDTYPE" >/dev/null
+              ${BUILDTYPE:+-DCMAKE_BUILD_TYPE="$BUILDTYPE"} >/dev/null
     fi
     cmake --build "$dir" -j"$(nproc)" >/dev/null
     cp "$dir/rpcortex_v2.uf2" "out/rpcortex-v2-$board.uf2"
