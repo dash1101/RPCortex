@@ -72,8 +72,17 @@ interesting bugs came from. Three of them could not have been caught here at all
 `stress` passes 25 checks on device: two cores, kill-at-next-yield, a sleeping
 task waking on time while the shell keeps running, three concurrent filesystem
 writers with no corruption, and an allocator that never hands the same block to
-two callers. `probe` measures what a host cannot — an unpinned task lives on
-core 1 99% of the time and changes core once in 2000 yields.
+two callers.
+
+**How the work is SPLIT between the cores is an open question.** `probe` once
+reported an unpinned task living on core 1 99% of the time; on 2026-08-05 the
+same measurement is 100% on core 0, with zero migrations in 2000 yields. Core 1
+is up — it launches, arms its own protection and registers for the flash
+lockout — and it accepts any task whose affinity allows it. What it also does
+is `busy_wait_us(200)` after each unsuccessful pass, while core 0 spins through
+the scheduler as fast as it can, so core 0 wins nearly every race for a
+runnable task. That is a fairness question rather than a correctness one, and
+it has not been looked at properly.
 
 ## What that means
 

@@ -79,7 +79,22 @@ static int      g_next_pid = 1;
 #define MAX_CORES 2
 static int      g_current[MAX_CORES] = { -1, -1 };
 static void    *g_sched_sp[MAX_CORES];    // where the scheduler loop parked
-static uint32_t g_cores = 1;
+// HOW MANY CORES, ASKED RATHER THAN REMEMBERED.
+//
+// This used to be latched in task_init. On this port task_core_count answers
+// "has core 1 been launched", and main.cpp launches it well AFTER task_init —
+// so the answer was cached as 1 for the life of the device, on a machine with
+// two. The one caller that reads it is task_migrate_to, which therefore
+// reported that there was nowhere else to go and refused every migration to
+// core 1. That is the mechanism the network lock relies on to move a task to
+// the core that owns the radio.
+//
+// Cheap enough to ask each time: one volatile read on this port, a constant
+// elsewhere. A number that can change is not a number to cache.
+static inline uint32_t cores(void) {
+    uint32_t n = task_core_count();
+    return n > MAX_CORES ? MAX_CORES : n;
+}
 
 // The stack is filled with this before use, so the high-water mark can be found
 // by counting how much of it is still untouched. That is the only way to report
@@ -241,8 +256,6 @@ static Task *pick(uint32_t core, int after_pid) {
 
 void task_init(const char *name) {
     memset(g_tasks, 0, sizeof(g_tasks));
-    g_cores = task_core_count();
-    if (g_cores > MAX_CORES) g_cores = MAX_CORES;
     for (int i = 0; i < MAX_CORES; i++) g_current[i] = -1;
 
     g_up = true;
@@ -680,7 +693,7 @@ TaskAffinity task_affinity(int pid) {
 // gives up and reports it rather than yielding for ever.
 bool task_migrate_to(uint32_t core) {
     if (task_this_core() == core) return true;
-    if (g_cores <= 1) return core == 0;      // nowhere else to go
+    if (cores() <= 1) return core == 0;      // nowhere else to go
 
     Task *me = cur();
     if (!me) return false;
