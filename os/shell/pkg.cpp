@@ -2,6 +2,7 @@
 #include "apps.h"
 #include "command.h"
 #include "out.h"
+#include "kernel.h"
 #include "loader.h"
 #include "storage.h"
 #include "pkgindex.h"
@@ -129,6 +130,38 @@ static void pkg_list(void) {
     index_walk(list_cb, nullptr);
 }
 
+// --- the machine-readable form ----------------------------------------------
+//
+// For a browser, not for a person. The package page on the site connects over
+// Web Serial, and parsing the coloured, aligned list above would mean parsing
+// escape sequences and column widths — both of which are free to change.
+//
+// The shape is v1's, deliberately, so ONE page reads both operating systems:
+//
+//     PKGS_BEGIN
+//     OS:v2.0.0:pico2_w
+//     PKG:httpd:2.1
+//     PKGS_END
+//
+// The OS line is the only addition. v1 does not emit one, so its absence is how
+// a page knows it is talking to v1 and should offer v1's catalogue — no version
+// selector to get wrong, and no guessing from a banner that is free to change.
+//
+// out_multi, which is the plain line printer: no prefix, no colour, no
+// indentation. Anything decorative here is something a parser has to be taught
+// to ignore. It also travels the data channel, so `_pkgs > file` works.
+static void manifest_cb(void *, const char *name, const char *version) {
+    out_multi("PKG:%s:%s", name, version);
+}
+
+static int cmd_pkgs_manifest(int, char **) {
+    out_multi("PKGS_BEGIN");
+    out_multi("OS:%s:%s", RPC_OS_VERSION, PICO_BOARD);
+    index_walk(manifest_cb, nullptr);
+    out_multi("PKGS_END");
+    return 0;
+}
+
 // --- boot loading + command ------------------------------------------------
 
 bool pkg_is_disabled(const char *name);    // diag.cpp
@@ -217,4 +250,8 @@ static int cmd_pkg(int argc, char **argv) {
 void pkg_register(void) {
     static const Command c{"pkg", "install/remove/list packages", cmd_pkg, nullptr, LEVEL_ADMIN};
     cmd_register(&c);
+    // Underscored, and with no help text, because it is not for a person. It
+    // reads nothing and changes nothing, so it needs no privilege.
+    static const Command m{"_pkgs", "", cmd_pkgs_manifest, nullptr};
+    cmd_register(&m);
 }
