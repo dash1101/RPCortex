@@ -91,15 +91,33 @@ RpcLock g_fs_lock;
 //
 // Giving the non-wireless board the wireless board's slot cost it a megabyte
 // of storage to reserve room for a radio it does not have.
+// The slot is sized to the image plus room to grow, not to the part. A slot
+// larger than the firmware needs is storage nobody gets, doubled — because the
+// staging half is reserved to match.
+//
+//   board     image   slot    spare   filesystem
+//   pico2_w    915     1024     109       2048
+//   pico_w     746      832      86        384
+//   pico2      319      512     193       3072
+//   pico       245      384     139       1280
+//
+// The wireless images carry the 227 KB CYW43 blob and cannot be made much
+// smaller; the plain ones have no radio and no business reserving room for one.
+// Spare is measured against the DEVELOPMENT build (--dev-packages), which is
+// the largest an image gets, so a debugging build never fails to fit.
 #ifndef RPC_FW_RESERVE
   #if PICO_RP2040
     #ifdef CYW43_LWIP
-      #define RPC_FW_RESERVE (1664 * 1024)      // 832 KB slot: 788 KB image
+      #define RPC_FW_RESERVE (1664 * 1024)      // 832 KB slot
     #else
-      #define RPC_FW_RESERVE (1024 * 1024)      // 512 KB slot: 288 KB image
+      #define RPC_FW_RESERVE (768 * 1024)       // 384 KB slot
     #endif
   #else
-    #define RPC_FW_RESERVE (2048 * 1024)
+    #ifdef CYW43_LWIP
+      #define RPC_FW_RESERVE (2048 * 1024)      // 1024 KB slot
+    #else
+      #define RPC_FW_RESERVE (1024 * 1024)      // 512 KB slot
+    #endif
   #endif
 #endif
 

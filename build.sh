@@ -147,10 +147,14 @@ for board in "${BOARDS[@]}"; do
         # needs room left over for a filesystem. Kept in step with
         # loader-spike/firmware/storage.cpp by hand; there is one definition
         # there and this is the only other place that needs the number.
+        # Sized to the image plus room to grow, not to the part — a slot bigger
+        # than the firmware needs is storage nobody gets, doubled. Kept in step
+        # with loader-spike/firmware/storage.cpp by hand.
         case "$board" in
-            pico_w) reserve=$((1664 * 1024)) ;;   # 788 KB image, radio blob and all
-            pico)   reserve=$((1024 * 1024)) ;;   # 288 KB image, no radio
-            *)      reserve=$((2048 * 1024)) ;;   # RP2350: 4 MB, room either way
+            pico_w)  reserve=$((1664 * 1024)) ;;   # 832 KB slot
+            pico)    reserve=$((768 * 1024))  ;;   # 384 KB slot
+            pico2_w) reserve=$((2048 * 1024)) ;;   # 1024 KB slot
+            *)       reserve=$((1024 * 1024)) ;;   # pico2: 512 KB slot
         esac
         slot=$((reserve / 2))
         fs=$(( (board_flash_kb * 1024) - reserve ))
