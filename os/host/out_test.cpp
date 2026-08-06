@@ -1,6 +1,6 @@
 // The output layer's exact bytes.
 //
-// "Looks right on my terminal" is not a check — the escape sequences are what
+// A terminal looking right is not a check — the escape sequences are what
 // make it look right, and a wrong one shows up as visible garbage on someone
 // else's. So this captures stdout and compares against the literal strings v1
 // emitted, character for character.

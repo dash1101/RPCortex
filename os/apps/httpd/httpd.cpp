@@ -13,7 +13,7 @@
 // EVERY FILE ON THE DEVICE, read-only, to anyone who can reach the port. There
 // is no password. That is the same bargain v1's httpd made and it is stated
 // here rather than buried, because "browse the filesystem" is easy to read as
-// "browse the files I meant to share".
+// browsing a chosen set of files rather than the whole device.
 //
 // Do not run it on a network you do not trust, and stop it when you are done.
 // Ctrl+C does that.

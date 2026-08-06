@@ -66,8 +66,28 @@ RpcLock g_fs_lock;
 // Halves rather than a tight fit: an image that outgrew its slot would be
 // discovered by overwriting something, and 694 KB in a 1 MB slot leaves real
 // room to grow.
+// PER PART, because the parts are not the same size.
+//
+// RP2350 boards hold 4 MB: 2 MB of reserve leaves 2 MB of filesystem, which is
+// the arrangement above and is unchanged. Moving it would relocate every
+// existing filesystem, so it does not move.
+//
+// RP2040 boards hold 2 MB IN TOTAL. A 2 MB reserve therefore left them with a
+// filesystem of exactly zero bytes — the image booted, the shell ran, and
+// nothing could be saved. It went unnoticed because every hardware test was on
+// a Pico 2 W.
+//
+// 1664 KB is 832 for the firmware and 832 to stage an update in, against an
+// image of 788 KB. That is 44 KB of headroom and 384 KB of filesystem, with
+// wireless, Bluetooth, TLS and over-the-air updates all still in. It only fits
+// because the build moved from -O3 to -Os; at -O3 the image was 1002 KB and
+// there was no arrangement of two slots and a filesystem that worked.
 #ifndef RPC_FW_RESERVE
-#define RPC_FW_RESERVE (2048 * 1024)
+  #if PICO_RP2040
+    #define RPC_FW_RESERVE (1664 * 1024)
+  #else
+    #define RPC_FW_RESERVE (2048 * 1024)
+  #endif
 #endif
 
 // Where the firmware runs, and where an update is assembled.

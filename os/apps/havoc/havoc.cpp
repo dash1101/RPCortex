@@ -103,7 +103,7 @@ static void group_ptr(void) {
     refused((int)fw_net_resolve("example.com", (char *)0x40000000u, 16),
             "resolve into peripherals");
 
-    step("inside our region, but the length runs past the end");
+    step("inside the package region, but the length runs past the end");
     // The classic: a valid base with a size that walks off it. Checking the
     // base alone would let this through.
     refused((int)fw_net_resolve("example.com", g_scratch, 0x7FFFFFFFu),
@@ -140,7 +140,7 @@ static void group_str(void) {
     step("a string in memory that is not ours");
     denied(fw_file_exists((const char *)0x10000000u), "exists() on flash");
 
-    step("an UNTERMINATED string that runs to the end of our region");
+    step("an UNTERMINATED string that runs to the end of the region");
     // Filled with no zero anywhere. A firmware that walks this looking for a
     // terminator must stop at the region boundary and refuse, not read on.
     for (unsigned i = 0; i < sizeof(g_scratch); i++) g_scratch[i] = 'A';

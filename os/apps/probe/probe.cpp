@@ -344,7 +344,7 @@ static int probe_cmd(int argc, char **argv) {
     }
 
     fw_printf("%s\n", RULE);
-    fw_printf("RPCortex probe - paste this whole block back\n");
+    fw_printf("RPCortex probe - a full report of what this board can do\n");
     fw_printf("%s\n", RULE);
 
     probe_cores();
@@ -355,7 +355,7 @@ static int probe_cmd(int argc, char **argv) {
     probe_memory();
 
     fw_printf("%s\n", RULE);
-    fw_printf("Also worth pasting: 'diag', and 'logdump' if anything looks wrong.\n");
+    fw_printf("'diag' and 'logdump' cover what this does not.\n");
     return 0;
 }
 

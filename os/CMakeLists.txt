@@ -7,6 +7,29 @@ if(NOT DEFINED PICO_BOARD)
     set(PICO_BOARD pico2_w)
 endif()
 
+# SIZE, NOT SPEED. The SDK's default is Release, which is -O3 — and every trick
+# -O3 has for going faster buys the speed with bytes: inlining a function into
+# each of its callers, unrolling a loop so its body appears several times,
+# duplicating a path so each copy can be specialised.
+#
+# On this family flash is the binding constraint. A Pico W holds 2 MB, and at
+# -O3 the image was 1002 KB against a 1024 KB slot, which left nothing for a
+# filesystem — a whole board unusable to buy speed nobody had measured.
+# MinSizeRel is -Os, and -Os is -O2 with the size-expensive tricks turned off
+# rather than a different, worse compiler. It costs 214 KB less:
+#
+#     pico_w  -O3  1002 KB      pico_w  -Os  788 KB
+#
+# On RP2040 it may also be FASTER. Code executes from flash through a small XIP
+# cache, so a smaller image is a better-cached one, and a cache hit beats an
+# unrolled loop that has to be fetched. `probe` measures busy_wait accuracy and
+# jitter, which is where any regression would show.
+#
+# Overridable: -DCMAKE_BUILD_TYPE=Release restores -O3 for anyone comparing.
+if(NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE MinSizeRel CACHE STRING "" FORCE)
+endif()
+
 include($ENV{PICO_SDK_PATH}/pico_sdk_init.cmake)
 project(rpcortex_v2 C CXX ASM)
 set(CMAKE_C_STANDARD 11)

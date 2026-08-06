@@ -252,7 +252,7 @@ static void first_run(void) {
     out_blank();
     out_info("=== RPCortex %s - First Run Setup ===", RPC_OS_VERSION);
     out_blank();
-    out_info("Welcome! Let's get your device configured.");
+    out_info("Welcome. A few questions, once.");
     out_multi("  Five quick steps - everything here can be changed later.");
     out_blank();
 

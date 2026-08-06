@@ -5,6 +5,8 @@
 #   ./build.sh pico2_w      one board
 #   ./build.sh --clean      wipe the build directories first
 #   ./build.sh --no-dev-packages   leave out bench, probe and stress
+#   ./build.sh --release           what gets published: no dev packages
+#   ./build.sh --fast              -O3 instead of -Os, for comparison
 #
 # Output lands in out/rpcortex-v2-<board>.uf2. Flashing is drag-and-drop: hold
 # BOOTSEL, plug in, copy the .uf2 onto the RPI-RP2 drive. There is no rawrepl
@@ -31,6 +33,7 @@ done
 
 CLEAN=0
 DEVPKGS=ON
+BUILDTYPE=MinSizeRel      # -Os; see the note in os/CMakeLists.txt
 BOARDS=()
 for arg in "$@"; do
     case "$arg" in
@@ -40,6 +43,12 @@ for arg in "$@"; do
         # just wants the OS, so a shipping build leaves them out — and this is
         # the whole of doing that, rather than picking them out of the build.
         --no-dev-packages) DEVPKGS=OFF ;;
+        # What a published image is: no dev packages, built for size. Passed
+        # explicitly rather than left to the cache, because a build directory
+        # configured once keeps whatever it was configured with — which is how
+        # a -Os default went unnoticed for a whole rebuild.
+        --release) DEVPKGS=OFF ;;
+        --fast) BUILDTYPE=Release ;;      # -O3, for comparing
         -*)      echo "unknown option: $arg" >&2; exit 1 ;;
         *)       BOARDS+=("$arg") ;;
     esac
@@ -57,6 +66,10 @@ done
 mkdir -p out
 for board in "${BOARDS[@]}"; do
     dir="os/build_$board"
+    case "$board" in
+        pico|pico_w) board_flash_kb=2048 ;;
+        *)           board_flash_kb=4096 ;;
+    esac
     [ "$CLEAN" -eq 1 ] && rm -rf "$dir"
     echo "==> $board"
     # picotool: the system copy is 2.1.1 and the SDK requires 2.3.0, so a fresh
@@ -74,9 +87,10 @@ for board in "${BOARDS[@]}"; do
     done
     if [ -n "$PT" ]; then
         cmake -S os -B "$dir" -DPICO_BOARD="$board" -DRPC_DEV_PACKAGES="$DEVPKGS" \
-              -Dpicotool_DIR="$PT" >/dev/null
+              -DCMAKE_BUILD_TYPE="$BUILDTYPE" -Dpicotool_DIR="$PT" >/dev/null
     else
-        cmake -S os -B "$dir" -DPICO_BOARD="$board" -DRPC_DEV_PACKAGES="$DEVPKGS" >/dev/null
+        cmake -S os -B "$dir" -DPICO_BOARD="$board" -DRPC_DEV_PACKAGES="$DEVPKGS" \
+              -DCMAKE_BUILD_TYPE="$BUILDTYPE" >/dev/null
     fi
     cmake --build "$dir" -j"$(nproc)" >/dev/null
     cp "$dir/rpcortex_v2.uf2" "out/rpcortex-v2-$board.uf2"
@@ -120,21 +134,32 @@ for board in "${BOARDS[@]}"; do
         # Reported every build, not only when it fails, because the number
         # matters most while it is still shrinking. It went from 71 KB of
         # headroom to 22 without anyone noticing.
-        # RPC_FW_RESERVE is 2 MB and the slot is half of it. Kept in step with
+        # The slot is half of RPC_FW_RESERVE, which is per part — 2 MB on
+        # RP2350, 1664 KB on RP2040, which holds 2 MB of flash in total and
+        # needs room left over for a filesystem. Kept in step with
         # loader-spike/firmware/storage.cpp by hand; there is one definition
         # there and this is the only other place that needs the number.
-        slot=$((2048 * 1024 / 2))
+        case "$board" in
+            pico|pico_w) reserve=$((1664 * 1024)) ;;
+            *)           reserve=$((2048 * 1024)) ;;
+        esac
+        slot=$((reserve / 2))
+        fs=$(( (board_flash_kb * 1024) - reserve ))
         left=$((slot - bsize))
         if [ "$left" -lt 0 ]; then
             printf '    [!] %s KB OVER the %s KB slot — this image cannot be flashed by an update\n' \
                 "$(( -left / 1024 ))" "$((slot / 1024))"
             exit 1
         elif [ "$left" -lt $((64 * 1024)) ]; then
-            printf '    [?] %s KB left in the %s KB slot\n' \
-                "$((left / 1024))" "$((slot / 1024))"
+            printf '    [?] %s KB left in the %s KB slot, %s KB filesystem\n' \
+                "$((left / 1024))" "$((slot / 1024))" "$((fs / 1024))"
         else
-            printf '    %s KB left in the %s KB slot\n' \
-                "$((left / 1024))" "$((slot / 1024))"
+            printf '    %s KB left in the %s KB slot, %s KB filesystem\n' \
+                "$((left / 1024))" "$((slot / 1024))" "$((fs / 1024))"
+        fi
+        if [ "$fs" -le 0 ]; then
+            printf '    [!] no filesystem: the reserve is the whole of this flash\n'
+            exit 1
         fi
     fi
 done
