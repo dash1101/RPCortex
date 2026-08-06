@@ -28,6 +28,7 @@
 #include "ptrcheck.h"
 
 void apps_stack_peak(uint32_t *used, uint32_t *size);
+void apps_stack_peak_reset(void);
 // The fault handler's own stack, one per core. See fault.cpp.
 extern "C" uint32_t fault_stack_used(int core);
 extern "C" uint32_t fault_stack_size(void);
@@ -452,7 +453,16 @@ bool safeboot_consume(char *staged, uint32_t cap) {
 // behaves exactly like one that is working right up until the moment it was
 // supposed to catch something. There is no way to tell from the outside except
 // to ask.
-static int cmd_mpu(int, char **) {
+static int cmd_mpu(int argc, char **argv) {
+    // Clearing the high-water mark, so the next reading measures what is
+    // happening rather than the worst thing ever attempted. `havoc stack` is
+    // the reason this is needed: it exhausts the stack on purpose, and without
+    // a reset every `mpu` afterwards reports a problem that is not there.
+    if (argc >= 2 && !strcmp(argv[1], "reset")) {
+        apps_stack_peak_reset();
+        out_ok("Package stack high-water mark cleared.");
+        return 0;
+    }
     MpuReport r;
     if (!mpu_report(0, &r) || !r.ready) {
         out_warn("Memory protection is not enabled on this board.");
@@ -503,9 +513,15 @@ static int cmd_mpu(int, char **) {
             out_multi("    Package stack     : %lu of %lu bytes at its deepest  (%lu%%)",
                       (unsigned long)used, (unsigned long)size,
                       (unsigned long)(used * 100 / size));
+            // A HIGH-WATER MARK, not a current reading, and saying which
+            // matters. This used to conclude "the reserve is too small for what
+            // packages are doing" — which is wrong after `havoc stack`, whose
+            // entire job is to exhaust the stack on purpose. The measurement was
+            // right and the conclusion was invented. `mpu reset` starts again.
             if (used * 10 > size * 8)
-                out_warn("  Over 80%% — the firmware reserve is too small for what "
-                         "packages are doing.");
+                out_warn("  Over 80%%, by the deepest package that has run since boot. "
+                         "If that was a stack test, it means nothing; 'mpu reset' "
+                         "clears the mark.");
         }
         uint32_t bad = ptr_refusals();
         if (bad)
@@ -581,7 +597,7 @@ static int cmd_mpu(int, char **) {
 }
 
 void diag_register(void) {
-    static const Command c_mpu{"mpu", "what the memory protection is enforcing", cmd_mpu, nullptr};
+    static const Command c_mpu{"mpu", "what the memory protection is enforcing  (mpu reset)", cmd_mpu, nullptr};
     cmd_register(&c_mpu);
     static const Command c_compat{"compat", "probe what this board actually supports", cmd_compat, nullptr};
     static const Command c_diag{"diag", "system state, and whether the last run crashed", cmd_diag, nullptr};

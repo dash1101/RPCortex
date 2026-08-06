@@ -419,6 +419,18 @@ void apps_stack_peak(uint32_t *used, uint32_t *size) {
     if (size) *size = g_stack_size;
 }
 
+// Start the measurement again.
+//
+// The peak is a high-water mark across every package that has run, so ONE
+// package that deliberately exhausts its stack sets it for the rest of the
+// uptime — and `mpu` then reports that the reserve is too small on a device
+// where nothing is wrong. Being able to clear it is what makes the number a
+// measurement rather than a memory of the worst thing ever attempted.
+void apps_stack_peak_reset(void) {
+    g_stack_peak = 0;
+    g_stack_size = 0;
+}
+
 static void sandbox_return(SandboxAlloc *sa, bool pooled) {
     note_stack_peak(sa);
     if (!pooled) { sandbox_free(sa); return; }

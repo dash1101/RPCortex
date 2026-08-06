@@ -219,14 +219,47 @@ static bool read_line(const char *prompt, char *buf, size_t max) {
 
 
 
+// STREAMED, not buffered. The size of the file is not the size of the memory it
+// needs.
+//
+// This used to malloc the whole length and hold it until the last byte arrived,
+// which capped it at 256 KB and meant a 200 KB transfer wanted 200 KB of heap
+// on a device with about 100 KB free at rest. A firmware image could not come
+// through here at all, which is the one transfer most worth having.
+//
+// Now it fills a small buffer and hands each one to the same sink `wget` and
+// the USB drive use — so the ceiling is free space rather than free memory, the
+// filesystem guard applies as it does to every other write, and a transfer that
+// runs out of room is refused rather than half-written.
+#define PUT_CHUNK 256
+
 static int cmd_put(int argc, char **argv) {
     if (argc < 3) { out_multi("Usage: put <name> <len>"); return 1; }
     uint32_t len = (uint32_t)strtoul(argv[2], nullptr, 10);
-    if (len == 0 || len > 256 * 1024) { out_err("Invalid length."); return 1; }
-    uint8_t *buf = (uint8_t *)malloc(len);
-    if (!buf) { out_err("Not enough memory for %u bytes.", (unsigned)len); return 1; }
+
+    // Bounded by what the filesystem could hold rather than by a constant. The
+    // point is to catch a mistyped length before the console goes quiet waiting
+    // for bytes nobody is going to send, not to impose a limit of its own.
+    if (len == 0 || len > storage_total_bytes()) {
+        out_err("Invalid length.");
+        return 1;
+    }
+    if (!storage_would_fit(len)) {
+        out_err("Not enough room: %u bytes free, %u%% used.",
+                (unsigned)storage_free_bytes(), (unsigned)storage_used_percent());
+        return 1;
+    }
+
+    void *sink = storage_open_sink(argv[1]);
+    if (!sink) { out_err("Could not open %s for writing.", argv[1]); return 1; }
+
     out_info("Send %u raw bytes now...", (unsigned)len);
-    for (uint32_t i = 0; i < len; i++) {
+
+    uint8_t buf[PUT_CHUNK];
+    uint32_t got = 0, held = 0;
+    bool ok = true;
+
+    while (got < len && ok) {
         int c;
         // Short waits with a yield between them, rather than one long block:
         // a five-second wait feeds nothing and a slow transfer would trip the
@@ -237,17 +270,29 @@ static int cmd_put(int argc, char **argv) {
             if (c == PICO_ERROR_TIMEOUT) { task_yield(); waited++; }
         } while (c == PICO_ERROR_TIMEOUT && waited < 20000);
         if (c == PICO_ERROR_TIMEOUT) {
-            free(buf);
-            out_err("Timed out after %u of %u bytes.", (unsigned)i, (unsigned)len);
-            return 1;
+            out_err("Timed out after %u of %u bytes.", (unsigned)got, (unsigned)len);
+            ok = false;
+            break;
         }
-        buf[i] = (uint8_t)c;
+        buf[held++] = (uint8_t)c;
+        got++;
+        if (held == sizeof(buf)) {
+            ok = storage_sink_write(sink, buf, held);
+            held = 0;
+        }
     }
-    bool ok = storage_write_file(argv[1], buf, len);
-    free(buf);
-    if (ok) out_ok("Wrote %s (%u bytes).", argv[1], (unsigned)len);
-    else    out_err("Could not write %s.", argv[1]);
-    return ok ? 0 : 1;
+    if (ok && held) ok = storage_sink_write(sink, buf, held);
+
+    // Close either way: the handle has to be given back, and a failed close is
+    // also a failure to report.
+    if (!storage_close_sink(sink)) ok = false;
+    if (!ok) {
+        storage_remove(argv[1]);        // no half-written file left behind
+        if (got >= len) out_err("Could not write %s.", argv[1]);
+        return 1;
+    }
+    out_ok("Wrote %s (%u bytes).", argv[1], (unsigned)len);
+    return 0;
 }
 
 // run / exec — the load-run-resident flow lives in apps_launch, shared with
