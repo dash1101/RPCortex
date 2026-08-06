@@ -63,6 +63,13 @@ static void probe_cores(void) {
     fw_printf("  samples on core 0   %d  (%d%%)\n", g_seen[0], g_seen[0] * 100 / total);
     fw_printf("  samples on core 1   %d  (%d%%)\n", g_seen[1], g_seen[1] * 100 / total);
     fw_printf("  core changes        %d in %d yields\n", g_switches, total);
+    // WHY 0% ON CORE 1 IS NOT A FINDING when this is run from the prompt. A
+    // package command executes on the SHELL task, and the shell is pinned to
+    // core 0 — so the only honest answer here is 100/0, and reading it as "the
+    // second core is dead" is the mistake this line exists to prevent.
+    if (!g_seen[1])
+        fw_printf("  (run as 'bg probe' to sample an unpinned task; a command\n"
+                  "   runs on the shell, which is pinned to core 0)\n");
 }
 
 // --- microsecond timing -----------------------------------------------------

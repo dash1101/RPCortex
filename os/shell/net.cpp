@@ -222,6 +222,15 @@ static bool radio_up(void) {
     return true;
 }
 
+// Shared with bt.cpp, which needs the same chip up and must not decide for
+// itself whether it already is. Bluetooth calling cyw43_arch_init directly
+// re-initialised a chip the WiFi side had already started — a second firmware
+// download over a bus with a live async_context on it — and the driver hard
+// asserted on the bus errors that produced. It also walked straight past the
+// radio lock, which is the "switch that only stops the polite callers" this
+// file warns about a few lines up.
+bool net_radio_up(void) { return radio_up(); }
+
 // The one-owner rule is about TASKS. This is the other half of it: the core.
 //
 // g_net_op guarantees one task at a time inside the driver, which is not the

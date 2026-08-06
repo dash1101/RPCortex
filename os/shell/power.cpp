@@ -21,8 +21,13 @@
 // stdio, then the second core, then the watchdog last — because re-enabling the
 // watchdog before the scheduler is running again is a reset with extra steps.
 //
-// DEVICE-UNCONFIRMED. The guard logic below is host-tested; the sleep itself
-// cannot be, and has not been run on hardware.
+// Run on hardware, and the first attempt failed on every call: the deadline was
+// built with make_timeout_time_ms, which reads the SYSTEM timer, and the SDK
+// requires one from the ALWAYS-ON timer. They are different clocks and the check
+// is exact — `to_us_since_boot(t) % 1000 == 0`, because the AON timer counts
+// milliseconds. What that returned, at every duration, was
+// PICO_ERROR_INVALID_DATA. Whether the chip actually sleeps is still unproven;
+// what is now known is that it is being asked properly.
 
 #include "command.h"
 #include "out.h"
@@ -42,6 +47,7 @@
 #include "hardware/clocks.h"
 #include "hardware/watchdog.h"
 #include "pico/low_power.h"
+#include "pico/aon_timer.h"
 
 void task_start_core1(void);
 void task_watchdog_start(void);
@@ -76,6 +82,14 @@ int power_sleep(unsigned ms, int wake_pin, int wake_high, bool dormant) {
         out_err("GPIO %d belongs to the board, not to you.", wake_pin);
         return 1;
     }
+    // A timed sleep wakes on the always-on timer, and that timer has to be
+    // running. Checked here rather than left to come back as an error code
+    // after the console has already been told the device is going away.
+    if (wake_pin < 0 && !aon_timer_is_running()) {
+        out_err("The always-on timer is not running, so there is nothing to wake on.");
+        out_multi("  'ntp sync' or 'date set' starts it. A pin wake works without it.");
+        return 1;
+    }
 
     out_warnp("power", "Sleeping. The USB connection will drop and come back.");
     if (ms) out_multi("  For %u ms%s.", ms, wake_pin >= 0 ? ", or until the pin changes" : "");
@@ -105,7 +119,19 @@ int power_sleep(unsigned ms, int wake_pin, int wake_high, bool dormant) {
            : low_power_sleep_until_gpio_pin_state((uint)wake_pin, /*edge*/true,
                                                   wake_high != 0, &keep, /*exclusive*/false);
     } else {
-        absolute_time_t until = make_timeout_time_ms(ms);
+        // THE DEADLINE HAS TO COME FROM THE ALWAYS-ON TIMER, not from the one
+        // make_timeout_time_ms reads.
+        //
+        // They are different clocks. The AON timer counts MILLISECONDS, and the
+        // SDK checks that a deadline handed to it came from there — the test is
+        // literally `to_us_since_boot(t) % 1000 == 0`. make_timeout_time_ms
+        // builds on time_us_64, which lands on a whole millisecond about one
+        // time in a thousand.
+        //
+        // So every sleep returned PICO_ERROR_INVALID_DATA (-16), at every
+        // duration, deterministically. It read as the hardware refusing and was
+        // arithmetic.
+        absolute_time_t until = delayed_by_ms(aon_timer_get_absolute_time(), ms);
         rc = dormant
            ? low_power_dormant_until_aon_timer(until, DORMANT_CLOCK_SOURCE_DEFAULT, &keep)
            : low_power_sleep_until_aon_timer(until, &keep, /*exclusive*/false);

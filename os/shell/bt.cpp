@@ -15,8 +15,13 @@
 // drives both — so a Bluetooth scan while a download is running is two tasks in
 // the same driver, which is exactly what took weeks to fix once already.
 //
-// DEVICE-UNCONFIRMED. Everything below builds and the parsing is host-tested;
-// none of it has been run against a radio.
+// Run on hardware, and it took the chip down: bt_up called cyw43_arch_init
+// itself, so a `bt scan` after the boot-time WiFi join re-initialised a chip
+// that was already running — a second firmware download over a bus with a live
+// async_context on it. The driver hard asserted on the bus errors. Bluetooth
+// goes through net_radio_up now, which is the one place that knows.
+//
+// DEVICE-UNCONFIRMED beyond that: no scan has yet returned a device.
 
 #include "command.h"
 #include "out.h"
@@ -42,6 +47,10 @@
 void net_op_acquire(void);
 void net_op_release(void);
 bool net_core_ok(void);
+// Brings the shared chip up if it is not already, honours the radio lock, and
+// records which core owns it. Bluetooth must go through this rather than call
+// cyw43_arch_init itself — see the note beside it in net.cpp.
+bool net_radio_up(void);
 
 static bool g_bt_up;
 static bool g_scanning;
@@ -144,10 +153,10 @@ static bool bt_up(void) {
         return false;
     }
 
-    if (cyw43_arch_init() != 0) {
-        out_err("Could not start the wireless chip.");
-        return false;
-    }
+    // The WIFI side owns the chip. Asking it means one place knows whether the
+    // firmware blob has already been loaded, the radio lock is honoured for
+    // Bluetooth as well, and the owning core is recorded once.
+    if (!net_radio_up()) return false;
 
     l2cap_init();
     sm_init();

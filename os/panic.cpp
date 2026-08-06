@@ -19,6 +19,7 @@
 
 #include "pico/stdlib.h"
 #include "hardware/watchdog.h"
+#include "blackbox.h"
 #include "pico/bootrom.h"
 #include "out.h"
 #include "task.h"
@@ -73,7 +74,20 @@ extern "C" void __attribute__((noreturn)) rpc_panic_handler(const char *fmt, ...
             // Deliberately kept alive: this wait is the whole point of the
             // screen, and letting the watchdog cut it short would throw away the
             // message it exists to show.
+            //
+            // BOTH watchdogs. task_watchdog_feed satisfies the hardware one;
+            // the graded one measures the STALL CLOCK, which only bb_note_yield
+            // moves. Feeding one and not the other cut a sixty-second countdown
+            // to three, with the reboot blamed on a task stalling at whatever
+            // phase note happened to be left over:
+            //
+            //   [!] PANIC
+            //   [!] watchdog: 'shell' pid 3 core 0 stalled 3002 ms at
+            //       'app_main returned'
+            //
+            // Nobody could reach the bootloader prompt this screen offers.
             task_watchdog_feed();
+            bb_note_yield(task_now_ms());
             int c = getchar_timeout_us(10000);
             if (c != PICO_ERROR_TIMEOUT) {
                 if (c == 'b' || c == 'B') {
