@@ -159,8 +159,8 @@ Three decisions that belong at the start rather than the middle:
   worse than one that costs 32 KB.
 - **Certificates get verified.** Shipping "verification disabled" is not a
   stage-3 shortcut to be tidied later; it is the decision most likely to become
-  permanent by accident. If it is ever temporarily off it warns at runtime and
-  says so in VS-V1.md.
+  permanent by accident. If it is ever temporarily off it says so at runtime,
+  every time, rather than in a document nobody reads twice.
 
 On the boards with no wireless (`pico`, `pico2`), `pkg install <name>` follows
 the `#else` stub pattern `net.cpp` already uses: a clear "no wireless on this

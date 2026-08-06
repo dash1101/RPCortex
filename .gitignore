@@ -64,3 +64,18 @@ compile_commands.json
 # Test output and cache
 Testing/
 .cache/
+
+# Working notes, kept in the workspace rather than the repository.
+#
+# STATUS.md and VS-V1.md tracked what was proven and what was not, week by week,
+# and STRESS-CRASH.md was one bug's evidence. Useful while building; not what
+# somebody cloning this wants to read, and written in a voice meant for whoever
+# was in the middle of it. The engineering documents that ARE for a reader —
+# ARCHITECTURE.md, TESTING.md, and the two design notes under os/ — stay.
+#
+# Listed as well as removed, so they cannot wander back in.
+STATUS.md
+VS-V1.md
+os/STRESS-CRASH.md
+CONTAIN-RESUME.md
+os/CONTAIN-RESUME.md

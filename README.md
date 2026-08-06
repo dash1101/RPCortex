@@ -31,10 +31,10 @@ package system — without an interpreter underneath.
 
 It runs on hardware with 264 KB of RAM. That constraint is still the point.
 
-> **Work in progress.** It boots, sets itself up, logs in and reaches a full
-> shell, and both boards build — but it has not been through a hardware soak.
-> [`STATUS.md`](STATUS.md) is honest about what works, what is unproven, and what
-> is missing.
+> **Early alpha.** It boots, sets itself up, logs in, joins a network, installs
+> and runs packages, and updates itself over the air — all confirmed on a Pico
+> 2 W. It is still changing week to week. What is NOT done is listed at the
+> bottom of this file rather than buried.
 
 ---
 
@@ -165,6 +165,28 @@ tools/rpc-push.sh build/apps/greet.app /dev/ttyACM0
 
 and `pkg install greet.app` on the device. `os/apps/greet/` is the worked
 example; `os/include/rpc_app.h` is the only header a package includes.
+
+---
+
+## What is not done
+
+Kept here rather than in a status file nobody outside this repository reads.
+
+- **No Python.** Packages are compiled. That is the point of the rewrite and it
+  is still a real loss of convenience against v1.
+- **Fourteen packages**, against v1's twenty. The rest need rewriting in C, and
+  that is the main distance left to parity.
+- **No SD card support**, and no ESP32-S3 port. The portable core moves
+  unchanged; the context switch, storage and network layers do not.
+- **No package sandbox on RP2040.** ARMv6-M protection regions are power-of-two
+  sized and aligned to their own size, so the five a package needs cost more RAM
+  than those boards have. Packages run privileged there, and `mpu` says which a
+  board is doing.
+- **Bluetooth is new** — scanning works, both LE and Classic, and little else
+  has been exercised.
+
+[`CHANGELOG.md`](CHANGELOG.md) has what v2 gained, what it matches and what it
+does differently on purpose.
 
 ---
 
