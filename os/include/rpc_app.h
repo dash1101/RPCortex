@@ -23,7 +23,7 @@ extern "C" {
 // MINOR: a symbol added — older-minor apps still run (everything they want is
 //        present); newer-minor apps refused (they may want something absent).
 #define RPC_API_MAJOR 1
-#define RPC_API_MINOR 16
+#define RPC_API_MINOR 17
 
 typedef struct {
     uint32_t magic;          // RPC_APP_MAGIC
@@ -142,6 +142,23 @@ int      fw_file_write(const char *path, const void *data, uint32_t len);
 uint32_t fw_file_read(const char *path, void *buf, uint32_t cap);
 int      fw_file_remove(const char *path);
 int      fw_file_exists(const char *path);
+
+// The longest command line fw_shell_run will take. Matches the shell's own.
+#define RPC_SHELL_LINE_MAX 256
+
+// Run a shell command line and, optionally, capture what it printed.
+//
+// The whole shell: pipes, `&&`, `||`, `;` and redirection all work, because
+// this is the same runner that handles a line typed at the prompt. Pass a null
+// `out` to run something for its effect and ignore the output.
+//
+// It runs with the SESSION's privileges, exactly as if the logged-in user had
+// typed it — not with the package's. A package cannot use this to gain rights
+// the person at the keyboard does not have.
+//
+// Returns the command's exit status, or -1 if the line was refused (too long,
+// or a pointer that is not the package's).
+int      fw_shell_run(const char *line, char *out, uint32_t cap);
 
 // Read from an OFFSET, so a file bigger than anything a package can hold is
 // still readable a piece at a time. Returns how many bytes were read: short at

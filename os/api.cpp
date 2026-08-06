@@ -15,6 +15,7 @@
 #include "logring.h"
 #include "blackbox.h"
 #include "interrupt.h"
+#include "out.h"        // out_capture_* for fw_shell_run
 
 #include <string.h>
 #include <stdlib.h>
@@ -225,6 +226,50 @@ extern "C" int fw_file_remove(const char *path) {
 extern "C" int fw_file_exists(const char *path) {
     if (!ok_s(path)) return 0;
     return storage_stat(path, nullptr, nullptr) ? 1 : 0;
+}
+
+// --- running a shell command ------------------------------------------------
+//
+// The Nova D1 has a shell app: a screen with a prompt on it, where a command is
+// typed on hardware buttons and its output drawn on an OLED. That needs the
+// command RUN and its output CAPTURED, not a second terminal — there is one
+// serial console and only one thing can own it.
+//
+// So this is the whole of what such an app needs, and it reuses what `.rps`
+// already does for `capture`: the shell's own line runner, with the output
+// diverted into a buffer. Pipes, chaining and redirection all work, because it
+// is the same runner that handles a typed line.
+//
+// PRIVILEGE IS THE SESSION'S, not the package's. The command runs exactly as if
+// the logged-in user had typed it — an admin session can do admin things and a
+// guest session cannot. A package cannot use this to become root, because the
+// commands that matter ask users_is_admin about the session and know nothing
+// about who called them.
+//
+// Returns the command's exit status, or -1 if the arguments were refused.
+int  shell_run_line_now(char *line);
+
+extern "C" int fw_shell_run(const char *line, char *out, uint32_t cap) {
+    if (!ok_s(line)) return -1;
+    if (out && cap && !ok_w(out, cap)) return -1;
+    task_alive();
+
+    // The runner splits its buffer in place, so it cannot be handed the
+    // package's string directly — that memory belongs to the package and the
+    // pointer check above proved only that it is READABLE.
+    char work[RPC_SHELL_LINE_MAX];
+    unsigned n = 0;
+    while (n + 1 < sizeof(work) && line[n]) { work[n] = line[n]; n++; }
+    if (line[n]) return -1;               // too long to run, rather than truncated
+    work[n] = 0;
+
+    if (!out || !cap) return shell_run_line_now(work);
+
+    out[0] = 0;
+    if (!out_capture_begin(out, cap)) return shell_run_line_now(work);
+    int rc = shell_run_line_now(work);
+    out_capture_end();
+    return rc;
 }
 
 // --- hardware ---------------------------------------------------------------
@@ -1181,6 +1226,7 @@ static const ApiSymbol kSymbols[] = {
     SYM(fw_file_read),
     SYM(fw_file_remove),
     SYM(fw_file_exists),
+    SYM(fw_shell_run),
     SYM(fw_core_id),
     SYM(fw_power_sleep),
     SYM(fw_power_dormant),
