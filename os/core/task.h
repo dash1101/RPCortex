@@ -237,6 +237,12 @@ uint32_t task_now_us(void);
 // multicore is disabled. Called once by task_init.
 uint32_t task_core_count(void);
 
+// How busy the machine has been since this was last asked, as a percentage of
+// one core's worth of time per core. Sampled rather than averaged over the
+// uptime, so it answers "what is happening now" — call it periodically and each
+// answer covers the interval since the last.
+uint32_t task_cpu_percent(void);
+
 // The core this code is running on, 0-based.
 uint32_t task_this_core(void);
 

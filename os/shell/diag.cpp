@@ -168,7 +168,8 @@ static int cmd_diag(int, char **) {
     out_multi("  %sUptime%s    %lu s", C_CYAN, C_RESET, (unsigned long)(task_now_ms() / 1000));
     out_multi("  %sClock%s     %u MHz", C_CYAN, C_RESET,
               (unsigned)(clock_get_hz(clk_sys) / 1000000u));
-    out_multi("  %sTasks%s     %lu", C_CYAN, C_RESET, (unsigned long)task_count());
+    out_multi("  %sTasks%s     %lu  (CPU %lu%%)", C_CYAN, C_RESET,
+              (unsigned long)task_count(), (unsigned long)task_cpu_percent());
     out_multi("  %sFlash%s     %lu KB firmware of a %lu KB slot",
               C_CYAN, C_RESET,
               (unsigned long)(storage_firmware_bytes() / 1024),

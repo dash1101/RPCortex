@@ -252,6 +252,52 @@ static Task *pick(uint32_t core, int after_pid) {
     return nullptr;
 }
 
+// --- how busy the machine is -------------------------------------------------
+//
+// Every task already accumulates cpu_ms; what was missing is a DENOMINATOR.
+// Total run time against total elapsed time is not it — a device idle for an
+// hour and then busy for a second reads as idle, which is exactly the question
+// nobody is asking. What people mean by "CPU usage" is a recent window.
+//
+// So this samples: the total CPU consumed across every task, remembered with
+// the wall clock at the moment it was read. The next reader gets the difference
+// over the difference, which is a live figure rather than a lifetime average.
+//
+// The idle loops are what makes the number meaningful. A core with nothing to
+// run parks in core1_main or the scheduler, and neither is a task — so the
+// time it spends there belongs to no cpu_ms and the percentage falls, which is
+// the behaviour wanted.
+struct CpuSample { uint32_t busy_ms; uint32_t wall_ms; };
+static CpuSample g_cpu_last;
+static uint32_t   g_cpu_pct;
+
+uint32_t task_cpu_percent(void) {
+    uint32_t busy = 0;
+    for (uint32_t i = 0; i < TASK_MAX; i++)
+        if (g_tasks[i].info.state != TASK_FREE) busy += g_tasks[i].info.cpu_ms;
+
+    uint32_t wall = task_now_ms();
+    uint32_t d_busy = busy - g_cpu_last.busy_ms;
+    uint32_t d_wall = wall - g_cpu_last.wall_ms;
+
+    // Too short a window is noise, not a reading — two samples a few
+    // milliseconds apart land on whatever happened to be running. Below a
+    // tenth of a second the previous answer is better than a fresh bad one.
+    if (d_wall < 100) return g_cpu_last.busy_ms ? g_cpu_pct : 0;
+
+    g_cpu_last.busy_ms = busy;
+    g_cpu_last.wall_ms = wall;
+
+    // Per CORE. Two cores each fully busy is 100%, not 200% — the figure people
+    // read off a task manager is "how much of this machine is in use".
+    uint32_t cores = task_core_count();
+    if (!cores) cores = 1;
+    uint32_t pct = (uint32_t)((uint64_t)d_busy * 100u / ((uint64_t)d_wall * cores));
+    if (pct > 100) pct = 100;          // rounding, and a sample that straddles a switch
+    g_cpu_pct = pct;
+    return pct;
+}
+
 // --- lifecycle --------------------------------------------------------------
 
 void task_init(const char *name) {

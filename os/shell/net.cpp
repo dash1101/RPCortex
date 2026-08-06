@@ -194,6 +194,46 @@ static void status_refresh(void) {
 #define JOIN_TIMEOUT 20000     // ms; a WPA2 join that has not landed by now failed
 
 
+// --- signal strength ---------------------------------------------------------
+//
+// dBm is the honest number and it is also the one nobody reads at a glance:
+// -47 and -83 are both "a negative number in the forties or eighties" until you
+// have learned the scale. Bars are the thing every phone and laptop shows,
+// so both are printed — the picture for reading and the number for diagnosing.
+//
+// The thresholds are the ones the industry settled on rather than anything
+// invented here: -50 and better is excellent, -60 good, -70 workable, -80 poor,
+// and below that a connection that exists on paper.
+const char *signal_bars(int rssi) {
+    if (rssi >= -50) return "▂▄▆█";
+    if (rssi >= -60) return "▂▄▆_";
+    if (rssi >= -70) return "▂▄__";
+    if (rssi >= -80) return "▂___";
+    return "____";
+}
+
+const char *signal_word(int rssi) {
+    if (rssi >= -50) return "excellent";
+    if (rssi >= -60) return "good";
+    if (rssi >= -70) return "fair";
+    if (rssi >= -80) return "weak";
+    return "very weak";
+}
+
+// The strength of the network this device is ON, which is a different question
+// from what a scan reports: a scan lists what can be heard, and this is the one
+// actually carrying traffic. Only meaningful with the link up.
+//
+// Returns false when there is no reading rather than inventing a zero, because
+// 0 dBm is a valid and extraordinary value, not an absence.
+bool net_signal(int *rssi_out) {
+    if (!g_radio_up || g_status.link != CYW43_LINK_UP) return false;
+    int32_t r = 0;
+    if (cyw43_wifi_get_rssi(&cyw43_state, &r) != 0) return false;
+    if (rssi_out) *rssi_out = (int)r;
+    return true;
+}
+
 // --- radio lifecycle --------------------------------------------------------
 
 // Bring the chip up on demand. cyw43_arch_init loads the firmware blob over
@@ -340,6 +380,12 @@ static int wifi_status(void) {
     out_multi("  Link   : %s%s%s",
               st == CYW43_LINK_UP ? C_CYAN : C_WARN, link_text(st), C_RESET);
     out_multi("  Network: %s", reg_get("WiFi.Active", "(none)"));
+    {
+        int rssi = 0;
+        if (net_signal(&rssi))
+            out_multi("  Signal : %s%s%s  %d dBm  (%s)",
+                      C_CYAN, signal_bars(rssi), C_RESET, rssi, signal_word(rssi));
+    }
     // Copied out under the lock, then printed. Printing while holding it would
     // keep the driver waiting for a serial line, and formatting straight from
     // netif fields lets DHCP change them mid-sentence.
@@ -474,12 +520,13 @@ static int wifi_scan(void) {
 
     // v1's table: RSSI, CH, SECURITY, SSID under a 48-hyphen rule.
     out_blank();
-    out_multi("  %-4s  %-6s  %-10s  %s", "RSSI", "CH", "SECURITY", "SSID");
-    out_multi("  %s------------------------------------------------%s", C_GRAY, C_RESET);
+    out_multi("  %-6s %-5s  %-6s  %-10s  %s", "SIGNAL", "dBm", "CH", "SECURITY", "SSID");
+    out_multi("  %s------------------------------------------------------%s", C_GRAY, C_RESET);
     for (uint32_t i = 0; i < g_scan.n; i++) {
         const ScanEntry &e = g_scan.e[i];
-        out_multi("  %4d  %5u  %-10s  %s%s%s", (int)e.rssi, (unsigned)e.channel,
-                  auth_text(e.auth), C_CYAN, e.ssid, C_RESET);
+        out_multi("  %s%-6s%s %5d  %5u  %-10s  %s%s%s",
+                  C_CYAN, signal_bars(e.rssi), C_RESET, (int)e.rssi,
+                  (unsigned)e.channel, auth_text(e.auth), C_CYAN, e.ssid, C_RESET);
     }
     out_blank();
     out_multi("  %u network(s) found.", (unsigned)g_scan.n);
@@ -1271,6 +1318,12 @@ void net_op_acquire(void) {}
 void net_op_release(void) {}
 // No radio, so no core to be wrong about. The transport still calls it.
 bool net_core_ok(void) { return true; }
+
+// No radio, so no reading — and false rather than a made-up zero, because
+// 0 dBm is a valid and extraordinary value, not an absence.
+bool net_signal(int *) { return false; }
+const char *signal_bars(int) { return "____"; }
+const char *signal_word(int) { return "no radio"; }
 bool radio_locked(void) { return false; }   // nothing to lock
 int  net_pkg_scan(FwNetAp *, unsigned) { return -1; }
 int  net_pkg_ssid(char *out, unsigned cap) { if (out && cap) out[0] = 0; return 0; }

@@ -228,6 +228,24 @@ extern "C" int fw_file_exists(const char *path) {
     return storage_stat(path, nullptr, nullptr) ? 1 : 0;
 }
 
+// How busy the machine is, 0-100, sampled since anything last asked.
+//
+// For a status bar: the Nova D1 wants a number next to the clock, the way a
+// desktop shows one. Per CORE, so two cores each fully busy is 100 rather than
+// 200 — the figure people read is "how much of this machine is in use".
+extern "C" uint32_t fw_cpu_percent(void) { task_alive(); return task_cpu_percent(); }
+
+// The signal strength of the network this device is ON, in dBm, or 0 when there
+// is no reading. A scan says what can be HEARD; this is what is carrying
+// traffic, which is the one worth putting on a screen.
+bool net_signal(int *rssi_out);
+
+extern "C" int fw_net_rssi(void) {
+    task_alive();
+    int r = 0;
+    return net_signal(&r) ? r : 0;
+}
+
 // --- running a shell command ------------------------------------------------
 //
 // The Nova D1 has a shell app: a screen with a prompt on it, where a command is
@@ -1227,6 +1245,8 @@ static const ApiSymbol kSymbols[] = {
     SYM(fw_file_remove),
     SYM(fw_file_exists),
     SYM(fw_shell_run),
+    SYM(fw_cpu_percent),
+    SYM(fw_net_rssi),
     SYM(fw_core_id),
     SYM(fw_power_sleep),
     SYM(fw_power_dormant),

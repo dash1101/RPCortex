@@ -8,6 +8,7 @@
 #include "command.h"
 #include "out.h"
 #include "task.h"
+#include "kernel.h"   // heap_free
 #include "fmt.h"
 
 #include <stdio.h>
@@ -82,7 +83,13 @@ static int cmd_ps(int argc, char **argv) {
                      (unsigned)(t->stack_used * 100 / t->stack_size));
     }
 
-    out_multi("  %s%u task%s%s", C_GRAY, (unsigned)shown, shown == 1 ? "" : "s", C_RESET);
+    // How busy the machine is, under the list rather than in it: it is a
+    // property of the device, not of any one task. Sampled since the last time
+    // anything asked, so running `ps` twice a second gives a live figure.
+    out_multi("  %s%u task%s  \u00b7  CPU %u%%  \u00b7  %lu KB free%s",
+              C_GRAY, (unsigned)shown, shown == 1 ? "" : "s",
+              (unsigned)task_cpu_percent(),
+              (unsigned long)(heap_free() / 1024), C_RESET);
     return 0;
 }
 

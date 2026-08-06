@@ -23,7 +23,7 @@ extern "C" {
 // MINOR: a symbol added — older-minor apps still run (everything they want is
 //        present); newer-minor apps refused (they may want something absent).
 #define RPC_API_MAJOR 1
-#define RPC_API_MINOR 17
+#define RPC_API_MINOR 18
 
 typedef struct {
     uint32_t magic;          // RPC_APP_MAGIC
@@ -159,6 +159,16 @@ int      fw_file_exists(const char *path);
 // Returns the command's exit status, or -1 if the line was refused (too long,
 // or a pointer that is not the package's).
 int      fw_shell_run(const char *line, char *out, uint32_t cap);
+
+// How busy the machine is, 0-100, sampled since anything last asked. Per CORE,
+// so two cores each fully busy reads 100 rather than 200. Call it periodically
+// and each answer covers the interval since the last — a status bar asking once
+// a second gets a second's worth.
+uint32_t fw_cpu_percent(void);
+
+// Signal strength of the network this device is CONNECTED to, in dBm, or 0 when
+// there is no reading. Negative: -50 is excellent, -70 fair, -85 poor.
+int      fw_net_rssi(void);
 
 // Read from an OFFSET, so a file bigger than anything a package can hold is
 // still readable a piece at a time. Returns how many bytes were read: short at
