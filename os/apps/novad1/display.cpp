@@ -67,8 +67,12 @@ static const uint8_t kInitSSD1306[] = {
     0xaf,
 };
 
-// SSD1309, for the 2.42" panel. DEVICE-UNCONFIRMED: no SSD1309 has been attached
-// yet, on either the MicroPython build or this one.
+// SSD1309, for the 2.42" panel the reference build carries. This is the DEFAULT.
+//
+// The sequence itself is the MicroPython suite's, and novad1-v1.md marks that
+// one verified on hardware. THIS code path has never driven a panel, so it is
+// DEVICE-UNCONFIRMED in the sense that matters here: the bytes are known good,
+// the code sending them is not.
 //
 // Two differences from the SSD1306 that both fail silently:
 //
@@ -115,8 +119,8 @@ PanelKind panel_from_name(const char *s) {
 const char *Display::kind_name(void) const {
     switch (kind_) {
         case PANEL_SSD1306: return "ssd1306";
-        case PANEL_SSD1309: return "ssd1309";
-        default:            return "sh1106";
+        case PANEL_SH1106:  return "sh1106";
+        default:            return "ssd1309";
     }
 }
 
@@ -165,12 +169,16 @@ bool Display::begin(void) {
     switch (kind_) {
         case PANEL_SSD1306: seq = kInitSSD1306; n = sizeof(kInitSSD1306); col_offset_ = 0; break;
         case PANEL_SSD1309: seq = kInitSSD1309; n = sizeof(kInitSSD1309); col_offset_ = 0; break;
-        default:
+        case PANEL_SH1106:
             // The SH1106 is a 132-column part showing 128, so everything is two
             // columns in. This is the ONLY place that offset appears — a screen
             // that knew about it would be wrong on the other two panels.
-            kind_ = PANEL_SH1106;
             seq = kInitSH1106; n = sizeof(kInitSH1106); col_offset_ = 2;
+            break;
+        default:
+            // Nothing configured means the reference part.
+            kind_ = PANEL_SSD1309;
+            seq = kInitSSD1309; n = sizeof(kInitSSD1309); col_offset_ = 0;
             break;
     }
     if (!cmds(seq, n)) return false;

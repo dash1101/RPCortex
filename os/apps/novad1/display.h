@@ -8,8 +8,20 @@
 //
 // THESE PANELS CANNOT BE TOLD APART IN SOFTWARE. They share an I2C address and
 // answer nothing that distinguishes them, so the panel is a configuration choice
-// and never a guess — `d1 display ssd1309`. "auto" means SH1106, which is the
-// one the reference build ships.
+// and never a guess — `d1 display sh1106`.
+//
+// The DEFAULT IS THE SSD1309, because that is the part the reference build
+// actually carries: a 2.42" 128x64 on I2C, which is what the bill of materials
+// specifies and what the wiring is drawn around. The MicroPython suite defaulted
+// to the SH1106 and its own documentation did not, which is a drift somebody
+// hits by wiring the documented panel and getting a blank screen.
+//
+// It matters more than a default usually does. An SSD1309 sent the SH1106's
+// init never unlocks its command interface and stays dark, with nothing to see
+// anywhere. An SH1106 sent the SSD1309's init is merely two columns out. So the
+// wrong default in this direction is a device that looks broken, and in the
+// other it is a device that looks slightly off — and the common case should be
+// the one that works.
 //
 // A wrong init sequence FAILS SILENTLY: a blank or garbled panel and no error
 // anywhere. The sequences here are carried over byte for byte from the
@@ -23,7 +35,7 @@
 namespace nova {
 
 enum PanelKind {
-    PANEL_AUTO = 0,     // means SH1106; see above
+    PANEL_AUTO = 0,     // means SSD1309, the reference part; see above
     PANEL_SH1106,
     PANEL_SSD1306,
     PANEL_SSD1309,

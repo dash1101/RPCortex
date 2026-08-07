@@ -21,7 +21,7 @@
 #include <string.h>
 #include <stdio.h>
 
-RPC_APP_VER("novad1", "0.89.0");
+RPC_APP_VER("novad1", "0.90.0");
 
 namespace {
 
@@ -143,7 +143,7 @@ int cmd_pins(int argc, char **argv) {
 // --- d1 ---------------------------------------------------------------------
 
 void usage(void) {
-    fw_printf("Nova D1 0.89.0 - the handheld multi-tool\n\n");
+    fw_printf("Nova D1 0.90.0 - the handheld multi-tool\n\n");
     fw_printf("  setup                  make it a Nova D1: storage, pins, the boot service\n");
     fw_printf("  gui [--bg]             run the screen, in front or in the background\n");
     fw_printf("  service start|stop|restart|status\n");
@@ -254,9 +254,12 @@ int cmd_perf(void) {
 int cmd_display(int argc, char **argv) {
     if (argc < 3) {
         fw_printf("Panel: %s\n", nova::display().kind_name());
-        fw_printf("These controllers share an I2C address and cannot be told apart\n");
-        fw_printf("in software, so this is a setting rather than a guess.\n");
-        fw_printf("  d1 display sh1106 | ssd1306 | ssd1309\n");
+        fw_printf("  ssd1309   2.42in, what the reference build carries (default)\n");
+        fw_printf("  sh1106    1.3in, 132 columns showing 128\n");
+        fw_printf("  ssd1306   0.96in\n");
+        fw_printf("\nThese share an I2C address and answer nothing that tells them\n");
+        fw_printf("apart, so this is a setting and never a guess. A blank screen on\n");
+        fw_printf("an otherwise working device is usually the wrong one set here.\n");
         return 0;
     }
     if (nova::panel_from_name(argv[2]) == nova::PANEL_AUTO && !nova::ieq(argv[2], "auto")) {
@@ -272,7 +275,7 @@ int cmd_display(int argc, char **argv) {
 int cmd_status(void) {
     char b[24];
     fw_board(b, sizeof(b));
-    fw_printf("Nova D1 0.89.0 on %s\n", b);
+    fw_printf("Nova D1 0.90.0 on %s\n", b);
     fw_printf("  profile   %s (%s)\n", nova::board::board_id(), nova::board::board_name());
     fw_printf("  display   %s\n", nova::board::display_bus());
     fw_printf("  storage   %s\n", fw_file_exists(NOVA_ROOT) ? NOVA_ROOT : "not created yet");
