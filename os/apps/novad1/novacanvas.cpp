@@ -143,6 +143,10 @@ void Canvas::invert_rect(int x, int y, int w, int h) {
 
 // --- circles ----------------------------------------------------------------
 
+// The loop order matters and is not the textbook one: y advances BEFORE the
+// error update. That is what the MicroPython canvas does, and a circle stepped
+// the other way round differs by a pixel on several radii — which on icons made
+// of circles is a visible difference at six pixels across.
 void Canvas::circle(int cx, int cy, int r, int colour) {
     if (r <= 0) { pixel(cx, cy, colour); return; }
     int x = r, y = 0, err = 1 - r;
@@ -157,20 +161,29 @@ void Canvas::circle(int cx, int cy, int r, int colour) {
     }
 }
 
+// Integer square root, floor. Newton's method on integers — no floating point
+// anywhere in this package, and none needed: floor(sqrt(n)) is exact.
+static int isqrt(int n) {
+    if (n < 2) return n < 0 ? 0 : n;
+    int x = n, y = (x + 1) / 2;
+    while (y < x) { x = y; y = (x + n / x) / 2; }
+    return x;
+}
+
+// ONE SPAN PER ROW, its width from the circle equation — not the octant walk the
+// outline uses.
+//
+// The two produce visibly different discs, and the difference is not subtle at
+// this size: the octant version steps in whole pixels of x per pixel of y and
+// leaves a faceted edge, while a row-by-row width is round. Every icon with a
+// filled circle in it — the thermometer bulb, the wrench jaw, the LED, the radar
+// blip — is drawn against the MicroPython version's shape, so this is that
+// shape.
 void Canvas::fill_circle(int cx, int cy, int r, int colour) {
     if (r <= 0) { pixel(cx, cy, colour); return; }
-    int x = r, y = 0, err = 1 - r;
-    while (x >= y) {
-        // Spans rather than pixels: two horizontal runs per octant pair covers
-        // the disc without drawing any row twice, which on an inverting surface
-        // would matter and here just costs time.
-        hline(cx - x, cy + y, 2 * x + 1, colour);
-        hline(cx - x, cy - y, 2 * x + 1, colour);
-        hline(cx - y, cy + x, 2 * y + 1, colour);
-        hline(cx - y, cy - x, 2 * y + 1, colour);
-        y++;
-        if (err < 0) err += 2 * y + 1;
-        else { x--; err += 2 * (y - x) + 1; }
+    for (int dy = -r; dy <= r; dy++) {
+        int dx = isqrt(r * r - dy * dy);
+        hline(cx - dx, cy + dy, 2 * dx + 1, colour);
     }
 }
 

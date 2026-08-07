@@ -231,7 +231,19 @@ static void render_menu(void) {
 
 // --- output ----------------------------------------------------------------------
 
-int main(void) {
+// `novasim --dump` prints one line per frame: name, then a character per pixel.
+// That is what makes the comparison against the MicroPython original mechanical
+// rather than a matter of squinting at two screenshots — tools/icondiff.py
+// renders the same keys through v1's own novacanvas and diffs the two.
+static int dump(void) {
+    render_icons();
+    for (const Frame &f : g_frames)
+        printf("%s %d %d %s\n", f.name.c_str(), f.w, f.h, f.bits.c_str());
+    return 0;
+}
+
+int main(int argc, char **argv) {
+    if (argc > 1 && strcmp(argv[1], "--dump") == 0) return dump();
     render_boot();
     render_home();
     render_status();
