@@ -52,18 +52,50 @@ int setup(void) {
     //
     // Entries are removed by INDEX and the list shifts as they go, so this walks
     // downward — removing 1 then 2 removes the wrong second one.
-    fw_shell_run("service list", out, sizeof(out));
+    // RE-READ THE LIST EVERY TIME, and remove the first match.
+    //
+    // The first version captured the list once and then removed indices from
+    // highest to lowest. It dropped one of three. Removing renumbers everything
+    // after it, so a single snapshot is stale the moment the first remove
+    // succeeds — and scanning a snapshot for "3 " finds text that describes a
+    // list which no longer exists.
+    //
+    // Asking again each time costs three shell round trips on a device with
+    // three stale entries, and is right regardless of how the list renumbers.
     int removed = 0;
-    for (int i = 8; i >= 1; i--) {
-        // A line is "  <n>  <command>". Only the ones that are this package get
-        // removed; somebody else's services are not setup's business.
-        char needle[8];
-        snprintf(needle, sizeof(needle), "%d ", i);
-        const char *at = strstr(out, needle);
-        if (!at || !strstr(at, "novad1")) continue;
+    for (int guard = 0; guard < 12; guard++) {
+        out[0] = 0;
+        fw_shell_run("service list", out, sizeof(out));
+        if (!out[0]) {
+            fw_printf("  service    could not read the list; skipping the tidy-up\n");
+            break;
+        }
+
+        // Lines look like "   2  novad1 gui --bg". Find the first whose command
+        // is this package's — somebody else's services are not setup's business.
+        int found = -1;
+        for (const char *p = out; *p; ) {
+            const char *eol = strchr(p, '\n');
+            unsigned len = eol ? (unsigned)(eol - p) : (unsigned)strlen(p);
+            const char *q = p;
+            while (q < p + len && *q == ' ') q++;
+            if (q < p + len && *q >= '1' && *q <= '9') {
+                int n = 0;
+                while (q < p + len && *q >= '0' && *q <= '9') n = n * 10 + (*q++ - '0');
+                // strstr would run past the newline; bound it to this line.
+                for (const char *s = q; s + 6 <= p + len; s++)
+                    if (strncmp(s, "novad1", 6) == 0) { found = n; break; }
+            }
+            if (found >= 0) break;
+            if (!eol) break;
+            p = eol + 1;
+        }
+        if (found < 0) break;
+
         char cmd[32];
-        snprintf(cmd, sizeof(cmd), "service remove %d", i);
-        if (fw_shell_run(cmd, nullptr, 0) == 0) removed++;
+        snprintf(cmd, sizeof(cmd), "service remove %d", found);
+        if (fw_shell_run(cmd, nullptr, 0) != 0) break;   // stop rather than spin
+        removed++;
     }
     if (removed) fw_printf("  service    dropped %d stale entr%s\n",
                            removed, removed == 1 ? "y" : "ies");

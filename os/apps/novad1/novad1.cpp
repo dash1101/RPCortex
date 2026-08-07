@@ -21,7 +21,7 @@
 #include <string.h>
 #include <stdio.h>
 
-RPC_APP_VER("novad1", "0.95.0");
+RPC_APP_VER("novad1", "0.96.0");
 
 namespace {
 
@@ -143,7 +143,7 @@ int cmd_pins(int argc, char **argv) {
 // --- d1 ---------------------------------------------------------------------
 
 void usage(void) {
-    fw_printf("Nova D1 0.95.0 - the handheld multi-tool\n\n");
+    fw_printf("Nova D1 0.96.0 - the handheld multi-tool\n\n");
     fw_printf("  setup                  make it a Nova D1: storage, pins, the boot service\n");
     fw_printf("  gui [--bg]             run the screen, in front or in the background\n");
     fw_printf("  service start|stop|restart|status\n");
@@ -289,6 +289,29 @@ int cmd_display_test(void) {
     nova::Canvas c;
     c.attach(fb, 128, 64);
 
+    // THE SCREEN TASK MUST NOT BE RUNNING.
+    //
+    // The first version of this ran happily alongside it, and told the person
+    // watching nothing at all: the GUI repaints every 16 to 140 ms, so each test
+    // pattern was overwritten before it could be read, and the GUI's own
+    // re-initialisation fought with this one over the same controller. Three
+    // "shown" lines and a screen that never changed.
+    if (nova::gui::started()) {
+        fw_printf("The screen task is running and would paint over the test.\n");
+        fw_printf("  novad1 service stop     then try again\n");
+        return 1;
+    }
+
+    // And say what is CONFIGURED, because a setting overrides the default and
+    // that is the other reason this test can mislead. The default was changed to
+    // the SH1106 and a device with Apps.NovaD1_Display already set to something
+    // else carried on using what it was told — correctly, and invisibly.
+    const char *cfg = nova::reg(NOVA_KEY_PREFIX "Display", "");
+    if (cfg[0]) {
+        fw_printf("Configured: %s  (this overrides the default)\n", cfg);
+        fw_printf("  novad1 display auto     to go back to the default\n\n");
+    }
+
     fw_printf("Watch the panel. Each controller gets four seconds.\n\n");
     for (unsigned i = 0; i < sizeof(kTry) / sizeof(kTry[0]); i++) {
         fw_printf("  %-8s ... ", kTry[i].name);
@@ -343,7 +366,7 @@ int cmd_display(int argc, char **argv) {
 int cmd_status(void) {
     char b[24];
     fw_board(b, sizeof(b));
-    fw_printf("Nova D1 0.95.0 on %s\n", b);
+    fw_printf("Nova D1 0.96.0 on %s\n", b);
     fw_printf("  profile   %s (%s)\n", nova::board::board_id(), nova::board::board_name());
     fw_printf("  display   %s\n", nova::board::display_bus());
     fw_printf("  storage   %s\n", fw_file_exists(NOVA_ROOT) ? NOVA_ROOT : "not created yet");
