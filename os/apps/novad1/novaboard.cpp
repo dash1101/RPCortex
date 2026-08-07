@@ -75,12 +75,26 @@ struct Profile {
 //
 // 'ibutton' stays unassigned: the map has three pins left and the LF front-end
 // or an iButton reader needs a GPIO expander to collapse the buttons first.
+// I2C IS ON GPIO 0 AND 1, not 4 and 5.
+//
+// The generated wiring table says 4/5 and the hardware in front of the person
+// who built this says 0/1, which is where the MicroPython suite put the panel in
+// practice. Both pairs are I2C0 — GPIO 0/1 and 4/5 are both valid SDA/SCL on
+// RP2 — so nothing about the bus decides it, and the working device wins.
+//
+// The GPS moves to 4/5 to make room, and lands on UART1 TX/RX, which those two
+// also are. So the swap costs nothing: each peripheral keeps a valid pair and
+// the pin count is unchanged.
+//
+// NovaLabs/docs/novad1-wiring.md is generated from the MicroPython profile and
+// still says 4/5. It needs regenerating from this one.
 static const Profile kPico2W = {
     "pico2w", "Raspberry Pi Pico 2 W", "i2c",
-    "Display on I2C. SD shares the radio SPI0 bus. Kill-switch on GPIO 8. "
-    "iButton and an LF front-end need a GPIO expander.",
+    "Display, NFC and the RTC share I2C0 on GPIO 0/1. SD shares the radio "
+    "SPI0 bus. Kill-switch on GPIO 8. iButton and an LF front-end need a "
+    "GPIO expander.",
     {
-        /* sda      */  4, /* scl      */  5,
+        /* sda      */  0, /* scl      */  1,
         /* enc_a    */ 14, /* enc_b    */ 15, /* enc_sw */ 13,
         /* btn1     */ 22, /* btn2     */ 26, /* killsw */  8,
         /* spi_sck  */ 18, /* spi_mosi */ 19, /* spi_miso */ 16,
@@ -88,7 +102,7 @@ static const Profile kPico2W = {
         /* sx_cs    */ 21, /* sx_rst   */ 12,
         /* sd_cs    */  9,
         /* ir_tx    */  6, /* ir_rx    */  7,
-        /* gps_tx   */  0, /* gps_rx   */  1,
+        /* gps_tx   */  4, /* gps_rx   */  5,
         /* buzzer   */ 27, /* vibe     */ 28, /* led */ PIN_NONE,
         /* dht      */  3, /* ibutton  */ PIN_NONE,
         /* battery  */ PIN_NONE, /* vbus */ PIN_NONE,
@@ -103,8 +117,8 @@ static const Profile kPicoPlus2W = {
     "Same header as the Pico 2 W, so the same map. Adds 8 MB PSRAM, 16 MB flash "
     "and GPIO beyond 28 — put iButton and the LF front-end there.",
     {
-        4, 5, 14, 15, 13, 22, 26, 8, 18, 19, 16, 17, 20, 21, 12, 9,
-        6, 7, 0, 1, 27, 28, PIN_NONE, 3, PIN_NONE, PIN_NONE, PIN_NONE,
+        0, 1, 14, 15, 13, 22, 26, 8, 18, 19, 16, 17, 20, 21, 12, 9,
+        6, 7, 4, 5, 27, 28, PIN_NONE, 3, PIN_NONE, PIN_NONE, PIN_NONE,
     }
 };
 

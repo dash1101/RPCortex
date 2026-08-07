@@ -6,6 +6,8 @@
 #include "novaboard.h"
 #include "display.h"
 #include "novasplash.h"
+#include "novabootcheck.h"
+#include "novapower.h"
 #include "novagui_tools.h"
 #include "novagui_system.h"
 
@@ -176,10 +178,45 @@ static void draw_status(Canvas &c, Screen *s) {
         c.text(right, 1, "?", 1);
     }
 
+    // Power, to the left of the clock. Three states, and which one shows is
+    // decided by what is actually WIRED rather than by a guess:
+    //
+    //   on USB          the USB trident, and no level — a charging cell reads as
+    //                   a charging voltage, and drawing that as a level would be
+    //                   a number that moves for the wrong reason
+    //   battery, no ADC an empty outline: powered, and no way to say how much
+    //   battery + ADC   the outline filled in proportion
+    right -= 13;
+    {
+        power::Source src = power::source();
+        if (src == power::PWR_USB) {
+            // A USB trident: the stem, the round tip, the square tip, the fork.
+            int y = 4;
+            c.hline(right, y, 10, 1);
+            c.fill_rect(right, y - 1, 2, 3, 1);
+            c.line(right + 4, y, right + 6, y - 3, 1);
+            c.fill_rect(right + 6, y - 4, 2, 2, 1);
+            c.line(right + 4, y, right + 6, y + 3, 1);
+            c.rect(right + 6, y + 2, 2, 2, 1);
+        } else {
+            // The cell outline, with its terminal on the right.
+            c.rect(right, 1, 10, 7, 1);
+            c.fill_rect(right + 10, 3, 1, 3, 1);
+            int pct = power::percent();
+            if (pct >= 0) {
+                int w = pct * 8 / 100;
+                if (w > 0) c.fill_rect(right + 1, 2, w, 5, 1);
+                // Nearly flat gets a mark rather than a very short bar, which at
+                // one pixel wide is indistinguishable from a full one.
+                if (power::low()) { c.fill_rect(right + 4, 3, 2, 3, 1); }
+            }
+        }
+    }
+
     // The link indicator: three ascending bars when connected, an outline when
     // not. Drawn rather than lettered because "WiFi" costs four characters of a
     // twenty-one-character line and says less.
-    right -= 9;
+    right -= 11;
     bool linked = fw_net_connected() != 0;
     for (int i = 0; i < 3; i++) {
         int h = 2 + i * 2;
@@ -200,7 +237,26 @@ class Gallery : public Screen {
 public:
     void set(const char *title, const App *const *items, int count) {
         title_ = title; items_ = items; count_ = count; sel_ = 0;
+        slide_ = 0; dir_ = 0;
     }
+
+    // The ring SLIDES rather than jumping.
+    //
+    // `slide_` runs from 256 down to 0 across a step, and every icon is placed
+    // and sized from it — so the one arriving at the centre grows into it while
+    // the one leaving shrinks away, and the whole row moves together. Jumping
+    // between two fixed sizes reads as a slideshow; this reads as a ring being
+    // turned, which is what it is.
+    //
+    // Fixed point, in 256ths. There is no floating point anywhere in this
+    // package and this is not the place to start needing it.
+    bool tick(uint32_t dt) override {
+        if (!slide_) return false;
+        uint32_t step = dt * 256 / SLIDE_MS;
+        slide_ = (slide_ > (int)step) ? slide_ - (int)step : 0;
+        return true;
+    }
+    bool animating(void) const override { return slide_ != 0; }
 
     void draw(Canvas &c) override {
         if (count_ <= 0) {
@@ -210,23 +266,38 @@ public:
         const int mid_y = ui::TOP + 20;
         const int cx = c.width() / 2;
 
-        // The neighbours first, so the centre icon overlaps them rather than the
-        // other way round — at this size an icon drawn over the big one reads as
-        // damage.
-        for (int d = -2; d <= 2; d++) {
-            if (d == 0) continue;
-            int idx = wrapped(sel_ + d);
-            int x = cx + d * 26;
-            if (x < 8 || x > c.width() - 8) continue;
-            const App *a = items_[idx];
-            icons::draw(c, a->key, x, mid_y, 6, a->label);
-            if (!app_available(*a)) strike(c, x, mid_y, 7);
+        // Where the ring is between two positions, in pixels. dir_ says which
+        // way it is going, slide_ how far it still has to travel.
+        const int off = dir_ * slide_ * SPACING / 256;
+
+        // Outside in, so the centre icon is drawn last and overlaps its
+        // neighbours rather than the other way round — at this size an icon
+        // drawn over the big one reads as damage.
+        for (int pass = 2; pass >= 0; pass--) {
+            for (int d = -2; d <= 2; d++) {
+                if ((d < 0 ? -d : d) != pass) continue;
+                int idx = wrapped(sel_ + d);
+                int x = cx + d * SPACING + off;
+                if (x < -12 || x > c.width() + 12) continue;
+
+                // Size follows DISTANCE FROM THE CENTRE, continuously. An icon
+                // halfway between two slots is halfway between two sizes, which
+                // is the whole reason this reads as motion.
+                int dist = x > cx ? x - cx : cx - x;
+                int r = R_BIG - dist * (R_BIG - R_SMALL) / SPACING;
+                if (r < R_SMALL) r = R_SMALL;
+                if (r > R_BIG)   r = R_BIG;
+
+                const App *a = items_[idx];
+                icons::draw(c, a->key, x, mid_y, r, a->label);
+                if (!app_available(*a)) strike(c, x, mid_y, r + 1);
+            }
         }
 
-        const App *a = items_[sel_];
-        icons::draw(c, a->key, cx, mid_y, 12, a->label);
-        if (!app_available(*a)) strike(c, cx, mid_y, 13);
-
+        // The label belongs to whichever icon is nearest the middle, so it
+        // changes at the halfway point of a step rather than at either end.
+        const App *a = items_[wrapped(sel_ + ((off > SPACING / 2) ? -1 :
+                                              (off < -SPACING / 2) ? 1 : 0))];
         c.text_centred(c.height() - ui::FH - 1, a->label, 1, 1, false);
 
         // Where you are in the ring. A row of pips rather than "3/12": on a list
@@ -243,8 +314,10 @@ public:
 
     Action on_event(Event e) override {
         if (count_ <= 0) return Screen::on_event(e);
-        if (e == EV_ROT_CW)  { sel_ = wrapped(sel_ + 1); return ACT_STAY; }
-        if (e == EV_ROT_CCW) { sel_ = wrapped(sel_ - 1); return ACT_STAY; }
+        // Moving starts the slide from a full step away, in the direction it
+        // came from, so the icons appear to travel from where they were.
+        if (e == EV_ROT_CW)  { sel_ = wrapped(sel_ + 1); slide_ = 256; dir_ =  1; return ACT_STAY; }
+        if (e == EV_ROT_CCW) { sel_ = wrapped(sel_ - 1); slide_ = 256; dir_ = -1; return ACT_STAY; }
         if (e == EV_SELECT) {
             const App *a = items_[sel_];
             if (a->open && app_available(*a)) a->open();
@@ -256,10 +329,18 @@ public:
     const char *title(void) const override { return title_; }
 
 protected:
+    static constexpr int SPACING  = 26;   // pixels between icon centres
+    static constexpr int R_BIG    = 12;   // the one under the cursor
+    static constexpr int R_SMALL  = 6;    // its neighbours
+    static constexpr int SLIDE_MS = 90;   // long enough to see, short enough
+                                          // that a fast spin does not lag behind
+
     const char *title_;
     const App *const *items_;
     int count_;
     int sel_;
+    int slide_;      // 256 at the start of a step, 0 when it has arrived
+    int dir_;        // which way the ring is turning
 
     int wrapped(int i) const {
         if (count_ <= 0) return 0;
@@ -409,7 +490,12 @@ bool begin(void) {
     // On TOP of home, so it pops back to a screen that is already built rather
     // than building one after the animation. That is what stops the splash
     // adding to boot time instead of covering it.
-    if (panel && nova::reg_bool(NOVA_KEY_PREFIX "Splash", true)) push<SplashScreen>();
+    // Home, then the check, then the splash — so they pop in the order they are
+    // meant to be seen and each one lands on something already built.
+    if (panel) {
+        push<BootCheckScreen>();
+        if (nova::reg_bool(NOVA_KEY_PREFIX "Splash", true)) push<SplashScreen>();
+    }
     g_level = LVL_ACTIVE;
     g_last_input = fw_millis();
     g_dirty = true;
@@ -424,9 +510,28 @@ void run(void) {
         input().poll();
 
         bool had_input = false;
+        bool turned = false;      // a rotation was consumed this frame
         Event e;
         while ((e = input().next()) != EV_NONE) {
             had_input = true;
+
+            // ONE DETENT PER FRAME, and this is the whole difference between an
+            // encoder that feels connected to the screen and one that does not.
+            //
+            // Draining the queue in a single frame means a fast spin moves the
+            // selection six rows and redraws once: the cursor teleports and
+            // there is no sense of having travelled. Taking one step per frame
+            // draws every position it passes through, which is what reads as
+            // smooth. The MicroPython suite arrived at the same answer and was
+            // capped at its loop rate; here the loop runs at 60 a second while
+            // anything is queued, so a fast spin keeps up instead of lagging.
+            //
+            // Buttons are NOT rationed — a press waiting behind three detents
+            // would be a button that feels stuck.
+            if (e == EV_ROT_CW || e == EV_ROT_CCW) {
+                if (turned) { input().unget(e); break; }
+                turned = true;
+            }
 
             // A gesture while the screen is dark wakes it and is CONSUMED. On a
             // device you pick up out of a pocket, the first press is "show me",
@@ -468,6 +573,13 @@ void run(void) {
 
         Screen *s = top();
         if (s && s->tick(dt)) g_dirty = true;
+        // RE-READ THE TOP. A screen may pop ITSELF from tick — the splash does
+        // exactly that when its animation ends — and the pointer taken before
+        // the call then refers to a slot that has been handed back. Drawing
+        // through it painted the splash again every frame, so the boot screen
+        // stayed up until a gesture arrived and pushed things along by another
+        // route. Nothing crashed, which is why it looked like a timing problem.
+        s = top();
 
         // Dim, then off, on their own timers. Both are contrast changes, so
         // waking is instant and nothing has to be re-initialised.
@@ -505,7 +617,10 @@ void run(void) {
         // and the difference between napping 16 ms and 300 ms is the difference
         // between a day of battery and an afternoon.
         uint32_t nap;
-        if      (s && s->animating())   nap = NAP_ANIMATING;
+        // Still something queued means still turning. Holding the fast frame
+        // rate is what lets the one-step-per-frame rule keep up with a spin.
+        if      (input().pending())     nap = NAP_ANIMATING;
+        else if (s && s->animating())   nap = NAP_ANIMATING;
         else if (had_input)             nap = NAP_ACTIVE;
         else if (g_level == LVL_OFF)    nap = NAP_OFF;
         else if (g_level == LVL_DIM)    nap = NAP_DIM;

@@ -97,6 +97,16 @@ Event Input::next(void) {
     return e;
 }
 
+void Input::unget(Event e) {
+    unsigned prev = (tail_ + QUEUE - 1) % QUEUE;
+    // Full is the one case where it cannot go back. Dropping it is right: the
+    // queue is already holding more turning than the screen can show, and one
+    // more detent at the far end of it changes nothing anybody would see.
+    if (prev == head_) return;
+    tail_ = prev;
+    queue_[tail_] = e;
+}
+
 void Input::flush(void) { head_ = tail_ = 0; }
 
 void Input::inject(Event e) { push(e); }

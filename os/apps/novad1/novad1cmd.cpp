@@ -33,7 +33,7 @@ int setup(void) {
     static char report[1024];
     unsigned bad = board::check(report, sizeof(report));
     if (bad) {
-        fw_printf("  pins       %u problem%s — run `d1 pins check`\n", bad, bad == 1 ? "" : "s");
+        fw_printf("  pins       %u problem%s — run `novad1 pins check`\n", bad, bad == 1 ? "" : "s");
     } else {
         fw_printf("  pins       %s, valid\n", board::board_id());
     }
@@ -42,11 +42,21 @@ int setup(void) {
     // supervised and restarted; a startup entry runs once and, if it fails, the
     // device comes up with no screen and nothing saying why.
     char out[256];
-    int rc = fw_shell_run("service add novad1 d1 gui --bg", out, sizeof(out));
-    if (rc == 0) fw_printf("  service    registered — the screen starts at every boot\n");
-    else         fw_printf("  service    could not register (%s)\n", out[0] ? out : "no detail");
+    // `service add <command>` — the whole rest of the line IS the command, with
+    // no name in front of it. Passing one made the service "novad1 novad1 gui
+    // --bg", which is not a command and failed at every boot saying so.
+    int rc = fw_shell_run("service add novad1 gui --bg", out, sizeof(out));
+    if (rc == 0) {
+        fw_printf("  service    registered — the screen starts at every boot\n");
+    } else {
+        fw_printf("  service    could not register\n");
+        if (out[0]) fw_printf("             %s", out);
+        // `service` is admin-only, and fw_shell_run runs as whoever is logged
+        // in. That is the usual reason and it is not obvious from the message.
+        fw_printf("             (adding a service needs an admin session)\n");
+    }
 
-    fw_printf("\nReboot, or `d1 gui` to start it now.\n");
+    fw_printf("\nReboot, or `novad1 gui` to start it now.\n");
     log::write("setup ran");
     return bad ? 1 : 0;
 }
@@ -58,14 +68,14 @@ int service(int argc, char **argv) {
     char out[256];
 
     if (!strcmp(sub, "status")) {
-        fw_printf("Screen: %s\n", gui::running() ? "running" : "stopped");
+        fw_printf("Nova D1 screen: %s\n", gui::running() ? "running" : "stopped");
         fw_shell_run("service list", out, sizeof(out));
         fw_printf("%s", out);
         return 0;
     }
     if (!strcmp(sub, "start")) {
         if (gui::running()) { fw_printf("Already running.\n"); return 1; }
-        return fw_shell_run("bg d1 gui --bg", nullptr, 0);
+        return fw_shell_run("novad1 gui --bg", nullptr, 0);
     }
     if (!strcmp(sub, "stop")) {
         if (!gui::running()) { fw_printf("Not running.\n"); return 1; }
@@ -84,9 +94,9 @@ int service(int argc, char **argv) {
             // "ask it to stop, then race it".
             for (int i = 0; i < 20 && gui::running(); i++) fw_task_sleep_ms(50);
         }
-        return fw_shell_run("bg d1 gui --bg", nullptr, 0);
+        return fw_shell_run("novad1 gui --bg", nullptr, 0);
     }
-    fw_printf("d1 service start | stop | restart | status\n");
+    fw_printf("novad1 service start | stop | restart | status\n");
     return 1;
 }
 
@@ -95,7 +105,7 @@ int service(int argc, char **argv) {
 int style(int argc, char **argv) {
     if (argc < 3) {
         fw_printf("Home style: %s\n", nova::reg(NOVA_KEY_PREFIX "HomeStyle", "folders"));
-        fw_printf("  d1 style folders | gallery | menu\n");
+        fw_printf("  novad1 style folders | gallery | menu\n");
         fw_printf("    folders   apps grouped, one icon per group (default)\n");
         fw_printf("    gallery   every app in one ring of icons\n");
         fw_printf("    menu      a plain list\n");
@@ -137,7 +147,7 @@ int apps(int argc, char **argv) {
             fw_printf("%-14s %-9s %-6s %s\n", a[i].key, category_name(a[i].cat),
                       home_shows(a[i].key) ? "yes" : "no", state);
         }
-        fw_printf("\n  d1 apps show <key> | hide <key> | reset\n");
+        fw_printf("\n  novad1 apps show <key> | hide <key> | reset\n");
         return 0;
     }
 
@@ -147,13 +157,13 @@ int apps(int argc, char **argv) {
         fw_printf("Every app shows again.\n");
         return 0;
     }
-    if (argc < 4) { fw_printf("d1 apps show|hide <key>\n"); return 1; }
+    if (argc < 4) { fw_printf("novad1 apps show|hide <key>\n"); return 1; }
 
     // Check the key exists before writing it. A typo saved into the list is a
     // setting that does nothing and gives no hint why.
     bool known = false;
     for (unsigned i = 0; i < n; i++) if (!strcmp(a[i].key, argv[3])) known = true;
-    if (!known) { fw_printf("No app called '%s'. `d1 apps` lists them.\n", argv[3]); return 1; }
+    if (!known) { fw_printf("No app called '%s'. `novad1 apps` lists them.\n", argv[3]); return 1; }
 
     bool hide = !strcmp(argv[2], "hide");
     char csv[NOVA_VAL_MAX];
@@ -174,13 +184,13 @@ int fav(int argc, char **argv) {
     if (argc < 3 || !strcmp(argv[2], "list")) {
         if (!csv[0]) {
             fw_printf("No favourites. The bar above the folders is empty.\n");
-            fw_printf("  d1 fav add <key>   — `d1 apps` lists the keys\n");
+            fw_printf("  novad1 fav add <key>   — `d1 apps` lists the keys\n");
             return 0;
         }
         fw_printf("Favourites: %s\n", csv);
         return 0;
     }
-    if (argc < 4) { fw_printf("d1 fav add|remove <key> | list | clear\n"); return 1; }
+    if (argc < 4) { fw_printf("novad1 fav add|remove <key> | list | clear\n"); return 1; }
 
     if (!strcmp(argv[2], "clear")) {
         nova::reg_set(NOVA_KEY_PREFIX "Favorites", "");
@@ -192,7 +202,7 @@ int fav(int argc, char **argv) {
     const gui::App *a = gui::apps();
     bool known = false;
     for (unsigned i = 0; i < gui::app_count(); i++) if (!strcmp(a[i].key, argv[3])) known = true;
-    if (!known) { fw_printf("No app called '%s'. `d1 apps` lists them.\n", argv[3]); return 1; }
+    if (!known) { fw_printf("No app called '%s'. `novad1 apps` lists them.\n", argv[3]); return 1; }
 
     bool changed = !strcmp(argv[2], "remove") ? nova::csv_remove(csv, sizeof(csv), argv[3])
                                               : nova::csv_add(csv, sizeof(csv), argv[3]);
@@ -212,7 +222,7 @@ int lock(int argc, char **argv) {
         fw_printf("Lock: %s\n", kind);
         int secs = nova::reg_int(NOVA_KEY_PREFIX "LockSec", 0);
         if (secs) fw_printf("  locks itself after %ds idle\n", secs);
-        fw_printf("  d1 pin set <6 digits> | clear | auto <seconds>\n");
+        fw_printf("  novad1 pin set <6 digits> | clear | auto <seconds>\n");
         return 0;
     }
 
@@ -226,7 +236,7 @@ int lock(int argc, char **argv) {
     }
 
     if (!strcmp(argv[2], "auto")) {
-        if (argc < 4) { fw_printf("d1 pin auto <seconds>, or 0 to never\n"); return 1; }
+        if (argc < 4) { fw_printf("novad1 pin auto <seconds>, or 0 to never\n"); return 1; }
         int s = 0;
         for (const char *p = argv[3]; *p; p++) {
             if (*p < '0' || *p > '9') { fw_printf("Not a number: %s\n", argv[3]); return 1; }
@@ -240,7 +250,7 @@ int lock(int argc, char **argv) {
     }
 
     if (!strcmp(argv[2], "set")) {
-        if (argc < 4) { fw_printf("d1 pin set <6 digits>\n"); return 1; }
+        if (argc < 4) { fw_printf("novad1 pin set <6 digits>\n"); return 1; }
         const char *pin = argv[3];
         unsigned n = (unsigned)strlen(pin);
         if (n != 6) { fw_printf("A PIN is six digits; that is %u.\n", n); return 1; }
@@ -256,7 +266,7 @@ int lock(int argc, char **argv) {
         log::write("screen lock set");
         return 0;
     }
-    fw_printf("d1 pin set <6 digits> | clear | auto <seconds>\n");
+    fw_printf("novad1 pin set <6 digits> | clear | auto <seconds>\n");
     return 1;
 }
 
@@ -293,7 +303,7 @@ int incognito(int argc, char **argv) {
         if (rc == 0) log::write("incognito off");
         return rc;
     }
-    fw_printf("d1 incognito on | off | status\n");
+    fw_printf("novad1 incognito on | off | status\n");
     return 1;
 }
 
@@ -371,7 +381,7 @@ int wifiprobe(void) {
     fw_printf("phone passively as it walks past. None of those are backlog items.\n\n");
     fw_printf("What DOES work:\n");
     fw_printf("  wifi scan        access points — BSSID, SSID, channel, signal\n");
-    fw_printf("  d1 wardrive      the same, logged to a WiGLE CSV with a position\n");
+    fw_printf("  novad1 wardrive      the same, logged to a WiGLE CSV with a position\n");
     fw_printf("  Bluetooth        nearly everything advertises, and the payload\n");
     fw_printf("                   says what a device is rather than that it exists\n\n");
     fw_printf("Capture belongs to a device with a radio that supports it.\n");

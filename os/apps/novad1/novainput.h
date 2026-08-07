@@ -53,6 +53,11 @@ public:
     // The next gesture, or EV_NONE. Never blocks.
     Event next(void);
 
+    // Put one back at the FRONT, so it is the next one out. The runner takes a
+    // single rotation step per frame and returns the rest; a plain push would
+    // put them behind whatever arrived since and reverse the order of a spin.
+    void unget(Event e);
+
     // Is anything waiting? For the UI loop's decision about how long to nap.
     bool pending(void) const { return head_ != tail_; }
 

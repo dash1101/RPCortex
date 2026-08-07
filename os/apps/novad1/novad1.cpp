@@ -21,7 +21,7 @@
 #include <string.h>
 #include <stdio.h>
 
-RPC_APP_VER("novad1", "0.90.0");
+RPC_APP_VER("novad1", "0.91.0");
 
 namespace {
 
@@ -100,7 +100,7 @@ int cmd_pins(int argc, char **argv) {
     }
 
     if (!strcmp(argv[1], "set")) {
-        if (argc < 4) { fw_printf("Usage: d1 pins set <name> <gpio>\n"); return 1; }
+        if (argc < 4) { fw_printf("Usage: novad1 pins set <name> <gpio>\n"); return 1; }
         PinId id = nova::board::by_name(argv[2]);
         if (id == PIN_COUNT) { fw_printf("No pin called '%s'.\n", argv[2]); return 1; }
         int g = 0;
@@ -125,7 +125,7 @@ int cmd_pins(int argc, char **argv) {
     }
 
     if (!strcmp(argv[1], "clear")) {
-        if (argc < 3) { fw_printf("Usage: d1 pins clear <name>\n"); return 1; }
+        if (argc < 3) { fw_printf("Usage: novad1 pins clear <name>\n"); return 1; }
         PinId id = nova::board::by_name(argv[2]);
         if (id == PIN_COUNT) { fw_printf("No pin called '%s'.\n", argv[2]); return 1; }
         nova::board::clear(id);
@@ -136,14 +136,14 @@ int cmd_pins(int argc, char **argv) {
         return 0;
     }
 
-    fw_printf("d1 pins [check | board [<id>|auto] | set <name> <gpio> | clear <name>]\n");
+    fw_printf("novad1 pins [check | board [<id>|auto] | set <name> <gpio> | clear <name>]\n");
     return 1;
 }
 
 // --- d1 ---------------------------------------------------------------------
 
 void usage(void) {
-    fw_printf("Nova D1 0.90.0 - the handheld multi-tool\n\n");
+    fw_printf("Nova D1 0.91.0 - the handheld multi-tool\n\n");
     fw_printf("  setup                  make it a Nova D1: storage, pins, the boot service\n");
     fw_printf("  gui [--bg]             run the screen, in front or in the background\n");
     fw_printf("  service start|stop|restart|status\n");
@@ -167,7 +167,8 @@ void usage(void) {
     fw_printf("  selfupdate             fetch and install a newer Nova D1\n");
     fw_printf("\n");
     fw_printf("Not built yet: wardrive, ble, radar, fire, store, web.\n");
-    fw_printf("Wiring is per board — `d1 pins` needs no registry editing.\n");
+    fw_printf("Short form: `d1` does everything `novad1` does.\n");
+    fw_printf("Wiring is per board — `novad1 pins` needs no registry editing.\n");
 }
 
 // --- d1 scan -------------------------------------------------------------------
@@ -222,7 +223,7 @@ int cmd_gui(int argc, char **argv) {
         fw_printf("No panel answered on I2C (SDA %d, SCL %d).\n",
                   nova::board::pin(nova::board::PIN_SDA),
                   nova::board::pin(nova::board::PIN_SCL));
-        fw_printf("Check the wiring, then `d1 scan`. `i2cscan` lists what is there.\n");
+        fw_printf("Check the wiring, then `novad1 scan`. `i2cscan` lists what is there.\n");
         return 1;
     }
     fw_printf("Panel: %s at 0x%02x.\n", nova::display().kind_name(), nova::display().address());
@@ -275,7 +276,7 @@ int cmd_display(int argc, char **argv) {
 int cmd_status(void) {
     char b[24];
     fw_board(b, sizeof(b));
-    fw_printf("Nova D1 0.90.0 on %s\n", b);
+    fw_printf("Nova D1 0.91.0 on %s\n", b);
     fw_printf("  profile   %s (%s)\n", nova::board::board_id(), nova::board::board_name());
     fw_printf("  display   %s\n", nova::board::display_bus());
     fw_printf("  storage   %s\n", fw_file_exists(NOVA_ROOT) ? NOVA_ROOT : "not created yet");
@@ -338,7 +339,7 @@ int cmd_d1(int argc, char **argv) {
         return 1;
     }
 
-    fw_printf("d1: don't know '%s'. Try `d1 help`.\n", sub);
+    fw_printf("Nova D1: don't know '%s'. Try `novad1 help`.\n", sub);
     return 1;
 }
 
@@ -347,9 +348,11 @@ int cmd_d1(int argc, char **argv) {
 extern "C" int app_main(int arg) {
     (void)arg;
     nova::paths_init();
-    rpc_register_command("d1", "Nova D1 - the handheld multi-tool", cmd_d1);
-    // Both spellings, because the MicroPython suite answered to both and
-    // people's notes and scripts have whichever one they learned first.
+    // novad1 FIRST, because that is the device's name and it is what the help,
+    // the service entry and every message here say. `d1` is the short form kept
+    // for typing and for the scripts people already have — the MicroPython
+    // suite answered to both and there is no reason to take one away.
     rpc_register_command("novad1", "Nova D1 - the handheld multi-tool", cmd_d1);
+    rpc_register_command("d1", "Nova D1 - short for novad1", cmd_d1);
     return 0;
 }
