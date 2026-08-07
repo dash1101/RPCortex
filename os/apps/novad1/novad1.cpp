@@ -21,7 +21,7 @@
 #include <string.h>
 #include <stdio.h>
 
-RPC_APP_VER("novad1", "0.94.0");
+RPC_APP_VER("novad1", "0.95.0");
 
 namespace {
 
@@ -143,7 +143,7 @@ int cmd_pins(int argc, char **argv) {
 // --- d1 ---------------------------------------------------------------------
 
 void usage(void) {
-    fw_printf("Nova D1 0.94.0 - the handheld multi-tool\n\n");
+    fw_printf("Nova D1 0.95.0 - the handheld multi-tool\n\n");
     fw_printf("  setup                  make it a Nova D1: storage, pins, the boot service\n");
     fw_printf("  gui [--bg]             run the screen, in front or in the background\n");
     fw_printf("  service start|stop|restart|status\n");
@@ -153,7 +153,7 @@ void usage(void) {
     fw_printf("  status                 what is configured and what answered\n");
     fw_printf("  perf                   what the last second of frames cost\n");
     fw_printf("  pins [check|board|set|clear]   the wiring, and where each value came from\n");
-    fw_printf("  display [<kind>]       sh1106 | ssd1306 | ssd1309\n");
+    fw_printf("  display [<kind>|test]  sh1106 | ssd1306 | ssd1309, or identify it\n");
     fw_printf("\n");
     fw_printf("  style [folders|gallery|menu]   the home layout\n");
     fw_printf("  apps [show|hide|reset] <key>   which apps are on the home screen\n");
@@ -213,10 +213,21 @@ int gui_task(void *) {
 }
 
 int cmd_gui(int argc, char **argv) {
+    bool bg = (argc > 2 && (!strcmp(argv[2], "--bg") || !strcmp(argv[2], "-b")));
+
     // started(), not running(). running() only becomes true once the loop is
     // turning, which is after the task has been spawned AND scheduled — so it
     // answers "no" during the window where a second start does the damage.
     if (nova::gui::started()) {
+        // A BACKGROUND start that finds the screen already up has SUCCEEDED at
+        // what it was asked to do, and says nothing.
+        //
+        // Three duplicate service entries each printed two lines of complaint
+        // over the login prompt at every boot, and the shell had to be nudged
+        // with a return key to come back. A service arriving to find its job
+        // already done is not an error, and the console belongs to the person
+        // sitting at it.
+        if (bg) return 0;
         fw_printf("The screen is already running.\n");
         fw_printf("  novad1 service restart   to start it again with new settings\n");
         return 1;
@@ -235,7 +246,6 @@ int cmd_gui(int argc, char **argv) {
     }
     fw_printf("Panel: %s at 0x%02x.\n", nova::display().kind_name(), nova::display().address());
 
-    bool bg = (argc > 2 && (!strcmp(argv[2], "--bg") || !strcmp(argv[2], "-b")));
     if (!bg) {
         fw_printf("Running. BACK on the home screen does nothing; Ctrl+C here stops it.\n");
         nova::gui::run();
@@ -259,7 +269,57 @@ int cmd_perf(void) {
     return 0;
 }
 
+// Light each controller in turn with something unmistakable on it, and let the
+// person watching say which one worked.
+//
+// This is the answer to a problem that has now cost four versions of a dark
+// screen: these three panels share an I2C address and answer nothing that
+// distinguishes them, so software cannot identify one. It can only try, and a
+// wrong init produces no error of any kind — the writes are acknowledged and the
+// glass stays black. So the question goes to the only observer who can settle
+// it.
+int cmd_display_test(void) {
+    static const struct { nova::PanelKind k; const char *name; } kTry[] = {
+        { nova::PANEL_SH1106,  "sh1106"  },
+        { nova::PANEL_SSD1306, "ssd1306" },
+        { nova::PANEL_SSD1309, "ssd1309" },
+    };
+
+    static uint8_t fb[128 * 8];
+    nova::Canvas c;
+    c.attach(fb, 128, 64);
+
+    fw_printf("Watch the panel. Each controller gets four seconds.\n\n");
+    for (unsigned i = 0; i < sizeof(kTry) / sizeof(kTry[0]); i++) {
+        fw_printf("  %-8s ... ", kTry[i].name);
+        if (!nova::display().begin_as(kTry[i].k)) {
+            fw_printf("no panel answered on I2C\n");
+            continue;
+        }
+        // A border, the name in large text, and a filled bar. Big enough to see
+        // at a glance and asymmetric enough that a two-column offset shows —
+        // which is how an SH1106 driven as an SSD1306 gives itself away.
+        c.clear(0);
+        c.rect(0, 0, 128, 64, 1);
+        c.text_centred(14, kTry[i].name, 1, 2, false);
+        c.fill_rect(4, 40, 120, 8, 1);
+        c.text(6, 52, "if you can read this", 1);
+        nova::display().invalidate();
+        nova::display().show(c);
+        fw_printf("shown\n");
+        fw_task_sleep_ms(4000);
+    }
+
+    c.clear(0);
+    nova::display().show(c);
+    fw_printf("\nWhichever one you could read is the panel:\n");
+    fw_printf("  novad1 display <that one>\n");
+    fw_printf("If two looked right, prefer the one that was not shifted sideways.\n");
+    return 0;
+}
+
 int cmd_display(int argc, char **argv) {
+    if (argc > 2 && !strcmp(argv[2], "test")) return cmd_display_test();
     if (argc < 3) {
         fw_printf("Panel: %s\n", nova::display().kind_name());
         fw_printf("  ssd1309   2.42in, what the reference build carries (default)\n");
@@ -283,7 +343,7 @@ int cmd_display(int argc, char **argv) {
 int cmd_status(void) {
     char b[24];
     fw_board(b, sizeof(b));
-    fw_printf("Nova D1 0.94.0 on %s\n", b);
+    fw_printf("Nova D1 0.95.0 on %s\n", b);
     fw_printf("  profile   %s (%s)\n", nova::board::board_id(), nova::board::board_name());
     fw_printf("  display   %s\n", nova::board::display_bus());
     fw_printf("  storage   %s\n", fw_file_exists(NOVA_ROOT) ? NOVA_ROOT : "not created yet");

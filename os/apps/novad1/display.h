@@ -10,18 +10,19 @@
 // answer nothing that distinguishes them, so the panel is a configuration choice
 // and never a guess — `d1 display sh1106`.
 //
-// The DEFAULT IS THE SSD1309, because that is the part the reference build
-// actually carries: a 2.42" 128x64 on I2C, which is what the bill of materials
-// specifies and what the wiring is drawn around. The MicroPython suite defaulted
-// to the SH1106 and its own documentation did not, which is a drift somebody
-// hits by wiring the documented panel and getting a blank screen.
+// The DEFAULT IS THE SH1106, because that is the panel that has actually lit up.
+// It was changed to the SSD1309 once — the bill of materials specifies one, and
+// a document seemed like a better authority than a default nobody had written
+// down. The board went dark for four versions.
 //
-// It matters more than a default usually does. An SSD1309 sent the SH1106's
-// init never unlocks its command interface and stays dark, with nothing to see
-// anywhere. An SH1106 sent the SSD1309's init is merely two columns out. So the
-// wrong default in this direction is a device that looks broken, and in the
-// other it is a device that looks slightly off — and the common case should be
-// the one that works.
+// The mechanism is worth knowing, because it fails in total silence. An SH1106
+// turns its own charge pump on with 0xad 0x8b; the SSD1309 has no pump command
+// at all, being driven externally. So an SH1106 sent the SSD1309 sequence has no
+// supply to its panel — while every I2C write is acknowledged, nothing reports
+// an error, and the screen is simply black.
+//
+// `novad1 display test` cycles all three with a pattern on each. That is the
+// only honest way to identify one of these: ask the person who can see it.
 //
 // A wrong init sequence FAILS SILENTLY: a blank or garbled panel and no error
 // anywhere. The sequences here are carried over byte for byte from the
@@ -35,7 +36,7 @@
 namespace nova {
 
 enum PanelKind {
-    PANEL_AUTO = 0,     // means SSD1309, the reference part; see above
+    PANEL_AUTO = 0,     // means SH1106, the one known to work; see above
     PANEL_SH1106,
     PANEL_SSD1306,
     PANEL_SSD1309,
@@ -67,6 +68,12 @@ public:
     void power(bool on);
     void invert(bool on);
 
+    // Bring the panel up as a NAMED controller, ignoring what is configured.
+    // For `novad1 display test`, which is the only honest way to identify one of
+    // these: they share an I2C address and answer nothing that tells them apart,
+    // so the question goes to the person who can see the screen.
+    bool begin_as(PanelKind kind);
+
     // How many pages the last show() actually wrote, for the frame-rate readout.
     // The number that says whether the diff is earning its keep.
     unsigned last_pages(void) const { return last_pages_; }
@@ -95,11 +102,14 @@ private:
     // The previous frame, for the diff. 1 KB of bss rather than an allocation:
     // it lives exactly as long as the package does, and taking it from the 12 KB
     // arena would be most of the arena.
-    bool    have_last_;
-    uint8_t last_[128 * 8];
+    bool      have_last_;
+    PanelKind forced_;      // begin_as(), for the identify test
+    unsigned  fails_;       // consecutive frames the panel would not take
+    uint8_t   last_[128 * 8];
 
     bool cmds(const uint8_t *seq, unsigned n);
     bool probe(uint8_t addr);
+    void note_fail(void);
 };
 
 // The one display the device has. A singleton because the panel is: two Display

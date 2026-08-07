@@ -144,6 +144,15 @@ bool Display::probe(uint8_t addr) {
     return fw_i2c_write(bus_, addr, nop, 2, 0) >= 0;
 }
 
+// The configured panel, or the one named. Everything below is shared; the only
+// difference is where the kind comes from.
+bool Display::begin_as(PanelKind kind) {
+    forced_ = kind;
+    bool ok = begin();
+    forced_ = PANEL_AUTO;
+    return ok;
+}
+
 bool Display::begin(void) {
     ready_ = false;
 
@@ -163,7 +172,8 @@ bool Display::begin(void) {
     else if (probe(0x3d)) addr_ = 0x3d;
     else return false;
 
-    kind_ = panel_from_name(nova::reg(NOVA_KEY_PREFIX "Display", ""));
+    kind_ = forced_ != PANEL_AUTO ? forced_
+                                  : panel_from_name(nova::reg(NOVA_KEY_PREFIX "Display", ""));
     const uint8_t *seq;
     unsigned n;
     switch (kind_) {
@@ -176,9 +186,24 @@ bool Display::begin(void) {
             seq = kInitSH1106; n = sizeof(kInitSH1106); col_offset_ = 2;
             break;
         default:
-            // Nothing configured means the reference part.
-            kind_ = PANEL_SSD1309;
-            seq = kInitSSD1309; n = sizeof(kInitSSD1309); col_offset_ = 0;
+            // NOTHING CONFIGURED MEANS SH1106, and this went the other way once
+            // on the strength of a document rather than a working device.
+            //
+            // The bill of materials specifies a 2.42" SSD1309, so the default
+            // was changed to match it — and the panel on the bench went dark and
+            // stayed dark for four versions. The mechanism is the charge pump:
+            // an SH1106 turns its own on with 0xad 0x8b, the SSD1309 sequence has
+            // no pump command at all because that part is driven externally, and
+            // an SH1106 sent the SSD1309 init therefore has no supply to its
+            // panel. Every I2C write is acknowledged. Nothing reports an error.
+            // The screen is simply black.
+            //
+            // So the default is the one that has actually lit up, and switching
+            // is one command. `novad1 display test` cycles all three with a
+            // pattern on each, which is the only honest way to tell them apart:
+            // they share an address and answer nothing that identifies them.
+            kind_ = PANEL_SH1106;
+            seq = kInitSH1106; n = sizeof(kInitSH1106); col_offset_ = 2;
             break;
     }
     if (!cmds(seq, n)) return false;
@@ -211,10 +236,19 @@ void Display::show(const Canvas &c) {
             (uint8_t)(0x00 | (col_offset_ & 0x0f)),       // column, low nibble
             (uint8_t)(0x10 | (col_offset_ >> 4)),         // column, high nibble
         };
-        if (fw_i2c_write(bus_, addr_, set, sizeof(set), 0) < 0) { ready_ = false; return; }
+        // A FAILED WRITE IS NOT THE END OF THE PANEL.
+        //
+        // This used to set ready_ = false and give up, so one NAK — a bus
+        // shared with the NFC reader and the clock, a marginal pull-up, a
+        // moment of contention — turned the screen off permanently with nothing
+        // said anywhere. The frame is abandoned and the next one tries again;
+        // the panel is only given up on after enough consecutive failures that
+        // it is clearly not there any more.
+        if (fw_i2c_write(bus_, addr_, set, sizeof(set), 0) < 0) { note_fail(); return; }
 
         memcpy(out + 1, src, (unsigned)w);
-        if (fw_i2c_write(bus_, addr_, out, (unsigned)w + 1, 0) < 0) { ready_ = false; return; }
+        if (fw_i2c_write(bus_, addr_, out, (unsigned)w + 1, 0) < 0) { note_fail(); return; }
+        fails_ = 0;
         last_pages_++;
     }
 
@@ -252,6 +286,17 @@ void Display::invert(bool on) {
 // to. At namespace scope with a trivial default constructor there is nothing to
 // construct: it is bss, and bss is zero.
 static Display g_display;
+
+// Thirty consecutive failed frames is about a second at the idle rate, which is
+// far longer than any transient and short enough that a genuinely unplugged
+// panel is noticed. Giving up also drops the diff, so a panel that comes back
+// gets a full repaint rather than half of one.
+void Display::note_fail(void) {
+    have_last_ = false;
+    if (++fails_ < 30) return;
+    ready_ = false;
+    fw_log(1, "novad1: the panel stopped answering");
+}
 
 Display &display(void) { return g_display; }
 
