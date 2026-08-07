@@ -274,6 +274,14 @@ static int do_check(bool quiet) {
         if (!quiet) out_ok("Already up to date.");
         return 0;
     }
+
+    if (!strcmp(reg_get("System.Rollback_Refused", ""), e.ver)) {
+        out_warn("This device already rolled back from %s.", e.ver);
+        out_multi("  It was installed and would not start, so the previous version");
+        out_multi("  was put back. 'update install --force' installs it anyway.");
+        return 0;
+    }
+
     out_info("An update is available. 'update install' to fetch and apply it.");
     return 0;
 }
@@ -291,6 +299,14 @@ static int do_install(bool force) {
         out_ok("Already running %s. 'update install --force' to reinstall.", RPC_OS_VERSION);
         return 0;
     }
+    if (!force && !strcmp(reg_get("System.Rollback_Refused", ""), e.ver)) {
+        out_err("%s was installed on this device before and would not start.", e.ver);
+        out_multi("  The previous version was restored automatically. Installing it");
+        out_multi("  again is unlikely to end differently unless something has changed.");
+        out_multi("  'update install --force' does it anyway.");
+        return 1;
+    }
+
     if (!e.sha256[0]) {
         // Refused rather than warned. A package installed unverified costs a
         // package; firmware installed unverified costs the device.
@@ -502,6 +518,11 @@ bool update_apply_file(const char *path, const char *to_version, bool at_boot) {
     if (strcmp(path, ROLLBACK_IMG) != 0) {
         reg_set("System.Update_From", RPC_OS_VERSION);
         reg_set("System.Update_To", to_version ? to_version : "a local image");
+        // Installing it on purpose withdraws the objection to it. Whoever typed
+        // --force has been told and has decided, and leaving the note behind
+        // would have the device arguing with them at every check afterwards.
+        if (to_version && !strcmp(reg_get("System.Rollback_Refused", ""), to_version))
+            reg_set("System.Rollback_Refused", "");
         persist_save_registry();
     }
 
@@ -627,6 +648,9 @@ void update_report_boot(void) {
         reg_set("System.Rollback_To", "");
         reg_set("System.Rollback_From", "");
         persist_save_registry();
+        // Rollback_Refused deliberately survives this: it names the version that
+        // failed, and this boot is the one that came back from it. It is cleared
+        // by that version being installed again on purpose, and by nothing else.
 
         // The copy has been spent. Clearing it reclaims most of a megabyte, and
         // leaving it would mean the NEXT capture has to find room beside it.

@@ -270,6 +270,20 @@ bool rollback_apply(bool at_boot) {
     reg_set("System.Update_To", "");
     reg_set("System.Rollback_From", RPC_OS_VERSION);
     reg_set("System.Rollback_To", info.ver);
+
+    // And remember WHICH version was rejected, which is a different fact with a
+    // longer life than the other two.
+    //
+    // Without it the device offers the same update again at the next check —
+    // including on the automatic path, where it rolled back precisely because
+    // that version would not start. An OS that heals itself and then reinstalls
+    // the thing it healed away from has not healed anything.
+    //
+    // The exact version string, so a LATER release clears the objection by
+    // simply not matching it. And a note, not a block: `--force` still works,
+    // because a version that failed once on one device is not a version nobody
+    // may ever install.
+    reg_set("System.Rollback_Refused", RPC_OS_VERSION);
     persist_save_registry();
 
     // Used once, and marked used BEFORE the write rather than after — because
