@@ -430,8 +430,15 @@ function(rpc_add_app name)
                                           -c ${src} -o ${obj})
             list(APPEND app_objs ${obj})
         endforeach()
-        list(APPEND app_build COMMAND ${CMAKE_LINKER} -r -o
-                                      ${CMAKE_BINARY_DIR}/apps/${name}.app ${app_objs})
+        # --force-group-allocation and the script are BOTH needed, and the
+        # reason is in apps_partial.ld: without them a C++ package grows two ELF
+        # sections per weak symbol and runs into the loader's limit of 128 long
+        # before it runs into anything else. Measured on the Nova D1 skeleton:
+        # 31 sections plain, 23 with the flag alone, 30 with the script alone,
+        # 14 with both — and flat from there however many classes it gains.
+        list(APPEND app_build COMMAND ${CMAKE_LINKER} -r --force-group-allocation
+                                      -T ${OS_ROOT}/apps_partial.ld
+                                      -o ${CMAKE_BINARY_DIR}/apps/${name}.app ${app_objs})
     endif()
 
     add_custom_command(

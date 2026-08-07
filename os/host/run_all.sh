@@ -55,6 +55,10 @@ declare -A SRC=(
     [btname_test]="$CORE/btname.cpp"
     [power_test]="$CORE/powerpolicy.cpp"
     [framebuf_test]="$CORE/framebuf.cpp"
+    # The Nova D1 canvas is INCLUDED by its test, the same as the packages above:
+    # it is a package source with no firmware behind it, which is exactly what
+    # lets the drawing code be checked here at all.
+    [novacanvas_test]=""
     [packages_test]="fakehw.cpp"
     [lock_test]="$CORE/lock.cpp $CORE/task.cpp $CORE/blackbox.cpp"
     [interrupt_test]="$CORE/interrupt.cpp $CORE/task.cpp $CORE/blackbox.cpp host_task_stub.cpp"
