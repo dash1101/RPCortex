@@ -38,6 +38,7 @@ void BootCheckScreen::enter(void) {
     done_ = false;
     hold_ = 0;
     spin_ = 0;
+    intro_ = 0;
     for (int i = 0; i < STEPS; i++) { result_[i] = -1; detail_[i][0] = 0; }
 }
 
@@ -162,6 +163,18 @@ void BootCheckScreen::run_step(int i) {
 bool BootCheckScreen::tick(uint32_t dt_ms) {
     spin_ += dt_ms;
 
+    // The wordmark plays FIRST, on this screen, and the checks begin underneath
+    // it rather than after it. One boot screen rather than two: the second one
+    // appearing was the jarring part, and running the checks behind the name is
+    // what the MicroPython suite meant by the splash playing over the real work.
+    if (intro_ < INTRO_MS) {
+        intro_ += dt_ms;
+        // The first two checks are the ones nothing can proceed without, so
+        // they run behind the animation rather than waiting for it.
+        if (intro_ >= INTRO_MS / 2 && step_ < 2) { run_step(step_); step_++; }
+        return true;
+    }
+
     if (done_) {
         hold_ += dt_ms;
         // Long enough to read the last few rows, short enough that somebody who
@@ -191,6 +204,8 @@ ui::Action BootCheckScreen::on_event(Event e) {
 }
 
 void BootCheckScreen::draw(Canvas &c) {
+    if (intro_ < INTRO_MS) { draw_intro(c); return; }
+
     // The last five rows, so the newest is always visible and the list appears
     // to scroll up under the bar as it fills.
     const int rows = 5;
@@ -219,6 +234,44 @@ void BootCheckScreen::draw(Canvas &c) {
         bool bad = result_[STEPS - 1] == R_BAD;
         c.fill_rect(0, by - ui::ROWH - 1, c.width(), ui::ROWH, 0);
         c.text_centred(by - ui::ROWH, bad ? detail_[STEPS - 1] : "Ready", 1);
+    }
+}
+
+// The opening beat. Slower than it was: the first version ran the whole thing
+// in 1.8 seconds and read as a flicker rather than as a reveal. A wipe wants
+// long enough for the eye to follow the edge, which is most of a second on its
+// own.
+void BootCheckScreen::draw_intro(Canvas &c) {
+    const int cx = c.width() / 2;
+    const int cy = c.height() / 2;
+
+    // A ring opening out. On a 1-bit panel there is no fade, so it thins by
+    // simply not redrawing the earlier circles — which reads as a pulse rather
+    // than as a growing target.
+    if (intro_ < RING_MS) {
+        int r = (int)(intro_ * 26 / RING_MS);
+        c.circle(cx, cy, r, 1);
+        if (r > 7) c.circle(cx, cy, r - 7, 1);
+        return;
+    }
+
+    // The name, wiped in from the left.
+    uint32_t into = intro_ - RING_MS;
+    int full  = c.text_width("Nova D1", 2, false);
+    int x0    = cx - full / 2;
+    uint32_t span = NAME_MS - RING_MS;
+    int shown = span ? (int)(into * (uint32_t)full / span) : full;
+    if (shown > full) shown = full;
+    c.text(x0, cy - 13, "Nova D1", 1, 2, false);
+    if (shown < full) c.fill_rect(x0 + shown, cy - 15, full - shown + 2, 19, 0);
+
+    if (intro_ >= NAME_MS) {
+        c.text_centred(cy + 7, "RPCortex", 1);
+        uint32_t sig = intro_ - NAME_MS;
+        uint32_t sspan = INTRO_MS - NAME_MS;
+        int w = sspan ? (int)(sig * 44u / sspan) : 44;
+        if (w > 44) w = 44;
+        c.hline(cx - w / 2, cy + 7 + FONT_H + 2, w, 1);
     }
 }
 

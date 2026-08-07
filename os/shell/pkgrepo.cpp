@@ -462,7 +462,7 @@ static int do_install(const char *name) {
         out_multi("  Installed unverified - only the transport was authenticated.");
     }
 
-    if (!pkg_install_file(TMP_PKG, /*quiet*/true)) {
+    if (!pkg_install_file(TMP_PKG, /*quiet*/true, /*consume*/true)) {
         storage_remove(TMP_PKG);
         out_err("The package downloaded but would not install.");
         return 1;

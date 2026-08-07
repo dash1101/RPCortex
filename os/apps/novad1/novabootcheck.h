@@ -32,7 +32,15 @@ public:
     // control on a count.
     static constexpr int STEPS = 9;
 
+    // The opening animation, in milliseconds. Slower than the first attempt,
+    // which ran the whole sequence in 1.8 s and read as a flicker.
+    static constexpr uint32_t RING_MS  = 700;
+    static constexpr uint32_t NAME_MS  = 1500;
+    static constexpr uint32_t INTRO_MS = 2100;
+
 private:
+    void draw_intro(Canvas &c);
+    uint32_t intro_;
     int      step_;
     bool     done_;
     uint32_t hold_;      // how long the finished list has been shown

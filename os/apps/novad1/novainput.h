@@ -46,9 +46,16 @@ public:
     bool ready(void) const { return ready_; }
 
     // Sample the pins and fold what happened into the queue. Called by the input
-    // task every couple of milliseconds — see the note in the .cpp about why
-    // this is polled and the buttons are not.
+    // TASK every two milliseconds — see the note in the .cpp about why this is
+    // polled and the buttons are not, and why it cannot ride the UI loop.
     void poll(void);
+
+    // Start and stop the task that does the polling. The encoder does not work
+    // without it, at all: quadrature is decoded from CONSECUTIVE samples, and a
+    // sample every 140 ms is not consecutive with anything.
+    bool start(void);
+    void stop(void);
+    bool running(void) const;
 
     // The next gesture, or EV_NONE. Never blocks.
     Event next(void);
@@ -87,9 +94,17 @@ private:
 
     // A ring, because a burst of turns between two polls is normal and dropping
     // the middle of it makes a menu feel like it is sticking.
+    // Written by the input task, read by the UI task, possibly on the other
+    // core. head_ has one writer and tail_ has one writer, which makes the ring
+    // safe without a lock — but both must be volatile, or the compiler is free
+    // to cache the other side's index across a loop and the queue appears never
+    // to change.
     static constexpr unsigned QUEUE = 32;
-    Event    queue_[QUEUE];
-    unsigned head_, tail_;
+    Event             queue_[QUEUE];
+    volatile unsigned head_, tail_;
+
+    int      pid_;
+    volatile bool run_;
 
     void push(Event e);
     void poll_encoder(void);

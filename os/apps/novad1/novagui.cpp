@@ -213,15 +213,38 @@ static void draw_status(Canvas &c, Screen *s) {
         }
     }
 
-    // The link indicator: three ascending bars when connected, an outline when
-    // not. Drawn rather than lettered because "WiFi" costs four characters of a
-    // twenty-one-character line and says less.
+    // The link indicator, and the bars mean something.
+    //
+    // The first version drew filled bars when connected and "an outline" when
+    // not — except a rect two pixels wide has no inside, so the outline WAS a
+    // filled bar and the two states were the same picture. It read as full
+    // signal on a device that had never joined anything.
+    //
+    // Now: how many bars are lit follows the actual RSSI, and not connected is
+    // an empty baseline with a dot over it — a shape, not a shade, because a
+    // 1-bit panel has no shades to tell apart.
     right -= 11;
-    bool linked = fw_net_connected() != 0;
-    for (int i = 0; i < 3; i++) {
-        int h = 2 + i * 2;
-        if (linked) c.fill_rect(right + i * 3, 1 + (6 - h), 2, h, 1);
-        else        c.rect(right + i * 3, 1 + (6 - h), 2, h, 1);
+    {
+        int bars = 0;
+        if (fw_net_connected()) {
+            int rssi = fw_net_rssi();
+            // -50 and better is three, -67 is two, -75 is one, worse is a link
+            // that exists and is barely there. A reading of 0 means the radio
+            // did not answer, which is still a link — one bar.
+            bars = rssi == 0 ? 1 : rssi >= -55 ? 3 : rssi >= -70 ? 2 : 1;
+        }
+        for (int i = 0; i < 3; i++) {
+            int h = 2 + i * 2;
+            int x = right + i * 3;
+            if (i < bars) c.fill_rect(x, 1 + (6 - h), 2, h, 1);
+            else          c.hline(x, 7, 2, 1);        // the baseline it would stand on
+        }
+        if (!bars) {
+            // A dot above the empty bars: unmistakably "nothing", and it cannot
+            // be confused with one weak bar.
+            c.pixel(right + 2, 2, 1);
+            c.pixel(right + 4, 2, 1);
+        }
     }
 
     c.text_fit(0, 1, title, 1, right - 2, false);
@@ -270,11 +293,17 @@ public:
         // way it is going, slide_ how far it still has to travel.
         const int off = dir_ * slide_ * SPACING / 256;
 
+        // THREE at a time — the one under the cursor and one either side, which
+        // is what the MicroPython home showed. Five fits on the panel and is
+        // worse: at six pixels the outer pair are unreadable, so they add
+        // clutter without adding information, and they make the ring look
+        // crowded rather than focused.
+        //
         // Outside in, so the centre icon is drawn last and overlaps its
         // neighbours rather than the other way round — at this size an icon
         // drawn over the big one reads as damage.
-        for (int pass = 2; pass >= 0; pass--) {
-            for (int d = -2; d <= 2; d++) {
+        for (int pass = 1; pass >= 0; pass--) {
+            for (int d = -1; d <= 1; d++) {
                 if ((d < 0 ? -d : d) != pass) continue;
                 int idx = wrapped(sel_ + d);
                 int x = cx + d * SPACING + off;
@@ -329,7 +358,7 @@ public:
     const char *title(void) const override { return title_; }
 
 protected:
-    static constexpr int SPACING  = 26;   // pixels between icon centres
+    static constexpr int SPACING  = 38;   // pixels between icon centres, for three across
     static constexpr int R_BIG    = 12;   // the one under the cursor
     static constexpr int R_SMALL  = 6;    // its neighbours
     static constexpr int SLIDE_MS = 90;   // long enough to see, short enough
@@ -482,7 +511,7 @@ bool begin(void) {
     build_catalogue();
 
     bool panel = display().begin();
-    input().begin();
+    if (input().begin()) input().start();
     modules_scan();
 
     g_depth = 0;
@@ -494,7 +523,6 @@ bool begin(void) {
     // meant to be seen and each one lands on something already built.
     if (panel) {
         push<BootCheckScreen>();
-        if (nova::reg_bool(NOVA_KEY_PREFIX "Splash", true)) push<SplashScreen>();
     }
     g_level = LVL_ACTIVE;
     g_last_input = fw_millis();
@@ -507,7 +535,9 @@ void run(void) {
     uint32_t last = fw_millis();
 
     while (g_running && !fw_task_should_stop()) {
-        input().poll();
+        // No poll here. The input task samples the encoder at 2 ms because
+        // quadrature needs consecutive readings, and this loop sleeps up to
+        // 300 ms — see the note at the top of novainput.cpp.
 
         bool had_input = false;
         bool turned = false;      // a rotation was consumed this frame
@@ -628,6 +658,7 @@ void run(void) {
         fw_task_sleep_ms(nap);
     }
     g_running = false;
+    input().stop();
 }
 
 }  // namespace gui

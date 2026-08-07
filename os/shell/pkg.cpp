@@ -54,7 +54,7 @@ static void index_walk(PkgIndexFn cb, void *ctx) {
 
 // --- operations ------------------------------------------------------------
 
-bool pkg_install_file(const char *file, bool quiet) {
+bool pkg_install_file(const char *file, bool quiet, bool consume) {
     // Validate by actually loading it — this checks the ELF, the ABI version and
     // every relocation, not just that a file exists. The header gives the name
     // and version to record.
@@ -86,9 +86,22 @@ bool pkg_install_file(const char *file, bool quiet) {
     apps_unload(name);
 
     char dst[40]; pkg_path(name, dst, sizeof(dst));
-    if (strcmp(file, dst) != 0 && !storage_copy(file, dst)) {
-        out_err("Could not copy package into %s.", PKG_DIR);
-        return false;
+    if (strcmp(file, dst) != 0) {
+        // Rename when the caller is handing the file over. See pkg.h: a copy
+        // wants the package's size free a second time, and the download that
+        // produced this file reserved eight kilobytes.
+        bool moved = false;
+        if (consume) {
+            storage_remove(dst);          // rename onto an existing name is not portable
+            moved = storage_rename(file, dst);
+        }
+        if (!moved && !storage_copy(file, dst)) {
+            out_err("Could not put the package into %s.", PKG_DIR);
+            out_multi("  %lu bytes free. A package needs its own size again to be",
+                      (unsigned long)storage_free_bytes());
+            out_multi("  copied in; 'pkg remove' something, or 'df' to see where it went.");
+            return false;
+        }
     }
     index_add(name, version);
     if (!quiet) out_okp("pkg", "Installed %s %s", name, version);

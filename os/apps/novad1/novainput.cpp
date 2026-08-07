@@ -35,6 +35,18 @@ namespace nova {
 // A PIO quadrature decoder would remove even that, and PIO is available. It is
 // not worth a state machine yet: the IR transmitter and the sub-GHz timing both
 // want one and neither of them has an alternative.
+//
+// THIS RUNS ON ITS OWN TASK, and that is not an optimisation.
+//
+// The first version polled from the UI loop, which sleeps between 16 and 300 ms
+// depending on what is happening. Quadrature is decoded from CONSECUTIVE
+// samples: a reading every 140 ms is not consecutive with anything, the
+// transition table correctly refuses every jump it cannot account for, and the
+// encoder produces NOTHING. Not jitter, not the wrong direction — silence.
+// Which looks exactly like a wiring fault, and is not one.
+//
+// So the sampling lives where its rate is its own business, and the UI loop is
+// free to sleep as long as it likes.
 
 // Buxton's full-step table, carried over from the MicroPython suite unchanged so
 // an encoder wired for that build turns the same way on this one.
@@ -239,13 +251,44 @@ void Input::poll_button(int i) {
     }
 }
 
+bool Input::running(void) const { return run_; }
+
 void Input::poll(void) {
     if (!ready_) return;
     poll_encoder();
     for (int i = 0; i < 3; i++) poll_button(i);
 }
 
+// --- the task ------------------------------------------------------------------
+
 static Input g_input;
 Input &input(void) { return g_input; }
+
+static int input_task(void *) {
+    // 2 ms is 500 samples a second against a hand producing maybe 80 transitions
+    // a second, so every one of them is caught several times over. The cost is
+    // two pin reads per sample: a thousand supervisor calls a second, which at
+    // 296 cycles is about two tenths of one percent of a core.
+    while (g_input.ready() && !fw_task_should_stop() && g_input.running()) {
+        g_input.poll();
+        fw_task_sleep_ms(2);
+    }
+    return 0;
+}
+
+bool Input::start(void) {
+    if (!ready_) return false;
+    if (run_) return true;
+    run_ = true;
+    // A small stack: this task calls four ABI functions and holds nothing.
+    pid_ = fw_task_spawn("novainput", input_task, nullptr, 2048);
+    if (pid_ < 0) { run_ = false; return false; }
+    return true;
+}
+
+void Input::stop(void) {
+    run_ = false;
+    pid_ = 0;
+}
 
 }  // namespace nova

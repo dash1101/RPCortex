@@ -60,6 +60,10 @@ declare -A SRC=(
     # lets the drawing code be checked here at all.
     [novacanvas_test]=""
     [novacore_test]=""
+    # Not a test — it renders the UI to a page. Built here so it cannot rot
+    # unnoticed: a change to the canvas that stops it compiling is a change
+    # somebody wants to know about on the same run.
+    [novasim]=""
     [packages_test]="fakehw.cpp"
     [lock_test]="$CORE/lock.cpp $CORE/task.cpp $CORE/blackbox.cpp"
     [interrupt_test]="$CORE/interrupt.cpp $CORE/task.cpp $CORE/blackbox.cpp host_task_stub.cpp"
