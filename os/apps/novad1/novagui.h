@@ -84,9 +84,18 @@ bool app_available(const App &a);
 
 // --- running -------------------------------------------------------------------
 
-// Bring up the panel, the input and the home screen. False when there is no
-// panel, which is the common half-built case and has to be said out loud.
+// Bring up the panel, the input and the home screen.
+//
+// FALSE means one of two things and the caller has to tell them apart with
+// started(): either there is no panel — the common half-built case, which has to
+// be said out loud — or a runner is already up, in which case starting a second
+// is not a smaller version of starting one, it is two tasks writing one screen
+// stack.
 bool begin(void);
+
+// Has begin() been called and not yet finished tearing down? Distinct from
+// running(), which is only true once the loop is actually turning.
+bool started(void);
 
 // The loop. Returns when stop() is called or the task is asked to end.
 void run(void);

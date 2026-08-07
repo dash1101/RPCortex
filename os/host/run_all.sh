@@ -60,6 +60,10 @@ declare -A SRC=(
     # lets the drawing code be checked here at all.
     [novacanvas_test]=""
     [novacore_test]=""
+    # The runner, with the hardware faked. Catches what is logic rather than
+    # electrons: screen lifetimes, a stack pushed past its pool, navigation that
+    # traps, and a runner started twice — which is what took a board down.
+    [novagui_test]=""
     # Not a test — it renders the UI to a page. Built here so it cannot rot
     # unnoticed: a change to the canvas that stops it compiling is a change
     # somebody wants to know about on the same run.

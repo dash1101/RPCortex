@@ -21,7 +21,7 @@
 #include <string.h>
 #include <stdio.h>
 
-RPC_APP_VER("novad1", "0.93.0");
+RPC_APP_VER("novad1", "0.94.0");
 
 namespace {
 
@@ -143,7 +143,7 @@ int cmd_pins(int argc, char **argv) {
 // --- d1 ---------------------------------------------------------------------
 
 void usage(void) {
-    fw_printf("Nova D1 0.93.0 - the handheld multi-tool\n\n");
+    fw_printf("Nova D1 0.94.0 - the handheld multi-tool\n\n");
     fw_printf("  setup                  make it a Nova D1: storage, pins, the boot service\n");
     fw_printf("  gui [--bg]             run the screen, in front or in the background\n");
     fw_printf("  service start|stop|restart|status\n");
@@ -213,7 +213,14 @@ int gui_task(void *) {
 }
 
 int cmd_gui(int argc, char **argv) {
-    if (nova::gui::running()) { fw_printf("Already running.\n"); return 1; }
+    // started(), not running(). running() only becomes true once the loop is
+    // turning, which is after the task has been spawned AND scheduled — so it
+    // answers "no" during the window where a second start does the damage.
+    if (nova::gui::started()) {
+        fw_printf("The screen is already running.\n");
+        fw_printf("  novad1 service restart   to start it again with new settings\n");
+        return 1;
+    }
 
     bool panel = nova::gui::begin();
     if (!panel) {
@@ -276,7 +283,7 @@ int cmd_display(int argc, char **argv) {
 int cmd_status(void) {
     char b[24];
     fw_board(b, sizeof(b));
-    fw_printf("Nova D1 0.93.0 on %s\n", b);
+    fw_printf("Nova D1 0.94.0 on %s\n", b);
     fw_printf("  profile   %s (%s)\n", nova::board::board_id(), nova::board::board_name());
     fw_printf("  display   %s\n", nova::board::display_bus());
     fw_printf("  storage   %s\n", fw_file_exists(NOVA_ROOT) ? NOVA_ROOT : "not created yet");
@@ -303,6 +310,12 @@ int cmd_d1(int argc, char **argv) {
     if (!strcmp(sub, "perf"))    return cmd_perf();
     if (!strcmp(sub, "display")) return cmd_display(argc, argv);
     if (!strcmp(sub, "gui"))     return cmd_gui(argc, argv);
+    // `novad1 start` is what people type, and answering "don't know 'start'"
+    // when `service start` exists is a wall for no reason.
+    if (!strcmp(sub, "start")) {
+        char *fake[3] = { argv[0], (char *)"service", (char *)"start" };
+        return nova::cmd::service(3, fake);
+    }
     if (!strcmp(sub, "stop")) {
         if (!nova::gui::running()) { fw_printf("Not running.\n"); return 1; }
         nova::gui::stop();

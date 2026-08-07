@@ -42,6 +42,32 @@ int setup(void) {
     // supervised and restarted; a startup entry runs once and, if it fails, the
     // device comes up with no screen and nothing saying why.
     char out[256];
+    // EVERY existing entry goes first, then exactly one is added.
+    //
+    // Without this, running setup twice registered the screen twice, and two
+    // service entries both ran `novad1 gui --bg` at the next boot. That is not a
+    // cosmetic duplicate: the second runner reset the screen stack under the
+    // first and the device jumped to address zero. Adding a service is cheap;
+    // adding a second copy of this one is a crash.
+    //
+    // Entries are removed by INDEX and the list shifts as they go, so this walks
+    // downward — removing 1 then 2 removes the wrong second one.
+    fw_shell_run("service list", out, sizeof(out));
+    int removed = 0;
+    for (int i = 8; i >= 1; i--) {
+        // A line is "  <n>  <command>". Only the ones that are this package get
+        // removed; somebody else's services are not setup's business.
+        char needle[8];
+        snprintf(needle, sizeof(needle), "%d ", i);
+        const char *at = strstr(out, needle);
+        if (!at || !strstr(at, "novad1")) continue;
+        char cmd[32];
+        snprintf(cmd, sizeof(cmd), "service remove %d", i);
+        if (fw_shell_run(cmd, nullptr, 0) == 0) removed++;
+    }
+    if (removed) fw_printf("  service    dropped %d stale entr%s\n",
+                           removed, removed == 1 ? "y" : "ies");
+
     // `service add <command>` — the whole rest of the line IS the command, with
     // no name in front of it. Passing one made the service "novad1 novad1 gui
     // --bg", which is not a command and failed at every boot saying so.
@@ -74,7 +100,7 @@ int service(int argc, char **argv) {
         return 0;
     }
     if (!strcmp(sub, "start")) {
-        if (gui::running()) { fw_printf("Already running.\n"); return 1; }
+        if (gui::started()) { fw_printf("The screen is already running.\n"); return 1; }
         return fw_shell_run("novad1 gui --bg", nullptr, 0);
     }
     if (!strcmp(sub, "stop")) {
@@ -87,12 +113,12 @@ int service(int argc, char **argv) {
         // refresh is restart under another name, because what people mean by
         // "reload the pins" is "start the screen again with the new ones" —
         // there is no way to re-pin a running panel that is worth the code.
-        if (gui::running()) {
+        if (gui::started()) {
             gui::stop();
             // The loop checks its flag once a frame, and the longest nap is
             // 300 ms. Waiting is what makes `restart` mean restart rather than
             // "ask it to stop, then race it".
-            for (int i = 0; i < 20 && gui::running(); i++) fw_task_sleep_ms(50);
+            for (int i = 0; i < 40 && gui::started(); i++) fw_task_sleep_ms(50);
         }
         return fw_shell_run("novad1 gui --bg", nullptr, 0);
     }

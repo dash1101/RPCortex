@@ -44,13 +44,46 @@ static Canvas   g_canvas;
 static uint8_t  g_fb[128 * 8];
 static Perf     g_perf;
 
+// Has a start been CLAIMED? Not the same question as "is the loop running".
+//
+// This is the bug that took the device down twice. running() is set inside
+// run(), which happens after the task has been spawned AND scheduled — so
+// between one caller's begin() and its loop actually starting there was a window
+// where a second caller saw "not running", called begin() itself, reset g_depth
+// to zero and pushed a fresh Home into slot 0 while the first task was drawing
+// out of it. Two tasks then owned one screen stack: a slot was constructed by
+// one while the other read its vtable pointer half-written, and the device
+// jumped to address zero.
+//
+// It needed two service entries to happen, which a malformed `service add`
+// obligingly produced. But one service plus one hand-typed `novad1 gui` is the
+// same race, and that is an ordinary thing to do.
+static bool     g_claimed;
+
 Canvas &canvas(void)  { return g_canvas; }
 Screen *top(void)     { return g_depth ? g_stack[g_depth - 1] : nullptr; }
 unsigned depth(void)  { return g_depth; }
 void invalidate(void) { g_dirty = true; }
 const Perf &perf(void){ return g_perf; }
 bool running(void)    { return g_running; }
-void stop(void)       { g_running = false; }
+
+// Whether run() is actually turning. Distinct from both of the others: claimed
+// says a start has been taken, running says the loop wants to continue, and this
+// says the loop was ever ENTERED — which is what decides who is responsible for
+// giving the claim back.
+static bool g_loop_live;
+
+void stop(void) {
+    g_running = false;
+    // If the loop was never entered, nobody else is going to release the claim.
+    // That is not hypothetical: begin() succeeds and then the task spawn fails,
+    // and without this the screen could never be started again without a reboot
+    // — for a failure whose whole message is "try again".
+    if (!g_loop_live) {
+        input().stop();
+        g_claimed = false;
+    }
+}
 
 void *push_slot(void) {
     if (g_depth >= STACK_MAX) return nullptr;
@@ -102,7 +135,9 @@ static const App kApps[] = {
     { "presence",   "Presence",   CAT_WIRELESS, nullptr,  nullptr },
     { "wardrive",   "Wardrive",   CAT_WIRELESS, nullptr,  nullptr },
     { "pn532",      "NFC",        CAT_WIRELESS, nullptr,  "pn532" },
-    { "ir_rx",      "IR",         CAT_WIRELESS, nullptr,  "ir_rx" },
+    // 'ir' is the app the MicroPython home used; ir_rx and ir_tx are the two
+    // halves of the hardware behind it, and they have their own icons.
+    { "ir",         "IR",         CAT_WIRELESS, nullptr,  "ir_rx" },
     { "cc1101",     "Sub-GHz",    CAT_WIRELESS, nullptr,  "cc1101" },
     { "sx1276",     "LoRa",       CAT_WIRELESS, nullptr,  "sx1276" },
     { "msg",        "Messages",   CAT_WIRELESS, nullptr,  "sx1276" },
@@ -506,7 +541,15 @@ static void set_level(int lvl) {
     g_dirty = true;
 }
 
+bool started(void) { return g_claimed; }
+
 bool begin(void) {
+    // ONE INSTANCE. The screen stack, the canvas and the frame buffer are all
+    // statics: a second runner is not a second screen, it is two tasks writing
+    // the same memory.
+    if (g_claimed) return false;
+    g_claimed = true;
+
     g_canvas.attach(g_fb, 128, 64);
     build_catalogue();
 
@@ -527,10 +570,21 @@ bool begin(void) {
     g_level = LVL_ACTIVE;
     g_last_input = fw_millis();
     g_dirty = true;
+
+    // No panel means no runner, so the claim goes back. Holding it would mean a
+    // device that failed to find its screen once could never be told to look
+    // again without a reboot — and looking again after fixing the wiring is
+    // exactly what somebody does next.
+    if (!panel) g_claimed = false;
     return panel;
 }
 
 void run(void) {
+    // Refuse a loop nobody claimed, and refuse a second one. Two tasks in here
+    // is the same corruption from the other end, and a task arriving without a
+    // claim is a spawn that outlived the start that made it.
+    if (!g_claimed || g_loop_live) return;
+    g_loop_live = true;
     g_running = true;
     uint32_t last = fw_millis();
 
@@ -658,7 +712,11 @@ void run(void) {
         fw_task_sleep_ms(nap);
     }
     g_running = false;
+    g_loop_live = false;
     input().stop();
+    // Released last, so nothing can claim a start until this one has finished
+    // tearing down.
+    g_claimed = false;
 }
 
 }  // namespace gui
