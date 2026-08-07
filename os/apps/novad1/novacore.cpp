@@ -142,12 +142,18 @@ bool csv_add(char *csv, unsigned cap, const char *field) {
     return true;
 }
 
-bool csv_remove(char *csv, const char *field) {
-    if (!csv || !field || !*field || !csv_has(csv, field)) return false;
+bool csv_remove(char *csv, unsigned cap, const char *field) {
+    if (!csv || !cap || !field || !*field || !csv_has(csv, field)) return false;
     // Rebuilt rather than spliced. Splicing has to get the separator right at
     // both ends and at both edges of the string, and that is four cases where
     // rebuilding has none.
+    //
+    // The work copy is sized from the CALLER's buffer, not from a constant. A
+    // fixed size here is the same bug in a second place: too small silently
+    // truncates the list, too large wastes stack on a device where the package
+    // gets eleven kilobytes of it.
     char work[NOVA_VAL_MAX * 2];
+    if (cap > sizeof(work)) return false;      // more than this never fits a registry value
     copy(work, sizeof(work), csv);
     char *fields[24];
     unsigned n = split_csv(work, fields, 24);
@@ -155,8 +161,8 @@ bool csv_remove(char *csv, const char *field) {
     unsigned at = 0;
     for (unsigned i = 0; i < n; i++) {
         if (!fields[i][0] || strcmp(fields[i], field) == 0) continue;
-        if (at) csv[at++] = ',';
-        at += copy(csv + at, NOVA_VAL_MAX * 2 - at, fields[i]);
+        if (at && at + 1 < cap) csv[at++] = ',';
+        at += copy(csv + at, cap - at, fields[i]);
     }
     csv[at] = 0;
     return true;

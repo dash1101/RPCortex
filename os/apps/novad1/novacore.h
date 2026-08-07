@@ -78,8 +78,13 @@ bool csv_has(const char *csv, const char *needle);
 
 // Add or remove a field, in place. Returns true when the string changed, which
 // is what decides whether a flash write is worth doing.
+//
+// BOTH take the capacity. An earlier csv_remove did not, and assumed the buffer
+// was as large as the one its first caller happened to use — which is a silent
+// overflow the moment somebody passes a smaller one, and every caller here was
+// about to.
 bool csv_add(char *csv, unsigned cap, const char *field);
-bool csv_remove(char *csv, const char *field);
+bool csv_remove(char *csv, unsigned cap, const char *field);
 
 // --- paths ------------------------------------------------------------------
 

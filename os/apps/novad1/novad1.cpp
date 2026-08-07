@@ -15,11 +15,13 @@
 #include "novamodtab.h"
 #include "novagui.h"
 #include "display.h"
+#include "novad1cmd.h"
+#include "novalog.h"
 
 #include <string.h>
 #include <stdio.h>
 
-RPC_APP_VER("novad1", "0.88.0");
+RPC_APP_VER("novad1", "0.89.0");
 
 namespace {
 
@@ -141,18 +143,31 @@ int cmd_pins(int argc, char **argv) {
 // --- d1 ---------------------------------------------------------------------
 
 void usage(void) {
-    fw_printf("Nova D1\n");
-    fw_printf("  d1 gui [--bg]          run the screen, in front or as a service\n");
-    fw_printf("  d1 stop                stop it\n");
-    fw_printf("  d1 status              what is configured and what answered\n");
-    fw_printf("  d1 scan                probe every module\n");
-    fw_printf("  d1 perf                what the last second of frames cost\n");
-    fw_printf("  d1 display [<kind>]    sh1106 | ssd1306 | ssd1309\n");
-    fw_printf("  d1 pins                every pin, its value and where it came from\n");
-    fw_printf("  d1 pins check          is this map assignable on this chip\n");
-    fw_printf("  d1 pins board [<id>]   list or choose a board profile\n");
-    fw_printf("  d1 pins set <n> <g>    override one pin\n");
-    fw_printf("  d1 pins clear <n>      drop an override\n");
+    fw_printf("Nova D1 0.89.0 - the handheld multi-tool\n\n");
+    fw_printf("  setup                  make it a Nova D1: storage, pins, the boot service\n");
+    fw_printf("  gui [--bg]             run the screen, in front or in the background\n");
+    fw_printf("  service start|stop|restart|status\n");
+    fw_printf("  refresh                restart the screen with the current pins\n");
+    fw_printf("\n");
+    fw_printf("  scan                   probe every module\n");
+    fw_printf("  status                 what is configured and what answered\n");
+    fw_printf("  perf                   what the last second of frames cost\n");
+    fw_printf("  pins [check|board|set|clear]   the wiring, and where each value came from\n");
+    fw_printf("  display [<kind>]       sh1106 | ssd1306 | ssd1309\n");
+    fw_printf("\n");
+    fw_printf("  style [folders|gallery|menu]   the home layout\n");
+    fw_printf("  apps [show|hide|reset] <key>   which apps are on the home screen\n");
+    fw_printf("  fav [add|remove|clear] <key>   the favourites bar\n");
+    fw_printf("  pin [set|clear|auto]   the screen lock\n");
+    fw_printf("\n");
+    fw_printf("  incognito on|off       take every radio down, and keep it down\n");
+    fw_printf("  notify [<text>|clear]  the notification queue\n");
+    fw_printf("  logs [n|clear]         the event log\n");
+    fw_printf("  wifiprobe              can this hardware capture 802.11\n");
+    fw_printf("  selfupdate             fetch and install a newer Nova D1\n");
+    fw_printf("\n");
+    fw_printf("Not built yet: wardrive, ble, radar, fire, store, web.\n");
+    fw_printf("Wiring is per board — `d1 pins` needs no registry editing.\n");
 }
 
 // --- d1 scan -------------------------------------------------------------------
@@ -257,7 +272,7 @@ int cmd_display(int argc, char **argv) {
 int cmd_status(void) {
     char b[24];
     fw_board(b, sizeof(b));
-    fw_printf("Nova D1 0.88.0 on %s\n", b);
+    fw_printf("Nova D1 0.89.0 on %s\n", b);
     fw_printf("  profile   %s (%s)\n", nova::board::board_id(), nova::board::board_name());
     fw_printf("  display   %s\n", nova::board::display_bus());
     fw_printf("  storage   %s\n", fw_file_exists(NOVA_ROOT) ? NOVA_ROOT : "not created yet");
@@ -291,6 +306,34 @@ int cmd_d1(int argc, char **argv) {
         return 0;
     }
     if (!strcmp(sub, "pins"))    return cmd_pins(argc - 1, argv + 1);
+    if (!strcmp(sub, "setup"))   return nova::cmd::setup();
+    if (!strcmp(sub, "style"))   return nova::cmd::style(argc, argv);
+    if (!strcmp(sub, "apps"))    return nova::cmd::apps(argc, argv);
+    if (!strcmp(sub, "fav") || !strcmp(sub, "favorite") || !strcmp(sub, "favorites"))
+        return nova::cmd::fav(argc, argv);
+    if (!strcmp(sub, "pin") || !strcmp(sub, "lock"))
+        return nova::cmd::lock(argc, argv);
+    if (!strcmp(sub, "incognito") || !strcmp(sub, "stealth") || !strcmp(sub, "panic"))
+        return nova::cmd::incognito(argc, argv);
+    if (!strcmp(sub, "service") || !strcmp(sub, "svc"))
+        return nova::cmd::service(argc, argv);
+    if (!strcmp(sub, "refresh") || !strcmp(sub, "reload")) {
+        char *fake[3] = { argv[0], (char *)"service", (char *)"restart" };
+        return nova::cmd::service(3, fake);
+    }
+    if (!strcmp(sub, "logs"))    return nova::cmd::logs(argc, argv);
+    if (!strcmp(sub, "notify"))  return nova::cmd::notifications(argc, argv);
+    if (!strcmp(sub, "wifiprobe") || !strcmp(sub, "pcap")) return nova::cmd::wifiprobe();
+    if (!strcmp(sub, "selfupdate") || !strcmp(sub, "upgrade")) return nova::cmd::selfupdate();
+    // These need subsystems that are not written yet. Named rather than met with
+    // "unknown subcommand", because the difference between "this device cannot"
+    // and "this build cannot yet" matters to whoever is typing.
+    if (!strcmp(sub, "wardrive") || !strcmp(sub, "ble") || !strcmp(sub, "radar") ||
+        !strcmp(sub, "watch") || !strcmp(sub, "fire") || !strcmp(sub, "store") ||
+        !strcmp(sub, "web")) {
+        fw_printf("'%s' is not built yet in this version.\n", sub);
+        return 1;
+    }
 
     fw_printf("d1: don't know '%s'. Try `d1 help`.\n", sub);
     return 1;

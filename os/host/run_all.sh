@@ -59,6 +59,7 @@ declare -A SRC=(
     # it is a package source with no firmware behind it, which is exactly what
     # lets the drawing code be checked here at all.
     [novacanvas_test]=""
+    [novacore_test]=""
     [packages_test]="fakehw.cpp"
     [lock_test]="$CORE/lock.cpp $CORE/task.cpp $CORE/blackbox.cpp"
     [interrupt_test]="$CORE/interrupt.cpp $CORE/task.cpp $CORE/blackbox.cpp host_task_stub.cpp"
