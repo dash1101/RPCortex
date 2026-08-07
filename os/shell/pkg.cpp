@@ -7,6 +7,11 @@
 #include "storage.h"
 #include "pkgindex.h"
 
+// Declared where it is used rather than in apps.h, matching sys.cpp: the pool is
+// an implementation detail of apps.cpp and only two callers have any business
+// asking for it back.
+uint32_t apps_pool_reclaim(void);
+
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -98,6 +103,25 @@ bool pkg_install_file(const char *file, bool quiet, bool consume) {
     // so if what follows fails there is something to put back.
     bool was_resident = apps_resident(name);
     apps_unload(name);
+
+    // AND ASK FOR THE SANDBOX POOL BACK, which is where the memory actually is.
+    //
+    // A task that finishes normally keeps its slot so its exit status can be
+    // read, and with the slot it keeps its sandbox entry — about 23 KB of stack
+    // and arena. Nothing releases that automatically: the only reclaimer runs
+    // when all twelve TASK SLOTS are full, and the pool it protects is exhausted
+    // at FOUR. So four background runs leave the pool empty with eight slots
+    // still free, the reclaimer stays dormant because by its own measure nothing
+    // is scarce, and 69 KB sits held by tasks that finished minutes ago.
+    //
+    // apps_pool_reclaim already frees exactly that state — claimed, not lent —
+    // and was wired to `freeup` and to the allocator's own retry, but not to
+    // here. Loading an image is the largest single allocation this device ever
+    // makes, so it is precisely where the memory should be asked for.
+    //
+    // This does not remove the need for a reaper. It means an install stops
+    // failing for want of memory that is sitting there unowned.
+    apps_pool_reclaim();
 
     LoadedApp probe;
     rc = app_load(src, &probe);
