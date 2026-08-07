@@ -297,13 +297,24 @@ bool rollback_apply(bool at_boot) {
     // Does not return when it works.
     if (update_apply_file(ROLLBACK_IMG, info.ver, at_boot)) return true;
 
-    // It did not get as far as writing anything, so the copy is still good and
-    // the notes for the next boot are now lies. Both are put back.
-    storage_rename("/os/rollback.used", ROLLBACK_CFG);
+    // Nothing was written, so the notes for the next boot are now lies.
     reg_set("System.Rollback_From", "");
     reg_set("System.Rollback_To", "");
     persist_save_registry();
-    out_err("Nothing was written. The saved copy is still there.");
+
+    // Whether the copy is offered again depends entirely on WHO asked.
+    //
+    // By hand, it is still good and there is a person there to try something
+    // else, so it goes back on the shelf. At boot it does not: that path is
+    // already the last resort, it will run again on the very next start, and
+    // offering the same copy that just failed to stage produces a device that
+    // retries forever instead of falling through to the step behind it.
+    if (!at_boot) {
+        storage_rename("/os/rollback.used", ROLLBACK_CFG);
+        out_err("Nothing was written. The saved copy is still there.");
+    } else {
+        out_err("The restore did not finish, so the saved copy has been given up on.");
+    }
     return false;
 }
 

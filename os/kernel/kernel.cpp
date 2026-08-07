@@ -247,7 +247,7 @@ bool kboot(void) {
 
             // Rung three, and last for a reason: this is the only step that
             // costs the person their files.
-            klog(LOG_ERROR, "There is no saved firmware to fall back to.");
+            klog(LOG_ERROR, "There is no saved firmware left to fall back to.");
             klog(LOG_WARN, "Rebuilding the filesystem. Files are lost; the device boots.");
             reg_clear();
             users_clear();
