@@ -12,6 +12,9 @@
 #include "rpc_app.h"
 #include "novacore.h"
 #include "novaboard.h"
+#include "novamodtab.h"
+#include "novagui.h"
+#include "display.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -139,12 +142,116 @@ int cmd_pins(int argc, char **argv) {
 
 void usage(void) {
     fw_printf("Nova D1\n");
+    fw_printf("  d1 gui [--bg]          run the screen, in front or as a service\n");
+    fw_printf("  d1 stop                stop it\n");
     fw_printf("  d1 status              what is configured and what answered\n");
+    fw_printf("  d1 scan                probe every module\n");
+    fw_printf("  d1 perf                what the last second of frames cost\n");
+    fw_printf("  d1 display [<kind>]    sh1106 | ssd1306 | ssd1309\n");
     fw_printf("  d1 pins                every pin, its value and where it came from\n");
     fw_printf("  d1 pins check          is this map assignable on this chip\n");
     fw_printf("  d1 pins board [<id>]   list or choose a board profile\n");
     fw_printf("  d1 pins set <n> <g>    override one pin\n");
     fw_printf("  d1 pins clear <n>      drop an override\n");
+}
+
+// --- d1 scan -------------------------------------------------------------------
+
+const char *presence_word(nova::Presence p) {
+    switch (p) {
+        case nova::MOD_PRESENT: return "answered";
+        case nova::MOD_ABSENT:  return "no answer";
+        case nova::MOD_UNWIRED: return "not wired";
+        default:                return "not checked";
+    }
+}
+
+int cmd_scan(void) {
+    nova::modules_scan();
+    fw_printf("%-11s %-10s %-7s %s\n", "module", "chip", "bus", "state");
+    const nova::Module *m = nova::modules();
+    for (unsigned i = 0; i < nova::module_count(); i++) {
+        fw_printf("%-11s %-10s %-7s %s\n", m[i].id, m[i].chip,
+                  nova::bus_name(m[i].bus), presence_word(nova::module_presence(m[i])));
+    }
+    fw_printf("\n");
+    // The pins each unwired module is waiting on, because "not wired" without
+    // saying WHICH wire is a message that sends somebody back to the table.
+    for (unsigned i = 0; i < nova::module_count(); i++) {
+        if (nova::module_presence(m[i]) != nova::MOD_UNWIRED) continue;
+        fw_printf("%s needs:", m[i].id);
+        for (unsigned j = 0; j < m[i].npins; j++) {
+            if (nova::board::pin(m[i].pins[j]) == PIN_NONE)
+                fw_printf(" %s", nova::board::name(m[i].pins[j]));
+        }
+        fw_printf("\n");
+    }
+    return 0;
+}
+
+// --- d1 gui --------------------------------------------------------------------
+
+int gui_task(void *) {
+    nova::gui::run();
+    return 0;
+}
+
+int cmd_gui(int argc, char **argv) {
+    if (nova::gui::running()) { fw_printf("Already running.\n"); return 1; }
+
+    bool panel = nova::gui::begin();
+    if (!panel) {
+        // Said out loud rather than left as a dark screen. A device with no
+        // panel answering on I2C is the ordinary state of a half-built one, and
+        // the two pins it is looking at are the useful part of the message.
+        fw_printf("No panel answered on I2C (SDA %d, SCL %d).\n",
+                  nova::board::pin(nova::board::PIN_SDA),
+                  nova::board::pin(nova::board::PIN_SCL));
+        fw_printf("Check the wiring, then `d1 scan`. `i2cscan` lists what is there.\n");
+        return 1;
+    }
+    fw_printf("Panel: %s at 0x%02x.\n", nova::display().kind_name(), nova::display().address());
+
+    bool bg = (argc > 2 && (!strcmp(argv[2], "--bg") || !strcmp(argv[2], "-b")));
+    if (!bg) {
+        fw_printf("Running. BACK on the home screen does nothing; Ctrl+C here stops it.\n");
+        nova::gui::run();
+        return 0;
+    }
+    int pid = fw_task_spawn("novagui", gui_task, nullptr, 4096);
+    if (pid < 0) { fw_printf("Could not start the screen task.\n"); return 1; }
+    fw_printf("Running as task %d.\n", pid);
+    return 0;
+}
+
+int cmd_perf(void) {
+    const nova::gui::Perf &p = nova::gui::perf();
+    if (!nova::gui::running()) fw_printf("The screen is not running; these are from last time.\n");
+    fw_printf("  frames     %u in the last second\n", p.frames);
+    fw_printf("  compose    %u us  (worst %u)\n", p.draw_us, p.draw_us_max);
+    fw_printf("  push       %u us, %u page%s of 8\n", p.push_us, p.pages, p.pages == 1 ? "" : "s");
+    // The one that says whether the page diff is earning its keep: a full frame
+    // is eight pages, and most updates should be one or two.
+    fw_printf("\nA full frame is 8 pages. Fewer means the diff is working.\n");
+    return 0;
+}
+
+int cmd_display(int argc, char **argv) {
+    if (argc < 3) {
+        fw_printf("Panel: %s\n", nova::display().kind_name());
+        fw_printf("These controllers share an I2C address and cannot be told apart\n");
+        fw_printf("in software, so this is a setting rather than a guess.\n");
+        fw_printf("  d1 display sh1106 | ssd1306 | ssd1309\n");
+        return 0;
+    }
+    if (nova::panel_from_name(argv[2]) == nova::PANEL_AUTO && !nova::ieq(argv[2], "auto")) {
+        fw_printf("Not a panel this knows: %s\n", argv[2]);
+        return 1;
+    }
+    nova::reg_set(NOVA_KEY_PREFIX "Display", nova::ieq(argv[2], "auto") ? "" : argv[2]);
+    nova::reg_save();
+    fw_printf("Panel set to %s. Restart the screen for it to take effect.\n", argv[2]);
+    return 0;
 }
 
 int cmd_status(void) {
@@ -172,8 +279,18 @@ int cmd_d1(int argc, char **argv) {
         usage();
         return 0;
     }
-    if (!strcmp(sub, "status")) return cmd_status();
-    if (!strcmp(sub, "pins"))   return cmd_pins(argc - 1, argv + 1);
+    if (!strcmp(sub, "status"))  return cmd_status();
+    if (!strcmp(sub, "scan"))    return cmd_scan();
+    if (!strcmp(sub, "perf"))    return cmd_perf();
+    if (!strcmp(sub, "display")) return cmd_display(argc, argv);
+    if (!strcmp(sub, "gui"))     return cmd_gui(argc, argv);
+    if (!strcmp(sub, "stop")) {
+        if (!nova::gui::running()) { fw_printf("Not running.\n"); return 1; }
+        nova::gui::stop();
+        fw_printf("Stopping.\n");
+        return 0;
+    }
+    if (!strcmp(sub, "pins"))    return cmd_pins(argc - 1, argv + 1);
 
     fw_printf("d1: don't know '%s'. Try `d1 help`.\n", sub);
     return 1;
