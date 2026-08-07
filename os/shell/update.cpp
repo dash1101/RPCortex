@@ -494,9 +494,16 @@ bool update_apply_file(const char *path, const char *to_version, bool at_boot) {
     // one thing guaranteed to survive it. Without this an update that works is
     // indistinguishable from one that did nothing: the device reboots, comes
     // back, and says nothing about why.
-    reg_set("System.Update_From", RPC_OS_VERSION);
-    reg_set("System.Update_To", to_version ? to_version : "a local image");
-    persist_save_registry();
+    //
+    // Not written for a rollback, which has left its OWN note and means the
+    // opposite thing. Writing both left the update keys set behind the rollback
+    // keys, and the boot after the one that reported the rollback would cheerily
+    // announce having been updated to the version it had just undone.
+    if (strcmp(path, ROLLBACK_IMG) != 0) {
+        reg_set("System.Update_From", RPC_OS_VERSION);
+        reg_set("System.Update_To", to_version ? to_version : "a local image");
+        persist_save_registry();
+    }
 
     log_addf(LOG_K_WARN, "update: writing %lu bytes of firmware", (unsigned long)size);
 

@@ -111,6 +111,10 @@ static bool file_reads_clean(const char *path, uint32_t size) {
         ok = src.read(src.ctx, at, buf, n) >= 0;
         at += n;
         task_alive();
+        // The hardware watchdog directly as well: this runs at boot, before
+        // there is a scheduler for task_alive to reach, and reading a megabyte
+        // takes longer than the watchdog will wait.
+        task_watchdog_feed();
     }
     storage_close_source(h);
     return ok;
@@ -140,7 +144,7 @@ static void collect(void *ctx, const char *name, bool is_dir, uint32_t size) {
 // deleted — which is the fix, not a giveup: every file this runs over is one
 // the OS knows how to produce again, and a corrupt one that stays on disk is
 // read again at every boot forever.
-uint32_t fs_scan_dir(const char *dir, bool repair, bool verbose) {
+uint32_t fs_scan_dir(const char *dir, bool repair, bool verbose, uint32_t max_bytes) {
     static ScanList list;
     list.n = 0; list.overflow = false;
     if (!storage_walk(dir, collect, &list)) return 0;
@@ -154,6 +158,13 @@ uint32_t fs_scan_dir(const char *dir, bool repair, bool verbose) {
 
     uint32_t bad = 0;
     for (uint32_t i = 0; i < list.n; i++) {
+        // Big files are skipped at boot, and only at boot. The one that matters
+        // is the saved firmware image: nearly a megabyte, read at every single
+        // start for no benefit, because it is checked against its own hash
+        // before it is ever written anywhere. `fscheck --scan` passes no limit
+        // and reads everything.
+        if (max_bytes && list.size[i] > max_bytes) continue;
+
         char path[128];
         snprintf(path, sizeof(path), "%s/%s", !strcmp(dir, "/") ? "" : dir, list.name[i]);
         task_alive();
@@ -175,7 +186,8 @@ uint32_t fs_scan_dir(const char *dir, bool repair, bool verbose) {
 uint32_t fs_integrity_check(bool verbose) {
     static const char *kOwn[] = { "/os", "/os/pkg", "/etc" };
     uint32_t bad = 0;
-    for (const char *d : kOwn) bad += fs_scan_dir(d, /*repair*/true, verbose);
+    for (const char *d : kOwn)
+        bad += fs_scan_dir(d, /*repair*/true, verbose, /*max_bytes*/128 * 1024);
 
     if (bad) {
         out_errp("fs", "%u file%s was damaged and has been removed.",
@@ -224,15 +236,15 @@ static int cmd_fscheck(int argc, char **argv) {
         uint32_t bad = 0;
         for (unsigned i = 0; i < N_DIRS; i++) {
             out_infop("scan", "%s", kDirs[i]);
-            bad += fs_scan_dir(kDirs[i], /*repair*/false, /*verbose*/true);
+            bad += fs_scan_dir(kDirs[i], /*repair*/false, /*verbose*/true, /*no limit*/0);
         }
         for (uint32_t i = 0; i < users_count(); i++) {
             char path[USR_HOME_MAX + 8];
             snprintf(path, sizeof(path), "/home/%s", users_name_at(i));
             out_infop("scan", "%s", path);
-            bad += fs_scan_dir(path, /*repair*/false, /*verbose*/true);
+            bad += fs_scan_dir(path, /*repair*/false, /*verbose*/true, /*no limit*/0);
         }
-        bad += fs_scan_dir("/", /*repair*/false, /*verbose*/true);
+        bad += fs_scan_dir("/", /*repair*/false, /*verbose*/true, /*no limit*/0);
 
         out_blank();
         if (!bad) { out_ok("Every file read back cleanly."); return 0; }
