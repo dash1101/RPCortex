@@ -2,9 +2,10 @@
 //
 // The other loader tests use synthetic objects, which only ever contain what the
 // test author thought to put in them. This one loads what the compiler actually
-// produced — with -ffunction-sections giving dozens of sections, .bss for each
-// static, string literals in merge sections, and whatever relocation types GCC
-// felt like emitting. That is the input the device gets.
+// produced — .bss for each static, string literals in merge sections, and
+// whatever relocation types GCC felt like emitting. That is the input the device
+// gets. novad1 adds the other real shape: several objects folded into one with
+// `ld -r`, which no compiler run produces directly.
 //
 // Two things it took to make this meaningful on a 64-bit host, both of which
 // were themselves findings:
@@ -78,12 +79,20 @@ static int file_read(void *, uint32_t off, void *dst, uint32_t len) {
 // Addresses sit ~256 MB from the loaded image on purpose: that is the real
 // distance from XIP flash to SRAM, so every firmware call is out of BL range and
 // has to go through a veneer, exercising that path rather than the easy one.
-static char g_seen[64][40];
-static uint32_t g_addr[64];
+//
+// The table is SHARED by every app in a run and grows as symbols are met, so it
+// has to be at least as wide as the union of what they all use — not what the
+// largest one uses. At 64 it filled up partway through the list and the app that
+// happened to be last failed with "unresolved symbol" naming a function the
+// firmware exports perfectly well. Sized to the real ABI (169 entries) with room
+// to grow, since being too small fails in a way that points at the wrong thing.
+#define FAKE_SYMS 256
+static char g_seen[FAKE_SYMS][40];
+static uint32_t g_addr[FAKE_SYMS];
 static int g_ns;
 static int api_slot(const char *n) {
     for (int i = 0; i < g_ns; i++) if (!strcmp(g_seen[i], n)) return i;
-    if (g_ns >= 64) return -1;
+    if (g_ns >= FAKE_SYMS) return -1;
     snprintf(g_seen[g_ns], 40, "%s", n);
     g_addr[g_ns] = (0x10001000u + (uint32_t)g_ns * 4u) | 1u;
     return g_ns++;
@@ -94,7 +103,10 @@ uint32_t api_lookup(const char *n) { int i = api_slot(n); return i < 0 ? 0 : g_a
 // mismatched pair pass unnoticed.
 int api_index_of(const char *n) { return api_slot(n); }
 uint32_t api_addr_at(uint32_t i) { return i < (uint32_t)g_ns ? g_addr[i] : 0; }
-uint32_t api_symbol_count(void) { return 64; }
+// The capacity, not the count so far: the loader asks this BEFORE resolving
+// anything, to bound the veneer pool, and an answer that grew as symbols were
+// met would size the pool from whichever app ran first.
+uint32_t api_symbol_count(void) { return FAKE_SYMS; }
 
 // Where a section landed in the loaded image, recomputed from the ELF so the
 // answers match what was actually placed.
@@ -464,7 +476,11 @@ static const char *kBuildDirs[] = {
     "../build_pico2/apps",   "../build_pico/apps",
     "../build/apps",
 };
-static const char *kNames[] = { "greet", "bench", "stress", "tuidemo" };
+// httpd is the largest SINGLE-file package and novad1 the first MULTI-file one —
+// several objects folded together with `ld -r`. That produces a different
+// section layout from anything the compiler emits directly, and the loader has
+// to handle it identically or a package that builds fine will not load.
+static const char *kNames[] = { "greet", "bench", "stress", "tuidemo", "httpd", "novad1" };
 
 int main(int argc, char **argv) {
     static char paths[8][64];

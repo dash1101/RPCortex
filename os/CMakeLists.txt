@@ -377,27 +377,76 @@ pico_add_bin_output(rpcortex_v2)
 # surface and nothing else. A branch chain costs a few instructions in code that
 # is waiting on a keypress anyway.
 #
+# NO -ffunction-sections / -fdata-sections, and that is the opposite of the usual
+# advice for a reason: they exist so a LINKER can discard what nothing reaches,
+# and a package is never linked. All they do here is put every function and every
+# string in a section of its own — which the loader then has to map, relocate and
+# account for individually.
+#
+# Measured on httpd: 83 sections with them, 13 without, and the object drops from
+# 20144 to 13808 bytes. LOADER_MAX_SECTIONS is 128, so they were a ceiling on how
+# large a package could be at all — around a thousand lines — for no benefit
+# whatsoever. W^X is unaffected: the merged .rodata is still flagged A, not WA,
+# so the loader's SHF_WRITE sort still puts it on the read-only side.
+#
 # Built for cortex-m0plus (ARMv6-M) deliberately: ARMv8-M Baseline is a superset,
 # so one binary serves the RP2040 and RP2350 boards alike.
 set(APP_FLAGS -mthumb -mcpu=cortex-m0plus -Os -std=c++17
     -fno-exceptions -fno-rtti -fno-common -fno-jump-tables
-    -fno-use-cxa-atexit -ffunction-sections -fdata-sections -I${OS_ROOT}/include)
+    -fno-use-cxa-atexit -I${OS_ROOT}/include)
 
+# A package may be one .cpp or many.
+#
+# One file compiles straight to the .app, as it always did. Several are compiled
+# separately and then PARTIALLY linked (`ld -r`) into a single relocatable object
+# — which is still ET_REL, still carries only the three relocation types the
+# loader handles, and looks to it exactly like a big single-file package.
+#
+# This exists because Nova D1 is not going to be one file, and the alternative —
+# a unity build stitched together with #include of .cpp files — hides the
+# dependency graph the layer rule depends on being visible.
 function(rpc_add_app name)
+    file(GLOB app_srcs CONFIGURE_DEPENDS ${OS_ROOT}/apps/${name}/*.cpp)
+    if(NOT app_srcs)
+        message(FATAL_ERROR "rpc_add_app(${name}): no .cpp files in apps/${name}/")
+    endif()
+
+    list(LENGTH app_srcs app_nsrc)
+    if(app_nsrc EQUAL 1)
+        set(app_build COMMAND ${CMAKE_CXX_COMPILER} ${APP_FLAGS}
+                              -c ${app_srcs} -o ${CMAKE_BINARY_DIR}/apps/${name}.app)
+    else()
+        # Compile each into apps/<name>.d/, then fold them into one object. The
+        # object list is built in the same order every time so the .app is
+        # reproducible rather than depending on the order the glob came back in.
+        list(SORT app_srcs)
+        set(app_build COMMAND ${CMAKE_COMMAND} -E make_directory
+                              ${CMAKE_BINARY_DIR}/apps/${name}.d)
+        set(app_objs "")
+        foreach(src ${app_srcs})
+            get_filename_component(stem ${src} NAME_WE)
+            set(obj ${CMAKE_BINARY_DIR}/apps/${name}.d/${stem}.o)
+            list(APPEND app_build COMMAND ${CMAKE_CXX_COMPILER} ${APP_FLAGS}
+                                          -c ${src} -o ${obj})
+            list(APPEND app_objs ${obj})
+        endforeach()
+        list(APPEND app_build COMMAND ${CMAKE_LINKER} -r -o
+                                      ${CMAKE_BINARY_DIR}/apps/${name}.app ${app_objs})
+    endif()
+
     add_custom_command(
         OUTPUT ${CMAKE_BINARY_DIR}/apps/${name}.app
         COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/apps
-        COMMAND ${CMAKE_CXX_COMPILER} ${APP_FLAGS}
-                -c ${OS_ROOT}/apps/${name}/${name}.cpp
-                -o ${CMAKE_BINARY_DIR}/apps/${name}.app
+        ${app_build}
         # Check every symbol resolves NOW, not when someone loads it on a device.
         # An unresolved symbol otherwise surfaces as a load failure naming a
-        # function the author never wrote.
+        # function the author never wrote. For a multi-file package this also
+        # catches the one a partial link cannot: a declaration nothing defines.
         COMMAND ${CMAKE_COMMAND} -E env python3 ${OS_ROOT}/tools_checkapp.py
                 ${CMAKE_BINARY_DIR}/apps/${name}.app
                 ${OS_ROOT}/api.cpp
                 ${CMAKE_NM}
-        DEPENDS ${OS_ROOT}/apps/${name}/${name}.cpp ${OS_ROOT}/include/rpc_app.h
+        DEPENDS ${app_srcs} ${OS_ROOT}/include/rpc_app.h
                 ${OS_ROOT}/api.cpp ${OS_ROOT}/tools_checkapp.py
         VERBATIM)
     add_custom_target(app_${name} ALL DEPENDS ${CMAKE_BINARY_DIR}/apps/${name}.app)
@@ -417,6 +466,7 @@ rpc_add_app(websearch)
 rpc_add_app(speedtest)
 rpc_add_app(havoc)
 rpc_add_app(httpd)
+rpc_add_app(novad1)
 
 # --- packages that ship installed -------------------------------------------
 #

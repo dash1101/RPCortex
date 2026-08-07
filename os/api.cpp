@@ -16,6 +16,8 @@
 #include "blackbox.h"
 #include "interrupt.h"
 #include "out.h"        // out_capture_* for fw_shell_run
+#include "registry.h"   // fw_reg_* 
+#include "persist.h"    // fw_reg_save
 
 #include <string.h>
 #include <stdlib.h>
@@ -25,6 +27,7 @@
 #include "hardware/adc.h"
 #include "hardware/i2c.h"
 #include "hardware/gpio.h"
+#include "hardware/irq.h"
 #include "hardware/pio.h"
 #include "hardware/spi.h"
 #include "hardware/pwm.h"
@@ -228,6 +231,85 @@ extern "C" int fw_file_exists(const char *path) {
     return storage_stat(path, nullptr, nullptr) ? 1 : 0;
 }
 
+extern "C" int fw_mkdir(const char *path) {
+    task_alive();
+    if (!ok_s(path)) return 0;
+    return storage_mkdir(path) ? 1 : 0;
+}
+
+// --- the registry (API 1.19) ------------------------------------------------
+//
+// A package's configuration, in the same store the OS keeps its own in, so
+// `reg` shows it and a factory reset clears it. Nova D1 alone carries about
+// sixty keys — pins, radio settings, the home layout, lock state — and until
+// now the only route was fw_shell_run("reg get ..."), which means a package
+// parses text to read its own settings and inherits whatever privileges the
+// session happened to have.
+//
+// fw_reg_get RETURNS THE VALUE BY COPY rather than handing back the pointer
+// reg_get gives. That pointer is into the firmware's own table, which a
+// sandboxed package cannot read at all — it would be a valid address that
+// faults on dereference, which is the worst kind. Copying costs a buffer the
+// caller already has.
+//
+// Writes are not saved to flash automatically. A settings screen changing six
+// values in a row should cost one flash write, not six, so persistence is the
+// package's explicit call — the same shape reg_set/persist_save_registry has
+// inside the firmware.
+extern "C" int fw_reg_get(const char *key, char *out, uint32_t cap) {
+    task_alive();
+    if (!ok_s(key) || !ok_w(out, cap) || cap == 0) return 0;
+    const char *v = reg_get(key, nullptr);
+    if (!v) { out[0] = 0; return 0; }
+    uint32_t n = (uint32_t)strlen(v);
+    if (n >= cap) n = cap - 1;
+    memcpy(out, v, n);
+    out[n] = 0;
+    return 1;
+}
+
+extern "C" int fw_reg_set(const char *key, const char *value) {
+    task_alive();
+    if (!ok_s(key) || !ok_s(value)) return 0;
+    return reg_set(key, value) ? 1 : 0;
+}
+
+extern "C" int32_t fw_reg_get_int(const char *key, int32_t def) {
+    task_alive();
+    if (!ok_s(key)) return def;
+    return reg_get_int(key, def);
+}
+
+extern "C" int fw_reg_has(const char *key) {
+    task_alive();
+    if (!ok_s(key)) return 0;
+    return reg_has(key) ? 1 : 0;
+}
+
+extern "C" void fw_reg_save(void) {
+    task_alive();
+    persist_save_registry();
+}
+
+// Which board this is — "pico2_w", "pico_w", "pico2", "pico" (API 1.19).
+//
+// A package is one binary for every board, so it cannot know this at build time,
+// and the things that differ are exactly the things a package cares about: which
+// GPIO the radio has taken, how many pins exist, whether there is a radio at
+// all. Nova D1 picks its pin map from this.
+//
+// The board's own name, not a guess from the pin count — an RP2350A and an
+// RP2040 both report 30 GPIO and are not interchangeable.
+extern "C" int fw_board(char *out, unsigned cap) {
+    task_alive();
+    if (!ok_w(out, cap) || cap == 0) return 0;
+    unsigned n = (unsigned)strlen(PICO_BOARD);
+    if (n >= cap) n = cap - 1;
+    memcpy(out, PICO_BOARD, n);
+    out[n] = 0;
+    return 1;
+}
+
 // How busy the machine is, 0-100, sampled since anything last asked.
 //
 // For a status bar: the Nova D1 wants a number next to the clock, the way a
@@ -340,6 +422,111 @@ extern "C" int fw_gpio_put(unsigned pin, int value) {
 extern "C" int fw_gpio_get(unsigned pin) {
     if (!fw_gpio_usable(pin)) return -1;
     return gpio_get(pin) ? 1 : 0;
+}
+
+// --- edges that cannot be missed (API 1.19) ---------------------------------
+//
+// Polling a button is fine until the thing doing the polling sleeps. The Nova
+// D1's screen loop naps up to 300 ms when the display is off, and a tap is
+// 40 ms — so a polled button drops presses, and the harder it tries to save
+// power the more it drops. Its MicroPython version caught them on a hardware
+// interrupt for exactly this reason.
+//
+// The ABI cannot hand an interrupt to a package: calling INTO unprivileged code
+// is the hard direction, it would have to happen with the sandbox already
+// programmed, and a package that faults inside an interrupt is a fault with
+// nowhere to be contained to. So the interrupt stays in the firmware and only
+// its RESULT crosses — a count of edges since the package last asked. Nothing
+// is missed, nothing runs in package code at interrupt time, and there is no
+// handle to leak.
+//
+// NO LOCK, and that is deliberate rather than an oversight. lock_hw_enter is
+// not recursive and taking it twice on one core hangs the board silently, which
+// makes an interrupt handler the last place it belongs. Instead each of the two
+// fields has exactly ONE writer: the handler only ever increments `count`, the
+// reader only ever writes `seen`, and the difference between them is the
+// answer. Unsigned subtraction handles the wrap. There is no interleaving that
+// loses an edge because there is no read-modify-write shared between them.
+//
+// One consequence worth stating: two tasks polling the SAME pin share `seen`,
+// so they split the edges between them rather than each seeing all of them.
+// That is a package deciding to have two readers for one button, not a fault
+// here.
+#define GPIO_WATCH_MAX 8
+
+struct GpioWatch {
+    volatile uint32_t count;    // written by the handler, only ever ++
+    uint32_t          seen;     // written by fw_gpio_events, only ever =
+    uint8_t           pin;
+    bool              used;
+};
+static GpioWatch g_watch[GPIO_WATCH_MAX];
+
+static void gpio_watch_irq(uint gpio, uint32_t events) {
+    (void)events;
+    for (int i = 0; i < GPIO_WATCH_MAX; i++)
+        if (g_watch[i].used && g_watch[i].pin == gpio) { g_watch[i].count++; return; }
+}
+
+extern "C" int fw_gpio_watch(unsigned pin, int edges) {
+    if (!fw_gpio_usable(pin)) return -1;
+    task_alive();
+
+    uint32_t mask = 0;
+    if (edges & FW_EDGE_FALL) mask |= GPIO_IRQ_EDGE_FALL;
+    if (edges & FW_EDGE_RISE) mask |= GPIO_IRQ_EDGE_RISE;
+
+    int slot = -1;
+    for (int i = 0; i < GPIO_WATCH_MAX; i++)
+        if (g_watch[i].used && g_watch[i].pin == pin) { slot = i; break; }
+
+    // edges == 0 means stop watching. Releasing the slot is what makes a
+    // package that opens and closes a screen repeatedly not run out of them.
+    if (!mask) {
+        if (slot < 0) return 0;
+        gpio_set_irq_enabled(pin, GPIO_IRQ_EDGE_FALL | GPIO_IRQ_EDGE_RISE, false);
+        g_watch[slot].used = false;
+        return 0;
+    }
+
+    if (slot < 0)
+        for (int i = 0; i < GPIO_WATCH_MAX; i++)
+            if (!g_watch[i].used) { slot = i; break; }
+    if (slot < 0) return -1;
+
+    // Re-arming an existing watch keeps its history; a fresh one starts at zero
+    // on both sides, so the first fw_gpio_events cannot report edges that
+    // happened before anyone was interested.
+    if (!g_watch[slot].used) {
+        g_watch[slot].count = 0;
+        g_watch[slot].seen  = 0;
+        g_watch[slot].pin   = (uint8_t)pin;
+        g_watch[slot].used  = true;
+    }
+
+    // The callback and the bank interrupt belong to whichever core calls this,
+    // which is where the handler will then run. Setting them every time is
+    // harmless and means a package that arms pins from two tasks on two cores
+    // gets both served rather than only the first.
+    gpio_set_irq_callback(gpio_watch_irq);
+    irq_set_enabled(IO_IRQ_BANK0, true);
+    gpio_set_irq_enabled(pin, mask, true);
+    return 0;
+}
+
+extern "C" int fw_gpio_events(unsigned pin, int *level) {
+    if (!fw_gpio_usable(pin)) return -1;
+    if (level && !ok_w(level, sizeof(*level))) return -1;
+    task_alive();
+    if (level) *level = gpio_get(pin) ? 1 : 0;
+    for (int i = 0; i < GPIO_WATCH_MAX; i++) {
+        if (!g_watch[i].used || g_watch[i].pin != pin) continue;
+        uint32_t now = g_watch[i].count;
+        uint32_t n   = now - g_watch[i].seen;
+        g_watch[i].seen = now;
+        return (int)(n > 0x7fffffffu ? 0x7fffffffu : n);
+    }
+    return -1;      // not being watched, which is a different thing from zero
 }
 
 // The ADC. Channel 4 is the temperature sensor on RP2040; RP2350 moved it to
@@ -1244,6 +1431,13 @@ static const ApiSymbol kSymbols[] = {
     SYM(fw_file_read),
     SYM(fw_file_remove),
     SYM(fw_file_exists),
+    SYM(fw_mkdir),
+    SYM(fw_reg_get),
+    SYM(fw_reg_set),
+    SYM(fw_reg_get_int),
+    SYM(fw_reg_has),
+    SYM(fw_reg_save),
+    SYM(fw_board),
     SYM(fw_shell_run),
     SYM(fw_cpu_percent),
     SYM(fw_net_rssi),
@@ -1319,6 +1513,8 @@ static const ApiSymbol kSymbols[] = {
     SYM(fw_gpio_pull),
     SYM(fw_gpio_put),
     SYM(fw_gpio_get),
+    SYM(fw_gpio_watch),
+    SYM(fw_gpio_events),
     SYM(fw_adc_init),
     SYM(fw_adc_read),
     SYM(fw_adc_temp_channel),

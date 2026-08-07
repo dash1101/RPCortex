@@ -23,7 +23,7 @@ extern "C" {
 // MINOR: a symbol added — older-minor apps still run (everything they want is
 //        present); newer-minor apps refused (they may want something absent).
 #define RPC_API_MAJOR 1
-#define RPC_API_MINOR 18
+#define RPC_API_MINOR 19
 
 typedef struct {
     uint32_t magic;          // RPC_APP_MAGIC
@@ -143,6 +143,36 @@ uint32_t fw_file_read(const char *path, void *buf, uint32_t cap);
 int      fw_file_remove(const char *path);
 int      fw_file_exists(const char *path);
 
+// Make a directory (API 1.19). littlefs does not create parents, so a package
+// that keeps its files under a directory of its own has to make each level —
+// and until this existed it could not make any of them.
+int      fw_mkdir(const char *path);
+
+// --- the registry (API 1.19) ------------------------------------------------
+//
+// A package's settings, in the same store the OS keeps its own in — so `reg`
+// lists them, a factory reset clears them, and they survive an update the same
+// way everything else does. Keys are dot-notation and by convention a package
+// owns one prefix ("Apps.NovaD1_Home"). A value is at most 96 characters.
+//
+// fw_reg_get copies into the caller's buffer rather than returning a pointer:
+// the string lives in firmware memory a sandboxed package cannot read, so a
+// pointer would be a valid-looking address that faults on use.
+//
+// A write is NOT saved to flash. Changing six settings in a row should cost one
+// flash write, not six, so fw_reg_save is a separate and explicit call.
+int      fw_reg_get(const char *key, char *out, uint32_t cap);   // 1 if found
+int      fw_reg_set(const char *key, const char *value);
+int32_t  fw_reg_get_int(const char *key, int32_t def);
+int      fw_reg_has(const char *key);
+void     fw_reg_save(void);
+
+// Which board this is: "pico2_w", "pico_w", "pico2", "pico" (API 1.19). A
+// package is one binary for every board, so anything that differs between them
+// — which GPIO the radio has taken, how many pins exist, whether there is a
+// radio at all — has to be asked for at run time rather than compiled in.
+int      fw_board(char *out, unsigned cap);
+
 // The longest command line fw_shell_run will take. Matches the shell's own.
 #define RPC_SHELL_LINE_MAX 256
 
@@ -217,6 +247,25 @@ int      fw_gpio_init(unsigned pin, int dir);          // FW_PIN_IN / FW_PIN_OUT
 int      fw_gpio_pull(unsigned pin, int mode);         // FW_PULL_*
 int      fw_gpio_put(unsigned pin, int value);
 int      fw_gpio_get(unsigned pin);                    // 0/1, or -1 if refused
+
+// Edges, counted in the firmware so a slow poll cannot miss one (API 1.19).
+//
+// For buttons and encoders on a screen loop that sleeps between frames. The
+// interrupt stays on this side — nothing runs in package code at interrupt time
+// — and what crosses is a count of edges since the last time this pin was
+// asked. Up to 8 pins at once.
+//
+// fw_gpio_watch(pin, 0) stops watching and gives the slot back.
+// fw_gpio_events returns the count and zeroes it, or -1 if the pin is not being
+// watched — which is a different answer from 0, meaning "nothing has happened".
+// `level` is optional and reports the pin's state right now, so a press and a
+// release can be told apart in one call.
+#define FW_EDGE_FALL  1
+#define FW_EDGE_RISE  2
+#define FW_EDGE_BOTH  3
+
+int      fw_gpio_watch(unsigned pin, int edges);       // FW_EDGE_*, 0 to stop
+int      fw_gpio_events(unsigned pin, int *level);     // count since last asked
 
 // ADC. Channels 0-3 are GPIO 26-29; the board's temperature sensor is on the
 // channel fw_adc_temp_channel() reports, which is not the same number on every

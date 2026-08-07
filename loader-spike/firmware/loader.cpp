@@ -413,9 +413,27 @@ LoadResult app_load(const AppSource &src, LoadedApp *out) {
 
     // Veneer pool. Sized from the number of relocations rather than guessed:
     // worst case is one veneer per distinct out-of-range target.
+    //
+    // But bounded by the ABI as well, because "one per relocation" is a wildly
+    // loose bound on a large package. veneer_emit reuses a trampoline for a
+    // target it has already seen, and BOTH call sites only ever emit for a
+    // firmware target — an ABI index when sandboxed, a firmware address when
+    // not. Everything else is inside the image and reachable by an ordinary
+    // branch. So the number of DISTINCT targets can never exceed the number of
+    // symbols the firmware exports, however many times they are called.
+    //
+    // Without this a package with five thousand relocations reserves eighty
+    // kilobytes of trampolines and uses under three. That is most of a Nova
+    // D1-sized image, spent on nothing. If the bound were ever wrong the cost
+    // is a clean LOAD_ERR_RELOC_RANGE from veneer_emit, not corruption.
     uint32_t reloc_count = 0;
     for (int i = 0; i < eh.e_shnum; i++)
         if (sh[i].sh_type == SHT_REL) reloc_count += sh[i].sh_size / sizeof(Elf32_Rel);
+    // Zero means a caller that does not keep a real table (a host test with a
+    // stubbed ABI), and clamping to nothing would refuse an app that resolves
+    // fine. Only a real count is allowed to tighten the bound.
+    uint32_t max_targets = api_symbol_count();
+    if (max_targets && reloc_count > max_targets) reloc_count = max_targets;
     uint32_t veneer_bytes = (reloc_count + 1) * VENEER_BYTES;
     if (g_veneer_mode == LOADER_VENEER_SVC) veneer_bytes += VENEER_GATE_BYTES;
     veneer_bytes = (veneer_bytes + (APP_BLOCK_ALIGN - 1)) & ~(APP_BLOCK_ALIGN - 1);
