@@ -66,6 +66,21 @@ updates itself.
   interrupt check and the scheduler yield are the same call.
 - **PIO, SPI and I2C for packages**, which is what makes drivers possible
   without touching the firmware.
+- **It puts itself back together.** Settings and accounts are written twice, so
+  a file that stops reading is restored from the copy beside it rather than
+  lost. Every file the OS owns is read at boot, because a bad flash block on
+  littlefs does not return wrong data — it returns nothing at all — and one that
+  cannot be read is removed and rebuilt. `fscheck --scan` reads the rest.
+- **Firmware rollback.** An update saves the version it replaces, and `update
+  rollback` writes it back. Files and settings are untouched; only the firmware
+  changes.
+- **A device that recovers on its own.** Three starts that never reach a shell
+  and it tries the cheapest fix first: load nothing — no packages, services or
+  startup items, which is what breaks a working device most often. Still
+  failing, it restores the saved firmware. Only when there is nothing left to
+  restore does it rebuild the filesystem, which is the step that costs you
+  something. v1 had none of this: a device that would not boot needed another
+  computer.
 
 ### What matches v1
 

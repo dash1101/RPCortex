@@ -7,6 +7,7 @@
 #include "logring.h"
 #include "hardware/watchdog.h"
 #include "task.h"
+#include "../shell/rollback.h"
 #include "registry.h"
 
 #include <stdio.h>
@@ -70,6 +71,19 @@ uint32_t heap_free(void) {
 // which is what makes the three-strikes rebuild safe.
 void kboot_succeeded(void) { watchdog_hw->scratch[4] = 0; }
 
+// Same register, different meaning, and worth its own name. A rollback resets
+// the count deliberately: the restored firmware has not failed anything, and
+// letting it inherit a counter already at three would have it rebuild the
+// filesystem on the first boot after being brought in to help.
+void kboot_clear_strikes(void) { watchdog_hw->scratch[4] = 0; }
+
+// For proving the recovery ladder works without breaking a device to do it.
+// Sets the count to one short of the threshold, so the next boot is the one
+// that triggers.
+void kboot_force_strikes(uint32_t n) {
+    watchdog_hw->scratch[4] = 0x52504300u | (n & 0xFFu);
+}
+
 // --- a restart that was asked for -------------------------------------------
 //
 // EVERY deliberate restart here goes through watchdog_reboot, because that is
@@ -85,6 +99,12 @@ void kboot_succeeded(void) { watchdog_hw->scratch[4] = 0; }
 #define REBOOT_MAGIC 0x52504352u        // 'RPCR'
 
 void kboot_expect_reboot(void) { watchdog_hw->scratch[5] = REBOOT_MAGIC; }
+
+// Set by the recovery ladder when repeated failures make it worth starting with
+// nothing loaded. Not a registry setting on purpose: it applies to THIS boot
+// only, and a flag written to flash could outlive the reason for it.
+static bool g_forced_maintenance = false;
+bool kboot_maintenance(void) { return g_forced_maintenance; }
 
 static bool asked_for_it(void) {
     bool yes = watchdog_hw->scratch[5] == REBOOT_MAGIC;
@@ -135,25 +155,23 @@ bool kboot(void) {
     attempts++;
     watchdog_hw->scratch[4] = BOOT_MAGIC | (attempts & 0xFFu);
 
-    bool force_format = false;
-    if (attempts >= 3) {
+    if (attempts >= 3)
         klog(LOG_ERROR, "Boot attempt %u without reaching a shell.", (unsigned)attempts);
-        klog(LOG_ERROR, "Assuming the filesystem is at fault and rebuilding it.");
-        force_format = true;
-    }
 
     // Fed at every step: mounting or rebuilding a filesystem can take seconds,
     // and the scheduler is not running yet to do it automatically.
     task_watchdog_feed();
     kstep("Mounting storage...");
-    if (!storage_init(true) || force_format) {
-        if (!force_format) klog(LOG_ERROR, "Storage would not mount.");
+    bool rebuilt = false;
+    if (!storage_init(true)) {
+        klog(LOG_ERROR, "Storage would not mount.");
         klog(LOG_WARN, "Rebuilding the filesystem. Files are lost; the device boots.");
         if (!storage_format_and_mount()) {
             klog(LOG_ERROR, "The flash itself will not take a filesystem.");
             return false;
         }
         klog(LOG_INFO, "Filesystem rebuilt.");
+        rebuilt = true;
     }
     klog(LOG_INFO, "Filesystem mounted  (%u KB free)", storage_free_bytes() / 1024);
 
@@ -165,6 +183,85 @@ bool kboot(void) {
     klog(LOG_INFO, "%u setting%s, %u account%s",
          (unsigned)reg_count(), reg_count() == 1 ? "" : "s",
          (unsigned)users_count(), users_count() == 1 ? "" : "s");
+
+    // SAY IT IF THE DEVICE HEALED ITSELF.
+    //
+    // A restore that happens quietly teaches nobody that the flash is going,
+    // and the next time it happens there may be no shadow copy left to use.
+    // This is one of the few boot lines worth interrupting somebody for.
+    {
+        const PersistRepair *r = persist_repair_report();
+        if (r->registry_restored) {
+            klog(LOG_WARN, "The settings file was unreadable; the backup was used.");
+            log_add(LOG_K_WARN, "persist: registry restored from backup");
+        }
+        if (r->users_restored) {
+            klog(LOG_WARN, "The accounts file was unreadable; the backup was used.");
+            log_add(LOG_K_WARN, "persist: accounts restored from backup");
+        }
+        if (r->registry_lost)
+            klog(LOG_WARN, "No settings could be read. Defaults are in use.");
+        if (r->users_lost)
+            klog(LOG_WARN, "No accounts could be read. Setup will run again.");
+        if (r->registry_restored || r->users_restored)
+            klog(LOG_WARN, "Both copies are rewritten now. 'fscheck' shows the state.");
+    }
+
+    // --- the recovery ladder, cheapest rung first ---------------------------
+    //
+    // Reached only when three boots in a row have failed to bring the OS up.
+    //
+    // The order matters more than either step does. If the filesystem MOUNTED
+    // and the device still cannot start, the filesystem is the one part that
+    // has just demonstrated it works — so wiping it is simultaneously the most
+    // destructive move available and the least likely to be the right one. The
+    // firmware is the thing that changed.
+    //
+    // So the old firmware goes back first, and the filesystem is rebuilt only
+    // if there was no firmware to go back to. Restoring costs a minute;
+    // rebuilding costs everything on the device, and it belongs last.
+    //
+    // After the registry is loaded, deliberately: a rollback writes a note for
+    // the next boot to read, and writing that note before the registry has been
+    // read would save an EMPTY registry over the real one — losing every
+    // setting on the device in the middle of trying to rescue it.
+    if (attempts >= 3 && !rebuilt) {
+        task_watchdog_feed();
+
+        // Rung one: load nothing.
+        //
+        // The most common reason a working device stops starting is something
+        // that was added to it — a package, a service, a startup command — and
+        // this is what safeboot does by hand for exactly that. Doing it
+        // automatically costs nothing, changes nothing, and undoes itself on the
+        // next boot. If the device comes up, the person gets a shell and can see
+        // for themselves, which beats any amount of guessing done down here.
+        if (attempts == 3) {
+            klog(LOG_WARN, "Starting with nothing loaded: no packages, services");
+            klog(LOG_WARN, "or startup items. Whichever of those it is, skip it.");
+            g_forced_maintenance = true;
+        } else {
+            // Rung two: the firmware. Reached only when a bare boot failed too,
+            // which rules out everything the device had installed on it.
+            rollback_try_at_boot();        // does not return when it succeeds
+
+            // Rung three, and last for a reason: this is the only step that
+            // costs the person their files.
+            klog(LOG_ERROR, "There is no saved firmware to fall back to.");
+            klog(LOG_WARN, "Rebuilding the filesystem. Files are lost; the device boots.");
+            reg_clear();
+            users_clear();
+            if (!storage_format_and_mount()) {
+                klog(LOG_ERROR, "The flash itself will not take a filesystem.");
+                return false;
+            }
+            // A fresh filesystem has earned its own attempts. Without this the
+            // count is already past the threshold, and the next boot rebuilds
+            // the empty filesystem it just made.
+            kboot_clear_strikes();
+            klog(LOG_INFO, "Filesystem rebuilt.");
+        }
+    }
 
     // Keep the registry honest about what is running. After an update the new
     // firmware boots against the old values, and `ver` would keep reporting the

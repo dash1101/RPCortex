@@ -18,6 +18,7 @@
 #include "task.h"
 #include "persist.h"
 #include "kernel.h"
+#include "rollback.h"
 #include "session.h"
 #include "users.h"
 #include "logring.h"
@@ -433,6 +434,58 @@ static int cmd_safeboot(int argc, char **argv) {
     return 0;                     // not reached
 }
 
+// --- proving the recovery ladder ---------------------------------------------
+//
+// Three failed boots make the device restore its firmware, and failing that,
+// rebuild its filesystem. That is the most consequential path in the OS and the
+// hardest to reach honestly — it needs a build that genuinely will not start,
+// which is also a build that cannot be flashed off the device afterwards.
+//
+// So the count is settable. `failboot` writes two strikes into the register the
+// boot counter lives in and restarts: the next boot is the third, and the
+// ladder runs for real — the same code, the same decisions, on a device that is
+// otherwise perfectly healthy.
+//
+// The count clears the moment a shell comes up. If the ladder does nothing (no
+// saved firmware, so the filesystem is rebuilt), that is the answer, and it is
+// better to learn it on purpose than during a real failure.
+static int cmd_failboot(int argc, char **argv) {
+    uint32_t n = 2;
+    if (argc >= 2) {
+        int v = atoi(argv[1]);
+        if (v < 0 || v > 9) { out_err("A count between 0 and 9."); return 1; }
+        n = (uint32_t)v;
+    }
+
+    out_warn("This tells the next boot that %u boots have already failed.", (unsigned)n);
+    out_blank();
+    out_multi("  The next boot is attempt %u, which reaches:", (unsigned)(n + 1));
+    if (n + 1 < 3)
+        out_multi("    nothing — the count clears as soon as a shell comes up.");
+    else if (n + 1 == 3)
+        out_multi("    a maintenance start: no packages, services or startup items.");
+    else {
+        RollbackInfo info;
+        if (rollback_read(&info))
+            out_multi("    the firmware restore — %s would be written back.", info.ver);
+        else {
+            out_multi("    the filesystem rebuild, because nothing is saved to restore.");
+            out_multi("    %sEverything on the device would be lost.%s", C_BOLD, C_RESET);
+        }
+    }
+    out_blank();
+    out_multi("  %s'failboot 3' is the one that reaches the firmware restore.%s",
+              C_GRAY, C_RESET);
+    if (!session_confirm("  Continue?")) { out_info("Cancelled."); return 0; }
+
+    kboot_force_strikes(n);
+    out_info("Restarting.");
+    out_flush();
+    task_sleep_ms(400);
+    sys_reboot();
+    return 0;                     // not reached
+}
+
 // Whether this boot is a maintenance boot. Consumes the flag: reading it clears
 // it and persists that, so the next boot is normal however this one ends.
 bool safeboot_consume(char *staged, uint32_t cap) {
@@ -617,6 +670,9 @@ void diag_register(void) {
                               nullptr, LEVEL_ADMIN};
     static const Command c_sb{"safeboot", "restart with no services or packages", cmd_safeboot,
                               nullptr, LEVEL_ADMIN};
+    static const Command c_fb{"failboot", "test the boot recovery ladder", cmd_failboot,
+                              nullptr, LEVEL_ADMIN};
     cmd_register(&c_fr);
     cmd_register(&c_sb);
+    cmd_register(&c_fb);
 }

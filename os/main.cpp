@@ -41,6 +41,7 @@ static inline void usbmsc_init(void) {}
 void stock_install_once(void);
 void update_report_boot(void);
 void fs_layout_check(bool verbose);
+uint32_t fs_integrity_check(bool verbose);
 bool fs_accounts_check(void);
 void jobs_run_startup(void);
 void jobs_start_services(void);
@@ -49,6 +50,21 @@ int  shell_run_line_now(char *line);
 
 // Everything that needs a real stack. Runs as pid 2.
 static int shell_task(void *) {
+    // THIS BOOT WORKED — recorded here, at the top, and not after the login
+    // prompt where it used to be.
+    //
+    // The strike counter exists to catch a device that cannot bring its OS up:
+    // three failures and the recovery ladder in kboot starts undoing things.
+    // Reaching this line means the kernel booted, storage mounted, the registry
+    // loaded and the scheduler is running a task — the OS is up. Everything
+    // after this point is either waiting for a person to type something or
+    // running somebody's package, and neither is the filesystem's fault.
+    //
+    // Clearing it after login instead meant a device left sitting at a login
+    // prompt and power-cycled three times — which is a completely ordinary
+    // thing to do to a board on a desk — rebuilt its own filesystem.
+    kboot_succeeded();
+
     net_autoconnect();       // rejoin a saved network, if one is set to auto
     session_boot();          // first-run setup, then login
 
@@ -63,9 +79,15 @@ static int shell_task(void *) {
     // reading and clearing would otherwise latch the device into maintenance
     // mode permanently, which is worse than whatever it was diagnosing.
     char staged[96];
-    bool safe = safeboot_consume(staged, sizeof(staged));
+    // Consumed unconditionally, whichever way this boot became a maintenance
+    // one: the flag has to be cleared even when the ladder is what forced it,
+    // or an unrelated safeboot left over from earlier would fire later.
+    bool asked = safeboot_consume(staged, sizeof(staged));
+    bool safe  = asked || kboot_maintenance();
 
     if (safe) {
+        if (!asked)
+            out_warnp("recovery", "Starting with nothing loaded, after repeated failures.");
         out_warnp("safeboot", "Maintenance boot: no packages, services or startup items.");
         out_multi("  Reboot normally to bring them back.");
     } else {
@@ -74,9 +96,6 @@ static int shell_task(void *) {
         jobs_start_services();
         jobs_run_startup();
     }
-
-    // An interactive shell was reached, so this boot succeeded.
-    kboot_succeeded();
 
     // A staged command runs with the machine as quiet as it gets, which is the
     // whole point of staging it. Failures are the command's to report.
@@ -166,6 +185,7 @@ int main(void) {
     // Before anything reads a file: put back any directory that is missing, so
     // a deleted /os is a repaired boot rather than a reflash.
     fs_layout_check(/*verbose*/false);
+    fs_integrity_check(/*verbose*/false);
     fs_accounts_check();
 
     // Core 0 registers as a flash lockout victim before core 1 exists.

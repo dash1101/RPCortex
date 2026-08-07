@@ -36,6 +36,7 @@
 #include "users.h"
 #include "session.h"
 #include "logring.h"
+#include "rollback.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -51,7 +52,7 @@
 #include "hardware/regs/addressmap.h"
 #include "pico/multicore.h"
 
-bool update_apply_file(const char *path, const char *to_version);   // defined below
+bool update_apply_file(const char *path, const char *to_version, bool at_boot);
 
 bool http_transport_get(HttpTransport *t);
 bool http_tls_available(void);
@@ -328,7 +329,7 @@ static int do_install(bool force) {
     out_multi("  The device reboots into %s when it finishes.", e.ver);
     if (!session_confirm("  Continue?")) { out_info("Cancelled. The download is kept."); return 0; }
 
-    return update_apply_file(IMAGE_PATH, e.ver) ? 0 : 1;
+    return update_apply_file(IMAGE_PATH, e.ver, /*at_boot*/false) ? 0 : 1;
 }
 
 // Called every sector while staging. It draws the bar, and — the part that
@@ -346,6 +347,12 @@ static inline bool usbdrv_release_for_update(void) { return false; }
 static void stage_progress(void *, uint32_t done, uint32_t total) {
     out_progress("Staging", done, total);
     task_alive();
+    // AND the hardware watchdog directly. task_alive is a no-op until the
+    // scheduler is up, and staging also happens at boot now — on the rollback
+    // path, before there is a scheduler to reach. Without this the automatic
+    // rollback resets the device halfway through the copy and looks like it
+    // simply does not work.
+    task_watchdog_feed();
 }
 
 // Stage the image, then copy it over the firmware.
@@ -353,7 +360,7 @@ static void stage_progress(void *, uint32_t done, uint32_t total) {
 // Two steps because source and destination share a flash chip. Staging is safe
 // and interruptible — it touches nothing the device needs — and it puts the
 // image at a fixed offset the final copy can read without a filesystem.
-bool update_apply_file(const char *path, const char *to_version) {
+bool update_apply_file(const char *path, const char *to_version, bool at_boot) {
     bool is_dir = false; uint32_t size = 0;
     if (!storage_stat(path, &is_dir, &size) || size == 0) {
         out_err("No image at %s.", path);
@@ -374,7 +381,7 @@ bool update_apply_file(const char *path, const char *to_version) {
     //
     // Not a warning to be dismissed — anything on the drive is gone, and
     // whoever put it there should be told rather than discovering it later.
-    if (usbdrv_release_for_update()) {
+    if (!at_boot && usbdrv_release_for_update()) {
         out_warn("The USB drive shares this space and has been cleared.");
         out_multi("  %sUnplug and replug after the update to get it back.%s",
                   C_GRAY, C_RESET);
@@ -460,6 +467,27 @@ bool update_apply_file(const char *path, const char *to_version) {
 
     out_ok("Staged and verified.");
 
+    // Keep a copy of what is running, so this update can be undone.
+    //
+    // HERE and not earlier, for space. The downloaded file is most of a
+    // megabyte and so is the copy, and holding both at once needs one and a
+    // half megabytes of a filesystem that may only have two. By this point the
+    // slot holds a verified copy of the download, so the download itself is
+    // redundant and can go — which leaves room for the rollback image in a
+    // filesystem that could not have held both.
+    //
+    // Only the file this command downloaded is removed. `update from-file`
+    // points at somebody's own image and deleting it would be theft.
+    //
+    // Skipped entirely on the rollback path: that IS a saved image being put
+    // back, and capturing the broken firmware over it would trade a copy that
+    // works for one that does not.
+    if (!at_boot && strcmp(path, ROLLBACK_IMG) != 0) {
+        if (!strcmp(path, IMAGE_PATH)) storage_remove(IMAGE_PATH);
+        rollback_capture(/*announce*/true);
+        out_blank();
+    }
+
     // A note to the NEXT boot, written before anything is erased.
     //
     // The firmware write leaves the filesystem alone, so the registry is the
@@ -525,7 +553,11 @@ bool update_apply_file(const char *path, const char *to_version) {
     // the image is invalid, and the boot ROM drops to USB.
     //
     // Reset rather than parked, since this function does not return.
-    multicore_reset_core1();
+    //
+    // Skipped on the boot path, where core 1 has not been started yet: it is
+    // still sitting in the boot ROM's wait loop, executing from ROM rather than
+    // from the flash about to be erased, and there is nothing to stop.
+    if (!at_boot) multicore_reset_core1();
 
     // And stop the watchdog. 695 KB is 174 sectors of erase and program, which
     // takes several seconds, and nothing feeds the watchdog while interrupts
@@ -549,13 +581,16 @@ static int cmd_update(int argc, char **argv) {
         bool force = (argc >= 3 && !strcmp(argv[2], "--force"));
         return do_install(force);
     }
+    if (!strcmp(sub, "rollback") || !strcmp(sub, "revert"))
+        return rollback_command(argc, argv);
+
     if (!strcmp(sub, "from-file")) {
         if (argc < 3) { out_multi("Usage: update from-file <image.bin>"); return 1; }
         if (!users_is_admin(session_user())) { out_err("Only an admin can update the firmware."); return 1; }
         out_warn("Writing %s over the firmware, unverified.", argv[2]);
         out_multi("  A local file has no checksum to check it against.");
         if (!session_confirm("  Continue?")) return 0;
-        return update_apply_file(argv[2], nullptr) ? 0 : 1;
+        return update_apply_file(argv[2], nullptr, /*at_boot*/false) ? 0 : 1;
     }
 
     out_multi("Usage:");
@@ -563,11 +598,37 @@ static int cmd_update(int argc, char **argv) {
     out_multi("  update install            fetch, verify and apply it");
     out_multi("  update install --force    reinstall the current version");
     out_multi("  update from-file <path>   apply an image already on the device");
+    out_multi("  update rollback           go back to the previous firmware");
     return 1;
 }
 
 // Called at boot. Reports a completed update once, then forgets it.
 void update_report_boot(void) {
+    // A rollback is reported the same way an update is, and takes precedence:
+    // both keys can never be set at once, because applying either clears the
+    // other before it writes.
+    const char *back_to = reg_get("System.Rollback_To", "");
+    if (back_to[0]) {
+        const char *back_from = reg_get("System.Rollback_From", "");
+        out_warn("Rolled back to %s.", back_to);
+        out_multi("  %s did not start, so the saved copy was put back.",
+                  back_from[0] ? back_from : "The previous firmware");
+        out_multi("  Files and settings were not touched.");
+        log_addf(LOG_K_WARN, "rollback: now running %s (was %s)",
+                 RPC_OS_VERSION, back_from);
+
+        reg_set("System.Rollback_To", "");
+        reg_set("System.Rollback_From", "");
+        persist_save_registry();
+
+        // The copy has been spent. Clearing it reclaims most of a megabyte, and
+        // leaving it would mean the NEXT capture has to find room beside it.
+        rollback_forget();
+        storage_remove("/os/rollback.used");
+        storage_remove(IMAGE_PATH);
+        return;
+    }
+
     const char *to = reg_get("System.Update_To", "");
     if (!to[0]) return;
     const char *from = reg_get("System.Update_From", "");

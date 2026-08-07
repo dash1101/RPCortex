@@ -31,6 +31,16 @@ bool kboot(void);
 // than leaving a device that needs another machine to recover.
 void kboot_succeeded(void);
 
+// Give the next boot a clean slate, without claiming this one worked.
+void kboot_clear_strikes(void);
+
+// Pretend n boots have already failed, so the recovery ladder can be tested.
+void kboot_force_strikes(uint32_t n);
+
+// Whether the recovery ladder decided this boot should load nothing. Read once,
+// by the shell task, and combined with a safeboot the person asked for.
+bool kboot_maintenance(void);
+
 // Say that the restart about to happen was asked for, so the next boot does not
 // announce it as a watchdog reset. Every deliberate restart on this part goes
 // through the watchdog, so without this they are indistinguishable from a hang.
