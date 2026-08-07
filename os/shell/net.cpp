@@ -257,6 +257,22 @@ static bool radio_up(void) {
         return false;
     }
     cyw43_arch_enable_sta_mode();
+
+    // POWER SAVE, turned down from the driver's default.
+    //
+    // CYW43_DEFAULT_PM is CYW43_PERFORMANCE_PM, which is PM2 with li_assoc = 10
+    // — the chip wakes for roughly every tenth beacon interval. That is a
+    // sensible default for a battery sensor and a poor one for a device with a
+    // shell on it: received frames are late or dropped, an SSH-shaped session
+    // feels laggy, and a marginal link drops that a listening radio would have
+    // held.
+    //
+    // Same performance mode with li_assoc = 1, so it listens on every beacon.
+    // Set HERE and not in the join path: the driver only applies its default
+    // while the interface is down, so once is enough and it survives every
+    // rejoin. It takes its own lock internally, so none is needed around it.
+    cyw43_wifi_pm(&cyw43_state, cyw43_pm_value(CYW43_PM2_POWERSAVE_MODE, 200, 1, 1, 1));
+
     g_radio_core = task_this_core();
     g_radio_up = true;
     return true;
@@ -292,6 +308,15 @@ static void radio_down(void) {
     if (!g_radio_up) return;
     cyw43_arch_deinit();
     g_radio_up = false;
+    // THE CACHE GOES WITH IT.
+    //
+    // net_is_connected() reads g_status.connected, and seven subsystems ask it
+    // before doing anything — the package repo, the updater, the diagnostics,
+    // both network apps, TCP and the HTTP transport. Taking the radio down
+    // without clearing it left every one of them believing the device was
+    // online while nothing could possibly work, which is a far more confusing
+    // failure than being told the link is gone.
+    memset(&g_status, 0, sizeof(g_status));
 }
 
 // --- saved networks ---------------------------------------------------------
@@ -710,10 +735,59 @@ void net_autoconnect_report(void) {
 // tasks actually ask — "are we online", "what is the address" — read a cached
 // struct instead of reaching into lwIP at all. So there is nothing left to
 // contend over.
+// How often the link is checked, and how far the retry backs off when the
+// access point is genuinely not there. Five seconds is faster than anyone
+// notices a drop; a minute is slow enough that a device left somewhere with no
+// network is not scanning all night.
+#define WATCH_IDLE_MS  5000u
+#define WATCH_MAX_MS  60000u
+static uint32_t g_backoff_ms;
+
 static int autoconnect_task(void *) {
     bool ok = wifi_autoconnect(/*quiet*/true, /*persist*/true) == 0;
     g_join_ok = ok;
     g_join_done = true;
+
+    // --- and then WATCH it, which is the part that was missing entirely -----
+    //
+    // There was exactly one join attempt in the whole life of the device. No
+    // link callback, no poll, no retry. So the first time the access point
+    // deauthenticated — a reboot, a roam, a moment of interference — the
+    // driver brought its own link down, and nothing above it ever found out.
+    // The device sat offline until somebody typed `wifi connect` again, while
+    // net_is_connected() went on answering yes from a cache that is only
+    // written by a join.
+    //
+    // This task now stays for the life of the device instead of returning.
+    for (;;) {
+        task_sleep_ms(WATCH_IDLE_MS);
+        if (task_should_stop()) break;
+        if (strcmp(reg_get("WiFi.Auto", "false"), "true") != 0) continue;
+        if (!g_radio_up) continue;
+
+        // TRY the lock, never wait for it. A scan holds it for fifteen seconds
+        // and a download for as long as the download takes; queueing behind
+        // either would mean the watchdog fires minutes after the link died, and
+        // would put this task inside a critical section for the duration.
+        if (!lock_try(&g_net_op)) continue;
+        status_refresh();
+        bool up = g_status.link == CYW43_LINK_UP;
+        lock_release(&g_net_op);
+
+        if (up) { g_backoff_ms = 0; continue; }
+
+        // Back off, because an access point that is genuinely gone should not
+        // have the radio scanning for it every five seconds forever — that is
+        // the battery and the airtime spent on a question already answered.
+        if (g_backoff_ms < WATCH_IDLE_MS) g_backoff_ms = WATCH_IDLE_MS;
+        else if (g_backoff_ms < WATCH_MAX_MS) g_backoff_ms *= 2;
+        if (g_backoff_ms > WATCH_MAX_MS) g_backoff_ms = WATCH_MAX_MS;
+        task_sleep_ms(g_backoff_ms);
+        if (task_should_stop()) break;
+
+        out_infop("wifi", "The link went down; rejoining.");
+        wifi_autoconnect(/*quiet*/true, /*persist*/false);
+    }
     return ok ? 0 : 1;
 }
 
