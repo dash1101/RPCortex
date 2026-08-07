@@ -10,6 +10,14 @@
 #include "novaui.h"
 #include "novamodtab.h"
 
+// Placement construction, declared rather than included.
+//
+// <new> is a freestanding header that is not guaranteed to exist for this
+// target, and the only thing wanted from it is this one line. Nothing in this
+// package ever calls the ALLOCATING new — there is no operator new and no
+// operator delete, deliberately, so a screen that tried would not link.
+inline void *operator new(size_t, void *p) noexcept { return p; }
+
 namespace nova {
 namespace gui {
 
@@ -23,11 +31,26 @@ namespace gui {
 constexpr unsigned STACK_MAX  = 8;
 constexpr unsigned SLOT_BYTES = 384;
 
+// The two halves of a push, so the pool itself stays private to novagui.cpp
+// while the template that needs it can live here. A template defined in the .cpp
+// cannot be instantiated by the screen files, and moving the pool into the
+// header would put a kilobyte of screen storage in every translation unit that
+// wanted to push anything.
+void *push_slot(void);              // the next free slot, or null when full
+void  push_commit(ui::Screen *s);   // adopt what was constructed in it
+
 // Push a screen of type T, constructed in place. The static_assert names the
 // type when one grows too large, which is a far better error than a pool
 // overrun that shows up as the screen underneath being corrupted.
 template <typename T>
-T *push(void);
+T *push(void) {
+    static_assert(sizeof(T) <= SLOT_BYTES, "screen too large for a stack slot");
+    void *slot = push_slot();
+    if (!slot) return nullptr;
+    T *s = new (slot) T();
+    push_commit(s);
+    return s;
+}
 
 void pop(void);
 void go_home(void);

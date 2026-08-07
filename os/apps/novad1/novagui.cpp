@@ -5,6 +5,9 @@
 #include "novacore.h"
 #include "novaboard.h"
 #include "display.h"
+#include "novasplash.h"
+#include "novagui_tools.h"
+#include "novagui_system.h"
 
 #include "rpc_app.h"
 #include <string.h>
@@ -15,7 +18,6 @@
 // <new> pulls in a freestanding header that is not guaranteed to exist for this
 // target, and the only thing wanted from it is the one-line placement form.
 // Nothing here ever calls the allocating new.
-inline void *operator new(unsigned n, void *p) noexcept { (void)n; return p; }
 
 namespace nova {
 namespace gui {
@@ -48,16 +50,17 @@ const Perf &perf(void){ return g_perf; }
 bool running(void)    { return g_running; }
 void stop(void)       { g_running = false; }
 
-template <typename T>
-T *push(void) {
-    static_assert(sizeof(T) <= SLOT_BYTES, "screen too large for a stack slot");
+void *push_slot(void) {
     if (g_depth >= STACK_MAX) return nullptr;
     if (Screen *cur = top()) cur->leave();
-    T *s = new (g_slots[g_depth]) T();
+    return g_slots[g_depth];
+}
+
+void push_commit(Screen *s) {
+    if (!s || g_depth >= STACK_MAX) return;
     g_stack[g_depth++] = s;
     s->enter();
     g_dirty = true;
-    return s;
 }
 
 void pop(void) {
@@ -105,22 +108,22 @@ static const App kApps[] = {
     { "gps",        "GPS",        CAT_SENSORS,  nullptr,  "gps" },
     { "dht11",      "Climate",    CAT_SENSORS,  nullptr,  "dht11" },
     { "battery",    "Battery",    CAT_SENSORS,  nullptr,  "battery" },
-    { "clock",      "Clock",      CAT_SENSORS,  nullptr,  nullptr },
+    { "clock",      "Clock",      CAT_SENSORS,  screens::open_clock,     nullptr },
 
     { "files",      "Files",      CAT_TOOLS,    nullptr,  nullptr },
     { "shell",      "Shell",      CAT_TOOLS,    nullptr,  nullptr },
-    { "res",        "Resources",  CAT_TOOLS,    nullptr,  nullptr },
+    { "res",        "Resources",  CAT_TOOLS,    screens::open_resources, nullptr },
     { "notes",      "Alerts",     CAT_TOOLS,    nullptr,  nullptr },
     { "scripts",    "Scripts",    CAT_TOOLS,    nullptr,  nullptr },
     { "store",      "App Store",  CAT_TOOLS,    nullptr,  nullptr },
     { "cmds",       "Commands",   CAT_TOOLS,    nullptr,  nullptr },
     { "logs",       "Logs",       CAT_TOOLS,    nullptr,  nullptr },
 
-    { "diag",       "Hardware",   CAT_SYSTEM,   nullptr,  nullptr },
+    { "diag",       "Hardware",   CAT_SYSTEM,   screens::open_hardware,  nullptr },
     { "check",      "Sys Check",  CAT_SYSTEM,   nullptr,  nullptr },
     { "fix",        "Repair",     CAT_SYSTEM,   nullptr,  nullptr },
     { "power",      "Power",      CAT_SYSTEM,   nullptr,  nullptr },
-    { "set_display","Display",    CAT_SYSTEM,   nullptr,  nullptr },
+    { "set_display","Display",    CAT_SYSTEM,   screens::open_display_settings, nullptr },
     { "set_home",   "Home",       CAT_SYSTEM,   nullptr,  nullptr },
     { "set_network","Network",    CAT_SYSTEM,   nullptr,  nullptr },
     { "set_security","Security",  CAT_SYSTEM,   nullptr,  nullptr },
@@ -403,6 +406,10 @@ bool begin(void) {
 
     g_depth = 0;
     push<Home>();
+    // On TOP of home, so it pops back to a screen that is already built rather
+    // than building one after the animation. That is what stops the splash
+    // adding to boot time instead of covering it.
+    if (panel && nova::reg_bool(NOVA_KEY_PREFIX "Splash", true)) push<SplashScreen>();
     g_level = LVL_ACTIVE;
     g_last_input = fw_millis();
     g_dirty = true;
