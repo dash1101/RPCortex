@@ -36,6 +36,9 @@
 // nothing about the device.
 static uint8_t *g_arena;
 static size_t   g_used_bytes;
+// A cap the tests can tighten, so "this heap only fits one image" is something
+// that can be ARRANGED rather than only observed on a device.
+static size_t   g_arena_cap;
 #define ARENA (1u << 20)
 
 static void *alloc32(size_t n) {
@@ -54,7 +57,8 @@ static void *alloc32(size_t n) {
         g_used_bytes = 8;
     }
     n = (n + 7) & ~(size_t)7;
-    if (g_used_bytes + n > ARENA) return nullptr;
+    size_t cap = g_arena_cap ? g_arena_cap : ARENA;
+    if (g_used_bytes + n > cap) return nullptr;
     void *r = g_arena + g_used_bytes;
     g_used_bytes += n;
     return r;
@@ -503,6 +507,106 @@ int main(int argc, char **argv) {
         }
     }
     int fails = 0;
+
+    // --- two copies at once, on a heap that only fits one --------------------
+    //
+    // This is the failure that stopped a device installing its own update.
+    // pkg_install_file used to LOAD the new image to read its name, and only
+    // then unload the copy already running — so an upgrade needed two images
+    // resident at the same moment. With 96 KB free and a 53 KB image, the second
+    // load returned LOAD_ERR_OOM and the message was "out of memory" from a step
+    // nobody expected to allocate.
+    //
+    // The check is the shape of the fix rather than the exact numbers: a heap
+    // sized for ONE image must load one, refuse the second, and — the part that
+    // matters — load the second successfully once the first is unloaded.
+    if (dir && argc == 1) {
+        char path[80];
+        snprintf(path, sizeof(path), "%s/novad1.app", dir);
+        FILE *probe_f = fopen(path, "rb");
+        if (probe_f) {
+            fclose(probe_f);
+            printf("  two-at-once on a one-image heap\n");
+
+            // Measure what one costs, then cap the arena just under two.
+            g_arena = nullptr; g_used_bytes = 0;
+            LoadedApp a{};
+            g_f = fopen(path, "rb");
+            AppSource s1{}; s1.read = file_read;
+            loader_set_allocator(alloc32, free32);
+            if (app_load(s1, &a) == LOAD_OK) {
+                size_t one = g_used_bytes;
+                app_unload(&a);
+                fclose(g_f);
+
+                // A header read must cost almost nothing — that is the whole
+                // reason it can happen before making room.
+                g_arena = nullptr; g_used_bytes = 0;
+                g_f = fopen(path, "rb");
+                RpcAppHeader hdr{};
+                bool peeked = app_peek(s1, &hdr) == LOAD_OK;
+                fclose(g_f);
+                printf("     one image %zu B, header read alone %zu B\n", one, g_used_bytes);
+                if (!peeked || hdr.magic != RPC_APP_MAGIC) {
+                    printf("     FAIL app_peek did not read the header\n");
+                    fails++;
+                } else if (g_used_bytes > one / 8) {
+                    printf("     FAIL app_peek allocated %zu B, which is not 'almost nothing'\n",
+                           g_used_bytes);
+                    fails++;
+                }
+
+                // Now the property itself: TWO images do not fit a heap sized
+                // for one and a half. That is the whole reason the install
+                // order had to change — validating before unloading needed
+                // exactly this and could not have it.
+                //
+                // The third step, "unload then load succeeds", cannot be
+                // expressed here: this allocator is a bump pointer and free32
+                // is a no-op, so nothing is ever given back. What IS checkable
+                // is that the loader reports releasing what it took, which is
+                // the same claim from the other side.
+                g_arena = nullptr; g_used_bytes = 0;
+                g_arena_cap = one + one / 2;          // room for one, not two
+                LoadedApp first{}, second{};
+                g_f = fopen(path, "rb");
+                bool got_first = app_load(s1, &first) == LOAD_OK;
+                size_t after_first = g_used_bytes;
+                LoadResult r2 = app_load(s1, &second);
+                fclose(g_f);
+                if (!got_first) { printf("     FAIL the first load did not fit\n"); fails++; }
+                if (r2 == LOAD_OK) {
+                    printf("     FAIL two images fitted a one-image heap\n");
+                    fails++;
+                    app_unload(&second);
+                } else {
+                    printf("     ok   two at once is refused (%zu B used of %zu)\n",
+                           after_first, g_arena_cap);
+                }
+                if (got_first) {
+                    // Everything it took, given back — image, veneers and the
+                    // alignment slack on both. `unload` reporting a shortfall is
+                    // how a leak in the loader would show up at all.
+                    // `one` was measured from a bump pointer that starts at 8
+                    // deliberately off-boundary, so the comparison allows for
+                    // that head start rather than reporting it as a leak.
+                    if (first.bytes_allocated + 8 < one) {
+                        printf("     FAIL unload accounts for %u B of %zu taken\n",
+                               (unsigned)first.bytes_allocated, one);
+                        fails++;
+                    } else {
+                        printf("     ok   unload accounts for every byte it took\n");
+                    }
+                    app_unload(&first);
+                }
+                g_arena_cap = 0;
+            } else {
+                fclose(g_f);
+            }
+            g_arena = nullptr; g_used_bytes = 0;
+        }
+    }
+
     if (argc > 1) {
         for (int i = 1; i < argc; i++) fails += load_one(argv[i]);
     } else {

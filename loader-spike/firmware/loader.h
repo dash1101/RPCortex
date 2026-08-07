@@ -119,6 +119,16 @@ typedef void  (*LoaderFree)(void *);
 void loader_set_allocator(LoaderAlloc a, LoaderFree f);
 
 // Load, relocate and resolve. Does not run anything.
+// The header alone: name, version and ABI, with no image loaded and nothing
+// relocated. The only allocation is the section-name strings, freed before it
+// returns.
+//
+// This exists so that deciding WHAT a package is does not cost the same memory
+// as running it. Installing an upgrade has to unload the copy already resident
+// before it can afford to load the new one, and it cannot know which package to
+// unload without reading the name first — which used to mean loading it.
+LoadResult app_peek(const AppSource &src, RpcAppHeader *out);
+
 LoadResult app_load(const AppSource &src, LoadedApp *out);
 
 // Free everything app_load allocated.

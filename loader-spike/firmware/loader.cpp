@@ -315,6 +315,54 @@ struct SectionMap {
     bool     loaded;
 };
 
+// The header, and nothing else.
+//
+// Reading a package's name and version used to require LOADING it — relocating
+// the whole image into RAM just to find out what it was called. That is fine
+// until the package being asked about is the one already running, because then
+// installing an upgrade needs two copies of the image resident at once. On a
+// device with 96 KB free and a 53 KB image it simply cannot be done, and the
+// message is "out of memory" from a step nobody expected to allocate.
+//
+// This reads the section table and the header section. The only allocation is
+// the section-name strings, a few hundred bytes, freed before returning.
+LoadResult app_peek(const AppSource &src, RpcAppHeader *out) {
+    memset(out, 0, sizeof(*out));
+
+    Elf32_Ehdr eh;
+    if (!read_exact(src, 0, &eh, sizeof(eh))) return LOAD_ERR_READ;
+    if (memcmp(eh.e_ident, "\x7f" "ELF", 4) != 0 || eh.e_ident[4] != 1)
+        return LOAD_ERR_NOT_ELF;
+    if (eh.e_type != ET_REL)      return LOAD_ERR_NOT_REL;
+    if (eh.e_machine != EM_ARM)   return LOAD_ERR_NOT_ARM;
+    if (eh.e_shnum > LOADER_MAX_SECTIONS) return LOAD_ERR_TOO_MANY_SECTIONS;
+
+    static Elf32_Shdr sh[LOADER_MAX_SECTIONS];
+    if (!read_exact(src, eh.e_shoff, sh, eh.e_shnum * sizeof(Elf32_Shdr)))
+        return LOAD_ERR_READ;
+
+    const Elf32_Shdr &shstr = sh[eh.e_shstrndx];
+    char *names = (char *)malloc(shstr.sh_size);
+    if (!names) return LOAD_ERR_OOM;
+    if (!read_exact(src, shstr.sh_offset, names, shstr.sh_size)) {
+        free(names);
+        return LOAD_ERR_READ;
+    }
+
+    int hdr_idx = -1;
+    for (int i = 0; i < eh.e_shnum; i++)
+        if (strcmp(names + sh[i].sh_name, ".rpc_app_header") == 0) { hdr_idx = i; break; }
+    if (hdr_idx < 0) { free(names); return LOAD_ERR_NO_HEADER; }
+
+    bool ok = read_exact(src, sh[hdr_idx].sh_offset, out, sizeof(RpcAppHeader));
+    free(names);
+    if (!ok) return LOAD_ERR_READ;
+    if (out->magic != RPC_APP_MAGIC) return LOAD_ERR_BAD_MAGIC;
+    if (out->api_major != RPC_API_MAJOR || out->api_minor > RPC_API_MINOR)
+        return LOAD_ERR_API_MISMATCH;
+    return LOAD_OK;
+}
+
 LoadResult app_load(const AppSource &src, LoadedApp *out) {
     memset(out, 0, sizeof(*out));
 

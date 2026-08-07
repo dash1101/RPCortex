@@ -55,35 +55,74 @@ static void index_walk(PkgIndexFn cb, void *ctx) {
 // --- operations ------------------------------------------------------------
 
 bool pkg_install_file(const char *file, bool quiet, bool consume) {
-    // Validate by actually loading it — this checks the ELF, the ABI version and
-    // every relocation, not just that a file exists. The header gives the name
-    // and version to record.
+    // THE NAME COMES FROM THE HEADER, NOT FROM A FULL LOAD, and the order below
+    // is the whole point of this function.
+    //
+    // It used to validate first by loading the image, and only then unload the
+    // copy that was already running. Upgrading a package therefore needed TWO
+    // copies of its image resident at the same moment. A 53 KB image on a device
+    // with 96 KB free and 42 KB in its largest block cannot do that, so a device
+    // could not install its own update — and the message was "out of memory"
+    // from a step nobody expected to allocate.
+    //
+    // app_peek reads the section table and the header section and allocates a
+    // few hundred bytes for section names. That is enough to know what this is
+    // and whether it could ever load, which is enough to decide whether to make
+    // room for it.
     AppSource src; void *h = nullptr;
     if (!storage_open_source(file, &src, &h)) { out_err("No such file: %s", file); return false; }
-    LoadedApp probe;
-    LoadResult rc = app_load(src, &probe);
-    storage_close_source(h);
+
+    RpcAppHeader hdr;
+    LoadResult rc = app_peek(src, &hdr);
     if (rc != LOAD_OK) {
-        out_err("Not a valid package: %s%s%s", load_result_str(rc),
-            probe.detail[0] ? " - " : "", probe.detail);
+        storage_close_source(h);
+        out_err("Not a valid package: %s", load_result_str(rc));
         return false;
     }
     char name[24], version[12];
-    strncpy(name, probe.header.name, sizeof(name) - 1); name[sizeof(name)-1] = 0;
-    strncpy(version, probe.header.version, sizeof(version) - 1); version[sizeof(version)-1] = 0;
-    app_unload(&probe);      // validated; the live copy is loaded below
+    strncpy(name, hdr.name, sizeof(name) - 1); name[sizeof(name)-1] = 0;
+    strncpy(version, hdr.version, sizeof(version) - 1); version[sizeof(version)-1] = 0;
 
-    // A reinstall/upgrade: drop the running copy before overwriting its file.
-    // Not while something is executing it, though — the file on flash is only
-    // half of a resident package, and replacing it under a task that is parked
-    // inside the copy in RAM leaves the two permanently disagreeing.
+    // Nothing may be executing it. The file on flash is only half of a resident
+    // package, and replacing it under a task parked inside the copy in RAM
+    // leaves the two permanently disagreeing.
     int busy = apps_busy_pid(name);
     if (busy >= 0) {
+        storage_close_source(h);
         out_errp("pkg", "'%s' is running right now (task %d).", name, busy);
         out_multi("  Let it finish, or stop it with 'kill %d', then try again.", busy);
         return false;
     }
+
+    // Room first, THEN validate. The old copy goes now; its file is untouched,
+    // so if what follows fails there is something to put back.
+    bool was_resident = apps_resident(name);
     apps_unload(name);
+
+    LoadedApp probe;
+    rc = app_load(src, &probe);
+    storage_close_source(h);
+    if (rc != LOAD_OK) {
+        out_err("Not a valid package: %s%s%s", load_result_str(rc),
+            probe.detail[0] ? " - " : "", probe.detail);
+        if (rc == LOAD_ERR_OOM) {
+            out_multi("  %lu bytes free. The image needs its size in ONE piece,",
+                      (unsigned long)heap_free());
+            out_multi("  so free memory alone is not enough; 'meminfo' shows the");
+            out_multi("  largest block. 'unload' something, or reboot and retry.");
+        }
+        // Put back what was working. The file was never touched, so this is a
+        // genuine restore rather than a hope — and a failed upgrade leaving the
+        // device without the package it had is a far worse outcome than the
+        // upgrade not happening.
+        if (was_resident) {
+            char back[40]; pkg_path(name, back, sizeof(back));
+            if (apps_launch(back, 0, /*quiet*/true) >= 0)
+                out_multi("  '%s' is still installed and has been reloaded.", name);
+        }
+        return false;
+    }
+    app_unload(&probe);      // validated; the live copy is loaded below
 
     char dst[40]; pkg_path(name, dst, sizeof(dst));
     if (strcmp(file, dst) != 0) {
