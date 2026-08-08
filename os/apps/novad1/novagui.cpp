@@ -395,7 +395,16 @@ public:
 
         // Where the ring is between two positions, in pixels. dir_ says which
         // way it is going, slide_ how far it still has to travel.
-        const int off = dir_ * slide_ * SPACING / 256;
+        //
+        // EASE-OUT, so the ring decelerates into place instead of moving at a
+        // flat speed and stopping dead. slide_ still falls linearly in tick(),
+        // so the animation lasts exactly SLIDE_MS and the frame count — and the
+        // test that guards it — are unchanged; only the mapping from "time
+        // remaining" to "distance remaining" is curved. slide_^2/256 is a
+        // quadratic ease-out in 256ths: distance closes fast at first and
+        // settles gently, with no float and one multiply a frame.
+        const int eased = slide_ * slide_ / 256;
+        const int off = dir_ * eased * SPACING / 256;
 
         // THREE at a time — the one under the cursor and one either side, which
         // is what the MicroPython home showed. Five fits on the panel and is
@@ -428,7 +437,11 @@ public:
         }
 
         // The label belongs to whichever icon is nearest the middle, so it
-        // changes at the halfway point of a step rather than at either end.
+        // changes when the arriving icon crosses the halfway POSITION, not at
+        // either end. This keys off `off`, which is the eased offset, so it
+        // stays tied to what is on screen: the ease-out reaches halfway sooner
+        // in time, and the label flips exactly then — when the new icon is
+        // visibly the one in the middle — rather than on a separate clock.
         const App *a = items_[wrapped(sel_ + ((off > SPACING / 2) ? -1 :
                                               (off < -SPACING / 2) ? 1 : 0))];
         c.text_centred(ui::label_y(c), a->label, 1, 1, false);
@@ -629,6 +642,10 @@ uint32_t frame_dt(uint32_t now, uint32_t *last, bool had_input) {
 
 #define NAP_ANIMATING 16      // 60 a second while something is moving
 #define NAP_ACTIVE    33      // 30 a second just after a gesture
+#define NAP_ACTIVE_MS 1200    // how long "just after a gesture" lasts — the loop
+                              // stays at NAP_ACTIVE for this long after the last
+                              // input, so a follow-up press or detent is seen
+                              // promptly instead of waiting out a full idle nap
 #define NAP_IDLE     140      // still on, nothing happening
 #define NAP_DIM      200
 #define NAP_OFF      300
@@ -815,7 +832,14 @@ void run(void) {
         // rate is what lets the one-step-per-frame rule keep up with a spin.
         if      (input().pending())     nap = NAP_ANIMATING;
         else if (s && s->animating())   nap = NAP_ANIMATING;
-        else if (had_input)             nap = NAP_ACTIVE;
+        // A WINDOW, not a single frame. Holding the active rate for a short
+        // while after the last input is what makes a SECOND detent or press
+        // land promptly: without it the loop dropped to NAP_IDLE the very next
+        // frame, so anything done a moment later waited up to 140 ms to be seen
+        // even though the input task had already queued it. g_last_input is
+        // already kept for the dim/off timers; this reuses it. The window is far
+        // shorter than the dim timeout, so it cannot hold the panel awake.
+        else if (now - g_last_input < NAP_ACTIVE_MS) nap = NAP_ACTIVE;
         else if (g_level == LVL_OFF)    nap = NAP_OFF;
         else if (g_level == LVL_DIM)    nap = NAP_DIM;
         else                            nap = NAP_IDLE;
