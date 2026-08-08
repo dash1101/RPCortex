@@ -72,6 +72,43 @@ if sections.returncode == 0:
               'the initialisers were setting anyway.\n', file=sys.stderr)
         sys.exit(1)
 
+# --- position-independent invariant -----------------------------------------
+#
+# A package built -fPIC -msingle-pic-base reaches its data through a GOT off r9,
+# so its .text must carry NO absolute address — only GOT_BREL (data via the GOT)
+# and THM_CALL / THM_JUMP24 (firmware, handled by veneers). That is exactly what
+# lets .text and .rodata run from flash. An ABS32 that slips into .text — a
+# function pointer the compiler failed to route through the GOT, say — links and
+# loads fine and then holds a stale address once the code is in flash, so it is
+# refused here, at build time, where it names itself. Only a PIC package (one
+# that has any GOT_BREL) is held to this; a plain package is unaffected.
+rel = subprocess.run([readelf, '-r', app], capture_output=True, text=True)
+if rel.returncode == 0 and 'R_ARM_GOT_BREL' in rel.stdout:
+    ALLOWED = {'R_ARM_GOT_BREL', 'R_ARM_THM_CALL', 'R_ARM_THM_JUMP24', 'R_ARM_NONE'}
+    in_text = False
+    offenders = {}
+    for line in rel.stdout.splitlines():
+        m = re.match(r"Relocation section '(\S+)'", line)
+        if m:
+            tgt = re.sub(r'^\.rela?', '', m.group(1))   # .rel.text -> .text
+            in_text = (tgt == '.text' or tgt.startswith('.text.'))
+            continue
+        if in_text:
+            mm = re.search(r'\b(R_ARM_\w+)\b', line)
+            if mm and mm.group(1) not in ALLOWED:
+                offenders[mm.group(1)] = offenders.get(mm.group(1), 0) + 1
+    if offenders:
+        print('\n%s is position-independent but its .text carries %d absolute '
+              'relocation(s):' % (name, sum(offenders.values())), file=sys.stderr)
+        for t, c in sorted(offenders.items()):
+            print('    %s x%d' % (t, c), file=sys.stderr)
+        print('\nA PIC package must reach every global through the GOT. An absolute\n'
+              'relocation in .text is an address that would be wrong the moment the\n'
+              'code runs from flash — usually a function pointer the compiler could\n'
+              'not route through r9. Check it is built with\n'
+              '    -fPIC -msingle-pic-base -mno-pic-data-is-text-relative\n', file=sys.stderr)
+        sys.exit(1)
+
 # --- symbols ----------------------------------------------------------------
 
 out = subprocess.run([nm, '-u', app], capture_output=True, text=True)
