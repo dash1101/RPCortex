@@ -33,6 +33,30 @@ int incognito(int argc, char **argv);
 int logs(int argc, char **argv);
 int notifications(int argc, char **argv);
 int wifiprobe(void);
+
+// Reproduce, from the shell, exactly what a SCREEN does when it runs a command:
+// spawn a task and call fw_shell_run from inside it. Every screen that reads a
+// listing goes through that path and several of them came back empty on a real
+// device, which is not reproducible from a command running on the shell task.
+int selftest(void);
+
+// Drive the screen from the shell: `novad1 tap cw`, `sel`, `back`, `home`,
+// `hold`, `homehold`. Injects the gesture the encoder would have produced.
+//
+// There is one encoder and no other way in, so a screen that misbehaves can
+// only be reported second-hand — "Tasks does not work" is where that ends up,
+// and it is not enough to find anything with. This makes every screen reachable
+// from a terminal, which is also the only way a fault in one can be watched as
+// it happens rather than read out of a log afterwards.
+int tap(int argc, char **argv);
+
+// Print what is on the panel, as characters, over the serial console.
+//
+// The single most useful thing this device was missing. Every UI bug this month
+// was reported second-hand by somebody looking at a 2.4 inch screen and
+// answered by guessing, because there was no way to SEE what was being drawn
+// from anywhere else. Eight kilobytes at 115200 is under a second.
+int shot(void);
 int selfupdate(void);
 
 }  // namespace cmd

@@ -6,6 +6,7 @@
 #include "novaboard.h"
 #include "novacore.h"
 #include "display.h"
+#include "novakeys.h"
 
 #include "rpc_app.h"
 #include <stdio.h>
@@ -188,7 +189,7 @@ public:
     }
 
 private:
-    static constexpr int ROWS = 4;
+    static constexpr int ROWS = 5;
     static const char *const kLabels[ROWS];
 
     int  sel_, bright_, dim_, off_;
@@ -199,7 +200,8 @@ private:
             case 0: snprintf(out, cap, "%d%%", bright_ * 100 / 255); break;
             case 1: if (dim_) snprintf(out, cap, "%ds", dim_); else nova::copy(out, cap, "never"); break;
             case 2: if (off_) snprintf(out, cap, "%ds", off_); else nova::copy(out, cap, "never"); break;
-            default: nova::copy(out, cap, invert_ ? "on" : "off"); break;
+            case 3: nova::copy(out, cap, invert_ ? "on" : "off"); break;
+            default: nova::copy(out, cap, display().kind_name()); break;
         }
     }
 
@@ -216,11 +218,37 @@ private:
                 break;
             case 1: dim_ = next_timeout(dim_); break;
             case 2: off_ = next_timeout(off_); break;
-            default:
+            case 3:
                 invert_ = !invert_;
                 display().invert(invert_);
                 break;
+            default: next_panel(); break;
         }
+    }
+
+    // Cycle the panel controller, and say so — the change cannot be shown,
+    // because the screen it would be shown on is the one being reconfigured.
+    //
+    // Written to the registry immediately rather than on the way out like the
+    // rest, since it only takes effect at the next start and a setting that
+    // needs a restart must survive one to be worth anything.
+    //
+    // THE DEFAULT IS THE SSD1309, and the MicroPython suite's default of SH1106
+    // is deliberately NOT carried over. Its own documentation said SSD1309, its
+    // code said SH1106, and the disagreement cost four versions of a black
+    // screen: an SSD1309 sent the SH1106 sequence never unlocks its command
+    // interface and stays dark. Fidelity does not extend to a bug already paid
+    // for. See the note at the top of display.h.
+    void next_panel(void) {
+        static const char *const kPanels[] = { "ssd1309", "sh1106", "ssd1306" };
+        const char *now = nova::reg(NOVA_KEY_PREFIX "Display", "ssd1309");
+        unsigned i = 0;
+        for (; i < 3; i++) if (nova::ieq(now, kPanels[i])) break;
+        const char *next = kPanels[(i + 1) % 3];
+        nova::reg_set(NOVA_KEY_PREFIX "Display", next);
+        nova::reg_save();
+        ui::notice("Panel", "Set. The screen has to be restarted before it "
+                            "changes: novad1 service restart.");
     }
 
     // The timeouts somebody actually wants, not every integer between them.
@@ -232,8 +260,10 @@ private:
     }
 };
 
+// The MicroPython suite's labels, exactly. Somebody who has used that device
+// should not have to relearn a word to change the same setting.
 const char *const DisplaySettings::kLabels[DisplaySettings::ROWS] = {
-    "Brightness", "Dim after", "Screen off", "Invert",
+    "Brightness", "Dim After", "Screen Off", "Invert", "Panel",
 };
 
 void open_display_settings(void) { gui::push<DisplaySettings>(); }

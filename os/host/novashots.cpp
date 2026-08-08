@@ -147,6 +147,21 @@ static int check_all(void) {
         // that the screen is empty, whatever it thinks it drew.
         if (lit < 12) { printf("    FAIL %s drew an empty panel\n", apps[i].key); bad++; }
 
+        // The header has to agree with the row that opened it. "Versions"
+        // opened a screen calling itself "Device", which reads as having landed
+        // somewhere else, and no compiler can see it: the label and the title
+        // are two unrelated strings in two files.
+        //
+        // Files is the deliberate exception. A browser titles itself with the
+        // path it is showing, which is worth more than repeating its own name.
+        const char *t = s->title();
+        if (strcmp(apps[i].key, "files") != 0 && t && t[0] &&
+            strcmp(t, apps[i].label) != 0) {
+            printf("    FAIL %s is labelled '%s' but titles itself '%s'\n",
+                   apps[i].key, apps[i].label, t);
+            bad++;
+        }
+
         if (!s->fullscreen()) {
             int intruding = 0;
             for (int y = 0; y < nova::ui::BARH; y++)
@@ -183,15 +198,12 @@ int main(int argc, char **argv) {
 
     if (argc < 2) return check_all();
 
-    if (argc > 1) {
+    // The option BEFORE the key lookup, or "--dump" is searched for as though it
+    // were the name of an app and reported missing.
+    if (strcmp(argv[1], "--dump") != 0) {
         for (unsigned i = 0; i < n; i++)
             if (!strcmp(apps[i].key, argv[1])) { shoot(apps[i]); return 0; }
-        printf("no app with key '%s' — try --list\n", argv[1]);
-        return 1;
-    }
-
-    if (strcmp(argv[1], "--dump") != 0) {
-        printf("unknown option '%s' — try --dump, --list, or a catalogue key\n", argv[1]);
+        printf("no app with key '%s' — try --dump, --list, or a catalogue key\n", argv[1]);
         return 1;
     }
 

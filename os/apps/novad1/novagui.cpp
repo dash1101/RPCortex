@@ -1,6 +1,7 @@
 // Desc: The runner — the screen stack, the status bar, and the home screen.
 // File: novagui.cpp
 #include "novagui.h"
+#include "novakeys.h"
 #include "novaicons.h"
 #include "novacore.h"
 #include "novaboard.h"
@@ -173,7 +174,10 @@ static const App kApps[] = {
     { "set_network","Network",    CAT_SYSTEM,   screens::open_set_network,  nullptr },
     { "set_security","Security",  CAT_SYSTEM,   screens::open_set_security, nullptr },
     { "set_system", "System",     CAT_SYSTEM,   screens::open_set_system,   nullptr },
-    { "set_device", "Device",     CAT_SYSTEM,   screens::open_set_device,   nullptr },
+    // No "Device" row. What this device IS reaches through System -> Versions,
+    // which is where the MicroPython suite kept it — identity is not a peer of
+    // Display and Network, and a sixth settings icon in this folder was the
+    // clutter the grouped layout exists to avoid.
 };
 
 #define APP_COUNT (sizeof(kApps) / sizeof(kApps[0]))
@@ -191,6 +195,39 @@ bool app_available(const App &a) {
     // and must not grey the app out — the SPI modules are all in that state
     // until their drivers exist.
     return p != MOD_ABSENT && p != MOD_UNWIRED;
+}
+
+// Say why a struck-through app did not open.
+//
+// Pressing one used to do nothing whatsoever, which on a device with one button
+// is indistinguishable from the button not working. v1 always answered — "No
+// CC1101 found" — and being told the chip is missing is the difference between
+// a broken device and one that is telling you what to plug in.
+//
+// The two reasons are not the same and must not read the same: an app with no
+// screen yet is on us, and an app whose chip is absent is a wiring job.
+void explain_unavailable(const App &a) {
+    static char body[128];
+
+    if (!a.open) {
+        snprintf(body, sizeof(body),
+                 "%s has no screen in this build yet.", a.label);
+        ui::notice(a.label, body);
+        return;
+    }
+
+    const Module *m = a.module ? module_by_id(a.module) : nullptr;
+    if (!m) { ui::notice(a.label, "Unavailable."); return; }
+
+    if (module_presence(*m) == MOD_UNWIRED)
+        snprintf(body, sizeof(body),
+                 "No pins are assigned to the %s. Set them in "
+                 "System, Hardware.", m->chip);
+    else
+        snprintf(body, sizeof(body),
+                 "No %s answered. Check it is wired to the pins in "
+                 "System, Hardware.", m->chip);
+    ui::notice(a.label, body);
 }
 
 // --- the status bar --------------------------------------------------------------
@@ -289,7 +326,23 @@ static const App *g_chosen;
 class Gallery : public Screen {
 public:
     void set(const char *title, const App *const *items, int count) {
-        title_ = title; items_ = items; count_ = count; sel_ = 0;
+        // KEEP THE SELECTION when the same list comes back.
+        //
+        // pop() calls enter() on the screen underneath and enter() calls this,
+        // so closing an app dropped the cursor to the first icon in the folder
+        // rather than leaving it on the one just closed. Reported from the
+        // device as "open Wardrive, close it, and it hovers the default app
+        // instead" — and it did that for every folder and for home.
+        //
+        // Identity of the item ARRAY is the test rather than the title. Each
+        // category has its own array, so moving between folders resets the
+        // cursor and coming back to one does not.
+        if (items != items_ || count != count_) sel_ = 0;
+        title_ = title; items_ = items; count_ = count;
+        // A list that shrank underneath a remembered position — an app hidden
+        // from the home screen while its folder was open — would otherwise read
+        // past the end of it.
+        if (sel_ >= count_) sel_ = count_ ? count_ - 1 : 0;
         slide_ = 0; dir_ = 0;
     }
 
@@ -402,6 +455,7 @@ public:
             // Network, and so do all the others".
             g_chosen = a;
             if (a->open && app_available(*a)) a->open();
+            else explain_unavailable(*a);
             return ACT_STAY;
         }
         return Screen::on_event(e);

@@ -192,6 +192,40 @@ static void test_folders_open_themselves(void) {
     // The whole bug in one check: N folders must open N DIFFERENT categories.
     eq(distinct, folders < 8 ? folders : 8, "each folder opens its own category");
     gui::go_home();
+
+    // An app that cannot open must SAY so. Pressing a struck-through row used to
+    // do nothing at all, and on a device whose only input is one encoder,
+    // "nothing happened" is what a broken button looks like.
+    const gui::App *apps = gui::apps();
+    const unsigned n = gui::app_count();
+    int checked = 0;
+    for (unsigned i = 0; i < n && checked < 1; i++) {
+        if (gui::app_available(apps[i])) continue;
+
+        // Its position in the gallery is its position among its own category.
+        int cat_index = 0, cat_row = -1;
+        for (unsigned k = 0; k < n; k++) {
+            if (apps[k].cat != apps[i].cat) continue;
+            if (k == i) { cat_row = cat_index; break; }
+            cat_index++;
+        }
+        if (cat_row < 0) continue;
+
+        gui::go_home();
+        ui::Screen *h = gui::top();
+        if (!h) break;
+        for (int step = 0; step < (int)apps[i].cat; step++) h->on_event(EV_ROT_CW);
+        h->on_event(EV_SELECT);
+        ui::Screen *gallery = gui::top();
+        if (!gallery || gallery == h) break;
+
+        for (int step = 0; step < cat_row; step++) gallery->on_event(EV_ROT_CW);
+        gallery->on_event(EV_SELECT);
+        ok(gui::top() != gallery,
+           "pressing an unavailable app says why instead of doing nothing");
+        checked++;
+    }
+    gui::go_home();
 }
 
 // --- the bug that reached a desk ----------------------------------------------------

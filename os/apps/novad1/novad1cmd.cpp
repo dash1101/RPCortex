@@ -112,6 +112,149 @@ int setup(void) {
     return bad ? 1 : 0;
 }
 
+// --- selftest ----------------------------------------------------------------------
+//
+// The screens run a shell command on a task of their own — spawn, call
+// fw_shell_run there, poll a flag — and several of them came back with nothing
+// on a real device while the same command typed at the prompt worked perfectly.
+// That difference is the whole bug and it cannot be seen from a command running
+// on the shell task, so this runs the screens' path and reports what it got.
+
+static char          g_st_out[512];
+static volatile bool g_st_done;
+static volatile int  g_st_rc;
+static const char   *g_st_cmd;
+
+static int selftest_task(void *) {
+    g_st_out[0] = 0;
+    g_st_rc = fw_shell_run(g_st_cmd, g_st_out, sizeof(g_st_out));
+    g_st_done = true;
+    return 0;
+}
+
+static void try_one(const char *line) {
+    g_st_cmd  = line;
+    g_st_done = false;
+    g_st_rc   = -999;
+
+    int pid = fw_task_spawn("d1self", selftest_task, nullptr, 4096);
+    if (pid < 0) { fw_printf("  %-16s SPAWN FAILED\n", line); return; }
+
+    for (int i = 0; i < 200 && !g_st_done; i++) fw_task_sleep_ms(25);
+    if (!g_st_done) { fw_printf("  %-16s never finished (task %d)\n", line, pid); return; }
+
+    unsigned n = 0, lines = 0;
+    for (const char *p = g_st_out; *p; p++) { n++; if (*p == '\n') lines++; }
+    fw_printf("  %-16s rc %-4d %4u bytes, %u line%s%s\n", line, g_st_rc, n, lines,
+              lines == 1 ? "" : "s", n ? "" : "   <-- NOTHING CAME BACK");
+    if (n) {
+        // The first line, so the shape of what came back is visible and not
+        // just its size — a buffer of the right length holding the wrong thing
+        // is the other way this fails.
+        char first[72];
+        unsigned i = 0;
+        while (i + 1 < sizeof(first) && g_st_out[i] && g_st_out[i] != '\n') { first[i] = g_st_out[i]; i++; }
+        first[i] = 0;
+        fw_printf("                   | %s\n", first);
+    }
+}
+
+int selftest(void) {
+    fw_printf("Running each command the way a SCREEN does — on its own task.\n\n");
+    fw_printf("  ON THIS TASK (the shell), for comparison:\n");
+    static char here[512];
+    here[0] = 0;
+    int rc = fw_shell_run("ps", here, sizeof(here));
+    fw_printf("  %-16s rc %-4d %4u bytes%s\n\n", "ps", rc, (unsigned)strlen(here),
+              here[0] ? "" : "   <-- NOTHING CAME BACK");
+
+    fw_printf("  ON A SPAWNED TASK, which is what every screen does:\n");
+    try_one("ps");
+    try_one("service list");
+    try_one("pkg list");
+    try_one("df");
+    try_one("free");
+    fw_printf("\nA screen reading a listing is only as good as the lines above.\n");
+    return 0;
+}
+
+// --- tap ---------------------------------------------------------------------------
+
+int tap(int argc, char **argv) {
+    if (!gui::running()) {
+        fw_printf("The screen is not running. `novad1 gui --bg` first.\n");
+        return 1;
+    }
+    if (argc < 3) {
+        fw_printf("novad1 tap cw | ccw | sel | hold | back | home | homehold [n]\n");
+        fw_printf("  Injects the gesture the encoder would have made.\n");
+        return 1;
+    }
+    const char *what = argv[2];
+    Event e = EV_NONE;
+    if      (!strcmp(what, "cw"))       e = EV_ROT_CW;
+    else if (!strcmp(what, "ccw"))      e = EV_ROT_CCW;
+    else if (!strcmp(what, "sel"))      e = EV_SELECT;
+    else if (!strcmp(what, "hold"))     e = EV_SELECT_HOLD;
+    else if (!strcmp(what, "back"))     e = EV_BACK;
+    else if (!strcmp(what, "home"))     e = EV_HOME;
+    else if (!strcmp(what, "homehold")) e = EV_HOME_HOLD;
+    else { fw_printf("Not a gesture: %s\n", what); return 1; }
+
+    // Parsed here rather than with atoi, which the firmware does not export to
+    // packages — and adding it to the ABI for one repeat count would be a poor
+    // trade. Anything that is not a number reads as one gesture, which is the
+    // safe way to be wrong about a repeat.
+    int n = 1;
+    if (argc > 3) {
+        n = 0;
+        for (const char *p = argv[3]; *p >= '0' && *p <= '9'; p++) n = n * 10 + (*p - '0');
+        if (n < 1) n = 1;
+    }
+    if (n > 64) n = 64;
+    for (int i = 0; i < n; i++) {
+        input().inject(e);
+        // A detent at a time, with a frame between, because the runner takes at
+        // most one rotation per frame on purpose — injecting sixteen at once
+        // would queue them and arrive as a spin rather than as sixteen steps.
+        fw_task_sleep_ms(40);
+    }
+    // Long enough for the frame after the last gesture to have been drawn, so
+    // what is reported below is what is on the glass.
+    fw_task_sleep_ms(120);
+
+    ui::Screen *s = gui::top();
+    fw_printf("%-9s x%-2d  ->  depth %u, showing '%s'\n", what, n,
+              gui::depth(), s ? s->title() : "(nothing)");
+    return 0;
+}
+
+// --- shot --------------------------------------------------------------------------
+
+int shot(void) {
+    if (!gui::running()) {
+        fw_printf("The screen is not running. `novad1 gui --bg` first.\n");
+        return 1;
+    }
+    Canvas &c = gui::canvas();
+    ui::Screen *s = gui::top();
+    fw_printf("%dx%d  depth %u  '%s'\n", c.width(), c.height(), gui::depth(),
+              s ? s->title() : "");
+
+    // A row at a time. The frame is live and the runner may redraw underneath
+    // this, so a torn picture is possible — and is worth far more than no
+    // picture, which is what there was.
+    char row[160];
+    for (int y = 0; y < c.height(); y++) {
+        int n = 0;
+        for (int x = 0; x < c.width() && n < (int)sizeof(row) - 1; x++)
+            row[n++] = c.get(x, y) ? '#' : '.';
+        row[n] = 0;
+        fw_printf("%s\n", row);
+    }
+    return 0;
+}
+
 // --- service ---------------------------------------------------------------------
 
 static int gui_task(void *) {

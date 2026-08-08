@@ -352,8 +352,15 @@ private:
     char name_[14];
 };
 
+// The MicroPython suite's own words where it had the row. "Apps" was its
+// "Manage Apps", and somebody who has used that device should not have to
+// relearn a label to reach the same screen.
+//
+// Favourites, Name and Buzz are ours: v1 had no row for any of them. Buzz is
+// the haptic and is NOT v1's "Chime", which was a tone from the buzzer — a
+// different feature, and one with nothing behind it here.
 const char *const HomeSettings::kLabels[HomeSettings::R_COUNT] = {
-    "Layout", "Apps", "Favourites", "Name", "Notify", "Alert LED", "Buzz",
+    "Layout", "Manage Apps", "Favourites", "Name", "Notify", "Alert LED", "Buzz",
 };
 
 void open_set_home(void) {
@@ -378,7 +385,7 @@ public:
     }
 
 protected:
-    enum { R_LINK = 0, R_SAVED, R_RADIO, R_AUTO, R_SYNC, R_COUNT };
+    enum { R_LINK = 0, R_SAVED, R_RADIO, R_AUTO, R_COUNT };
 
     int count(void) const override { return R_COUNT; }
     const char *label(int i) const override { return kLabels[i]; }
@@ -446,14 +453,9 @@ protected:
                     locked_ = !locked_;
                 }
                 break;
-            case R_AUTO:
+            default:
                 auto_ = !auto_;
                 dirty_ = true;
-                break;
-            default:
-                if (fw_shell_run("ntp sync", out, sizeof(out)) != 0 && !out[0])
-                    nova::copy(out, sizeof(out), "No answer from the time server.");
-                ui::notice("Clock", out[0] ? out : "The clock is set.");
                 break;
         }
         return ui::ACT_STAY;
@@ -466,8 +468,20 @@ private:
     char ssid_[FW_NET_SSID_MAX];
 };
 
+// v1 called the first row WiFi and it opened the whole WiFi screen; "Link" was
+// ours and said less. Saved is a second row because the saved-networks manager
+// is its own screen here.
+//
+// Sync Clock has MOVED, to System -> Clock. v1 had it under Network because NTP
+// needs the network, which split the clock across two groups: the zone and the
+// time in one place, the thing that sets them in another. It is a clock action
+// that happens to need a radio.
+//
+// Not carried over: LoRa radio, LoRa MHz and Web Panel. There is no SX1276
+// driver and no web panel in this build, and a row that changes nothing teaches
+// somebody the device is broken.
 const char *const NetworkSettings::kLabels[NetworkSettings::R_COUNT] = {
-    "Link", "Saved", "Radio", "Join at boot", "Sync clock",
+    "WiFi", "Saved", "Radio", "Join at boot",
 };
 
 void open_set_network(void) {
@@ -610,8 +624,14 @@ private:
     bool locked_;
 };
 
+// v1's words, including its hyphen. Its fifth row was a "Privacy" sub-group
+// holding Incognito, Random ID and a "What leaks" screen; two of those three
+// have nothing behind them here — there is no MAC API on the ABI and no privacy
+// screen — and a sub-menu with one row in it is worse than the row. So Incognito
+// stays where it can be reached in one press, and the group comes back when
+// there is something to put in it.
 const char *const SecuritySettings::kLabels[SecuritySettings::R_COUNT] = {
-    "Lock", "Lock type", "Change code", "Auto-lock", "Incognito",
+    "Lock", "Lock type", "Change code", "Auto-Lock", "Incognito",
 };
 
 void open_set_security(void) {
@@ -728,9 +748,44 @@ static void do_reset(void *) {
     fw_reboot();
 }
 
-class SystemSettings : public SettingsList {
+// Step the CPU clock, and make it stick past a restart.
+//
+// A free function rather than a member because the Clock group is the only
+// caller now and System used to be — a static tucked inside one of two screens
+// that both want it is how a second copy gets written.
+static void bump_cpu_clock(void) {
+    const unsigned now = fw_clock_hz() / 1000000u;
+    int want = kMhz[0];
+    for (int i = 0; i < MHZ_STEPS; i++)
+        if ((unsigned)kMhz[i] == now) { want = kMhz[(i + 1) % MHZ_STEPS]; break; }
+
+    char line[24], out[112];
+    snprintf(line, sizeof(line), "pulse set %d", want);
+    if (fw_shell_run(line, out, sizeof(out)) != 0) {
+        ui::notice("CPU clock", out[0] ? out
+                   : "Refused. Changing the clock needs an admin session.");
+        return;
+    }
+    // And keep it after a restart. Setting the clock without setting the boot
+    // clock is a setting that undoes itself overnight, which reads as the row
+    // never having worked.
+    snprintf(line, sizeof(line), "pulse boot %d", want);
+    fw_shell_run(line, nullptr, 0);
+}
+
+// --- Clock --------------------------------------------------------------------------
+//
+// Time, zone, speed and the sync, on one screen.
+//
+// v1 kept a Clock group for the same reason and put Sync Clock under Network
+// instead, because NTP needs the network. That split the clock across two
+// groups: Set Time and Timezone in one place, the thing that sets them from a
+// server in another. Sync is a clock action that happens to need a radio, so it
+// is here with the rest of them.
+
+class ClockSettings : public SettingsList {
 public:
-    const char *title(void) const override { return "System"; }
+    const char *title(void) const override { return "Clock"; }
 
     int help(const char **out, int max) const override {
         if (max < 3) return 0;
@@ -749,7 +804,7 @@ public:
     }
 
 protected:
-    enum { R_CPU = 0, R_TZ, R_24H, R_REBOOT, R_RESET, R_COUNT };
+    enum { R_TZ = 0, R_24H, R_CPU, R_SYNC, R_COUNT };
 
     int count(void) const override { return R_COUNT; }
     const char *label(int i) const override { return kLabels[i]; }
@@ -759,7 +814,13 @@ protected:
 
     void value(int i, char *out, unsigned cap) const override {
         switch (i) {
-            case R_CPU: {
+            case R_TZ: {
+                int off = nova::reg_int("System.TZ_Offset", 0);
+                snprintf(out, cap, "UTC%c%d", off < 0 ? '-' : '+', off < 0 ? -off : off);
+                break;
+            }
+            case R_24H: nova::copy(out, cap, h24_ ? "on" : "off"); break;
+            case R_CPU:
                 // Read from the clock every time it is drawn, never from a
                 // stored preference: this row, `pulse set` in the shell and the
                 // boot clock all move the same number, and only one of them
@@ -767,22 +828,78 @@ protected:
                 // sitting at 150 is worse than no row.
                 snprintf(out, cap, "%uMHz", (unsigned)(fw_clock_hz() / 1000000u));
                 break;
-            }
-            case R_TZ: {
-                int off = nova::reg_int("System.TZ_Offset", 0);
-                snprintf(out, cap, "UTC%c%d", off < 0 ? '-' : '+', off < 0 ? -off : off);
-                break;
-            }
-            case R_24H: nova::copy(out, cap, h24_ ? "on" : "off"); break;
-            default:    nova::copy(out, cap, ">"); break;
+            default: nova::copy(out, cap, ">"); break;
         }
     }
 
     Action activate(int i) override {
         switch (i) {
-            case R_CPU:    bump_clock(); break;
-            case R_TZ:     gui::push<TimezoneScreen>(); break;
-            case R_24H:    h24_ = !h24_; dirty_ = true; break;
+            case R_TZ:  gui::push<TimezoneScreen>(); break;
+            case R_24H: h24_ = !h24_; dirty_ = true; break;
+            case R_CPU: bump_cpu_clock(); break;
+            default: {
+                char out[112];
+                if (fw_shell_run("ntp sync", out, sizeof(out)) != 0 && !out[0])
+                    nova::copy(out, sizeof(out), "No answer from the time server.");
+                ui::notice("Clock", out[0] ? out : "The clock is set.");
+                break;
+            }
+        }
+        return ui::ACT_STAY;
+    }
+
+private:
+    static const char *const kLabels[R_COUNT];
+    bool h24_;
+};
+
+const char *const ClockSettings::kLabels[ClockSettings::R_COUNT] = {
+    "Timezone", "24-hour", "CPU", "Sync Clock",
+};
+
+static void open_clock_settings(void) {
+    ClockSettings *s = gui::push<ClockSettings>();
+    if (s) s->begin();
+}
+
+class SystemSettings : public SettingsList {
+public:
+    const char *title(void) const override { return "System"; }
+
+    int help(const char **out, int max) const override {
+        if (max < 3) return 0;
+        out[0] = "Clock holds the time, the zone";
+        out[1] = "and the CPU speed. Versions is";
+        out[2] = "what this device is.";
+        return 3;
+    }
+
+    bool tick(uint32_t dt) override {
+        (void)dt;
+        if (!g_said[0]) return false;
+        ui::notice(g_said_title ? g_said_title : "Nova D1", g_said);
+        g_said[0] = 0;
+        return true;
+    }
+
+protected:
+    enum { R_CLOCK = 0, R_VERSIONS, R_REBOOT, R_RESET, R_COUNT };
+
+    int count(void) const override { return R_COUNT; }
+    const char *label(int i) const override { return kLabels[i]; }
+
+    void load(void) override {}
+    void store(void) override {}
+
+    void value(int i, char *out, unsigned cap) const override {
+        (void)i;
+        nova::copy(out, cap, ">");
+    }
+
+    Action activate(int i) override {
+        switch (i) {
+            case R_CLOCK:    open_clock_settings(); break;
+            case R_VERSIONS: open_set_device(); break;
             case R_REBOOT:
                 ui::confirm("Restart the device now?", "Reboot", do_reboot, nullptr);
                 break;
@@ -799,29 +916,19 @@ private:
 
     bool h24_;
 
-    static void bump_clock(void) {
-        const unsigned now = fw_clock_hz() / 1000000u;
-        int want = kMhz[0];
-        for (int i = 0; i < MHZ_STEPS; i++)
-            if ((unsigned)kMhz[i] == now) { want = kMhz[(i + 1) % MHZ_STEPS]; break; }
-
-        char line[24], out[112];
-        snprintf(line, sizeof(line), "pulse set %d", want);
-        if (fw_shell_run(line, out, sizeof(out)) != 0) {
-            ui::notice("CPU clock", out[0] ? out
-                       : "Refused. Changing the clock needs an admin session.");
-            return;
-        }
-        // And keep it after a restart. Setting the clock without setting the
-        // boot clock is a setting that undoes itself overnight, which reads as
-        // the row never having worked.
-        snprintf(line, sizeof(line), "pulse boot %d", want);
-        fw_shell_run(line, nullptr, 0);
-    }
 };
 
+// v1's shape: Clock and Versions are their own screens under System rather than
+// rows beside Reboot. Its reasoning was that nothing at the top level should
+// scroll, and it holds here — the clock rows are three settings about one thing
+// and belong together.
+//
+// Verbose and SD Card are NOT carried over. Nothing in this build reads either;
+// Settings.Verbose_Boot is declared by the OS itself and has no reader there
+// either, which is an OS gap rather than a port gap. A row that changes nothing
+// is worse than an absent one, because it teaches somebody the device is broken.
 const char *const SystemSettings::kLabels[SystemSettings::R_COUNT] = {
-    "CPU", "Timezone", "24-hour", "Reboot", "Reset settings",
+    "Clock", "Versions", "Reboot", "Reset settings",
 };
 
 void open_set_system(void) {
@@ -857,7 +964,10 @@ static char g_listing[512];
 
 class DeviceScreen : public Screen {
 public:
-    const char *title(void) const override { return "Device"; }
+    // "Versions", matching the row that opens it and the name v1 used. It said
+    // "Device" while the row said "Versions" — a header that disagrees with the
+    // row you pressed reads as having landed somewhere else.
+    const char *title(void) const override { return "Versions"; }
 
     int help(const char **out, int max) const override {
         if (max < 2) return 0;

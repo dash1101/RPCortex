@@ -21,7 +21,13 @@
 #include <string.h>
 #include <stdio.h>
 
-RPC_APP_VER("novad1", "1.1.0");
+// One version string. It was written out three times — the header, `novad1
+// help` and `novad1 info` — and three copies of a number that must agree is a
+// version that eventually disagrees with itself in a way nobody notices until a
+// bug report quotes the wrong one.
+#define NOVAD1_VER "1.2.1"
+
+RPC_APP_VER("novad1", NOVAD1_VER);
 
 namespace {
 
@@ -143,7 +149,7 @@ int cmd_pins(int argc, char **argv) {
 // --- d1 ---------------------------------------------------------------------
 
 void usage(void) {
-    fw_printf("Nova D1 1.1.0 - the handheld multi-tool\n\n");
+    fw_printf("Nova D1 " NOVAD1_VER " - the handheld multi-tool\n\n");
     fw_printf("  setup                  make it a Nova D1: storage, pins, the boot service\n");
     fw_printf("  gui [--bg]             run the screen, in front or in the background\n");
     fw_printf("  service start|stop|restart|status\n");
@@ -325,7 +331,7 @@ int cmd_display(int argc, char **argv) {
 int cmd_status(void) {
     char b[24];
     fw_board(b, sizeof(b));
-    fw_printf("Nova D1 1.1.0 on %s\n", b);
+    fw_printf("Nova D1 " NOVAD1_VER " on %s\n", b);
     fw_printf("  profile   %s (%s)\n", nova::board::board_id(), nova::board::board_name());
     fw_printf("  display   %s\n", nova::board::display_bus());
     fw_printf("  storage   %s\n", fw_file_exists(NOVA_ROOT) ? NOVA_ROOT : "not created yet");
@@ -383,6 +389,9 @@ int cmd_d1(int argc, char **argv) {
     if (!strcmp(sub, "logs"))    return nova::cmd::logs(argc, argv);
     if (!strcmp(sub, "notify"))  return nova::cmd::notifications(argc, argv);
     if (!strcmp(sub, "wifiprobe") || !strcmp(sub, "pcap")) return nova::cmd::wifiprobe();
+    if (!strcmp(sub, "selftest")) return nova::cmd::selftest();
+    if (!strcmp(sub, "tap")) return nova::cmd::tap(argc, argv);
+    if (!strcmp(sub, "shot")) return nova::cmd::shot();
     if (!strcmp(sub, "selfupdate") || !strcmp(sub, "upgrade")) return nova::cmd::selfupdate();
     // These need subsystems that are not written yet. Named rather than met with
     // "unknown subcommand", because the difference between "this device cannot"
