@@ -297,6 +297,11 @@ static void draw_status(Canvas &c, Screen *s) {
 // The home style, and the inside of a folder. One large icon in the middle with
 // its neighbours small on either side, and the label underneath.
 
+// The row whose open() is running, for an OpenFn that serves several of them.
+// Set immediately before the call and read immediately inside it; nothing keeps
+// it beyond that, and nothing should.
+static const App *g_chosen;
+
 class Gallery : public Screen {
 public:
     void set(const char *title, const App *const *items, int count) {
@@ -390,6 +395,16 @@ public:
         if (e == EV_ROT_CCW) { sel_ = wrapped(sel_ - 1); slide_ = 256; dir_ = -1; return ACT_STAY; }
         if (e == EV_SELECT) {
             const App *a = items_[sel_];
+            // WHICH app is being opened, recorded before the call.
+            //
+            // An OpenFn takes nothing and returns nothing, so a screen that
+            // serves more than one row — the folders all share open_category —
+            // has no other way to know which one was chosen. It used to try to
+            // read it back off the gallery still on top, through an unchecked
+            // cast, and the read was never written: every folder opened the
+            // first category. Reported as "the System folder takes me to
+            // Network, and so do all the others".
+            g_chosen = a;
             if (a->open && app_available(*a)) a->open();
             return ACT_STAY;
         }
@@ -493,9 +508,11 @@ public:
 };
 
 static void open_category(void) {
-    // Which folder was chosen is read off the gallery that is still on top.
-    Gallery *g = (Gallery *)top();
-    (void)g;
+    // The folder that was just chosen, not the gallery it was chosen from.
+    // Casting top() to a Gallery to ask it was the old way and it was wrong
+    // twice over: the cast is unchecked, and the answer was never recorded.
+    if (!g_chosen) return;
+    g_open_cat = g_chosen->cat;
     push<CategoryScreen>();
 }
 

@@ -264,6 +264,57 @@ static void test_one_detent_animates(void) {
     ok(frames >= 4, "and takes enough frames to read as movement");
 }
 
+// --- a folder opens ITS OWN category --------------------------------------------------
+//
+// Every folder opened the first one. An OpenFn takes nothing and returns
+// nothing, so open_category had no way to know which row invoked it; it tried
+// to read the answer back off the gallery through an unchecked cast, and the
+// value it read was never written. Reported from the device as "the System
+// folder takes me to Network, and so do all the others".
+//
+// Nothing in the type system could catch that, so it is worth a test: walk to
+// each folder in turn, open it, and check the title is the folder's own.
+
+static void test_folders_open_themselves(void) {
+    using namespace nova;
+
+    fw_reg_set("Apps.NovaD1_HomeStyle", "folders");
+    gui::go_home();
+    ui::Screen *home = gui::top();
+    if (!home) { ok(false, "home is up"); return; }
+    home->enter();                       // re-read the style
+
+    // How many folders there are is however many categories hold anything.
+    int folders = 0;
+    for (unsigned i = 0; i < gui::app_count(); i++) {
+        bool seen = false;
+        for (unsigned j = 0; j < i; j++)
+            if (gui::apps()[j].cat == gui::apps()[i].cat) { seen = true; break; }
+        if (!seen) folders++;
+    }
+    ok(folders > 1, "there is more than one folder to get wrong");
+
+    int distinct = 0;
+    static char titles[8][24];
+    for (int f = 0; f < folders && f < 8; f++) {
+        gui::go_home();
+        ui::Screen *h = gui::top();
+        if (!h) break;
+        for (int step = 0; step < f; step++) h->on_event(EV_ROT_CW);
+        h->on_event(EV_SELECT);
+
+        ui::Screen *opened = gui::top();
+        if (opened == h) { ok(false, "selecting a folder opens something"); break; }
+        snprintf(titles[f], sizeof(titles[f]), "%s", opened->title());
+        bool dupe = false;
+        for (int k = 0; k < f; k++) if (!strcmp(titles[k], titles[f])) dupe = true;
+        if (!dupe) distinct++;
+    }
+    // The whole bug in one check: N folders must open N DIFFERENT categories.
+    eq(distinct, folders < 8 ? folders : 8, "each folder opens its own category");
+    gui::go_home();
+}
+
 // --- the bug that reached a desk ----------------------------------------------------
 
 static void test_single_instance(void) {
@@ -378,6 +429,7 @@ static void test_catalogue(void) {
 int main(void) {
     STAGE(test_single_instance);
     STAGE(test_one_detent_animates);
+    STAGE(test_folders_open_themselves);
     STAGE(test_navigation);
     STAGE(test_stack_bounds);
     STAGE(test_one_step_per_frame);
