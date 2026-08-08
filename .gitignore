@@ -1,9 +1,12 @@
 # Vendored upstream, cloned by setup rather than committed. See the README.
 sdk/
 littlefs/
-littlefs        # the bare name too: a SYMLINK named littlefs is not matched
-                # by "littlefs/", and one committed from a worktree replaced
-                # the vendored checkout on merge
+# The bare name too, on ITS OWN line: git has no inline comments, so
+# "littlefs   # note" is a pattern for a file literally called that plus spaces,
+# and it silently stops matching. A symlink named littlefs is not caught by
+# "littlefs/" (that matches a directory), and one committed from a worktree
+# replaced the vendored checkout on a merge once. This line prevents the repeat.
+littlefs
 
 # Build directories
 build/
