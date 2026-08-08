@@ -287,6 +287,18 @@ static bool radio_up(void) {
 // file warns about a few lines up.
 bool net_radio_up(void) { return radio_up(); }
 
+// Is the radio up RIGHT NOW — a pure question, with no power to change the
+// answer. net_radio_up() above is misnamed for a query: it is radio_up(), an
+// ACTIVATOR that brings the chip up (and errors, or faults mid-teardown, when
+// it cannot). A per-frame status read must never do that. fw_power_source draws
+// a battery icon every frame and only wants to know whether it is safe to read
+// VBUS off the chip; it asks THIS. The freeze it caused: incognito took the
+// radio down, the next status frame called the activator, and it tried to
+// re-initialise the chip from the render task's core straight into the driver's
+// own teardown — the "second firmware download on a live async_context" this
+// file warns about a few lines up — and the GUI task faulted.
+bool net_radio_is_up(void) { return g_radio_up; }
+
 // The one-owner rule is about TASKS. This is the other half of it: the core.
 //
 // g_net_op guarantees one task at a time inside the driver, which is not the

@@ -647,7 +647,10 @@ extern "C" unsigned fw_power_min_sleep_ms(void) { return power_min_sleep_ms(); }
 
 // What is powering the board. See the note in rpc_app.h for why a package
 // cannot answer this itself.
-bool net_radio_up(void);
+// A PURE QUERY, not net_radio_up() — that one is an activator (radio_up()) and
+// using it here brought the chip up, or faulted trying, as a side effect of
+// drawing the battery icon every frame. That was the incognito freeze.
+bool net_radio_is_up(void);
 extern "C" int fw_power_source(void) {
     task_alive();
 #if defined(RPC_HAS_WIFI) && RPC_HAS_WIFI
@@ -655,7 +658,7 @@ extern "C" int fw_power_source(void) {
     // can only be read through the radio driver, and ONLY while the radio is
     // already up — asking otherwise would either fail or, worse, bring the chip
     // up as a side effect of drawing a battery icon.
-    if (!net_radio_up()) return FW_POWER_UNKNOWN;
+    if (!net_radio_is_up()) return FW_POWER_UNKNOWN;
     return cyw43_arch_gpio_get(CYW43_WL_GPIO_VBUS_PIN) ? FW_POWER_USB
                                                        : FW_POWER_BATTERY;
 #elif defined(PICO_VBUS_PIN)
