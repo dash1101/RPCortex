@@ -352,8 +352,39 @@ target_compile_definitions(rpcortex_v2 PRIVATE
     CFG_TUD_MSC=1
     CFG_TUD_MSC_EP_BUFSIZE=512)
 
+# THE CONSOLE: USB on real hardware, UART under the emulator.
+#
+# The device's console is USB CDC, which is right — it is the one cable a Pico
+# already has and it needs no adapter. The RP2040 model this project runs under
+# Renode does not implement USB at all, but does implement the PL011 UART, so an
+# emulator build puts the console there instead and everything above it is
+# unchanged: stdio_init_all picks whichever is compiled in, and the shell reads
+# through getchar either way.
+#
+#     ./build.sh pico --emu
+#
+# This is the only difference between the image on the bench and the image under
+# the emulator, which is what makes the emulator worth trusting.
+# ADDED to USB, not swapped for it.
+#
+# Switching stdio to UART alone takes pico_stdio_usb out of the link, and with
+# it the tinyusb headers that usbmsc.cpp and usb_descriptors.c include directly
+# — the transfer area is USB whether or not the console is. So the emulator
+# build keeps USB exactly as the board has it and turns the UART on as well.
+# The SDK's stdio multiplexes both directions across every registered driver,
+# so the shell reads from whichever one a character arrives on.
+#
+# The consequence is the one that matters: the image under the emulator differs
+# from the image on the bench by ONE enabled output, not by a different console
+# stack. That is what makes what happens here worth believing about there.
+option(RPC_CONSOLE_UART "Also put the console on UART0, for emulation" OFF)
 pico_enable_stdio_usb(rpcortex_v2 1)
-pico_enable_stdio_uart(rpcortex_v2 0)
+if(RPC_CONSOLE_UART)
+    pico_enable_stdio_uart(rpcortex_v2 1)
+    target_compile_definitions(rpcortex_v2 PRIVATE RPC_CONSOLE_UART=1)
+else()
+    pico_enable_stdio_uart(rpcortex_v2 0)
+endif()
 pico_add_extra_outputs(rpcortex_v2)
 # The raw image, which is what an OTA writes to flash.
 pico_add_bin_output(rpcortex_v2)

@@ -41,6 +41,8 @@ CLEAN=0
 DEVPKGS=OFF
 BUILDTYPE=""              # empty: os/CMakeLists.txt picks per part
 BOARDS=()
+CONSOLE_UART=OFF
+SUFFIX=""
 for arg in "$@"; do
     case "$arg" in
         --clean) CLEAN=1 ;;
@@ -56,6 +58,10 @@ for arg in "$@"; do
         # a -Os default went unnoticed for a whole rebuild.
         --release) DEVPKGS=OFF ;;   # the default now; kept for clarity at a release
         --fast) BUILDTYPE=Release ;;      # -O3 everywhere, for comparing
+        # The emulator's RP2040 model has no USB, so an --emu image puts the
+        # console on the UART it does have. Built into its own directory so it
+        # never gets confused with the image that goes on a board.
+        --emu) CONSOLE_UART=ON; SUFFIX="-emu" ;;
         --small) BUILDTYPE=MinSizeRel ;;  # -Os everywhere, for comparing
         -*)      echo "unknown option: $arg" >&2; exit 1 ;;
         *)       BOARDS+=("$arg") ;;
@@ -73,7 +79,7 @@ done
 
 mkdir -p out
 for board in "${BOARDS[@]}"; do
-    dir="os/build_$board"
+    dir="os/build_${board}${SUFFIX}"
     case "$board" in
         pico|pico_w) board_flash_kb=2048 ;;
         *)           board_flash_kb=4096 ;;
@@ -95,9 +101,11 @@ for board in "${BOARDS[@]}"; do
     done
     if [ -n "$PT" ]; then
         cmake -S os -B "$dir" -DPICO_BOARD="$board" -DRPC_DEV_PACKAGES="$DEVPKGS" \
+            -DRPC_CONSOLE_UART="$CONSOLE_UART" \
               ${BUILDTYPE:+-DCMAKE_BUILD_TYPE="$BUILDTYPE"} -Dpicotool_DIR="$PT" >/dev/null
     else
         cmake -S os -B "$dir" -DPICO_BOARD="$board" -DRPC_DEV_PACKAGES="$DEVPKGS" \
+            -DRPC_CONSOLE_UART="$CONSOLE_UART" \
               ${BUILDTYPE:+-DCMAKE_BUILD_TYPE="$BUILDTYPE"} >/dev/null
     fi
     cmake --build "$dir" -j"$(nproc)" >/dev/null

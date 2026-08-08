@@ -79,3 +79,7 @@ VS-V1.md
 os/STRESS-CRASH.md
 CONTAIN-RESUME.md
 os/CONTAIN-RESUME.md
+
+# The emulator platform is a third-party checkout plus a built DLL; emu/run.sh
+# fetches and builds it on first use.
+emu/Renode_RP2040/
