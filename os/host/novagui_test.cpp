@@ -129,6 +129,21 @@ int fw_net_rssi(void) { return 0; }
 
 int fw_time_get(struct FwTime *out) { (void)out; return 0; }
 
+// The screens that arrived with the settings, wireless, files and operations
+// groups reach further into the ABI than the runner alone ever did.
+int fw_unique_id(char *out, unsigned cap) { snprintf(out, cap, "E6614104037A5E2F"); return 1; }
+uint32_t fw_clock_hz(void) { return 150000000u; }
+int fw_net_scan(FwNetAp *out, unsigned max) { (void)out; (void)max; return 0; }
+int fw_dir_count(const char *) { return 0; }
+int fw_dir_entry(const char *, unsigned, FwDirEntry *) { return 0; }
+uint32_t fw_file_size(const char *) { return 0; }
+uint32_t fw_file_read_at(const char *, uint32_t, void *, uint32_t) { return 0; }
+unsigned long fw_random(void) { return 4; }
+void fw_random_bytes(void *buf, unsigned len) { for (unsigned i = 0; i < len; i++) ((unsigned char *)buf)[i] = 0; }
+int fw_power_sleep(unsigned, int, int) { return 0; }
+int fw_power_dormant(unsigned, int, int) { return 0; }
+unsigned fw_power_min_sleep_ms(void) { return 1; }
+
 }  // extern "C"
 
 // The real thing, all of it.
@@ -146,6 +161,11 @@ int fw_time_get(struct FwTime *out) { (void)out; return 0; }
 #include "../apps/novad1/novabootcheck.cpp"
 #include "../apps/novad1/novagui_tools.cpp"
 #include "../apps/novad1/novagui_system.cpp"
+#include "../apps/novad1/novakeys.cpp"
+#include "../apps/novad1/novagui_wifi.cpp"
+#include "../apps/novad1/novagui_files.cpp"
+#include "../apps/novad1/novagui_settings.cpp"
+#include "../apps/novad1/novagui_ops.cpp"
 #include "../apps/novad1/novagui.cpp"
 
 static int checks, failures;

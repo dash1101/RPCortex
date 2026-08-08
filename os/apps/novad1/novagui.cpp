@@ -10,6 +10,10 @@
 #include "novapower.h"
 #include "novagui_tools.h"
 #include "novagui_system.h"
+#include "novagui_files.h"
+#include "novagui_settings.h"
+#include "novagui_wifi.h"
+#include "novagui_ops.h"
 
 #include "rpc_app.h"
 #include <string.h>
@@ -129,11 +133,11 @@ void go_home(void) {
 
 static const App kApps[] = {
     // key          label         category      open      module
-    { "wifi",       "WiFi",       CAT_WIRELESS, nullptr,  nullptr },
+    { "wifi",       "WiFi",       CAT_WIRELESS, screens::open_wifi,      nullptr },
     { "bt",         "BLE",        CAT_WIRELESS, nullptr,  "bt" },
     { "radar",      "Radar",      CAT_WIRELESS, nullptr,  nullptr },
     { "presence",   "Presence",   CAT_WIRELESS, nullptr,  nullptr },
-    { "wardrive",   "Wardrive",   CAT_WIRELESS, nullptr,  nullptr },
+    { "wardrive",   "Wardrive",   CAT_WIRELESS, screens::open_wardrive,  nullptr },
     { "pn532",      "NFC",        CAT_WIRELESS, nullptr,  "pn532" },
     // 'ir' is the app the MicroPython home used; ir_rx and ir_tx are the two
     // halves of the hardware behind it, and they have their own icons.
@@ -147,25 +151,25 @@ static const App kApps[] = {
     { "battery",    "Battery",    CAT_SENSORS,  nullptr,  "battery" },
     { "clock",      "Clock",      CAT_SENSORS,  screens::open_clock,     nullptr },
 
-    { "files",      "Files",      CAT_TOOLS,    nullptr,  nullptr },
+    { "files",      "Files",      CAT_TOOLS,    screens::open_files,     nullptr },
     { "shell",      "Shell",      CAT_TOOLS,    nullptr,  nullptr },
     { "res",        "Resources",  CAT_TOOLS,    screens::open_resources, nullptr },
-    { "notes",      "Alerts",     CAT_TOOLS,    nullptr,  nullptr },
+    { "notes",      "Alerts",     CAT_TOOLS,    screens::open_alerts,    nullptr },
     { "scripts",    "Scripts",    CAT_TOOLS,    nullptr,  nullptr },
     { "store",      "App Store",  CAT_TOOLS,    nullptr,  nullptr },
-    { "cmds",       "Commands",   CAT_TOOLS,    nullptr,  nullptr },
-    { "logs",       "Logs",       CAT_TOOLS,    nullptr,  nullptr },
+    { "cmds",       "Commands",   CAT_TOOLS,    screens::open_commands,  nullptr },
+    { "logs",       "Logs",       CAT_TOOLS,    screens::open_logs,      nullptr },
 
     { "diag",       "Hardware",   CAT_SYSTEM,   screens::open_hardware,  nullptr },
-    { "check",      "Sys Check",  CAT_SYSTEM,   nullptr,  nullptr },
-    { "fix",        "Repair",     CAT_SYSTEM,   nullptr,  nullptr },
-    { "power",      "Power",      CAT_SYSTEM,   nullptr,  nullptr },
+    { "check",      "Sys Check",  CAT_SYSTEM,   screens::open_check,     nullptr },
+    { "fix",        "Repair",     CAT_SYSTEM,   screens::open_repair,    nullptr },
+    { "power",      "Power",      CAT_SYSTEM,   screens::open_power,     nullptr },
     { "set_display","Display",    CAT_SYSTEM,   screens::open_display_settings, nullptr },
-    { "set_home",   "Home",       CAT_SYSTEM,   nullptr,  nullptr },
-    { "set_network","Network",    CAT_SYSTEM,   nullptr,  nullptr },
-    { "set_security","Security",  CAT_SYSTEM,   nullptr,  nullptr },
-    { "set_system", "System",     CAT_SYSTEM,   nullptr,  nullptr },
-    { "set_device", "Device",     CAT_SYSTEM,   nullptr,  nullptr },
+    { "set_home",   "Home",       CAT_SYSTEM,   screens::open_set_home,     nullptr },
+    { "set_network","Network",    CAT_SYSTEM,   screens::open_set_network,  nullptr },
+    { "set_security","Security",  CAT_SYSTEM,   screens::open_set_security, nullptr },
+    { "set_system", "System",     CAT_SYSTEM,   screens::open_set_system,   nullptr },
+    { "set_device", "Device",     CAT_SYSTEM,   screens::open_set_device,   nullptr },
 };
 
 #define APP_COUNT (sizeof(kApps) / sizeof(kApps[0]))
@@ -712,12 +716,17 @@ void run(void) {
         // PACE THE FRAME, do not just sleep after it.
         //
         // Sleeping the full nap AFTER the work means a 16 ms target actually
-        // takes 16 plus however long the frame took — and a frame here is about
-        // 13 ms, 1.5 to compose and 11.6 to push a full panel over I2C. So the
-        // "60 a second" animation rate was really 34, and a 90 ms slide got
-        // three frames. Three frames does not read as motion; it reads as a
-        // jump, which is exactly what a single detent looked like while a fast
-        // scroll — which queues enough steps to last — animated perfectly.
+        // takes 16 plus however long the frame took, and how long that is
+        // depends entirely on how much of the panel changed. Measured on a
+        // Pico 2 W: composing costs about 1.5 ms whatever happens, and the push
+        // costs 1.5 ms for the one page a settled screen touches and 11.6 ms
+        // for all eight.
+        //
+        // An ANIMATION is the eight-page case, every frame. So the "60 a
+        // second" animation rate was really 34, and a 90 ms slide got three
+        // frames. Three frames does not read as motion; it reads as a jump,
+        // which is exactly what a single detent looked like while a fast scroll
+        // — which queues enough steps to last — animated perfectly.
         uint32_t spent = fw_millis() - now;
         fw_task_sleep_ms(spent >= nap ? 1 : nap - spent);
     }

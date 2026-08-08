@@ -21,7 +21,14 @@
 // async_context on it. The driver hard asserted on the bus errors. Bluetooth
 // goes through net_radio_up now, which is the one place that knows.
 //
-// DEVICE-UNCONFIRMED beyond that: no scan has yet returned a device.
+// CONFIRMED on a Pico 2 W: `bt scan le 5` returned 24 devices in an ordinary
+// room, with names where the advertisement carried one and blank where it did
+// not — which is most of them. The whole call takes about twelve seconds for a
+// five-second scan, because the stack takes up to three to come up on first use
+// and the results take a while to print at 115200.
+//
+// Still DEVICE-UNCONFIRMED: classic inquiry, which needs a discoverable BR/EDR
+// device in range to say anything about.
 
 #include "command.h"
 #include "out.h"
