@@ -219,40 +219,22 @@ static void draw_status(Canvas &c, Screen *s) {
         c.text(right, 1, "?", 1);
     }
 
-    // Power, to the left of the clock. Three states, and which one shows is
-    // decided by what is actually WIRED rather than by a guess:
+    // Power, to the left of the clock. The badge is drawn in novaui.cpp; the
+    // decision about WHICH of its three states to show is here, because it is
+    // the one place that has both halves of the question.
     //
-    //   on USB          the USB trident, and no level — a charging cell reads as
-    //                   a charging voltage, and drawing that as a level would be
-    //                   a number that moves for the wrong reason
-    //   battery, no ADC an empty outline: powered, and no way to say how much
-    //   battery + ADC   the outline filled in proportion
-    right -= 13;
-    {
-        power::Source src = power::source();
-        if (src == power::PWR_USB) {
-            // A USB trident: the stem, the round tip, the square tip, the fork.
-            int y = 4;
-            c.hline(right, y, 10, 1);
-            c.fill_rect(right, y - 1, 2, 3, 1);
-            c.line(right + 4, y, right + 6, y - 3, 1);
-            c.fill_rect(right + 6, y - 4, 2, 2, 1);
-            c.line(right + 4, y, right + 6, y + 3, 1);
-            c.rect(right + 6, y + 2, 2, 2, 1);
-        } else {
-            // The cell outline, with its terminal on the right.
-            c.rect(right, 1, 10, 7, 1);
-            c.fill_rect(right + 10, 3, 1, 3, 1);
-            int pct = power::percent();
-            if (pct >= 0) {
-                int w = pct * 8 / 100;
-                if (w > 0) c.fill_rect(right + 1, 2, w, 5, 1);
-                // Nearly flat gets a mark rather than a very short bar, which at
-                // one pixel wide is indistinguishable from a full one.
-                if (power::low()) { c.fill_rect(right + 4, 3, 2, 3, 1); }
-            }
-        }
-    }
+    // They are separate questions. Where the power comes from is the firmware's
+    // to answer — VBUS sense on a Pico 2 W is a pin on the radio module, not one
+    // a package can read — while whether there is a LEVEL depends on the battery
+    // divider being wired, which on the reference board it is not. So the board
+    // can know perfectly well that it is running off the cell and still have
+    // nothing to say about how full it is, and the badge has to survive that.
+    //
+    // USB wins when it is present: on external power a cell reads as a charging
+    // voltage rather than a state of charge, and drawing that as a level would
+    // be a number that moves for the wrong reason.
+    right -= ui::POWER_W;
+    ui::power_badge(c, right, power::source() == power::PWR_USB, power::percent());
 
     // The link indicator, and the bars mean something.
     //
@@ -327,7 +309,7 @@ public:
             c.text_centred(ui::TOP + 12, "Nothing here", 1);
             return;
         }
-        const int mid_y = ui::TOP + 20;
+        const int mid_y = ui::RING_Y;
         const int cx = c.width() / 2;
 
         // Where the ring is between two positions, in pixels. dir_ says which
@@ -348,7 +330,7 @@ public:
                 if ((d < 0 ? -d : d) != pass) continue;
                 int idx = wrapped(sel_ + d);
                 int x = cx + d * SPACING + off;
-                if (x < -12 || x > c.width() + 12) continue;
+                if (x < -R_BIG || x > c.width() + R_BIG) continue;
 
                 // Size follows DISTANCE FROM THE CENTRE, continuously. An icon
                 // halfway between two slots is halfway between two sizes, which
@@ -368,16 +350,28 @@ public:
         // changes at the halfway point of a step rather than at either end.
         const App *a = items_[wrapped(sel_ + ((off > SPACING / 2) ? -1 :
                                               (off < -SPACING / 2) ? 1 : 0))];
-        c.text_centred(c.height() - ui::FH - 1, a->label, 1, 1, false);
+        c.text_centred(ui::label_y(c), a->label, 1, 1, false);
 
         // Where you are in the ring. A row of pips rather than "3/12": on a list
         // that wraps, the shape tells you more than the number.
+        //
+        // UNDER THE LABEL, at the foot of the panel. They used to sit on the
+        // first row of the body, a pixel below the status rule, where a row of
+        // dots hard against the bar read as part of it — decoration competing
+        // with the clock rather than an answer to "where am I". At the bottom
+        // they belong to the thing they describe and the top of the screen goes
+        // back to being the status bar.
+        //
+        // Every pip shares a baseline and the current one is the only one with
+        // any height, so the row reads as a scale with a marker on it.
         if (count_ > 1 && count_ <= 16) {
-            int w = count_ * 3 - 1;
-            int x0 = cx - w / 2;
+            const int y = ui::pip_y(c);
+            const int base = y + ui::PIP_H - 1;
+            int x0 = cx - (count_ * ui::PIP_PITCH - 1) / 2;
             for (int i = 0; i < count_; i++) {
-                if (i == sel_) c.fill_rect(x0 + i * 3, ui::TOP + 1, 2, 2, 1);
-                else           c.pixel(x0 + i * 3, ui::TOP + 1, 1);
+                int x = x0 + i * ui::PIP_PITCH;
+                if (i == sel_) c.fill_rect(x, y, ui::PIP_H, ui::PIP_H, 1);
+                else           c.pixel(x, base, 1);
             }
         }
     }
@@ -399,9 +393,11 @@ public:
     const char *title(void) const override { return title_; }
 
 protected:
-    static constexpr int SPACING  = 38;   // pixels between icon centres, for three across
-    static constexpr int R_BIG    = 12;   // the one under the cursor
-    static constexpr int R_SMALL  = 6;    // its neighbours
+    // The ring's shape is a layout token, not a private constant: the host
+    // renderer draws the same frame and had its own copy of all three.
+    static constexpr int SPACING  = ui::ICON_SPACING;
+    static constexpr int R_BIG    = ui::ICON_BIG;
+    static constexpr int R_SMALL  = ui::ICON_SMALL;
     static constexpr int SLIDE_MS = 140;  // long enough to see, short enough
                                           // that a fast spin does not lag behind
 

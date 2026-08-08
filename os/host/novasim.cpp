@@ -16,6 +16,11 @@
 // and a set of composed screens. No network, no dependencies.
 #include "../apps/novad1/novacanvas.cpp"
 #include "../apps/novad1/novaicons.cpp"
+// The layout tokens and the shared widgets, so the frames below are POSITIONED
+// by the same numbers the device uses instead of by a second set that agreed
+// with them on the day it was written. novaui has no fw_* call in it either,
+// which is what makes that possible.
+#include "../apps/novad1/novaui.cpp"
 
 #include <stdio.h>
 #include <string.h>
@@ -68,10 +73,14 @@ static const char *kIconKeys[] = {
 };
 
 static void render_icons(void) {
-    // The two sizes the home screen actually uses, side by side, on one strip
-    // per icon — because an icon that reads at twelve pixels and turns to mush
-    // at six is a real problem and is invisible until they are next to each
-    // other.
+    // The pair the icons were DRAWN against, side by side, on one strip per icon
+    // — because an icon that reads at twelve pixels and turns to mush at six is
+    // a real problem and is invisible until they are next to each other.
+    //
+    // Fixed at 12 and 6 rather than following ui::ICON_SMALL, because this strip
+    // is also what tools/icondiff.py compares against the MicroPython original
+    // and both sides have to be asked for the same size. The gallery's own
+    // choice of neighbour size shows in the home frames below.
     for (unsigned i = 0; i < sizeof(kIconKeys) / sizeof(kIconKeys[0]); i++) {
         fresh(44, 32);
         nova::icons::draw(C, kIconKeys[i], 15, 16, 12, kIconKeys[i]);
@@ -80,91 +89,120 @@ static void render_icons(void) {
     }
 }
 
+// The gallery, laid out from nova::ui rather than from a private copy of the
+// numbers. This is Gallery::draw with the animation state passed in — the ring,
+// the label under it and the position pips under that.
+static void ring(const char *const *keys, int count, int sel, int slide, int dir) {
+    using namespace nova::ui;
+    const int cx = C.width() / 2;
+    const int off = dir * slide * ICON_SPACING / 256;
+
+    for (int pass = 1; pass >= 0; pass--) {
+        for (int d = -1; d <= 1; d++) {
+            if ((d < 0 ? -d : d) != pass) continue;
+            int idx = ((sel + d) % count + count) % count;
+            int x = cx + d * ICON_SPACING + off;
+            if (x < -ICON_BIG || x > C.width() + ICON_BIG) continue;
+            int dist = x > cx ? x - cx : cx - x;
+            int r = ICON_BIG - dist * (ICON_BIG - ICON_SMALL) / ICON_SPACING;
+            if (r < ICON_SMALL) r = ICON_SMALL;
+            if (r > ICON_BIG)   r = ICON_BIG;
+            nova::icons::draw(C, keys[idx], x, RING_Y, r, keys[idx]);
+        }
+    }
+
+    int at = ((sel + ((off > ICON_SPACING / 2) ? -1 :
+                      (off < -ICON_SPACING / 2) ? 1 : 0)) % count + count) % count;
+    C.text_centred(label_y(C), keys[at], 1, 1, false);
+
+    if (count > 1 && count <= 16) {
+        const int y = pip_y(C);
+        const int base = y + PIP_H - 1;
+        int x0 = cx - (count * PIP_PITCH - 1) / 2;
+        for (int i = 0; i < count; i++) {
+            int x = x0 + i * PIP_PITCH;
+            if (i == sel) C.fill_rect(x, y, PIP_H, PIP_H, 1);
+            else          C.pixel(x, base, 1);
+        }
+    }
+}
+
+// The status bar, so a home frame is the whole thing the panel shows and not
+// just the part that changed.
+static void status_bar(const char *title, bool usb, int pct, int bars);
+
 // The home ring, at three positions through a step, so the slide can be checked
-// as a sequence rather than as one still.
+// as a sequence rather than as one still — and then the flat gallery style,
+// which shows app icons rather than the five folders and is where the neighbour
+// size has to earn its keep.
 static void render_home(void) {
-    static const char *keys[] = { "Wireless", "Sensors", "Tools", "System", "Testing" };
+    static const char *folders[] = { "Wireless", "Sensors", "Tools", "System", "Testing" };
     for (int phase = 0; phase < 3; phase++) {
         fresh();
-        const int cx = 64, mid_y = 10 + 20;
-        const int SPACING = 38, R_BIG = 12, R_SMALL = 6;
-        int slide = 256 - phase * 128;         // 256, 128, 0
-        int off = slide * SPACING / 256;
-        for (int pass = 1; pass >= 0; pass--) {
-            for (int d = -1; d <= 1; d++) {
-                if ((d < 0 ? -d : d) != pass) continue;
-                int idx = ((2 + d) % 5 + 5) % 5;
-                int x = cx + d * SPACING + off;
-                if (x < -12 || x > 128 + 12) continue;
-                int dist = x > cx ? x - cx : cx - x;
-                int r = R_BIG - dist * (R_BIG - R_SMALL) / SPACING;
-                if (r < R_SMALL) r = R_SMALL;
-                if (r > R_BIG)   r = R_BIG;
-                nova::icons::draw(C, keys[idx], x, mid_y, r, keys[idx]);
-            }
-        }
-        C.text_centred(64 - 8, "Tools", 1);
-        for (int i = 0; i < 5; i++) {
-            int x0 = cx - 7;
-            if (i == 2) C.fill_rect(x0 + i * 3, 11, 2, 2, 1);
-            else        C.pixel(x0 + i * 3, 11, 1);
-        }
-        // The status bar, so the whole frame is what the device shows.
-        C.text(0, 1, "Nova D1", 1);
-        C.text(128 - 29, 1, "14:32", 1);
-        C.hline(0, 8, 128, 1);
+        ring(folders, 5, 2, 256 - phase * 128, 1);     // slide 256, 128, 0
+        status_bar("Nova D1", false, -1, 0);
         char nm[24];
         snprintf(nm, sizeof(nm), "home ring %d of 3", phase + 1);
         capture(nm);
     }
+
+    static const char *apps[] = { "wifi", "bt", "radar", "gps", "clock",
+                                  "files", "shell", "res", "diag", "store" };
+    for (int sel = 0; sel < 3; sel++) {
+        fresh();
+        ring(apps, 10, sel * 4 + 1, 0, 1);
+        status_bar("Nova D1", false, -1, 0);
+        char nm[32];
+        snprintf(nm, sizeof(nm), "home gallery %d of 3", sel + 1);
+        capture(nm);
+    }
+}
+
+// draw_status, minus the parts that need a live screen: the clock on the right,
+// the power badge, the link bars, and the title in what is left.
+static void status_bar(const char *title, bool usb, int pct, int bars) {
+    int right = C.width() - C.text_width("14:32", 1, false);
+    C.text(right, 1, "14:32", 1);
+
+    right -= nova::ui::POWER_W;
+    nova::ui::power_badge(C, right, usb, pct);
+
+    right -= 11;
+    for (int b = 0; b < 3; b++) {
+        int h = 2 + b * 2;
+        int x = right + b * 3;
+        if (b < bars) C.fill_rect(x, 1 + (6 - h), 2, h, 1);
+        else          C.hline(x, 7, 2, 1);
+    }
+    if (!bars) { C.pixel(right + 2, 2, 1); C.pixel(right + 4, 2, 1); }
+
+    C.text_fit(0, 1, title, 1, right - 2, false);
+    C.hline(0, nova::ui::BARH - 1, C.width(), 1);
 }
 
 // The status bar on its own, in each of the states it can be in — this is where
 // the signal bars were wrong for a week without anybody being able to see it.
+//
+// The power states are here in full because there are three of them now and the
+// difference between two is the ABSENCE of a level: an outline that means "no
+// reading" and a filled cell that means 4% are a keystroke apart in the source
+// and must not be a keystroke apart on the glass. The percentages are the width
+// edges of the number inside — one digit, two, and the three that fill the cell.
 static void render_status(void) {
     struct S { const char *name; int bars; int batt; bool usb; };
     static const S kStates[] = {
-        { "status: no link, no power sense", 0, -1, false },
-        { "status: weak link, USB",          1, -1, true  },
-        { "status: full link, battery 80%",  3, 80, false },
-        { "status: full link, battery low",  3,  9, false },
+        { "status: no link, source not known", 0, -1, false },
+        { "status: weak link, on USB",         1, -1, true  },
+        { "status: on the cell, level unknown",3, -1, false },
+        { "status: battery 4%",                3,  4, false },
+        { "status: battery 42%",               3, 42, false },
+        { "status: battery 80%",               3, 80, false },
+        { "status: battery 100%",              3,100, false },
     };
     for (unsigned i = 0; i < sizeof(kStates) / sizeof(kStates[0]); i++) {
         const S &s = kStates[i];
         fresh(128, 16);
-        int right = 128 - C.text_width("14:32", 1, false);
-        C.text(right, 1, "14:32", 1);
-
-        right -= 13;
-        if (s.usb) {
-            int y = 4;
-            C.hline(right, y, 10, 1);
-            C.fill_rect(right, y - 1, 2, 3, 1);
-            C.line(right + 4, y, right + 6, y - 3, 1);
-            C.fill_rect(right + 6, y - 4, 2, 2, 1);
-            C.line(right + 4, y, right + 6, y + 3, 1);
-            C.rect(right + 6, y + 2, 2, 2, 1);
-        } else {
-            C.rect(right, 1, 10, 7, 1);
-            C.fill_rect(right + 10, 3, 1, 3, 1);
-            if (s.batt >= 0) {
-                int w = s.batt * 8 / 100;
-                if (w > 0) C.fill_rect(right + 1, 2, w, 5, 1);
-                if (s.batt <= 15) C.fill_rect(right + 4, 3, 2, 3, 1);
-            }
-        }
-
-        right -= 11;
-        for (int b = 0; b < 3; b++) {
-            int h = 2 + b * 2;
-            int x = right + b * 3;
-            if (b < s.bars) C.fill_rect(x, 1 + (6 - h), 2, h, 1);
-            else            C.hline(x, 7, 2, 1);
-        }
-        if (!s.bars) { C.pixel(right + 2, 2, 1); C.pixel(right + 4, 2, 1); }
-
-        C.text(0, 1, "Nova D1", 1);
-        C.hline(0, 8, 128, 1);
+        status_bar("Nova D1", s.usb, s.batt, s.bars);
         capture(s.name);
     }
 }

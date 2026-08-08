@@ -21,9 +21,18 @@ namespace power {
 // frame. Five seconds is far faster than a battery moves.
 #define CACHE_MS 5000
 
+// The source gets its own, shorter, cache. A cell moves over hours, but plugging
+// a cable in is something somebody does and then looks at the screen to confirm
+// — five seconds of the old icon would read as a dead socket.
+#define SRC_CACHE_MS 1000
+
 static uint32_t g_at;
 static int      g_mv = -1;
 static bool     g_have;
+
+static uint32_t g_src_at;
+static Source   g_src;
+static bool     g_src_have;
 
 static int read_mv(void) {
     int pin = board::pin(board::PIN_BATTERY);
@@ -68,25 +77,47 @@ int percent(void) {
     return (mv - MV_EMPTY) * 100 / (MV_FULL - MV_EMPTY);
 }
 
-Source source(void) {
+static Source read_source(void) {
     int vbus = board::pin(board::PIN_VBUS);
     if (vbus != board::PIN_NONE) {
+        // An explicitly configured pin wins. Somebody who has wired a divider to
+        // a spare GPIO has said something specific about this device, and it is
+        // also the only answer available with the radio down.
         fw_gpio_init((unsigned)vbus, FW_PIN_IN);
         // No pull. VBUS sense is a divider off the USB rail and driving either
         // way against it gives a reading about the pull-up rather than the rail.
         fw_gpio_pull((unsigned)vbus, FW_PULL_NONE);
         if (fw_gpio_get((unsigned)vbus) == 1) return PWR_USB;
-        return percent() >= 0 ? PWR_BATTERY : PWR_UNKNOWN;
+        return PWR_BATTERY;
     }
 
-    // No VBUS pin. On a Pico W the board's own USB sense is behind the wireless
-    // module rather than on a GPIO, so there is nothing to read — and guessing
-    // from the battery voltage does not work either, because a charging cell and
-    // a full one look the same.
+    // Otherwise the firmware answers, because a package cannot. VBUS sense on a
+    // Pico W and a Pico 2 W is GPIO 2 on the CYW43 module, reachable only
+    // through the radio driver, and the pin it lives on elsewhere is one of the
+    // four the firmware keeps for the radio and refuses to hand out. Every
+    // attempt to read it from here got either a refusal or a floating value.
     //
-    // Which leaves the honest answer: if a battery is wired, say battery; if
-    // nothing is wired, say nothing.
+    // UNKNOWN comes back whenever the question could not be asked — with the
+    // radio down, which is most of the time — and it is a real answer rather
+    // than a failure. It must not be drawn as an empty battery.
+    switch (fw_power_source()) {
+        case FW_POWER_USB:     return PWR_USB;
+        case FW_POWER_BATTERY: return PWR_BATTERY;
+        default:               break;
+    }
+
+    // Nothing knows. A wired battery divider at least says the device is running
+    // off something with a level, which is more than nothing.
     return percent() >= 0 ? PWR_BATTERY : PWR_UNKNOWN;
+}
+
+Source source(void) {
+    uint32_t now = fw_millis();
+    if (g_src_have && now - g_src_at < SRC_CACHE_MS) return g_src;
+    g_src_at = now;
+    g_src_have = true;
+    g_src = read_source();
+    return g_src;
 }
 
 bool low(void) {
