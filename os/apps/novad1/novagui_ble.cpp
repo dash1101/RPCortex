@@ -10,8 +10,9 @@
 //     bt scan le <seconds>        every device advertising
 //     bt scan classic <seconds>   every discoverable device
 //     bt status                   is the stack up
+//     bt advertise ...            transmit a chosen advertisement, bounded in time
 //
-// Everything below is built on parsing those rows, and three things follow from
+// Everything below is built on parsing that text, and three things follow from
 // it that shaped every screen here:
 //
 //   * A scan BLOCKS. Measured on a Pico 2 W, `bt scan le 5` takes about twelve
@@ -19,15 +20,18 @@
 //     time, five scanning, and the rest printing two dozen rows at 115200.
 //     Called from tick() that is twelve seconds of frozen panel, so it runs on a
 //     task and tick() only ever looks at the result.
-//   * THE ADVERTISEMENT ITSELF NEVER ARRIVES. The shell prints an address, LE or
-//     BR, an RSSI and a name; the raw AD payload stays in the firmware. So all of
-//     novableid — company identifiers, service UUIDs, TX power, the Apple message
-//     types — has nothing to decode and is not ported. Neither is the tracker
-//     mark Radar used to show, because that came from the manufacturer data.
-//   * There is no advertising, so novable's proximity ping cannot exist here.
-//     `bt` scans and reports status; it has no way to transmit. The BLE app in
-//     the MicroPython suite offered "Ping iPhone" and "Ping Android" and this one
-//     cannot, which is a capability lost rather than a screen rewritten.
+//   * THE ADVERTISEMENT ITSELF NEVER ARRIVES on the scan path. `bt scan` prints
+//     an address, LE or BR, an RSSI and a name; the raw AD payload of what it
+//     HEARS stays in the firmware. So all of novableid — company identifiers,
+//     service UUIDs, TX power, the Apple message types — has nothing to decode
+//     and is not ported. Neither is the tracker mark Radar used to show, because
+//     that came from the manufacturer data.
+//   * TRANSMITTING, though, is here. `bt advertise` was wired into the firmware,
+//     so novable's proximity ping — the crafted Apple Continuity / Google Fast
+//     Pair beacon that raises a pairing card on a nearby phone — is back, on the
+//     Ping screen. The firmware builds the payload and bounds the transmission;
+//     this file just drives `bt advertise ping ios|android` on a worker and
+//     shows the countdown, the same shape as the scan screens.
 //
 // What replaces the v1 background observer: nothing. novawatch ran continuously
 // as a service and these screens only read its table. Here the table is filled by
@@ -161,6 +165,24 @@ static bool scan_start(bool classic, unsigned secs) {
     if (fw_task_spawn("novabt", scan_task, nullptr, 2048) < 0) {
         g_ble_busy = 0;
         g_state = SC_REFUSED;
+        return false;
+    }
+    return true;
+}
+
+// Fire an arbitrary shell line on the SAME worker the scans use — one radio, one
+// output capture, one task at a time. False when one is already in flight, which
+// the caller retries on a later tick or ignores. Unlike a scan it sets no
+// ScanState: an advertise is not a scan and must never be folded into the table.
+static bool cmd_start(const char *line) {
+    if (g_ble_busy || g_ready) return false;
+    snprintf(g_ble_line, sizeof(g_ble_line), "%s", line);
+    g_ble_out[0] = 0;
+    g_req_gen = g_gen;
+    g_start_ms = fw_millis();
+    g_ble_busy = 1;
+    if (fw_task_spawn("novabt", scan_task, nullptr, 2048) < 0) {
+        g_ble_busy = 0;
         return false;
     }
     return true;
@@ -882,22 +904,157 @@ static void open_device(const Dev &d) {
     gui::push<BleDeviceScreen>();
 }
 
+// --- Ping ----------------------------------------------------------------------
+//
+// The capability v1 had and this suite was long said to have lost: transmit a
+// crafted advertisement that makes a nearby phone raise a pairing card. It is
+// back, because `bt advertise` is. The firmware builds the sourced Apple
+// Continuity / Google Fast Pair payload, sends it from a random address and
+// stops it on a deadline; this screen just asks for it and shows the countdown.
+//
+// It follows the exact async shape the scans use — the shell call runs on the
+// worker, never on tick() — but it is not a scan and stores nothing in the
+// table, so it does its own tiny result handling rather than scan_collect's.
+//
+// Bounded three ways over: the firmware stops at its own deadline whatever the
+// UI does, leaving stops it early, and this screen only ever asks for a short
+// burst. So a Ping screen left open does NOT sit transmitting; each burst is a
+// deliberate press.
+//
+// DEVICE-UNCONFIRMED: no card has been raised on a real handset from here. The
+// payload is host-tested (btadv_test), the screen is driven on the host, but the
+// radio and the phone are not. To confirm: open Ping, pick iOS with an iPhone in
+// range, press SELECT, watch for the AirPods card; then Android with a Pixel.
+class PingScreen : public Screen {
+public:
+    const char *title(void) const override { return "Ping"; }
+
+    int help(const char **out, int max) const override {
+        if (max < 3) return 0;
+        out[0] = "Turn to pick iPhone / Android.";
+        out[1] = "SELECT sends a pairing card.";
+        out[2] = "BACK stops it.";
+        return 3;
+    }
+
+    void enter(void) override {
+        scan_disown();
+        android_  = false;
+        phase_    = 0;
+        adv_until_ = 0;
+        sent_     = false;
+        note_[0]  = 0;
+    }
+
+    // Best-effort stop on the way out. The firmware's own deadline stops it
+    // regardless, so a refused send here (worker still busy) is not a leak.
+    void leave(void) override {
+        cmd_start("bt advertise stop");
+        adv_until_ = 0;
+        scan_disown();
+    }
+
+    bool animating(void) const override { return advertising() || g_ble_busy != 0; }
+
+    bool tick(uint32_t dt) override {
+        phase_ += dt;
+        // Reap the worker's reply just enough to tell started from refused. The
+        // fw text is "[@] Advertising ..." on success; a guest session or a
+        // held capture gives a tagged error or an empty buffer instead.
+        if (g_ready) {
+            g_ready = 0;
+            if (!g_ble_out[0])                       nova::copy(note_, sizeof(note_), "no result - busy");
+            else if (g_ble_rc != 0)                  nova::copy(note_, sizeof(note_), "refused");
+            else if (strstr(g_ble_out, "Advertising")) note_[0] = 0;   // it started
+            else                                     nova::copy(note_, sizeof(note_), "refused");
+        }
+        return advertising() || g_ble_busy;
+    }
+
+    void draw(Canvas &c) override {
+        int y = ui::TOP;
+
+        // The two targets as buttons, the selected one filled — the same button
+        // row the Device screen draws its actions with.
+        static const char *const kOpt[2] = { "iPhone", "Android" };
+        int x = 2;
+        for (int i = 0; i < 2; i++) {
+            const bool on = ((android_ ? 1 : 0) == i);
+            const int w = c.text_width(kOpt[i], 1, true) + 6;
+            if (on) c.rounded_rect(x, y - 1, w, ui::ROWH, 1, true);
+            c.text(x + 3, y, kOpt[i], on ? 0 : 1, 1, true);
+            x += w + 3;
+        }
+        if (g_ble_busy) c.spinner(c.width() - 9, ui::TOP, phase_ / BLE_SPIN_MS, 1);
+        y += ui::ROWH + 2;
+
+        char line[28];
+        if (advertising()) {
+            const uint32_t left = (adv_until_ - fw_millis()) / 1000 + 1;
+            snprintf(line, sizeof(line), "Advertising %us", (unsigned)left);
+            c.text(2, y, line, 1);
+        } else {
+            c.text(2, y, sent_ ? "Sent." : "SELECT to ping.", 1);
+        }
+        y += ui::ROWH;
+        if (note_[0]) c.text(2, y, note_, 1);
+
+        // The footer says what this is and, while live, how to stop it.
+        const char *foot = advertising() ? "BACK stops it"
+                                         : "proximity pairing beacon";
+        c.text_fit(2, c.height() - ui::FH, foot, 1, c.width() - 4, false);
+    }
+
+    Action on_event(Event e) override {
+        if (e == EV_ROT_CW || e == EV_ROT_CCW) {
+            if (!advertising()) android_ = !android_;   // no switching mid-burst
+            return ui::ACT_STAY;
+        }
+        if (e == EV_SELECT || e == EV_SELECT_HOLD) { fire(); return ui::ACT_STAY; }
+        // BACK falls through to the base, which pops; leave() sends the stop.
+        return Screen::on_event(e);
+    }
+
+private:
+    static constexpr unsigned PING_SECS = 10;
+
+    bool     android_;
+    unsigned phase_;
+    uint32_t adv_until_;      // fw_millis deadline of the burst this screen asked for
+    bool     sent_;
+    char     note_[18];
+
+    bool advertising(void) const { return adv_until_ && fw_millis() < adv_until_; }
+
+    void fire(void) {
+        char line[32];
+        snprintf(line, sizeof(line), "bt advertise ping %s %u",
+                 android_ ? "android" : "ios", PING_SECS);
+        if (cmd_start(line)) {
+            adv_until_ = fw_millis() + PING_SECS * 1000;
+            sent_ = true;
+            note_[0] = 0;
+        }
+    }
+};
+
 // --- BLE -----------------------------------------------------------------------
 //
 // What is around, right now. The MicroPython BLE app was a menu of three — scan,
-// ping an iPhone, ping an Android — and the two pings cannot exist without a way
-// to advertise, so what is left is the scan. With nothing else on the menu the
-// menu itself is gone and opening the app starts the scan, which is what somebody
-// opening it wanted.
+// ping an iPhone, ping an Android. The scan is the body of this screen and starts
+// on open, which is what somebody opening it wanted; the two pings, which need a
+// way to advertise, live on the Ping screen now that `bt advertise` exists. A
+// pinned first row reaches it — the same synthetic-row trick Radar uses for its
+// settings — so the capability is one press from where it always was.
 class BleScreen : public Screen {
 public:
     const char *title(void) const override { return "BLE"; }
 
     int help(const char **out, int max) const override {
         if (max < 3) return 0;
-        out[0] = "SELECT opens a device.";
-        out[1] = "Hold SELECT to scan again.";
-        out[2] = "A scan takes about 12s.";
+        out[0] = "Top row pings a phone.";
+        out[1] = "SELECT opens a device.";
+        out[2] = "Hold SELECT to scan again.";
         return 3;
     }
 
@@ -934,39 +1091,50 @@ public:
         const int rows = list_rows(c);
         char line[32];
 
-        if (g_nidx == 0) {
-            c.text(2, ui::TOP, g_ble_busy ? "Scanning..." : "Nothing answered.", 1);
-            if (g_ble_busy) {
-                c.spinner(c.width() - 9, ui::TOP, phase_ / BLE_SPIN_MS, 1);
-            } else if (g_state == SC_OK) {
-                c.text(2, ui::TOP + ui::ROWH, "Only devices that are", 1);
-                c.text(2, ui::TOP + 2 * ui::ROWH, "advertising can be seen.", 1);
-            }
-        } else {
-            if (sel_ >= g_nidx) sel_ = g_nidx - 1;
-            if (sel_ < top_) top_ = sel_;
-            else if (sel_ >= top_ + rows) top_ = sel_ - rows + 1;
+        // Row zero is the Ping entry, pinned like Radar's settings row, so the
+        // list is never empty and the transmit capability is always in reach.
+        const int total = g_nidx + 1;
+        if (sel_ >= total) sel_ = total - 1;
+        if (sel_ < 0) sel_ = 0;
+        if (sel_ < top_) top_ = sel_;
+        else if (sel_ >= top_ + rows) top_ = sel_ - rows + 1;
 
-            for (int i = 0; i < rows; i++) {
-                const int idx = top_ + i;
-                if (idx >= g_nidx) break;
-                const Dev &d = g_dev[g_idx[idx]];
-                draw_dev_row(c, d, ui::TOP + i * ui::ROWH, idx == sel_, is_known(d.mac));
+        const int right = c.width() - (ui::SB_W + 1);
+        for (int i = 0; i < rows; i++) {
+            const int idx = top_ + i;
+            if (idx >= total) break;
+            const int y = ui::TOP + i * ui::ROWH;
+            if (idx == 0) {
+                if (sel_ == 0) c.rounded_rect(0, y - 1, right, ui::ROWH, 1, true);
+                c.text_fit(2, y, "Ping a phone", sel_ == 0 ? 0 : 1, right - 12, false);
+                c.text(right - ui::ADV - 2, y, ">", sel_ == 0 ? 0 : 1);
+                continue;
             }
-            c.scrollbar(c.width() - ui::SB_W + 1, ui::TOP,
-                        c.height() - ui::TOP - ui::FH, top_, rows, g_nidx);
+            const Dev &d = g_dev[g_idx[idx - 1]];
+            draw_dev_row(c, d, y, idx == sel_, is_known(d.mac));
         }
+        if (total > 1)
+            c.scrollbar(c.width() - ui::SB_W + 1, ui::TOP,
+                        c.height() - ui::TOP - ui::FH, top_, rows, total);
+
+        // An empty room still says so, on the row under the ping entry, rather
+        // than taking the whole panel and crowding out the one press that works.
+        if (g_nidx == 0 && !g_ble_busy && g_state == SC_OK)
+            c.text(2, ui::TOP + ui::ROWH, "Nothing else answered.", 1);
 
         // This screen scans once and stops, so it never promises a next one.
         scan_status(line, sizeof(line), 5, false);
         c.text_fit(2, c.height() - ui::FH, line, 1, c.width() - 4, false);
+        if (g_ble_busy) c.spinner(c.width() - 9, c.height() - ui::FH, phase_ / BLE_SPIN_MS, 1);
     }
 
     Action on_event(Event e) override {
-        if (e == EV_ROT_CW && g_nidx)  { sel_ = (sel_ + 1) % g_nidx; return ui::ACT_STAY; }
-        if (e == EV_ROT_CCW && g_nidx) { sel_ = (sel_ + g_nidx - 1) % g_nidx; return ui::ACT_STAY; }
-        if (e == EV_SELECT && g_nidx && sel_ < g_nidx) {
-            open_device(g_dev[g_idx[sel_]]);
+        const int total = g_nidx + 1;
+        if (e == EV_ROT_CW)  { sel_ = (sel_ + 1) % total; return ui::ACT_STAY; }
+        if (e == EV_ROT_CCW) { sel_ = (sel_ + total - 1) % total; return ui::ACT_STAY; }
+        if (e == EV_SELECT) {
+            if (sel_ == 0) gui::push<PingScreen>();
+            else if (sel_ - 1 < g_nidx) open_device(g_dev[g_idx[sel_ - 1]]);
             return ui::ACT_STAY;
         }
         if (e == EV_SELECT_HOLD) { scan_start(false, 5); return ui::ACT_STAY; }

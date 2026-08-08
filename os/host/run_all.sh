@@ -53,6 +53,10 @@ declare -A SRC=(
     [wav_test]="$CORE/wav.cpp"
     [pcmring_test]="$CORE/pcmring.cpp"
     [btname_test]="$CORE/btname.cpp"
+    # The advertising payload builders (from shell/bt.cpp via BT_ADV_BUILDER_ONLY)
+    # and a render check for the Ping screen, which is reached by a gesture and so
+    # is the one screen novashots cannot photograph on its own.
+    [btadv_test]=""
     [power_test]="$CORE/powerpolicy.cpp"
     [framebuf_test]="$CORE/framebuf.cpp"
     # The Nova D1 canvas is INCLUDED by its test, the same as the packages above:
