@@ -188,6 +188,26 @@ int fw_net_scan(FwNetAp *out, unsigned max) { (void)out; (void)max; return 0; }
 int fw_dir_count(const char *) { return 0; }
 int fw_dir_entry(const char *, unsigned, FwDirEntry *) { return 0; }
 uint32_t fw_file_size(const char *) { return 0; }
+
+// Two roots, so the browser's roots screen renders both cases the device has:
+// on-board flash always present, and an SD card that here is present with a
+// capacity. A harness that returned flash alone would never draw the SD row.
+static bool g_fake_sd = true;
+int fw_storage_roots(FwStorageRoot *out, int max) {
+    if (!out || max < 1) return -1;
+    memset(out, 0, sizeof(*out) * (unsigned)(max < 2 ? max : 2));
+    snprintf(out[0].label, sizeof(out[0].label), "On-Board");
+    snprintf(out[0].path, sizeof(out[0].path), "/");
+    out[0].kind = FW_ROOT_FLASH; out[0].present = 1;
+    out[0].total_kb = 2048; out[0].free_kb = 1788;
+    if (max < 2) return 1;
+    snprintf(out[1].label, sizeof(out[1].label), "SD");
+    snprintf(out[1].path, sizeof(out[1].path), "/sd");
+    out[1].kind = FW_ROOT_SD; out[1].present = g_fake_sd ? 1 : 0;
+    out[1].total_kb = g_fake_sd ? 31000000u : 0;   // ~32 GB, exercises human_kb's G path
+    out[1].free_kb  = g_fake_sd ? 29500000u : 0;
+    return 2;
+}
 uint32_t fw_file_read_at(const char *, uint32_t, void *, uint32_t) { return 0; }
 unsigned long fw_random(void) { return 4; }
 void fw_random_bytes(void *buf, unsigned len) { for (unsigned i = 0; i < len; i++) ((unsigned char *)buf)[i] = 0; }

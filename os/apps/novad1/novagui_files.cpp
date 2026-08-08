@@ -84,6 +84,21 @@ static void human(char *out, unsigned cap, uint32_t n) {
     }
 }
 
+// The same, but the input is KILOBYTES — a whole SD card in bytes overflows a
+// uint32_t at 4 GB, and cards are bigger than that. Roots report capacity in KB
+// for exactly this reason (see FwStorageRoot).
+static void human_kb(char *out, unsigned cap, uint32_t kb) {
+    if (kb < 1024u) {
+        snprintf(out, cap, "%uK", (unsigned)kb);
+    } else if (kb < 1024u * 1024u) {
+        snprintf(out, cap, "%uM", (unsigned)(kb / 1024u));
+    } else {
+        unsigned gb = (unsigned)(kb >> 20);
+        unsigned tenth = (unsigned)(((kb >> 10) & 1023u) * 10u / 1024u);
+        snprintf(out, cap, "%u.%uG", gb, tenth);
+    }
+}
+
 // Draw a value right-aligned, trimming from the LEFT when it is too wide. For a
 // path or a filename the tail is the part that tells one from another, which is
 // the opposite of what text_fit's trailing ".." keeps.
@@ -331,6 +346,11 @@ constexpr int LEVEL_MAX = (int)gui::STACK_MAX - 3;
 // catalogue.
 static char g_path[LEVEL_MAX + 1][PATH_MAX];
 
+// Held between the roots screen and the browser it opens: the browser shows the
+// root's friendly name ("On-Board", "SD") at its top level rather than "/" or
+// "sd". Written by RootsScreen::open_sel before the browser is pushed.
+static char g_root_label[16];
+
 // The entries currently on the panel, and which listing they came from. Keyed
 // rather than refilled every frame: fw_dir_entry(path, i) walks the directory to
 // reach i, so a redraw that has not scrolled must not pay for it again.
@@ -373,7 +393,12 @@ public:
     // title decided there shows up a frame late, carrying the previous
     // directory's name into the first frame of this one.
     const char *title(void) const override {
-        return ready_ ? basename(g_path[level_]) : "Files";
+        if (!ready_) return "Files";
+        // At a root, the store's name ("On-Board", "SD") reads better than the
+        // path it happens to be ("/", "sd"). Deeper in, the folder name is what
+        // tells you where you are.
+        if (level_ == 0 && g_root_label[0]) return g_root_label;
+        return basename(g_path[level_]);
     }
 
     int help(const char **out, int max) const override {
@@ -554,10 +579,147 @@ private:
     }
 };
 
+// --- the storage roots -----------------------------------------------------------
+//
+// The top of the browser. On-board flash is always here; an SD card appears as a
+// second root when one is mounted and vanishes when it is pulled — the firmware
+// answers fw_storage_roots every time this screen asks, so a card coming or
+// going is noticed while somebody is looking at the list.
+//
+// Why a level ABOVE the directory browser rather than a "/sd" folder inside "/":
+// the two are different filesystems on different chips, and a card that is not
+// there is not an empty folder — it is a row that says "no card", which a folder
+// cannot. It also gives each store its own name and icon at the point of choice,
+// which is what the person picking between them actually wants to see.
+
+// A memory-chip glyph for on-board flash: a body with legs down each side.
+static void ic_flash(Canvas &c, int x, int y, int col) {
+    c.rect(x + 1, y, 5, 6, col);
+    c.pixel(x, y + 1, col);   c.pixel(x, y + 3, col);      // left legs
+    c.pixel(x + 6, y + 1, col); c.pixel(x + 6, y + 3, col); // right legs
+    c.pixel(x + 3, y + 2, col); c.pixel(x + 3, y + 3, col); // a mark on the die
+}
+
+// An SD card: a body with the top-right corner cut off, the way a real one is
+// keyed so it only goes in one way.
+static void ic_sd(Canvas &c, int x, int y, int col) {
+    // Outline with the corner notched.
+    c.hline(x, y, 5, col);            // top, short of the corner
+    c.line(x + 5, y, x + 6, y + 1, col);
+    c.vline(x + 6, y + 1, 5, col);    // right
+    c.hline(x, y + 6, 7, col);        // bottom
+    c.vline(x, y, 7, col);            // left
+    c.pixel(x + 2, y + 2, col);       // a contact
+    c.pixel(x + 4, y + 2, col);
+}
+
+class RootsScreen : public Screen {
+public:
+    void begin(void) { sel_ = 0; ready_ = true; refresh(); }
+
+    // Re-read on the way in too, so a card removed while down in its files is
+    // gone from the list by the time BACK lands back here.
+    void enter(void) override { if (ready_) refresh(); }
+
+    // Its label must equal the catalogue's — novashots fails the build otherwise
+    // — and "Files" is what the app is called.
+    const char *title(void) const override { return "Files"; }
+
+    int help(const char **out, int max) const override {
+        if (max < 3) return 0;
+        out[0] = "Pick where to look.";
+        out[1] = "On-Board is the device; SD is";
+        out[2] = "the card, when one is in.";
+        return 3;
+    }
+
+    // The card is hot-pluggable, so poll for a change and redraw when the set of
+    // roots moves. fw_storage_roots is a cheap firmware call; once a second is
+    // plenty and costs nothing a person would see.
+    bool tick(uint32_t dt) override {
+        poll_ += dt;
+        if (poll_ < 1000) return false;
+        poll_ = 0;
+        int was = n_;
+        uint8_t sig = present_sig();
+        refresh();
+        return n_ != was || sig != present_sig_prev_;
+    }
+
+    void draw(Canvas &c) override {
+        if (n_ <= 0) { c.text(2, ui::TOP, "(no storage)", 1); return; }
+        const int right = c.width();
+        for (int i = 0; i < n_; i++) {
+            const int y = ui::TOP + i * ui::ROWH;
+            const bool on = (i == sel_);
+            if (on) c.rounded_rect(0, y - 1, right, ui::ROWH, 1, true);
+            const int col = on ? 0 : 1;
+
+            if (roots_[i].kind == FW_ROOT_SD) ic_sd(c, 3, y, col);
+            else                              ic_flash(c, 3, y, col);
+            c.text(14, y, roots_[i].label, col);
+
+            char v[16];
+            if (!roots_[i].present) {
+                nova::copy(v, sizeof(v), "no card");
+            } else if (roots_[i].total_kb) {
+                human_kb(v, sizeof(v), roots_[i].free_kb);
+            } else {
+                v[0] = 0;
+            }
+            if (v[0]) {
+                int w = c.text_width(v, 1, false);
+                c.text(right - w - 2, y, v, col);
+            }
+        }
+    }
+
+    Action on_event(Event e) override {
+        if (e == EV_ROT_CW  && n_) { sel_ = (sel_ + 1) % n_; return ui::ACT_STAY; }
+        if (e == EV_ROT_CCW && n_) { sel_ = (sel_ + n_ - 1) % n_; return ui::ACT_STAY; }
+        if (e == EV_SELECT  && n_) { open_sel(); return ui::ACT_STAY; }
+        return Screen::on_event(e);
+    }
+
+private:
+    FwStorageRoot roots_[4];
+    int      n_, sel_;
+    bool     ready_;
+    uint32_t poll_;
+    uint8_t  present_sig_prev_;
+
+    // A one-byte fingerprint of which roots are present, so tick() can tell a
+    // card going in or out from a mere capacity update.
+    uint8_t present_sig(void) const {
+        uint8_t s = 0;
+        for (int i = 0; i < n_ && i < 8; i++) if (roots_[i].present) s |= (uint8_t)(1 << i);
+        return s;
+    }
+
+    void refresh(void) {
+        int got = fw_storage_roots(roots_, 4);
+        n_ = got > 0 ? got : 0;
+        if (sel_ >= n_) sel_ = n_ ? n_ - 1 : 0;
+        present_sig_prev_ = present_sig();
+    }
+
+    void open_sel(void) {
+        const FwStorageRoot &r = roots_[sel_];
+        if (!r.present) {
+            ui::notice(r.label, "No card is in the slot. Push one in and it will "
+                                "appear here.");
+            return;
+        }
+        nova::copy(g_path[0], PATH_MAX, r.path);
+        nova::copy(g_root_label, sizeof(g_root_label), r.label);
+        FilesScreen *s = gui::push<FilesScreen>();
+        if (s) s->begin(0);
+    }
+};
+
 void open_files(void) {
-    nova::copy(g_path[0], PATH_MAX, "/");
-    FilesScreen *s = gui::push<FilesScreen>();
-    if (s) s->begin(0);
+    RootsScreen *s = gui::push<RootsScreen>();
+    if (s) s->begin();
 }
 
 // --- a list of lines, newest first ------------------------------------------------
