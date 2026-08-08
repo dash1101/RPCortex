@@ -187,8 +187,12 @@ static int load_one(const char *path) {
     uintptr_t e = (uintptr_t)app.entry & ~1u;
     uintptr_t b = (uintptr_t)app.image;
     int bad = 0;
-    if (e < b || e >= b + app.image_size) {
-        printf("       FAIL entry point is outside the image\n");
+    // Against the READ-ONLY half specifically: the entry point is code, and
+    // image_size is a sum rather than a span now that the halves are separate
+    // allocations. Checking it against b + image_size would pass an entry point
+    // that had landed in the gap between two unrelated heap blocks.
+    if (e < b || e >= b + app.text_size) {
+        printf("       FAIL entry point is outside the executable half\n");
         bad = 1;
     }
     if ((uintptr_t)app.entry & 1u) { /* Thumb bit: required */ } else {
@@ -217,17 +221,33 @@ static int load_one(const char *path) {
         printf("       FAIL veneer pool is off the block boundary\n");
         bad = 1;
     }
-    if (app.text_size % APP_BLOCK_ALIGN || app.image_size % APP_BLOCK_ALIGN) {
+    if (app.text_size % APP_BLOCK_ALIGN || app.data_size % APP_BLOCK_ALIGN) {
         printf("       FAIL a half is not a whole number of blocks (%u / %u)\n",
-               app.text_size, app.image_size);
+               app.text_size, app.data_size);
         bad = 1;
     }
     if (app.text_size + app.data_size != app.image_size) {
-        printf("       FAIL the halves do not add up to the image\n");
+        printf("       FAIL image_size is not the two halves added up\n");
         bad = 1;
     }
-    if (app.data && (uintptr_t)app.data != b + app.text_size) {
-        printf("       FAIL the writable half does not start where the other ends\n");
+    // THE HALVES ARE SEPARATE ALLOCATIONS and must not be assumed adjacent.
+    // They used to be one block, and this check used to require it; the split
+    // is what lets a 123 KB package load on a heap whose largest free piece is
+    // smaller than that. What still has to hold is that the writable half is on
+    // its own boundary and does not overlap the other.
+    if (app.data && (uintptr_t)app.data % APP_BLOCK_ALIGN) {
+        printf("       FAIL the writable half is off the block boundary\n");
+        bad = 1;
+    }
+    if (app.data) {
+        uintptr_t d = (uintptr_t)app.data;
+        if (d < b + app.text_size && d + app.data_size > b) {
+            printf("       FAIL the two halves overlap\n");
+            bad = 1;
+        }
+    }
+    if (!app.data && app.data_size) {
+        printf("       FAIL a writable half with no address\n");
         bad = 1;
     }
     // The entry point is code, so it must be in the half that stays executable.
@@ -302,20 +322,43 @@ static int load_one(const char *path) {
     // Scanning the whole image for words that land inside it and look like code
     // catches the whole class: any ABS32 to a function, not just the ones a
     // hand-written test thought to check.
-    uint32_t *words = (uint32_t *)app.image;
+    // TWO RANGES, walked separately, because the halves are separate
+    // allocations. Reading `image_size` words from `image` used to be the whole
+    // image and is now the read-only block plus whatever the heap put after it:
+    // the first run after the split reported a bad code pointer at +0xf10c,
+    // which was not in the package at all.
+    //
+    // The offsets this reports and hands to in_text are ELF-LAYOUT offsets —
+    // the writable half continues where the read-only half stopped — because
+    // that is the space section_flags_at and in_text describe. Only the
+    // addresses are in two pieces.
+    const uintptr_t db = (uintptr_t)app.data;
+    struct Half { const uint32_t *words; uint32_t bytes; uint32_t off_base; uintptr_t addr; };
+    const Half halves[2] = {
+        { (const uint32_t *)app.image, app.text_size, 0,              b  },
+        { (const uint32_t *)app.data,  app.data_size, app.text_size,  db },
+    };
+
     int checked = 0, even_ptrs = 0;
-    for (uint32_t w = 0; w < app.image_size / 4; w++) {
-        uint32_t v = words[w];
-        if (v < b || v >= b + app.image_size) continue;   // not a pointer into us
-        uint32_t off = (v & ~1u) - b;
-        // Only judge values that point into an executable section. Data pointers
-        // are legitimately even, so counting them would be noise.
-        if (!in_text(path, off)) continue;
-        checked++;
-        if (!(v & 1u)) {
-            printf("       FAIL word at +0x%x holds %08x -> code at +0x%x with NO Thumb bit\n",
-                   w * 4, v, off);
-            even_ptrs++;
+    for (const Half &h : halves) {
+        if (!h.words || !h.bytes) continue;
+        for (uint32_t w = 0; w < h.bytes / 4; w++) {
+            uint32_t v = h.words[w];
+            uint32_t a = v & ~1u;
+            // Which half does it point into, if either?
+            uint32_t off;
+            if (a >= b && a < b + app.text_size)                 off = a - (uint32_t)b;
+            else if (db && a >= db && a < db + app.data_size)    off = (a - (uint32_t)db) + app.text_size;
+            else continue;                                        // not a pointer into us
+            // Only judge values that point into an executable section. Data
+            // pointers are legitimately even, so counting them would be noise.
+            if (!in_text(path, off)) continue;
+            checked++;
+            if (!(v & 1u)) {
+                printf("       FAIL word at +0x%x holds %08x -> code at +0x%x with NO Thumb bit\n",
+                       h.off_base + w * 4, v, off);
+                even_ptrs++;
+            }
         }
     }
     if (checked) printf("       %d code pointer(s), %d missing the Thumb bit\n",

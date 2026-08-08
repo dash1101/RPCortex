@@ -23,6 +23,7 @@
 #include "api.h"
 
 #include <string.h>
+#include <stdio.h>
 #include <stdlib.h>
 
 // ------------------------------------------------------------- allocation
@@ -417,21 +418,29 @@ LoadResult app_load(const AppSource &src, LoadedApp *out) {
         return LOAD_ERR_API_MISMATCH;
     }
 
-    // --- lay the allocatable sections out in one block, in two halves.
+    // --- lay the allocatable sections out in two halves, and TWO allocations.
     //
-    // Still one allocation: the heap this runs on is small, and a single free is
-    // the only way "unload reclaims everything" stays verifiable. But the block
-    // is now split, with everything the app may not write to first and
-    // everything it must be able to write to after, because those two want
-    // OPPOSITE permissions and a section order that interleaves them can be
-    // given neither. Code has to be executable and must not be writable; data
-    // has to be writable and must never be executed. Sorted by SHF_WRITE, which
-    // is the ELF flag that says exactly which is which.
+    // Everything the app may not write to first, everything it must be able to
+    // write to after, because those two want OPPOSITE permissions and a section
+    // order that interleaves them can be given neither. Code has to be
+    // executable and must not be writable; data has to be writable and must
+    // never be executed. Sorted by SHF_WRITE, which is the ELF flag that says
+    // exactly which is which.
     //
     // The halves are padded to APP_BLOCK_ALIGN so the protection hardware can
-    // cover each one exactly. Without that the region would either stop short —
-    // leaving the tail of the block unprotected — or run past the end and apply
-    // the app's permissions to whatever the heap handed out next.
+    // cover each one exactly. Without that a region would either stop short —
+    // leaving the tail unprotected — or run past the end and apply the app's
+    // permissions to whatever the heap handed out next.
+    //
+    // TWO ALLOCATIONS rather than one, since 2026-08-08. The two halves were
+    // always separate regions to everything that consumes them — the MPU, the
+    // pointer checker, the fault reporter — and only the heap thought they were
+    // one thing. Asking for them together meant a 123 KB package needed 123 KB
+    // in a single piece, and upgrading it on a device already running it could
+    // not find that: the copy being replaced leaves a hole its own old size,
+    // which the larger new image does not fit in. The offsets below are still
+    // computed as though it were one block, because the writable half's
+    // offsets already include text_end and rebasing is where that is undone.
     // Static for the same reason as `sh` above, and cleared on every entry
     // because a static keeps the last load's answers.
     static SectionMap map[LOADER_MAX_SECTIONS];
@@ -486,24 +495,65 @@ LoadResult app_load(const AppSource &src, LoadedApp *out) {
     if (g_veneer_mode == LOADER_VENEER_SVC) veneer_bytes += VENEER_GATE_BYTES;
     veneer_bytes = (veneer_bytes + (APP_BLOCK_ALIGN - 1)) & ~(APP_BLOCK_ALIGN - 1);
 
-    // Both blocks are over-allocated by one alignment and the useful part is
+    // Every block is over-allocated by one alignment and the useful part is
     // placed on the first boundary inside. The raw pointers are kept because
     // they, not the aligned ones, are what the allocator will take back.
-    uint8_t *image_raw = (uint8_t *)g_alloc((total ? total : APP_BLOCK_ALIGN) + APP_BLOCK_ALIGN);
-    if (!image_raw) { free(names); return LOAD_ERR_OOM; }
+    //
+    // The read-only half is asked for FIRST and is the larger of the two, so
+    // the request most likely to fail is made while the heap is least picked
+    // over. An app with no writable sections asks for nothing at all rather
+    // than a token block nobody uses.
+    uint32_t text_bytes = text_end;
+    uint32_t data_bytes = total - text_end;
+
+    // WHICH allocation failed, named in the detail. Three requests of very
+    // different sizes fail with one error code, and "out of memory" without the
+    // number is a message nobody can act on — the whole point of splitting the
+    // image was to make the binding request smaller, and there is no way to
+    // tell whether that worked without knowing which one ran out.
+    uint8_t *image_raw = (uint8_t *)g_alloc((text_bytes ? text_bytes : APP_BLOCK_ALIGN) + APP_BLOCK_ALIGN);
+    if (!image_raw) {
+        snprintf(out->detail, sizeof(out->detail), "%u bytes for the code half",
+                 (unsigned)text_bytes);
+        free(names);
+        return LOAD_ERR_OOM;
+    }
+
+    uint8_t *data_raw = nullptr;
+    if (data_bytes) {
+        data_raw = (uint8_t *)g_alloc(data_bytes + APP_BLOCK_ALIGN);
+        if (!data_raw) {
+            snprintf(out->detail, sizeof(out->detail), "%u bytes for the data half",
+                     (unsigned)data_bytes);
+            g_free(image_raw); free(names);
+            return LOAD_ERR_OOM;
+        }
+    }
+
     uint8_t *veneers_raw = (uint8_t *)g_alloc(veneer_bytes + APP_BLOCK_ALIGN);
-    if (!veneers_raw) { g_free(image_raw); free(names); return LOAD_ERR_OOM; }
+    if (!veneers_raw) {
+        snprintf(out->detail, sizeof(out->detail), "%u bytes for the veneers",
+                 (unsigned)veneer_bytes);
+        g_free(image_raw);
+        if (data_raw) g_free(data_raw);
+        free(names);
+        return LOAD_ERR_OOM;
+    }
 
     uint8_t *image   = (uint8_t *)block_align((uintptr_t)image_raw);
+    uint8_t *data    = data_raw ? (uint8_t *)block_align((uintptr_t)data_raw) : nullptr;
     uint8_t *veneers = (uint8_t *)block_align((uintptr_t)veneers_raw);
 
     out->image_raw   = image_raw;
+    out->data_raw    = data_raw;
     out->veneers_raw = veneers_raw;
-    out->text_size   = text_end;
-    out->data        = text_end < total ? image + text_end : nullptr;
-    out->data_size   = total - text_end;
+    out->text_size   = text_bytes;
+    out->data        = data;
+    out->data_size   = data_bytes;
     out->image = image;
-    out->image_size = total;
+    // A SUM, not a span. The two halves are separate allocations and there is
+    // no address at image + image_size.
+    out->image_size = text_bytes + data_bytes;
     out->veneers = veneers;
     out->veneer_size = veneer_bytes;
     out->veneers_used = 0;
@@ -513,11 +563,19 @@ LoadResult app_load(const AppSource &src, LoadedApp *out) {
     if (g_veneer_mode == LOADER_VENEER_SVC) veneer_write_gates(out);
     // What was actually taken from the heap, alignment slack included — so the
     // "did not release N bytes" report after a package runs stays truthful.
-    out->bytes_allocated = total + veneer_bytes + 2 * APP_BLOCK_ALIGN;
+    out->bytes_allocated = (text_bytes ? text_bytes : APP_BLOCK_ALIGN) + data_bytes +
+                           veneer_bytes + (data_raw ? 3 : 2) * APP_BLOCK_ALIGN;
 
     for (int i = 0; i < eh.e_shnum; i++) {
         if (!map[i].loaded) continue;
-        map[i].addr += (uint32_t)(uintptr_t)image;                 // rebase to real memory
+        // REBASE PER HALF. The offsets were laid out as though the two were one
+        // block, so a writable section's offset already counts text_end — which
+        // is exactly the amount to take back off before adding its own base.
+        // Getting this wrong loads the app successfully and faults later at an
+        // address that looks plausible.
+        bool writable = (sh[i].sh_flags & SHF_WRITE) != 0;
+        map[i].addr += writable ? (uint32_t)(uintptr_t)data - text_end
+                                : (uint32_t)(uintptr_t)image;
         if (sh[i].sh_type == SHT_NOBITS) {
             memset((void *)(uintptr_t)map[i].addr, 0, sh[i].sh_size);   // .bss
         } else if (!read_exact(src, sh[i].sh_offset,
@@ -776,10 +834,11 @@ void app_unload(LoadedApp *app) {
     // and occasionally are not, which is the worst possible shape for a bug:
     // it works on the bench and corrupts the heap in the field.
     if (app->image_raw)   g_free(app->image_raw);
+    if (app->data_raw)    g_free(app->data_raw);
     if (app->veneers_raw) g_free(app->veneers_raw);
     app->image = app->image_raw = nullptr;
     app->veneers = app->veneers_raw = nullptr;
-    app->data = nullptr;
+    app->data = app->data_raw = nullptr;
     app->entry = nullptr;
     app->image_size = app->text_size = app->data_size = 0;
     app->veneer_size = app->veneers_used = app->veneer_gates = 0;

@@ -53,13 +53,26 @@ enum LoadResult {
 #define APP_BLOCK_ALIGN 32u
 
 struct LoadedApp {
-    // One allocation holding every SHF_ALLOC section, laid out in two halves:
-    // everything the app may not write to first, everything it must be able to
-    // write to after. `image` is the start and also the app's identity — the
-    // token a registered command is tagged with, and what a fault address is
-    // resolved against.
-    void    *image;
-    uint32_t image_size;       // both halves together
+    // TWO allocations, one per half: everything the app may not write to, and
+    // everything it must be able to write to. They want opposite permissions
+    // and the protection hardware covers each separately, so they were already
+    // two regions in everything that consumes them — the MPU, the pointer
+    // checker, the fault reporter — and only the heap thought otherwise.
+    //
+    // It used to be one block. A Nova D1 at 123 KB then needed 123 KB in one
+    // piece, and upgrading it on a device already running it could not find
+    // that: the copy being replaced is unloaded first, but the hole it leaves
+    // is its own old size and the new image does not fit in it. So the free
+    // total climbed and the largest block did not, and `pkg install` failed
+    // with "out of memory" on a device reporting 281 KB free.
+    //
+    // THE TWO BLOCKS ARE NOT ADJACENT and nothing may assume they are.
+    // `image + image_size` is not an address. Anything walking the whole image
+    // walks two ranges.
+    void    *image;            // the read-only half, and the app's identity —
+                               // the token a registered command is tagged with
+                               // and what a fault address is resolved against
+    uint32_t image_size;       // text_size + data_size, for accounting ONLY
     uint32_t text_size;        // the read-only half, from `image`
     void    *data;             // the writable half; null if the app has none
     uint32_t data_size;
@@ -75,6 +88,7 @@ struct LoadedApp {
     // allocator only promises eight — and handing back a pointer the allocator
     // never issued corrupts the heap somewhere else entirely.
     void    *image_raw;
+    void    *data_raw;
     void    *veneers_raw;
     int (*entry)(int);
     RpcAppHeader header;

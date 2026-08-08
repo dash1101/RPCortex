@@ -964,9 +964,25 @@ int apps_launch(const char *file, int arg, bool quiet) {
 extern "C" const char *apps_locate(uint32_t addr, uint32_t *offset, bool *in_veneer) {
     for (int i = 0; i < APPS_MAX; i++) {
         if (!g_used[i]) continue;
+        // THE TWO HALVES ARE SEPARATE ALLOCATIONS. This tested `image` against
+        // image_size, which was the whole image while it was one block and is
+        // now the read-only half plus however much unrelated heap follows it —
+        // so a fault in another package, or in the firmware's own heap, could
+        // be reported as an offset into this one. A report that names the wrong
+        // package is worse than one that names none.
+        //
+        // The offset reported is the ELF-layout one, where the writable half
+        // continues where the read-only half stopped, because that is what
+        // matches a disassembly of the .app.
         uint32_t base = (uint32_t)(uintptr_t)g_apps[i].image;
-        if (addr >= base && addr < base + g_apps[i].image_size) {
+        if (addr >= base && addr < base + g_apps[i].text_size) {
             if (offset)    *offset = addr - base;
+            if (in_veneer) *in_veneer = false;
+            return g_apps[i].header.name;
+        }
+        uint32_t dbase = (uint32_t)(uintptr_t)g_apps[i].data;
+        if (dbase && addr >= dbase && addr < dbase + g_apps[i].data_size) {
+            if (offset)    *offset = (addr - dbase) + g_apps[i].text_size;
             if (in_veneer) *in_veneer = false;
             return g_apps[i].header.name;
         }
