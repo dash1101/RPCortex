@@ -22,6 +22,16 @@ bool sandbox_supported(void);
 //
 // -1 if the sandbox could not be set up, which is a refusal to run the package
 // rather than a decision to run it unprotected.
+//
+// SANDBOX_REENTERED if this task is already inside a package call. One call per
+// task: the state that says how to get back out is per-task and singular, and a
+// second entry overwrites the first one's way home. See the note at the top of
+// sandbox_enter for how the shell reaches that on an ordinary command.
+//
+// Distinct from -1 because it is not a failure of the sandbox — it is a thing
+// the caller asked for that cannot be done, and the caller can say so usefully.
+#define SANDBOX_REENTERED (-2)
+
 int sandbox_enter(void *fn, int arg0, void *arg1, void *stack_top,
                   uint32_t return_gate, uint32_t enter_gate, uint32_t exit_gate,
                   uint32_t stack_size);

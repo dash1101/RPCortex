@@ -207,54 +207,13 @@ int cmd_scan(void) {
 
 // --- d1 gui --------------------------------------------------------------------
 
-int gui_task(void *) {
-    nova::gui::run();
-    return 0;
-}
-
 int cmd_gui(int argc, char **argv) {
     bool bg = (argc > 2 && (!strcmp(argv[2], "--bg") || !strcmp(argv[2], "-b")));
-
-    // started(), not running(). running() only becomes true once the loop is
-    // turning, which is after the task has been spawned AND scheduled — so it
-    // answers "no" during the window where a second start does the damage.
-    if (nova::gui::started()) {
-        // A BACKGROUND start that finds the screen already up has SUCCEEDED at
-        // what it was asked to do, and says nothing.
-        //
-        // Three duplicate service entries each printed two lines of complaint
-        // over the login prompt at every boot, and the shell had to be nudged
-        // with a return key to come back. A service arriving to find its job
-        // already done is not an error, and the console belongs to the person
-        // sitting at it.
-        if (bg) return 0;
-        fw_printf("The screen is already running.\n");
-        fw_printf("  novad1 service restart   to start it again with new settings\n");
-        return 1;
-    }
-
-    bool panel = nova::gui::begin();
-    if (!panel) {
-        // Said out loud rather than left as a dark screen. A device with no
-        // panel answering on I2C is the ordinary state of a half-built one, and
-        // the two pins it is looking at are the useful part of the message.
-        fw_printf("No panel answered on I2C (SDA %d, SCL %d).\n",
-                  nova::board::pin(nova::board::PIN_SDA),
-                  nova::board::pin(nova::board::PIN_SCL));
-        fw_printf("Check the wiring, then `novad1 scan`. `i2cscan` lists what is there.\n");
-        return 1;
-    }
-    fw_printf("Panel: %s at 0x%02x.\n", nova::display().kind_name(), nova::display().address());
-
-    if (!bg) {
-        fw_printf("Running. BACK on the home screen does nothing; Ctrl+C here stops it.\n");
-        nova::gui::run();
-        return 0;
-    }
-    int pid = fw_task_spawn("novagui", gui_task, nullptr, 4096);
-    if (pid < 0) { fw_printf("Could not start the screen task.\n"); return 1; }
-    fw_printf("Running as task %d.\n", pid);
-    return 0;
+    // The body of this lives in novad1cmd.cpp, because `service start` and
+    // `service restart` need the same thing and used to get it by asking the
+    // shell to run this command — which re-enters the package on a task that is
+    // already inside it. See screen_start()'s note for what that cost.
+    return nova::cmd::screen_start(bg);
 }
 
 int cmd_perf(void) {

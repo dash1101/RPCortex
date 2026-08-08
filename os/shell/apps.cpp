@@ -744,6 +744,22 @@ bool app_run_owner(const void *owner, int (*fn)(int, char **), int argc,
     if (!owner) return false;
     for (int i = 0; i < APPS_MAX; i++) {
         if (!g_used[i] || g_apps[i].image != owner) continue;
+
+        // Said HERE rather than left to sandbox_enter, because by the time that
+        // refuses, the message has to be reconstructed from a return code and
+        // this is the only place that knows which command was being asked for.
+        //
+        // The route in is fw_shell_run: a package command can run a shell
+        // command, and until this check the shell would dispatch straight back
+        // into a package on the same task — overwriting the outer call's way
+        // home. It killed the device on `novad1 service restart`.
+        if (sandbox_in_package()) {
+            out_errp("apps", "'%s' cannot run while another package command is "
+                             "already running on this task.", g_apps[i].header.name);
+            out_multi("  A package that needs one runs it in a task of its own.");
+            *ret = 1;
+            return true;
+        }
         // A registered command takes two arguments where app_main takes one, so
         // the shim carries both. Reinterpreting the pointer is safe because the
         // call is made in assembly from registers rather than through this type:

@@ -227,6 +227,30 @@ int sandbox_enter(void *fn, int arg0, void *arg1, void *stack_top,
                   uint32_t stack_size) {
     SandboxState *s = state_of_current();
     if (!s || !fn || !stack_top || !return_gate || !enter_gate || !exit_gate) return -1;
+
+    // ONE PACKAGE CALL PER TASK AT A TIME.
+    //
+    // This state is the task's only record of how to get back out of a package:
+    // the return gate, the saved firmware stack pointer, the stack band the
+    // guard is armed on. Entering again on the same task OVERWRITES all of it,
+    // and the exit clears depth to zero — so the outer call comes back to a
+    // kernel_sp belonging to the inner one, with no gate and no depth, and
+    // returns into nothing.
+    //
+    // It is reachable from the shell, not just from a misbehaving package. A
+    // package command can call fw_shell_run, and the shell will happily
+    // dispatch another package command onto the same task. `novad1 service
+    // restart` did exactly that — stop the screen, then fw_shell_run("novad1
+    // gui --bg") — and the device died on an IACCVIOL at address zero with the
+    // fault handler reporting "no package was running", because by then depth
+    // said so.
+    //
+    // Refusing is the whole fix. Nesting could be MADE to work by stacking the
+    // state, but a package that wants to run a package command wants a second
+    // task, not a second frame on this one — and a refusal that says why costs
+    // nothing to understand.
+    if (s->depth) return SANDBOX_REENTERED;
+
     s->return_gate = return_gate;
     s->package_lr  = 0;
     s->depth       = 1;

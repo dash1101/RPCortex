@@ -10,6 +10,7 @@
 #include "novagui.h"
 #include "novalog.h"
 #include "novanotify.h"
+#include "display.h"
 
 #include "rpc_app.h"
 #include <string.h>
@@ -113,6 +114,49 @@ int setup(void) {
 
 // --- service ---------------------------------------------------------------------
 
+static int gui_task(void *) {
+    gui::run();
+    return 0;
+}
+
+int screen_start(bool bg) {
+    if (gui::started()) {
+        // A BACKGROUND start that finds the screen already up has SUCCEEDED at
+        // what it was asked to do, and says nothing.
+        //
+        // Three duplicate service entries each printed two lines of complaint
+        // over the login prompt at every boot, and the shell had to be nudged
+        // with a return key to come back. A service arriving to find its job
+        // already done is not an error, and the console belongs to the person
+        // sitting at it.
+        if (bg) return 0;
+        fw_printf("The screen is already running.\n");
+        fw_printf("  novad1 service restart   to start it again with new settings\n");
+        return 1;
+    }
+
+    if (!gui::begin()) {
+        // Said out loud rather than left as a dark screen. A device with no
+        // panel answering on I2C is the ordinary state of a half-built one, and
+        // the two pins it is looking at are the useful part of the message.
+        fw_printf("No panel answered on I2C (SDA %d, SCL %d).\n",
+                  board::pin(board::PIN_SDA), board::pin(board::PIN_SCL));
+        fw_printf("Check the wiring, then `novad1 scan`. `i2cscan` lists what is there.\n");
+        return 1;
+    }
+    fw_printf("Panel: %s at 0x%02x.\n", display().kind_name(), display().address());
+
+    if (!bg) {
+        fw_printf("Running. BACK on the home screen does nothing; Ctrl+C here stops it.\n");
+        gui::run();
+        return 0;
+    }
+    int pid = fw_task_spawn("novagui", gui_task, nullptr, 4096);
+    if (pid < 0) { fw_printf("Could not start the screen task.\n"); return 1; }
+    fw_printf("Running as task %d.\n", pid);
+    return 0;
+}
+
 int service(int argc, char **argv) {
     const char *sub = argc > 2 ? argv[2] : "status";
     char out[256];
@@ -125,7 +169,7 @@ int service(int argc, char **argv) {
     }
     if (!strcmp(sub, "start")) {
         if (gui::started()) { fw_printf("The screen is already running.\n"); return 1; }
-        return fw_shell_run("novad1 gui --bg", nullptr, 0);
+        return screen_start(true);
     }
     if (!strcmp(sub, "stop")) {
         if (!gui::running()) { fw_printf("Not running.\n"); return 1; }
@@ -144,7 +188,7 @@ int service(int argc, char **argv) {
             // "ask it to stop, then race it".
             for (int i = 0; i < 40 && gui::started(); i++) fw_task_sleep_ms(50);
         }
-        return fw_shell_run("novad1 gui --bg", nullptr, 0);
+        return screen_start(true);
     }
     fw_printf("novad1 service start | stop | restart | status\n");
     return 1;
