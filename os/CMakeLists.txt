@@ -165,7 +165,35 @@ target_include_directories(rpcortex_v2 PRIVATE
     ${LFS_DIR}
 )
 
+# WHICH BUILD THIS IS, baked in.
+#
+# `ver` used to print a registry key that defaults to "1" and that nothing ever
+# writes, so every image ever produced claimed to be build 1. Eight different
+# firmwares went onto one board in a single night and none of them could be told
+# from another — which makes "what is this device running" unanswerable at
+# exactly the moment somebody needs to know.
+#
+# The short commit, plus a mark when the tree was dirty, because an image built
+# from uncommitted work is not the commit it claims and saying so is the whole
+# point. Falls back to "nogit" rather than failing the build: a tarball with no
+# repository in it should still compile.
+execute_process(COMMAND git -C ${OS_ROOT}/.. rev-parse --short=8 HEAD
+                OUTPUT_VARIABLE RPC_GIT_SHA OUTPUT_STRIP_TRAILING_WHITESPACE
+                ERROR_QUIET RESULT_VARIABLE RPC_GIT_RC)
+if(NOT RPC_GIT_RC EQUAL 0)
+    set(RPC_GIT_SHA "nogit")
+else()
+    execute_process(COMMAND git -C ${OS_ROOT}/.. status --porcelain --untracked-files=no
+                    OUTPUT_VARIABLE RPC_GIT_DIRTY OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+    if(NOT RPC_GIT_DIRTY STREQUAL "")
+        set(RPC_GIT_SHA "${RPC_GIT_SHA}+")
+    endif()
+endif()
+message(STATUS "build id: ${RPC_GIT_SHA}")
+
 target_compile_definitions(rpcortex_v2 PRIVATE
+    RPC_BUILD_ID="${RPC_GIT_SHA}"
+
     LFS_NO_DEBUG=1 LFS_NO_WARN=1 LFS_NO_ERROR=1 LFS_NO_ASSERT=1
 
     # An allocation failure must RETURN NULL, not kill the device. The SDK

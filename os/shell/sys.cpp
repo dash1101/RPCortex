@@ -223,8 +223,15 @@ static int cmd_meminfo(int, char **) {
 
 static int cmd_ver(int, char **) {
     out_multi("RPCortex %s  —  %s", RPC_OS_VERSION, RPC_OS_CODENAME);
-    out_multi("Build: %s  (%s)  [C++ native]",
-              reg_get("System.Build", "1"), reg_get("System.Stage", "dev"));
+    // The COMMIT, baked at build time, not a registry key.
+    //
+    // This read System.Build, which defaults to "1" and which nothing ever
+    // writes — so every image ever produced said "Build: 1" and two firmwares
+    // could not be told apart. Eight different images went onto a board in one
+    // night and `ver` reported the same thing for all of them, which makes
+    // "what is this device running" unanswerable exactly when it matters.
+    out_multi("Build: %s  (%s)  [C++ native]", RPC_BUILD_ID,
+              reg_get("System.Stage", "dev"));
     out_multi("GCC %s   Platform: %s (%s)", __VERSION__, PICO_BOARD, RPC_ARCH);
     return 0;
 }
