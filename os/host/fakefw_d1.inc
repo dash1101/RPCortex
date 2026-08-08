@@ -61,7 +61,56 @@ int fw_printf(const char *, ...) { return 0; }
 void fw_log(int, const char *) {}
 void fw_progress(const char *) {}
 int  rpc_register_command(const char *, const char *, int (*)(int, char **)) { return 1; }
-int  fw_shell_run(const char *, char *out, uint32_t cap) { if (out && cap) out[0] = 0; return 0; }
+// A shell that answers, for the handful of commands the screens read back.
+//
+// It returned an empty buffer, which is a legal answer — the OS has ONE capture
+// buffer and a command whose output could not be captured comes back empty — but
+// it is the wrong DEFAULT. Every screen that reads a listing rendered as though
+// the device had no tasks, no services and no packages, so a renderer driving
+// them photographed empty columns and a test asserting on them asserted nothing.
+//
+// The text below is copied from a real Pico 2 W, spacing included, because the
+// screens parse it. A prettier fake would pass while the real format failed.
+static const char *fake_shell(const char *line) {
+    if (!strncmp(line, "ps", 2))
+        return "  PID  NAME         STATE  CORE STACK       CPU      \n"
+               "  1    init         ready  0    0B/4.0K     1.6s     \n"
+               "  2    usb          ready  0    432B/8.0K   1.2s     \n"
+               "  3    shell        run    0    2.1K/8.0K   2.1s     \n"
+               "  4    novad1       done   1    796B/3.0K   6ms      \n"
+               "  5    novainput    sleep  1    372B/2.0K   5ms      \n"
+               "  6    novagui      sleep  1    316B/2.0K   609ms    \n"
+               "  6 tasks  ,  CPU 10%  ,  86 KB free\n";
+    if (!strncmp(line, "service", 7))
+        return "[:] Services:\n"
+               "   1  novad1 gui --bg\n"
+               "  Live state is in 'ps'; services run as ordinary tasks.\n";
+    if (!strncmp(line, "pkg list", 8))
+        return "[:] Installed packages:\n  novad1           1.1.0  \n";
+    if (!strncmp(line, "pkg search", 10))
+        return "  bench      1.0   RPCMark, the same workload as the MicroPython build\n"
+               "  calc       1.0   Shell calculator\n"
+               "  novad1     1.1.0 Nova D1 - the handheld multi-tool\n";
+    if (!strncmp(line, "df", 2))
+        return "  Total : 2048 KB\n  Used  : 260 KB  (12%)\n  Free  : 1788 KB\n";
+    if (!strncmp(line, "free", 4) || !strncmp(line, "meminfo", 7))
+        return "  Total : 301 KB\n  Used  : 217 KB  (72%)\n  Free  : 83 KB\n"
+               "  Largest block : 29 KB\n";
+    if (!strncmp(line, "radio", 5))
+        return "  Radio  : on\n  Link   : connected\n  Network: dash_\n";
+    if (!strncmp(line, "bt ", 3))
+        return "[:] 3 devices\n"
+               "  D9:33:36:32:1B:59  LE    -78 dBm  Govee_H6199_1B59\n"
+               "  37:96:7B:89:C2:EB  LE    -80 dBm  \n"
+               "  53:0A:FB:D0:FF:87  LE    -92 dBm  Quest 3S\n";
+    return "";
+}
+
+int fw_shell_run(const char *line, char *out, uint32_t cap) {
+    if (!out || !cap) return 0;
+    snprintf(out, cap, "%s", line ? fake_shell(line) : "");
+    return 0;
+}
 
 void *fw_malloc(size_t n) { return malloc(n); }
 void  fw_free(void *p) { free(p); }
