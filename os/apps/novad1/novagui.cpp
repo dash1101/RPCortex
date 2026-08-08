@@ -209,14 +209,20 @@ bool app_available(const App &a) {
 void explain_unavailable(const App &a) {
     static char body[128];
 
+    const Module *m = a.module ? module_by_id(a.module) : nullptr;
+
     if (!a.open) {
-        snprintf(body, sizeof(body),
-                 "%s has no screen in this build yet.", a.label);
+        // The chip it will want, when it is known. "No screen yet" answers the
+        // button; naming the part answers the question that comes next, and the
+        // notice title is already the app's name so repeating it wastes a line
+        // on a screen 128 pixels wide.
+        if (m) snprintf(body, sizeof(body),
+                        "No screen for this yet. It will need a %s.", m->chip);
+        else   snprintf(body, sizeof(body), "No screen for this yet.");
         ui::notice(a.label, body);
         return;
     }
 
-    const Module *m = a.module ? module_by_id(a.module) : nullptr;
     if (!m) { ui::notice(a.label, "Unavailable."); return; }
 
     if (module_presence(*m) == MOD_UNWIRED)
