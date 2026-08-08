@@ -17,6 +17,7 @@
 #include "novagui_ops.h"
 #include "novagui_apps.h"
 #include "novagui_ble.h"
+#include "novagui_media.h"
 #include "novagui_tasks.h"
 
 #include "rpc_app.h"
@@ -161,6 +162,9 @@ static const App kApps[] = {
     { "notes",      "Alerts",     CAT_TOOLS,    screens::open_alerts,    nullptr },
     { "scripts",    "Scripts",    CAT_TOOLS,    screens::open_scripts,   nullptr },
     { "store",      "App Store",  CAT_TOOLS,    screens::open_store,     nullptr },
+    // The media player needs Classic Bluetooth to reach a speaker, so it names
+    // the radio and greys out on a board that has none.
+    { "media",      "Media",      CAT_TOOLS,    screens::open_media,     "bt" },
     { "cmds",       "Commands",   CAT_TOOLS,    screens::open_commands,  nullptr },
     { "logs",       "Logs",       CAT_TOOLS,    screens::open_logs,      nullptr },
 
