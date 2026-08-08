@@ -172,6 +172,53 @@ static void test_reg_bool(void) {
     ok(nova::reg_bool("Junk", true), "and so does a value that means neither");
 }
 
+// Reading a `service list` back.
+//
+// This is the parser that failed on hardware twice. The first version captured
+// the list once and removed indices from highest to lowest, which dropped one of
+// three because removing renumbers what follows. The second re-read the list but
+// skipped only spaces before expecting a digit — and the rows are coloured, so
+// it met 0x1b, matched nothing, and added a FOURTH copy of a service that was
+// already registered three times.
+//
+// Both listings below are real: the plain one is what firmware 2.0.1 hands a
+// package now, the coloured one is what every firmware before it did.
+static void test_listing_index(void) {
+    const char *plain =
+        "[:] Services:\n"
+        "   1  novad1 gui --bg\n"
+        "  Live state is in 'ps'; services run as ordinary tasks.\n";
+    ok(nova::listing_index_of(plain, "novad1") == 1, "a plain listing");
+
+    const char *coloured =
+        "\033[94m[\033[97m:\033[94m]\033[0m Services:\n"
+        "  \033[96m 1\033[0m  httpd\n"
+        "  \033[96m 2\033[0m  novad1 gui --bg\n"
+        "  \033[96m 3\033[0m  novad1 gui --bg\n";
+    ok(nova::listing_index_of(coloured, "novad1") == 2,
+       "a coloured listing finds the first match, not the first row");
+    ok(nova::listing_index_of(coloured, "httpd") == 1, "and somebody else's entry");
+
+    ok(nova::listing_index_of(plain, "httpd") == -1, "no match is -1");
+    ok(nova::listing_index_of("[:] Services:\n  (none)\n", "novad1") == -1,
+       "an empty list is -1");
+    ok(nova::listing_index_of("", "novad1") == -1, "so is an empty string");
+
+    // The header mentions the word but has no index. Matching it would return a
+    // number parsed from somewhere else entirely.
+    ok(nova::listing_index_of("[:] novad1 services:\n  (none)\n", "novad1") == -1,
+       "a line with no leading index is not a row");
+
+    // Double digits, since the guard allows twelve rounds and a device that has
+    // run setup ten times is exactly the one that needs this.
+    ok(nova::listing_index_of("  11  novad1 gui\n", "novad1") == 11, "two-digit indices");
+
+    // The match must be bounded to its own line: "nova" on row 1 and "d1" on
+    // row 2 is not "novad1".
+    ok(nova::listing_index_of("   1  nova\n   2  d1\n", "novad1") == -1,
+       "a match cannot straddle two rows");
+}
+
 int main(void) {
     test_copy();
     test_csv_has();
@@ -179,6 +226,7 @@ int main(void) {
     test_csv_remove();
     test_ellipsize();
     test_reg_bool();
+    test_listing_index();
     printf("  %d checks", checks);
     if (failures) printf(", %d FAILED", failures);
     printf("\n");

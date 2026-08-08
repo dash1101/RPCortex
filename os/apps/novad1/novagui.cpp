@@ -396,7 +396,7 @@ protected:
     static constexpr int SPACING  = 38;   // pixels between icon centres, for three across
     static constexpr int R_BIG    = 12;   // the one under the cursor
     static constexpr int R_SMALL  = 6;    // its neighbours
-    static constexpr int SLIDE_MS = 90;   // long enough to see, short enough
+    static constexpr int SLIDE_MS = 140;  // long enough to see, short enough
                                           // that a fast spin does not lag behind
 
     const char *title_;
@@ -709,7 +709,17 @@ void run(void) {
         else if (g_level == LVL_OFF)    nap = NAP_OFF;
         else if (g_level == LVL_DIM)    nap = NAP_DIM;
         else                            nap = NAP_IDLE;
-        fw_task_sleep_ms(nap);
+        // PACE THE FRAME, do not just sleep after it.
+        //
+        // Sleeping the full nap AFTER the work means a 16 ms target actually
+        // takes 16 plus however long the frame took — and a frame here is about
+        // 13 ms, 1.5 to compose and 11.6 to push a full panel over I2C. So the
+        // "60 a second" animation rate was really 34, and a 90 ms slide got
+        // three frames. Three frames does not read as motion; it reads as a
+        // jump, which is exactly what a single detent looked like while a fast
+        // scroll — which queues enough steps to last — animated perfectly.
+        uint32_t spent = fw_millis() - now;
+        fw_task_sleep_ms(spent >= nap ? 1 : nap - spent);
     }
     g_running = false;
     g_loop_live = false;

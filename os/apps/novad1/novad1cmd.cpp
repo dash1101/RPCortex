@@ -41,7 +41,11 @@ int setup(void) {
     // Registered as a SERVICE rather than a startup command. A service is
     // supervised and restarted; a startup entry runs once and, if it fails, the
     // device comes up with no screen and nothing saying why.
-    char out[256];
+    // 512 rather than 256. Three entries plus a header and a footer is about
+    // 180 bytes of text and rather more with the colour still in it, and this
+    // is the one function whose whole job is "remove ALL of them" — a truncated
+    // list reads as a shorter list and leaves the rest behind.
+    static char out[512];
     // EVERY existing entry goes first, then exactly one is added.
     //
     // Without this, running setup twice registered the screen twice, and two
@@ -67,29 +71,17 @@ int setup(void) {
         out[0] = 0;
         fw_shell_run("service list", out, sizeof(out));
         if (!out[0]) {
+            // Either the command printed nothing, or the OS could not lend out
+            // its one capture buffer because something else held it. Both mean
+            // the same thing here: there is nothing to read, so read nothing
+            // into it rather than concluding the list is empty.
             fw_printf("  service    could not read the list; skipping the tidy-up\n");
             break;
         }
 
-        // Lines look like "   2  novad1 gui --bg". Find the first whose command
-        // is this package's — somebody else's services are not setup's business.
-        int found = -1;
-        for (const char *p = out; *p; ) {
-            const char *eol = strchr(p, '\n');
-            unsigned len = eol ? (unsigned)(eol - p) : (unsigned)strlen(p);
-            const char *q = p;
-            while (q < p + len && *q == ' ') q++;
-            if (q < p + len && *q >= '1' && *q <= '9') {
-                int n = 0;
-                while (q < p + len && *q >= '0' && *q <= '9') n = n * 10 + (*q++ - '0');
-                // strstr would run past the newline; bound it to this line.
-                for (const char *s = q; s + 6 <= p + len; s++)
-                    if (strncmp(s, "novad1", 6) == 0) { found = n; break; }
-            }
-            if (found >= 0) break;
-            if (!eol) break;
-            p = eol + 1;
-        }
+        // The first entry whose command is this package's — somebody else's
+        // services are not setup's business.
+        int found = nova::listing_index_of(out, "novad1");
         if (found < 0) break;
 
         char cmd[32];

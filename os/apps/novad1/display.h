@@ -8,25 +8,27 @@
 //
 // THESE PANELS CANNOT BE TOLD APART IN SOFTWARE. They share an I2C address and
 // answer nothing that distinguishes them, so the panel is a configuration choice
-// and never a guess — `d1 display sh1106`.
+// and never a guess.
 //
-// The DEFAULT IS THE SH1106, because that is the panel that has actually lit up.
-// It was changed to the SSD1309 once — the bill of materials specifies one, and
-// a document seemed like a better authority than a default nobody had written
-// down. The board went dark for four versions.
+// The DEFAULT IS THE SSD1309, and it took three wrong answers to get here.
 //
-// The mechanism is worth knowing, because it fails in total silence. An SH1106
-// turns its own charge pump on with 0xad 0x8b; the SSD1309 has no pump command
-// at all, being driven externally. So an SH1106 sent the SSD1309 sequence has no
-// supply to its panel — while every I2C write is acknowledged, nothing reports
-// an error, and the screen is simply black.
+// The bill of materials says SSD1309, so the default was set to it — and the
+// panel went black for four versions. That looked like the document being wrong,
+// so it was changed to the SH1106, which lit the panel but sat two columns
+// right, because the SH1106 is a 132-column part showing 128.
+//
+// Neither was the real story. The panel IS an SSD1309; the SSD1309 SEQUENCE was
+// wrong. It omitted the charge-pump command on the reasoning that this part is
+// driven from an external boost converter — true of the bare controller, false
+// of the breakout modules people buy. Adding 0x8d 0x14 lights it, in the right
+// place, on the part the BOM specifies.
+//
+// The failure was silent throughout: every I2C write is acknowledged whatever
+// the sequence, nothing reports an error, and the glass is simply black.
 //
 // `novad1 display test` cycles all three with a pattern on each. That is the
 // only honest way to identify one of these: ask the person who can see it.
-//
-// A wrong init sequence FAILS SILENTLY: a blank or garbled panel and no error
-// anywhere. The sequences here are carried over byte for byte from the
-// MicroPython suite, where the SH1106 is verified on hardware.
+
 #ifndef NOVA_DISPLAY_H
 #define NOVA_DISPLAY_H
 
@@ -36,7 +38,7 @@
 namespace nova {
 
 enum PanelKind {
-    PANEL_AUTO = 0,     // means SH1106, the one known to work; see above
+    PANEL_AUTO = 0,     // means SSD1309, the part the BOM specifies; see above
     PANEL_SH1106,
     PANEL_SSD1306,
     PANEL_SSD1309,

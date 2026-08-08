@@ -86,6 +86,12 @@ static bool g_had_error;
 void out_clear_error(void) { g_had_error = false; }
 bool out_had_error(void)   { return g_had_error; }
 
+// Defined with the rest of the capture below; declared here because emit needs
+// them and reads better where it is.
+static bool capturing_here(void);
+static bool capture_takes_tags(void);
+static void cap_append(const char *src, uint32_t len, uint8_t *st);
+
 // The shape v1's _fmt built:
 //   <colour>[<white><symbol><colour>] [<white><prefix><colour>] <reset><msg>
 static void emit(const char *colour, const char *symbol, const char *p,
@@ -94,11 +100,29 @@ static void emit(const char *colour, const char *symbol, const char *p,
     // no second format string to drift.
     char msg[LOG_LINE_MAX];
     vsnprintf(msg, sizeof(msg), fmt, ap);
-    OutGuard _o;
 
-    printf("%s[%s%s%s]", colour, C_WHITE, symbol, colour);
-    if (p) printf(" %s[%s%s%s]", colour, C_WHITE, p, colour);
-    printf(" %s%s\n", C_RESET, msg);
+    // A package that asked for the output wants ALL of it. A pipe does not —
+    // during `ls > f` an error about the listing belongs on the screen, not in
+    // the file — so this is the capture's choice and not emit's.
+    if (capture_takes_tags()) {
+        uint8_t st = 0;
+        cap_append("[", 1, &st);
+        cap_append(symbol, (uint32_t)strlen(symbol), &st);
+        cap_append("] ", 2, &st);
+        if (p) {
+            cap_append("[", 1, &st);
+            cap_append(p, (uint32_t)strlen(p), &st);
+            cap_append("] ", 2, &st);
+        }
+        cap_append(msg, (uint32_t)strlen(msg), &st);
+        st = 0;
+        cap_append("\n", 1, &st);
+    } else {
+        OutGuard _o;
+        printf("%s[%s%s%s]", colour, C_WHITE, symbol, colour);
+        if (p) printf(" %s[%s%s%s]", colour, C_WHITE, p, colour);
+        printf(" %s%s\n", C_RESET, msg);
+    }
 
     // Only the things worth keeping. Recording every [@] would fill the ring
     // with routine success and push out the one warning that mattered.
@@ -162,25 +186,65 @@ static bool     g_cap_over;
 // background task printing during `ls > f` must go to the console rather than
 // into someone else's redirect — its output has nothing to do with that file.
 static int      g_cap_owner;
+// Whether the tagged lines come too. A pipe wants the data channel only; a
+// package that asked for a command's output wants what a person would see.
+static bool     g_cap_tags;
+// Where the escape-stripper got to. Kept across calls because out_write is
+// handed whatever the caller had, and a sequence can straddle two writes.
+static uint8_t  g_cap_esc;
 
 bool out_capturing(void)           { return g_cap != nullptr; }
 bool out_capture_overflowed(void)  { return g_cap_over; }
 
-bool out_capture_begin(char *buf, uint32_t cap) {
+static bool begin(char *buf, uint32_t cap, bool tags) {
     if (g_cap || !buf || cap == 0) return false;
     g_cap = buf; g_cap_size = cap; g_cap_len = 0; g_cap_over = false;
     g_cap_owner = task_self();
+    g_cap_tags = tags;
+    g_cap_esc = 0;
     g_cap[0] = 0;
     return true;
 }
 
+bool out_capture_begin(char *buf, uint32_t cap)     { return begin(buf, cap, false); }
+bool out_capture_begin_all(char *buf, uint32_t cap) { return begin(buf, cap, true); }
+
 // True only for the task that started the capture.
 static bool capturing_here(void) { return g_cap && g_cap_owner == task_self(); }
+static bool capture_takes_tags(void) { return g_cap_tags && capturing_here(); }
 
 uint32_t out_capture_end(void) {
     uint32_t n = g_cap_len;
     g_cap = nullptr;
     return n;
+}
+
+// A captured buffer is TEXT.
+//
+// Colour arrives as arguments — out_multi("  %s%2u%s  %s", C_CYAN, n, C_RESET,
+// line) — so there is no format string to switch off and nothing upstream knows
+// it is being captured. The escapes have to come out here, on the way in.
+//
+// This is not tidiness. `novad1 setup` read `service list` back to find its own
+// stale entries: skip the leading spaces, expect a digit. It found 0x1b, matched
+// nothing, removed nothing, and added a fourth copy of a service that was
+// already listed three times. `ls | grep` fails in exactly the same way, and had
+// been failing quietly for as long as pipes have existed here.
+//
+// CSI is ESC '[', parameter and intermediate bytes, then one final byte in
+// 0x40..0x7e. Anything else after ESC is a two-byte sequence and ends there.
+static void cap_append(const char *src, uint32_t len, uint8_t *st) {
+    for (uint32_t i = 0; i < len; i++) {
+        char c = src[i];
+        if (*st == 1)      { *st = (c == '[') ? 2 : 0; continue; }
+        if (*st == 2)      { if (c >= 0x40 && c <= 0x7e) *st = 0; continue; }
+        if (c == '\033')   { *st = 1; continue; }
+        // Leave a byte for the terminator so the buffer is always a valid C
+        // string for whatever reads it next.
+        if (g_cap_len + 1 >= g_cap_size) { g_cap_over = true; break; }
+        g_cap[g_cap_len++] = c;
+    }
+    g_cap[g_cap_len] = 0;
 }
 
 // Flushed, always. stdout is line buffered, so a write with no newline in it
@@ -200,13 +264,7 @@ void out_write(const char *data, uint32_t len) {
         fflush(stdout);
         return;
     }
-    // Leave a byte for the terminator so the buffer is always a valid C string
-    // for whatever reads it next.
-    uint32_t room = g_cap_size - 1 - g_cap_len;
-    if (len > room) { len = room; g_cap_over = true; }
-    memcpy(g_cap + g_cap_len, data, len);
-    g_cap_len += len;
-    g_cap[g_cap_len] = 0;
+    cap_append(data, len, &g_cap_esc);
 }
 
 void out_multi(const char *fmt, ...) {
@@ -216,18 +274,38 @@ void out_multi(const char *fmt, ...) {
         va_end(ap);
         return;
     }
-    // Format straight into the remaining space. vsnprintf returns the length it
-    // WANTED, so a return past the room available is how truncation is detected.
-    uint32_t room = g_cap_size - 1 - g_cap_len;
-    int want = vsnprintf(g_cap + g_cap_len, room + 1, fmt, ap);
+    // Format straight into the remaining space, then take the escapes back out
+    // in place. vsnprintf returns the length it WANTED, so a return past the
+    // room available is how truncation is detected.
+    uint32_t start = g_cap_len;
+    uint32_t room  = g_cap_size - 1 - start;
+    int want = vsnprintf(g_cap + start, room + 1, fmt, ap);
     va_end(ap);
     if (want < 0) return;
-    if ((uint32_t)want > room) { g_cap_len = g_cap_size - 1; g_cap_over = true; }
-    else                        g_cap_len += (uint32_t)want;
-    out_write("\n", 1);
+    uint32_t got = (uint32_t)want > room ? room : (uint32_t)want;
+    if ((uint32_t)want > room) g_cap_over = true;
+
+    // Read that region back through the filter. The write index starts level
+    // with the read index and only ever falls behind it, since the filter drops
+    // bytes and never adds any — so this overlaps safely. A whole line is
+    // formatted at once, so no escape can straddle it: a local state, and the
+    // shared one is left alone for out_write's benefit.
+    uint8_t st = 0;
+    g_cap_len = start;
+    cap_append(g_cap + start, got, &st);
+    st = 0;
+    cap_append("\n", 1, &st);
 }
 
-void out_blank(void) { OutGuard _o; putchar('\n'); }
+// A blank line is data, so it goes where the rest of the data went. It used to
+// putchar unconditionally, which put a stray newline on the console during a
+// redirect and left the captured text missing the separator that was supposed
+// to be there.
+void out_blank(void) {
+    if (capturing_here()) { uint8_t st = 0; cap_append("\n", 1, &st); return; }
+    OutGuard _o;
+    putchar('\n');
+}
 
 void out_prompt(const char *msg) {
     OutGuard _o;

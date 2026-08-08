@@ -76,6 +76,21 @@ unsigned split_csv(char *editable, char **out, unsigned max);
 // Is `needle` one of the comma-separated fields in `csv`?
 bool csv_has(const char *csv, const char *needle);
 
+// Find the first line of a `service list` / `startup list` listing whose command
+// mentions `name`, and return its index. -1 when there is none.
+//
+// Rows look like "   2  novad1 gui --bg", and on any firmware before 2.0.1 they
+// arrive with the colour still in them — "  \033[96m 2\033[0m  novad1 ...". A
+// package and the firmware under it ship on separate versions, so this has to
+// read both. Leading spaces and ANSI escapes are stepped over; a line whose
+// first real character is not a digit is not a row.
+//
+// This is a whole function for four lines of parsing because the four lines
+// were wrong: `novad1 setup` skipped spaces, looked for a digit, found 0x1b,
+// matched nothing, removed nothing, and added a fourth copy of a service that
+// was already registered three times.
+int listing_index_of(const char *listing, const char *name);
+
 // Add or remove a field, in place. Returns true when the string changed, which
 // is what decides whether a flash write is worth doing.
 //

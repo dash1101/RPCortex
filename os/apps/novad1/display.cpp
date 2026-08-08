@@ -89,6 +89,19 @@ static const uint8_t kInitSSD1306[] = {
 static const uint8_t kInitSSD1309[] = {
     0xfd, 0x12,         // unlock the command interface, first of all
     0xae,
+    // THE CHARGE PUMP, which this sequence used to omit — and that omission is
+    // why a real SSD1309 stayed black for six versions.
+    //
+    // The reasoning for leaving it out was that the SSD1309 is driven from an
+    // external boost converter and has no pump of its own. That is true of the
+    // bare controller and false of the breakout modules people actually buy:
+    // measured on the reference panel, the SSD1309 init without 0x8d lit
+    // nothing, and the SSD1306 init — identical apart from this command and the
+    // unlock — lit it correctly and in the right place.
+    //
+    // So the part that is genuinely SSD1309-specific is the unlock, and the pump
+    // command belongs in both. A controller that truly has no pump ignores it.
+    0x8d, 0x14,
     0xd5, 0x80,
     0xa8, 0x3f,
     0xd3, 0x00,
@@ -202,8 +215,13 @@ bool Display::begin(void) {
             // is one command. `novad1 display test` cycles all three with a
             // pattern on each, which is the only honest way to tell them apart:
             // they share an address and answer nothing that identifies them.
-            kind_ = PANEL_SH1106;
-            seq = kInitSH1106; n = sizeof(kInitSH1106); col_offset_ = 2;
+            // SSD1309, and this is now grounded in a panel rather than in a
+            // document OR in a guess. The reference build's 2.42" module lights
+            // correctly on this sequence once it has the charge pump, and sits
+            // in the right place — the SH1106 lit it too but two columns right,
+            // because that controller is 132 wide showing 128.
+            kind_ = PANEL_SSD1309;
+            seq = kInitSSD1309; n = sizeof(kInitSSD1309); col_offset_ = 0;
             break;
     }
     if (!cmds(seq, n)) return false;

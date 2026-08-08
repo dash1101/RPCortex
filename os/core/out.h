@@ -87,7 +87,16 @@ void out_write(const char *data, uint32_t len);
 //
 // Not nestable — one shell, one pipeline at a time. Beginning a capture while
 // one is active is a bug in the caller, so it is refused rather than tracked.
+//
+// ANSI escapes are stripped on the way in, whichever form is used. What comes
+// out is text a parser can read, which is the only thing a buffer is ever for.
 bool     out_capture_begin(char *buf, uint32_t cap);
+
+// The same, plus the tagged status lines. For fw_shell_run, where a package
+// asked for a command's output and means all of it — a listing whose header is
+// an out_info and whose rows are out_multi arrives half-captured otherwise, and
+// half a listing reads exactly like a complete one.
+bool     out_capture_begin_all(char *buf, uint32_t cap);
 uint32_t out_capture_end(void);       // bytes captured; ends the capture
 bool     out_capturing(void);
 // True if the capture ran out of room. A truncated pipe should say so rather

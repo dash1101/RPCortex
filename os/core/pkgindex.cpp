@@ -23,7 +23,10 @@ bool pkgindex_has(const char *buf, uint32_t len, const char *name) {
 
 uint32_t pkgindex_add(char *buf, uint32_t len, uint32_t cap,
                       const char *name, const char *version) {
-    if (pkgindex_has(buf, len, name)) return len;      // keep one line per package
+    // Drop any line this package already has, then append the current one. One
+    // line per package either way, and an upgrade actually changes the version
+    // it reports. See the header for what the early return cost.
+    len = pkgindex_remove(buf, len, cap, name);
     int add = snprintf(buf + len, cap - len, "%s,%s\n", name, version);
     if (add < 0 || (uint32_t)add >= cap - len) return len;   // no room; unchanged
     return len + (uint32_t)add;

@@ -58,6 +58,9 @@ static void emit_info(void)  { out_info("Working"); }
 static void emit_fatal(void) { out_fatal("Gone"); }
 static void emit_okp(void)   { out_okp("WiFi", "Connected"); }
 static void emit_multi(void) { out_multi("plain %d", 7); }
+static void emit_multi_coloured(void) {
+    out_multi("  %s%2u%s  %s", "\033[96m", 3u, "\033[0m", "novad1 gui --bg");
+}
 static void emit_prompt(void){ out_prompt("Username"); }
 static void emit_blank(void) { out_blank(); }
 
@@ -136,6 +139,61 @@ int main(int argc, char **argv) {
     char tiny[4];
     out_pad("abcdefgh", 8, tiny, sizeof(tiny));
     ck(strlen(tiny) < sizeof(tiny), "pad respects the destination cap");
+
+    // --- what lands in a capture -------------------------------------------
+    //
+    // A capture is read by a parser, so what goes into it must be text. Every
+    // check below is a bug that shipped: `novad1 setup` looked for a digit at
+    // the start of a `service list` row, found 0x1b, matched nothing, and added
+    // a fourth copy of a service that was already listed three times.
+
+    char cap[256];
+
+    ck(out_capture_begin(cap, sizeof(cap)), "a capture starts");
+    out_multi("  %s%2u%s  %s", "\033[96m", 3u, "\033[0m", "novad1 gui --bg");
+    out_capture_end();
+    eq(cap, "   3  novad1 gui --bg\n", "out_multi captures without the colour");
+
+    // The same line on the console keeps every escape. Stripping is what the
+    // BUFFER is for, and must not reach the terminal.
+    capture(emit_multi_coloured, buf, sizeof(buf));
+    eq(buf, "  \033[96m 3\033[0m  novad1 gui --bg\n", "the console still gets colour");
+
+    // out_write is handed whatever the caller had, so a sequence can arrive in
+    // pieces. The state has to live across the calls or half of it lands.
+    ck(out_capture_begin(cap, sizeof(cap)), "a capture starts");
+    out_write("ab\033", 3);
+    out_write("[96mcd", 6);
+    out_capture_end();
+    eq(cap, "abcd", "an escape split across two writes is still removed");
+
+    // The tagged lines are the status channel: a pipe must not get them, since
+    // during `ls > f` an error about the listing belongs on the screen.
+    ck(out_capture_begin(cap, sizeof(cap)), "a capture starts");
+    out_info("Services:");
+    out_multi("  one");
+    out_capture_end();
+    eq(cap, "  one\n", "a plain capture takes the data channel only");
+
+    // fw_shell_run's form takes both, because a package that asked for a
+    // command's output means all of it. A listing whose header is an out_info
+    // and whose rows are out_multi arrives half-captured otherwise — and half a
+    // listing reads exactly like a complete one.
+    ck(out_capture_begin_all(cap, sizeof(cap)), "a full capture starts");
+    out_info("Services:");
+    out_multi("  one");
+    out_blank();
+    out_capture_end();
+    eq(cap, "[:] Services:\n  one\n\n", "a full capture takes the tagged lines too");
+
+    // Truncation must be reported. A short read of a list is a shorter list,
+    // and the one caller that matters is trying to remove all of them.
+    char small[12];
+    ck(out_capture_begin(small, sizeof(small)), "a small capture starts");
+    out_multi("0123456789abcdefghij");
+    ck(out_capture_overflowed(), "overflow is flagged");
+    out_capture_end();
+    ck(strlen(small) == sizeof(small) - 1, "a truncated capture is still terminated");
 
     if (argc > 1 && !strcmp(argv[1], "-v")) {
         printf("\n  --- rendered sample ---\n");

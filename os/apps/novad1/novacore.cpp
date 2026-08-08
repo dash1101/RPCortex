@@ -131,6 +131,49 @@ bool csv_has(const char *csv, const char *needle) {
     return false;
 }
 
+// Step over leading spaces AND any ANSI escape sequence, up to `end`.
+// CSI is ESC '[' then parameter bytes then one final byte in 0x40..0x7e;
+// anything else after ESC is a two-byte sequence and ends there.
+static const char *skip_blank(const char *p, const char *end) {
+    while (p < end) {
+        if (*p == ' ' || *p == '\t') { p++; continue; }
+        if (*p == '\033') {
+            p++;
+            if (p < end && *p == '[') {
+                p++;
+                while (p < end && !(*p >= 0x40 && *p <= 0x7e)) p++;
+            }
+            if (p < end) p++;              // the final byte of the sequence
+            continue;
+        }
+        break;
+    }
+    return p;
+}
+
+int listing_index_of(const char *listing, const char *name) {
+    if (!listing || !name || !*name) return -1;
+    unsigned nl = (unsigned)strlen(name);
+
+    for (const char *p = listing; *p; ) {
+        const char *eol = strchr(p, '\n');
+        const char *end = eol ? eol : p + strlen(p);
+
+        const char *q = skip_blank(p, end);
+        if (q < end && *q >= '1' && *q <= '9') {
+            int n = 0;
+            while (q < end && *q >= '0' && *q <= '9') n = n * 10 + (*q++ - '0');
+            // strstr would run past the newline into the next row; bound it.
+            for (const char *s = q; s + nl <= end; s++)
+                if (strncmp(s, name, nl) == 0) return n;
+        }
+
+        if (!eol) break;
+        p = eol + 1;
+    }
+    return -1;
+}
+
 bool csv_add(char *csv, unsigned cap, const char *field) {
     if (!csv || !field || !*field) return false;
     if (csv_has(csv, field)) return false;

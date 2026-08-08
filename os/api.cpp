@@ -365,8 +365,17 @@ extern "C" int fw_shell_run(const char *line, char *out, uint32_t cap) {
 
     if (!out || !cap) return shell_run_line_now(work);
 
+    // Everything a person would have seen, tagged lines included, with the
+    // colour stripped out. A pipe wants the data channel only; a package that
+    // asked for a command's output means the whole answer.
+    //
+    // Begin can refuse: there is one capture, and a pipeline or another task's
+    // fw_shell_run may hold it. The command still runs — the caller wanted it
+    // to — and out stays empty, which is how the caller can tell. Callers that
+    // parse what comes back must check for an empty buffer and not read it as
+    // an empty answer.
     out[0] = 0;
-    if (!out_capture_begin(out, cap)) return shell_run_line_now(work);
+    if (!out_capture_begin_all(out, cap)) return shell_run_line_now(work);
     int rc = shell_run_line_now(work);
     out_capture_end();
     return rc;
