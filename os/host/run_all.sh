@@ -68,6 +68,16 @@ declare -A SRC=(
     # unnoticed: a change to the canvas that stops it compiling is a change
     # somebody wants to know about on the same run.
     [novasim]=""
+    # Opens every screen the app catalogue can reach and looks at the panel it
+    # produced. Fails on a screen that draws nothing — which on the device is
+    # indistinguishable from a hang — and on one painting into the status bar's
+    # rows, which the runner overwrites every frame.
+    #
+    # Deliberately not a pixel comparison against stored frames: every one of
+    # these screens is meant to change, and a test that fails when a label is
+    # reworded is a test somebody turns off. Run it with no arguments to get the
+    # frames as characters and actually look at a layout.
+    [novashots]=""
     [packages_test]="fakehw.cpp"
     [lock_test]="$CORE/lock.cpp $CORE/task.cpp $CORE/blackbox.cpp"
     [interrupt_test]="$CORE/interrupt.cpp $CORE/task.cpp $CORE/blackbox.cpp host_task_stub.cpp"

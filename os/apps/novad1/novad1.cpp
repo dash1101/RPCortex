@@ -21,7 +21,7 @@
 #include <string.h>
 #include <stdio.h>
 
-RPC_APP_VER("novad1", "1.0.0");
+RPC_APP_VER("novad1", "1.1.0");
 
 namespace {
 
@@ -143,7 +143,7 @@ int cmd_pins(int argc, char **argv) {
 // --- d1 ---------------------------------------------------------------------
 
 void usage(void) {
-    fw_printf("Nova D1 1.0.0 - the handheld multi-tool\n\n");
+    fw_printf("Nova D1 1.1.0 - the handheld multi-tool\n\n");
     fw_printf("  setup                  make it a Nova D1: storage, pins, the boot service\n");
     fw_printf("  gui [--bg]             run the screen, in front or in the background\n");
     fw_printf("  service start|stop|restart|status\n");
@@ -325,7 +325,7 @@ int cmd_display(int argc, char **argv) {
 int cmd_status(void) {
     char b[24];
     fw_board(b, sizeof(b));
-    fw_printf("Nova D1 1.0.0 on %s\n", b);
+    fw_printf("Nova D1 1.1.0 on %s\n", b);
     fw_printf("  profile   %s (%s)\n", nova::board::board_id(), nova::board::board_name());
     fw_printf("  display   %s\n", nova::board::display_bus());
     fw_printf("  storage   %s\n", fw_file_exists(NOVA_ROOT) ? NOVA_ROOT : "not created yet");
