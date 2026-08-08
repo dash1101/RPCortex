@@ -196,35 +196,91 @@ static void test_folders_open_themselves(void) {
     // An app that cannot open must SAY so. Pressing a struck-through row used to
     // do nothing at all, and on a device whose only input is one encoder,
     // "nothing happened" is what a broken button looks like.
+    // An app that cannot open must SAY so. Pressing a struck-through row used to
+    // do nothing at all, and on a device whose only input is one encoder,
+    // "nothing happened" is what a broken button looks like.
+    //
+    // Walked by PRESSING every row rather than by counting detents to a known
+    // one. Two things make counting wrong: home lists a folder per non-empty
+    // category, so a folder's row is not its category's enum value; and a
+    // gallery remembers where its cursor was, deliberately, so row zero is not
+    // where it starts. Counting found the System folder while looking for
+    // Wireless and still opened something, which is a pass for the wrong
+    // reason.
     const gui::App *apps = gui::apps();
     const unsigned n = gui::app_count();
-    int checked = 0;
-    for (unsigned i = 0; i < n && checked < 1; i++) {
-        if (gui::app_available(apps[i])) continue;
 
-        // Its position in the gallery is its position among its own category.
-        int cat_index = 0, cat_row = -1;
-        for (unsigned k = 0; k < n; k++) {
-            if (apps[k].cat != apps[i].cat) continue;
-            if (k == i) { cat_row = cat_index; break; }
-            cat_index++;
-        }
-        if (cat_row < 0) continue;
+    gui::go_home();
+    ui::Screen *hh = gui::top();
+    if (!hh) { ok(false, "home is up"); return; }
+    hh->on_event(EV_SELECT);
+    ui::Screen *gallery = gui::top();
+    if (!gallery || gallery == hh) { ok(false, "a folder opened"); return; }
 
-        gui::go_home();
-        ui::Screen *h = gui::top();
-        if (!h) break;
-        for (int step = 0; step < (int)apps[i].cat; step++) h->on_event(EV_ROT_CW);
-        h->on_event(EV_SELECT);
-        ui::Screen *gallery = gui::top();
-        if (!gallery || gallery == h) break;
-
-        for (int step = 0; step < cat_row; step++) gallery->on_event(EV_ROT_CW);
-        gallery->on_event(EV_SELECT);
-        ok(gui::top() != gallery,
-           "pressing an unavailable app says why instead of doing nothing");
-        checked++;
+    const char *cat = gallery->title();
+    int rows = 0, want = 0;
+    for (unsigned i = 0; i < n; i++) {
+        if (strcmp(category_name(apps[i].cat), cat) != 0) continue;
+        rows++;
+        if (!gui::app_available(apps[i])) want++;
     }
+
+    // Press each row in turn and note what it produced. Matching on the title
+    // means it does not matter which row the cursor happened to start on.
+    int answered = 0;
+    for (int r = 0; r < rows; r++) {
+        gallery->on_event(EV_SELECT);
+        ui::Screen *opened = gui::top();
+        if (opened && opened != gallery) {
+            for (unsigned i = 0; i < n; i++)
+                if (!gui::app_available(apps[i]) &&
+                    strcmp(category_name(apps[i].cat), cat) == 0 &&
+                    !strcmp(opened->title(), apps[i].label)) { answered++; break; }
+            gui::pop();
+        }
+        gallery->on_event(EV_ROT_CW);
+    }
+    eq(answered, want,
+       "every unavailable app in a folder says why instead of doing nothing");
+    gui::go_home();
+}
+
+// Closing an app must leave the highlight ON that app.
+//
+// Reported from the board as "i open wardrive and close it, it wont close while
+// hovering that app, itll hover the default app in that folder". Coming back to
+// a screen re-ran set(), and set() zeroed the selection. It is checked here
+// rather than by hand because hand-checking it is what let it ship.
+static void test_selection_survives_a_round_trip(void) {
+    using namespace nova;
+    gui::go_home();
+    ui::Screen *h = gui::top();
+    if (!h) { ok(false, "home is up"); return; }
+
+    // Into the first folder, then down to a row that is NOT the first — the bug
+    // returns the highlight to row zero, so row zero cannot detect it.
+    h->on_event(EV_SELECT);
+    ui::Screen *gallery = gui::top();
+    if (!gallery || gallery == h) { ok(false, "a folder opened"); return; }
+
+    const int target_row = 2;
+    for (int i = 0; i < target_row; i++) gallery->on_event(EV_ROT_CW);
+
+    // What is under the cursor, named by what opening it produces.
+    gallery->on_event(EV_SELECT);
+    ui::Screen *first = gui::top();
+    if (!first || first == gallery) { ok(false, "an app opened"); return; }
+    static char opened[32];
+    snprintf(opened, sizeof(opened), "%s", first->title());
+
+    gui::pop();
+    if (gui::top() != gallery) { ok(false, "back returns to the folder"); return; }
+
+    // Press again WITHOUT rotating. The same app must come back.
+    gallery->on_event(EV_SELECT);
+    ui::Screen *again = gui::top();
+    ok(again && again != gallery && !strcmp(again->title(), opened),
+       "closing an app leaves the highlight on that app");
     gui::go_home();
 }
 
@@ -343,6 +399,7 @@ int main(void) {
     STAGE(test_single_instance);
     STAGE(test_one_detent_animates);
     STAGE(test_folders_open_themselves);
+    STAGE(test_selection_survives_a_round_trip);
     STAGE(test_navigation);
     STAGE(test_stack_bounds);
     STAGE(test_one_step_per_frame);
