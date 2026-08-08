@@ -3,6 +3,48 @@
 A sketch, not an implementation. Written before the code so the shape can be
 argued with cheaply.
 
+## What was actually built, and where this note was wrong
+
+The sketch below argues for a split: the block layer as a package, the
+filesystem in the firmware. **It went in the other way** — all of it is
+firmware, in `core/sdproto.*`, `core/fatro.*` and `sdcard_rp2.cpp`, with a `sd`
+command and `/sd` routed through `storage_*`. Three things changed the answer.
+
+**The flash cost is a fifth of what this note assumed.** It estimated 20–30 KB
+for FatFs. A read-only FAT12/16/32 reader written for this device is 3 KB, and
+the whole card stack — block layer, filesystem, mount, command — is **9 KB**
+compiled for size. Against 85 KB of Pico 2 W headroom that is affordable in a
+way FatFs was not.
+
+**Not everything has to be on every board.** The note weighed the cost against
+"83 KB of headroom on a Pico W" as though the choice were all-or-nothing. It is
+not: `RPC_HAS_SD` builds this for the RP2350 boards only, which are the ones
+Nova D1 targets and the only ones with a slot wired to them. A Pico W's
+headroom is untouched.
+
+**A package cannot be a mount.** The note's own argument — that a driver in a
+package reaches files "not to `ls`, not to `cat`, not to a script, not to
+another package" — is decisive once the ABI grew `fw_storage_roots`, whose whole
+point is a file browser listing a card next to flash. That contract cannot be
+honoured from a package.
+
+The rest still holds, and two of its warnings were exactly right: the
+initialisation sequence is where the bugs are, and CCS is the one that reads as
+corruption rather than as an error. Two corrections to the ordering it proposes:
+
+- **`fat12.*` was NOT extended.** Its root directory is a fixed region and its
+  cluster numbers are 16-bit, and FAT32 has neither; reaching one from the other
+  means restructuring the scanner the USB transfer area's WRITE path shares. A
+  separate read-only reader leaves that code and its three host tests alone.
+- **The block layer did not need a card to be worth writing.** Splitting the
+  protocol (`core/sdproto.*`, no hardware in it) from the transport
+  (`sdcard_rp2.cpp`) put the initialisation sequence in front of a fake card on
+  the host — which is what this note's own test table asks for, and it turned
+  out to be reachable without reflashing anything.
+
+What still cannot be moved off a bench is the last row of that table: timing,
+real cards, the init dance. `sdcard_rp2.cpp` says what to run first.
+
 ## Why it is wanted
 
 Flash on these parts runs from 384 KB to 3 MB, and it is shared with the

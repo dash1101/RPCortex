@@ -16,8 +16,11 @@
 #include "blackbox.h"
 #include "interrupt.h"
 #include "out.h"        // out_capture_* for fw_shell_run
-#include "registry.h"   // fw_reg_* 
+#include "registry.h"   // fw_reg_*
 #include "persist.h"    // fw_reg_save
+#if defined(RPC_HAS_SD) && RPC_HAS_SD
+#include "sdcard.h"     // the "/sd" root fw_storage_roots offers
+#endif
 
 #include <string.h>
 #include <stdlib.h>
@@ -1032,21 +1035,57 @@ extern "C" int fw_dir_entry(const char *path, unsigned index, FwDirEntry *out) {
     return p.found ? 1 : 0;
 }
 
-// The storage roots a browser lists. Flash is always root 0 and always there.
-// This is the baseline: it reports flash only. The SD driver replaces the body
-// with real card detection and appends an "/sd" root when one is mounted,
-// keeping flash at index 0 — see FwStorageRoot in rpc_app.h for the contract.
+// The storage roots a browser lists. Flash is always root 0 and always there;
+// a card is root 1 and comes and goes. See FwStorageRoot in rpc_app.h for the
+// contract this implements.
+//
+// The `present=0` row is the part worth reading twice. A card pulled out while
+// somebody is browsing it must not make the row VANISH under the cursor — the
+// selection would jump to whatever slid up into its place, and on a device
+// where the next button press might delete something that matters. So a card
+// that has gone is still offered for a few seconds, marked not present, and the
+// browser gets to say "card removed" in the row it was already looking at.
+// sd_info's `recently_removed` is that window, and a deliberate `sd unmount`
+// deliberately does not open it.
+//
+// The buffer check is for what will actually be WRITTEN, not for `max`: a
+// package asking for eight roots with room for two is lying, and validating its
+// claim rather than our use would either write past its buffer or refuse a
+// perfectly good call.
 extern "C" int fw_storage_roots(FwStorageRoot *out, int max) {
-    if (!ok_w(out, sizeof(*out)) || max < 1) return -1;
+    if (max < 1) return -1;
+    int want = max < 2 ? max : 2;
+    if (!ok_w(out, sizeof(*out) * (unsigned)want)) return -1;
     task_alive();
-    memset(out, 0, sizeof(*out));
+    memset(out, 0, sizeof(*out) * (unsigned)want);
+
     snprintf(out[0].label, sizeof(out[0].label), "On-Board");
     snprintf(out[0].path, sizeof(out[0].path), "/");
     out[0].kind = FW_ROOT_FLASH;
     out[0].present = 1;
     out[0].total_kb = (uint32_t)(storage_total_bytes() / 1024);
     out[0].free_kb  = (uint32_t)(storage_free_bytes() / 1024);
-    return 1;
+    int n = 1;
+
+#if defined(RPC_HAS_SD) && RPC_HAS_SD
+    if (want >= 2) {
+        SdInfo sd;
+        sd_info(&sd);                       // this is also where a card is noticed
+        if (sd.mounted || sd.recently_removed) {
+            // The label the card carries, when it has one — a browser showing
+            // "HOLIDAY" rather than "SD" is showing the user their own card.
+            snprintf(out[1].label, sizeof(out[1].label), "%s",
+                     (sd.mounted && sd.label[0]) ? sd.label : "SD");
+            snprintf(out[1].path, sizeof(out[1].path), SD_ROOT);
+            out[1].kind = FW_ROOT_SD;
+            out[1].present = sd.mounted ? 1 : 0;
+            out[1].total_kb = (uint32_t)(sd.volume_bytes / 1024);
+            out[1].free_kb  = (uint32_t)(sd.free_bytes / 1024);
+            n = 2;
+        }
+    }
+#endif
+    return n;
 }
 
 extern "C" int fw_tcp_listen(unsigned port) {

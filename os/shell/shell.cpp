@@ -48,6 +48,12 @@ void net_register(void);
 void power_register(void);
 void bt_register(void);
 void btaudio_register(void);
+// Only on the boards the SD driver is compiled for — see os/CMakeLists.txt.
+// Declared inside the guard as well as called inside it, so a build without it
+// cannot accidentally link against a function that is not there.
+#if defined(RPC_HAS_SD) && RPC_HAS_SD
+void sd_register(void);
+#endif
 void http_register(void);
 void net_autoconnect_report(void);
 void diag_register(void);
@@ -474,6 +480,9 @@ void shell_register_builtins(void) {
     ps_register();          // ps / kill — the task manager
     log_register();         // logdump
     usbdrive_register();    // usbdrive — offer the filesystem over USB, or do not
+#if defined(RPC_HAS_SD) && RPC_HAS_SD
+    sd_register();          // sd — the memory card, browsed at /sd
+#endif
     jobs_register();        // startup / task / service / watch
     fsinit_register();      // fscheck
     diag_register();        // diag / compat / inputstat / regreset / pkgdisable / pkgenable

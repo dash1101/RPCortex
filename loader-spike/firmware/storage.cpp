@@ -11,6 +11,32 @@
 #include "storage.h"
 #include "lock.h"
 
+// --- a second volume ----------------------------------------------------------
+//
+// An SD card is a whole filesystem that is not this one, and every caller in the
+// OS reaches a file through the storage_* calls below. So "/sd/..." is routed
+// here, at the top of each one, and everything above — `ls`, `cat`, `tree`, the
+// ABI's fw_dir_* and therefore any package's file browser — works on the card
+// with no further change anywhere.
+//
+// TWO RULES, both learned the hard way elsewhere in this file:
+//
+//   * The branch goes BEFORE the LockGuard. An SD read is an SPI transaction
+//     that yields, and holding the littlefs lock across it would stop every
+//     other task touching a file for its duration.
+//   * The prefix match is exact. "/sdcard" is an ordinary flash path and must
+//     stay one; sd_owns_path is what decides.
+//
+// Compiled out entirely on boards without the SD build (and in the loader
+// spike, which does not have os/ on its include path at all), so this costs a
+// non-SD image nothing — not a branch, not a symbol.
+#if defined(RPC_HAS_SD) && RPC_HAS_SD
+#include "sdcard.h"
+#define SD_ROUTE(p) (sd_owns_path(p))
+#else
+#define SD_ROUTE(p) (false)
+#endif
+
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -261,6 +287,9 @@ static void touch(const char *path) {
 }
 
 uint32_t storage_mtime(const char *path) {
+#if defined(RPC_HAS_SD) && RPC_HAS_SD
+    if (sd_owns_path(path)) return sd_mtime(path);
+#endif
     LockGuard _fs(&g_fs_lock);
     if (!g_mounted) return 0;
     uint32_t t = 0;
@@ -321,6 +350,11 @@ bool storage_would_fit(uint32_t bytes) {
 }
 
 bool storage_write_file(const char *name, const uint8_t *data, uint32_t len) {
+    // The card is mounted READ-ONLY, so every mutating call refuses a "/sd"
+    // path here rather than letting littlefs try — which would either fail with
+    // a confusing error or, if somebody ever made /sd a real directory in
+    // flash, quietly write to the wrong place.
+    if (SD_ROUTE(name)) return false;
     LockGuard _fs(&g_fs_lock);
     if (!g_mounted) return false;
     if (!room_for(len)) return false;
@@ -336,6 +370,7 @@ bool storage_write_file(const char *name, const uint8_t *data, uint32_t len) {
 }
 
 bool storage_append_file(const char *name, const uint8_t *data, uint32_t len) {
+    if (SD_ROUTE(name)) return false;
     LockGuard _fs(&g_fs_lock);
     if (!g_mounted) return false;
     if (!room_for(len)) return false;
@@ -351,6 +386,19 @@ bool storage_append_file(const char *name, const uint8_t *data, uint32_t len) {
 }
 
 uint32_t storage_read_file(const char *name, uint8_t *buf, uint32_t cap) {
+#if defined(RPC_HAS_SD) && RPC_HAS_SD
+    if (sd_owns_path(name)) {
+        // A FAT read is short at every sector boundary, so this loops where the
+        // littlefs one below does not.
+        uint32_t got = 0;
+        while (got < cap) {
+            uint32_t n = sd_read_at(name, got, buf + got, cap - got);
+            if (!n) break;
+            got += n;
+        }
+        return got;
+    }
+#endif
     LockGuard _fs(&g_fs_lock);
     if (!g_mounted) return 0;
     lfs_file_t f;
@@ -364,7 +412,23 @@ uint32_t storage_read_file(const char *name, uint8_t *buf, uint32_t cap) {
 // Random access straight out of the file rather than slurping it into RAM. An
 // app ELF is a few kilobytes here, but the loader is meant to survive one that
 // is not, and reading it whole would double the peak RAM cost of loading.
-struct FileHandle { lfs_file_t f; };
+struct FileHandle {
+    // Which volume this handle belongs to. One handle type rather than two
+    // because storage_close_source is given the handle and nothing else, so it
+    // has to be able to tell them apart from the pointer alone.
+    bool       is_sd;
+    lfs_file_t f;                 // flash
+#if defined(RPC_HAS_SD) && RPC_HAS_SD
+    char       path[96];          // card
+#endif
+};
+
+#if defined(RPC_HAS_SD) && RPC_HAS_SD
+static int sd_source_read(void *ctx, uint32_t off, void *dst, uint32_t len) {
+    FileHandle *h = (FileHandle *)ctx;
+    return (int)sd_read_at(h->path, off, (uint8_t *)dst, len);
+}
+#endif
 
 static int lfs_source_read(void *ctx, uint32_t off, void *dst, uint32_t len) {
     FileHandle *h = (FileHandle *)ctx;
@@ -387,9 +451,27 @@ uint32_t storage_read_at(const char *name, uint32_t off, uint8_t *buf, uint32_t 
 }
 
 bool storage_open_source(const char *name, AppSource *src, void **handle) {
+#if defined(RPC_HAS_SD) && RPC_HAS_SD
+    if (sd_owns_path(name)) {
+        bool is_dir = false;
+        uint32_t size = 0;
+        if (!sd_stat(name, &is_dir, &size) || is_dir) return false;
+        if (strlen(name) >= sizeof(((FileHandle *)nullptr)->path)) return false;
+        FileHandle *h = (FileHandle *)malloc(sizeof(FileHandle));
+        if (!h) return false;
+        h->is_sd = true;
+        snprintf(h->path, sizeof(h->path), "%s", name);
+        src->ctx = h;
+        src->read = sd_source_read;
+        src->size = size;
+        *handle = h;
+        return true;
+    }
+#endif
     if (!g_mounted) return false;
     FileHandle *h = (FileHandle *)malloc(sizeof(FileHandle));
     if (!h) return false;
+    h->is_sd = false;
     if (lfs_file_open(&g_lfs, &h->f, name, LFS_O_RDONLY) < 0) { free(h); return false; }
     struct lfs_info info;
     uint32_t size = 0;
@@ -427,6 +509,7 @@ static bool sink_flush(SinkHandle *h) {
 }
 
 void *storage_open_sink(const char *name) {
+    if (SD_ROUTE(name)) return nullptr;
     LockGuard _fs(&g_fs_lock);
     if (!g_mounted) return nullptr;
     // The length is not known here, so this only refuses a filesystem that is
@@ -484,7 +567,10 @@ bool storage_close_sink(void *handle) {
 void storage_close_source(void *handle) {
     if (!handle) return;
     FileHandle *h = (FileHandle *)handle;
-    lfs_file_close(&g_lfs, &h->f);
+    // A card handle holds no open file and nothing to close — the read path is
+    // stateless, which is what makes a card pulled out mid-read cost an error
+    // rather than a dangling handle.
+    if (!h->is_sd) lfs_file_close(&g_lfs, &h->f);
     free(h);
 }
 
@@ -505,6 +591,7 @@ void storage_list(void) {
 }
 
 bool storage_mkdir(const char *path) {
+    if (SD_ROUTE(path)) return false;
     LockGuard _fs(&g_fs_lock);
     // A directory is metadata, so it costs a block like anything else.
     if (!g_mounted || !room_for(0) || lfs_mkdir(&g_lfs, path) < 0) return false;
@@ -514,6 +601,7 @@ bool storage_mkdir(const char *path) {
 }
 
 bool storage_remove(const char *path) {
+    if (SD_ROUTE(path)) return false;
     LockGuard _fs(&g_fs_lock);
     if (!g_mounted || lfs_remove(&g_lfs, path) < 0) return false;
     bump();
@@ -521,6 +609,7 @@ bool storage_remove(const char *path) {
 }
 
 bool storage_rename(const char *from, const char *to) {
+    if (SD_ROUTE(from) || SD_ROUTE(to)) return false;
     LockGuard _fs(&g_fs_lock);
     // No touch(): littlefs carries the attributes across, and mv changes a name
     // rather than content — refreshing the timestamp would misreport it.
@@ -530,6 +619,7 @@ bool storage_rename(const char *from, const char *to) {
 }
 
 bool storage_truncate(const char *path, uint32_t size) {
+    if (SD_ROUTE(path)) return false;
     LockGuard _fs(&g_fs_lock);
     if (!g_mounted) return false;
     lfs_file_t f;
@@ -542,6 +632,9 @@ bool storage_truncate(const char *path, uint32_t size) {
 }
 
 bool storage_stat(const char *path, bool *is_dir, uint32_t *size) {
+#if defined(RPC_HAS_SD) && RPC_HAS_SD
+    if (sd_owns_path(path)) return sd_stat(path, is_dir, size);
+#endif
     LockGuard _fs(&g_fs_lock);
     if (!g_mounted) return false;
     struct lfs_info info;
@@ -554,6 +647,13 @@ bool storage_stat(const char *path, bool *is_dir, uint32_t *size) {
 }
 
 bool storage_copy(const char *from, const char *to) {
+#if defined(RPC_HAS_SD) && RPC_HAS_SD
+    // OFF the card into flash is the whole point of having one, and it is the
+    // only direction a read-only mount allows. Card to card, or flash to card,
+    // is refused rather than half-done.
+    if (sd_owns_path(from) && !sd_owns_path(to)) return sd_copy_out(from, to);
+    if (sd_owns_path(from) || sd_owns_path(to))  return false;
+#endif
     LockGuard _fs(&g_fs_lock);
     if (!g_mounted) return false;
     lfs_file_t in, out;
@@ -579,6 +679,9 @@ bool storage_copy(const char *from, const char *to) {
 }
 
 bool storage_walk(const char *path, StorageWalkFn cb, void *ctx) {
+#if defined(RPC_HAS_SD) && RPC_HAS_SD
+    if (sd_owns_path(path)) return sd_walk(path, cb, ctx);
+#endif
     LockGuard _fs(&g_fs_lock);
     if (!g_mounted) return false;
     lfs_dir_t dir;
