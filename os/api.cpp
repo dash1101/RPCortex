@@ -1032,6 +1032,23 @@ extern "C" int fw_dir_entry(const char *path, unsigned index, FwDirEntry *out) {
     return p.found ? 1 : 0;
 }
 
+// The storage roots a browser lists. Flash is always root 0 and always there.
+// This is the baseline: it reports flash only. The SD driver replaces the body
+// with real card detection and appends an "/sd" root when one is mounted,
+// keeping flash at index 0 — see FwStorageRoot in rpc_app.h for the contract.
+extern "C" int fw_storage_roots(FwStorageRoot *out, int max) {
+    if (!ok_w(out, sizeof(*out)) || max < 1) return -1;
+    task_alive();
+    memset(out, 0, sizeof(*out));
+    snprintf(out[0].label, sizeof(out[0].label), "On-Board");
+    snprintf(out[0].path, sizeof(out[0].path), "/");
+    out[0].kind = FW_ROOT_FLASH;
+    out[0].present = 1;
+    out[0].total_kb = (uint32_t)(storage_total_bytes() / 1024);
+    out[0].free_kb  = (uint32_t)(storage_free_bytes() / 1024);
+    return 1;
+}
+
 extern "C" int fw_tcp_listen(unsigned port) {
     bb_note_phase("entered fw_tcp_listen");
     task_alive();
@@ -1521,6 +1538,7 @@ static const ApiSymbol kSymbols[] = {
     SYM(fw_file_size),
     SYM(fw_dir_count),
     SYM(fw_dir_entry),
+    SYM(fw_storage_roots),
     SYM(fw_tcp_listen),
     SYM(fw_tcp_accept),
     SYM(fw_tcp_recv),

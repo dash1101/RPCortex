@@ -23,7 +23,7 @@ extern "C" {
 // MINOR: a symbol added — older-minor apps still run (everything they want is
 //        present); newer-minor apps refused (they may want something absent).
 #define RPC_API_MAJOR 1
-#define RPC_API_MINOR 20
+#define RPC_API_MINOR 21
 
 typedef struct {
     uint32_t magic;          // RPC_APP_MAGIC
@@ -529,6 +529,39 @@ int fw_dir_count(const char *path);
 // One entry. Returns 1 when `out` was filled, 0 when `index` is past the end,
 // negative when the directory cannot be read.
 int fw_dir_entry(const char *path, unsigned index, FwDirEntry *out);
+
+// --- storage roots (API 1.21) -----------------------------------------------
+//
+// The mount points a file browser shows at its top level. On-board flash is
+// always there; an SD card comes and goes as it is inserted and pulled out, so
+// a browser cannot assume a fixed set — it asks, every time it opens.
+//
+// This is the CONTRACT between the SD driver in the firmware and any package
+// that lists files. A root is just a path prefix — "/" for flash, "/sd" for the
+// card — so once a root is known, the existing fw_dir_* calls browse it with no
+// further ceremony. The point of enumerating rather than hard-coding "/sd" is
+// removal: a card pulled mid-browse must stop being offered, and its `present`
+// flag going to 0 is how the browser learns without faulting on a dead mount.
+//
+// kind lets the UI draw the right icon without parsing the label.
+#define FW_ROOT_FLASH 0
+#define FW_ROOT_SD    1
+
+typedef struct {
+    char     label[16];         // "On-Board", "SD" — what the user reads
+    char     path[24];          // "/", "/sd" — what fw_dir_* takes
+    uint8_t  kind;              // FW_ROOT_FLASH | FW_ROOT_SD
+    uint8_t  present;           // 1 if mounted and readable right now
+    uint32_t total_kb;          // 0 if unknown
+    uint32_t free_kb;           // 0 if unknown
+} FwStorageRoot;
+
+// Fill up to `max` roots, newest state each call. Returns the count written, or
+// negative on error. Flash is always index 0 and always present. An SD root is
+// present only while a card is mounted; it may still be RETURNED with present=0
+// briefly after removal so a browser can show "card removed" rather than having
+// the row vanish under the cursor.
+int fw_storage_roots(FwStorageRoot *out, int max);
 
 // --- TCP (API 1.14) ---------------------------------------------------------
 //

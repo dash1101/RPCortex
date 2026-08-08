@@ -864,7 +864,9 @@ static void open_clock_settings(void) {
 
 class SystemSettings : public SettingsList {
 public:
-    const char *title(void) const override { return "System"; }
+    // Matches its row, which is "Settings" now — see the catalogue. novashots
+    // fails the build if the two ever disagree again.
+    const char *title(void) const override { return "Settings"; }
 
     int help(const char **out, int max) const override {
         if (max < 3) return 0;

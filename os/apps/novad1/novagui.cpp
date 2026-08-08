@@ -173,7 +173,11 @@ static const App kApps[] = {
     { "set_home",   "Home",       CAT_SYSTEM,   screens::open_set_home,     nullptr },
     { "set_network","Network",    CAT_SYSTEM,   screens::open_set_network,  nullptr },
     { "set_security","Security",  CAT_SYSTEM,   screens::open_set_security, nullptr },
-    { "set_system", "System",     CAT_SYSTEM,   screens::open_set_system,   nullptr },
+    // "Settings", not "System": this row lives INSIDE the System folder, and a
+    // System folder holding a System row read as a dead end that looped back on
+    // itself. It is the general device settings — clock, versions, reset — so
+    // Settings is both what it is and what stops the folder repeating its name.
+    { "set_system", "Settings",   CAT_SYSTEM,   screens::open_set_system,   nullptr },
     // No "Device" row. What this device IS reaches through System -> Versions,
     // which is where the MicroPython suite kept it — identity is not a peer of
     // Display and Network, and a sixth settings icon in this folder was the
