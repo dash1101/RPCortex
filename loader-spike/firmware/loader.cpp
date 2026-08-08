@@ -24,6 +24,11 @@
 
 #include <string.h>
 #include <stdio.h>
+
+// Relocations processed per read. 256 of them is two kilobytes of bss and one
+// read per 256 patches — small enough to be free, large enough that the read
+// count never matters.
+#define REL_CHUNK 256
 #include <stdlib.h>
 
 // ------------------------------------------------------------- allocation
@@ -603,12 +608,38 @@ LoadResult app_load(const AppSource &src, LoadedApp *out) {
     if (strtab_idx >= eh.e_shnum) {
         free(syms); free(names); app_unload(out); return LOAD_ERR_READ;
     }
-    char *strs = (char *)malloc(sh[strtab_idx].sh_size);
-    if (!strs) { free(syms); free(names); app_unload(out); return LOAD_ERR_OOM; }
-    if (!read_exact(src, sh[strtab_idx].sh_offset, strs,
-                    sh[strtab_idx].sh_size)) {
-        free(strs); free(syms); free(names); app_unload(out); return LOAD_ERR_READ;
-    }
+    // THE STRING TABLE IS NOT READ INTO RAM.
+    //
+    // It is 32 KB for a Nova D1-sized package and was held for the whole of
+    // relocation, alongside the symbol table and the image itself — a peak of
+    // over 200 KB for a package whose image is 123. That is what made an
+    // in-place upgrade fail on a device reporting 277 KB free.
+    //
+    // Almost none of it is ever looked at. A name is needed only for a symbol
+    // the firmware has to resolve — sixty-odd imports — and for the text of an
+    // error. Every other relocation resolves through the section map and never
+    // touches a character. So the names are read one at a time, from wherever
+    // the package is, and the 32 KB stays on flash.
+    const uint32_t strtab_off  = sh[strtab_idx].sh_offset;
+    const uint32_t strtab_size = sh[strtab_idx].sh_size;
+    static char namebuf[96];
+
+    auto sym_name = [&](uint32_t st_name) -> const char * {
+        namebuf[0] = 0;
+        if (st_name >= strtab_size) return namebuf;
+        uint32_t want = strtab_size - st_name;
+        if (want > sizeof(namebuf) - 1) want = sizeof(namebuf) - 1;
+        if (!read_exact(src, strtab_off + st_name, namebuf, want)) {
+            namebuf[0] = 0;
+            return namebuf;
+        }
+        // A name longer than the buffer is truncated, and truncation is safe:
+        // api_index_of will not match a partial name, so it becomes a clean
+        // "undefined symbol" naming most of what was wanted rather than a wrong
+        // match. Every symbol the firmware exports is a short C name.
+        namebuf[sizeof(namebuf) - 1] = 0;
+        return namebuf;
+    };
 
     LoadResult rc = LOAD_OK;
 
@@ -618,7 +649,7 @@ LoadResult app_load(const AppSource &src, LoadedApp *out) {
         const Elf32_Sym &s = syms[idx];
         *is_func = (ELF32_ST_TYPE(s.st_info) == STT_FUNC);
         if (s.st_shndx == SHN_UNDEF) {
-            const char *nm = strs + s.st_name;
+            const char *nm = sym_name(s.st_name);
             if (g_veneer_mode == LOADER_VENEER_SVC) {
                 // A sandboxed package never learns a firmware address at all.
                 // The symbol resolves to its own supervisor-call veneer, which
@@ -646,7 +677,7 @@ LoadResult app_load(const AppSource &src, LoadedApp *out) {
         }
         if (s.st_shndx == SHN_ABS) { *addr = s.st_value; return LOAD_OK; }
         if (s.st_shndx >= eh.e_shnum || !map[s.st_shndx].loaded) {
-            set_detail(out, strs + s.st_name);
+            set_detail(out, sym_name(s.st_name));
             return LOAD_ERR_UNDEF_SYMBOL;
         }
         *addr = map[s.st_shndx].addr + s.st_value;
@@ -659,13 +690,29 @@ LoadResult app_load(const AppSource &src, LoadedApp *out) {
         if (target_sec >= eh.e_shnum || !map[target_sec].loaded) continue;
 
         uint32_t n = sh[i].sh_size / sizeof(Elf32_Rel);
-        Elf32_Rel *rels = (Elf32_Rel *)malloc(sh[i].sh_size);
-        if (!rels) { rc = LOAD_ERR_OOM; break; }
-        if (!read_exact(src, sh[i].sh_offset, rels, sh[i].sh_size)) {
-            free(rels); rc = LOAD_ERR_READ; break;
-        }
+
+        // STREAMED, not read whole. .rel.text alone is 29 KB on a Nova D1, and
+        // a relocation is looked at exactly once in order — there is no reason
+        // for the whole section to be resident, and holding it was 29 KB of the
+        // peak that stopped a device upgrading its own package.
+        //
+        // Static rather than a stack array: this runs on the shell's task,
+        // which has 8 KB, and two kilobytes of locals is a third of what a
+        // command has to play with.
+        static Elf32_Rel relbuf[REL_CHUNK];
+        uint32_t have = 0, first = 0;
 
         for (uint32_t r = 0; r < n && rc == LOAD_OK; r++) {
+            if (r >= first + have) {
+                first = r;
+                have  = n - r < REL_CHUNK ? n - r : REL_CHUNK;
+                if (!read_exact(src, sh[i].sh_offset + first * sizeof(Elf32_Rel),
+                                relbuf, have * sizeof(Elf32_Rel))) {
+                    rc = LOAD_ERR_READ;
+                    break;
+                }
+            }
+            const Elf32_Rel *rels = relbuf - first;   // so rels[r] still reads
             uint32_t type = ELF32_R_TYPE(rels[r].r_info);
             uint32_t sidx = ELF32_R_SYM(rels[r].r_info);
             uint32_t P = map[target_sec].addr + rels[r].r_offset;   // patch site
@@ -789,7 +836,6 @@ LoadResult app_load(const AppSource &src, LoadedApp *out) {
                 break;
             }
         }
-        free(rels);
     }
 
     // --- entry point
@@ -797,7 +843,7 @@ LoadResult app_load(const AppSource &src, LoadedApp *out) {
         rc = LOAD_ERR_NO_ENTRY;
         for (uint32_t i = 0; i < nsyms; i++) {
             if (syms[i].st_shndx == SHN_UNDEF) continue;
-            if (strcmp(strs + syms[i].st_name, "app_main") != 0) continue;
+            if (strcmp(sym_name(syms[i].st_name), "app_main") != 0) continue;
             if (syms[i].st_shndx >= eh.e_shnum || !map[syms[i].st_shndx].loaded) break;
             uint32_t a = map[syms[i].st_shndx].addr + syms[i].st_value;
             out->entry = (int (*)(int))(uintptr_t)(a | 1u);       // Thumb
@@ -806,7 +852,6 @@ LoadResult app_load(const AppSource &src, LoadedApp *out) {
         }
     }
 
-    free(strs);
     free(syms);
     free(names);
     if (rc != LOAD_OK) app_unload(out);
