@@ -185,6 +185,66 @@ protected:
     int             top_;
 };
 
+// --- the slider widget --------------------------------------------------------
+//
+// A value you scrub with the encoder, drawn as a fill bar with the reading over
+// it. One widget for every "how much" setting — brightness, the dim and off
+// timeouts, the auto-lock — so they all move and look the same.
+//
+// TWO modes, because two kinds of "how much" want different treatment:
+//   * a RANGE (lo..hi by step) for a true level like brightness, where any point
+//     is meaningful;
+//   * a set of STOPS for a timeout, where 47 seconds is not a thing anybody
+//     wants — the curated list "never, 15s, 30s, 1m, 2m, 5m" is, and the encoder
+//     steps between those.
+//
+// The change is applied LIVE: on_change fires on every detent, so brightness
+// dims under your thumb and the owner can save the final value on its own leave.
+
+enum SliderFmt {
+    SL_PLAIN,       // the number itself
+    SL_PERCENT255,  // a 0..255 level shown 0..100%
+    SL_SECONDS,     // seconds shown "never" / "45s" / "5m"
+};
+
+typedef void (*SliderFn)(void *ctx, int value);
+
+class Slider : public Screen {
+public:
+    // A continuous range. `value` is clamped into [lo, hi].
+    void set(const char *title, int value, int lo, int hi, int step,
+             SliderFmt fmt, SliderFn on_change, void *ctx);
+
+    // A curated set of stops; the encoder moves between them. `stops` belongs to
+    // the caller and must outlive the slider (a static, like a MenuItem array).
+    void set_stops(const char *title, int value, const int *stops, int n,
+                   SliderFmt fmt, SliderFn on_change, void *ctx);
+
+    void draw(Canvas &c) override;
+    Action on_event(Event e) override;
+    const char *title(void) const override { return title_; }
+
+    int help(const char **out, int max) const override {
+        if (max < 2) return 0;
+        out[0] = "Turn to change it.";
+        out[1] = "BACK keeps it.";
+        return 2;
+    }
+
+private:
+    void move(int dir);
+    void fmt_value(char *out, unsigned cap) const;
+
+    const char *title_;
+    SliderFn    cb_;
+    void       *ctx_;
+    const int  *stops_;     // null for a continuous range
+    int         n_;         // stop count, or 0
+    int         idx_;       // current stop, in STOPS mode
+    int         val_, lo_, hi_, step_;
+    SliderFmt   fmt_;
+};
+
 // --- helpers ------------------------------------------------------------------
 
 // Break text into lines of at most `cols` characters, at spaces where it can.

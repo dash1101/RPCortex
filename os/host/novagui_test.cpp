@@ -732,6 +732,39 @@ static void test_contact_readers(void) {
 
 #define STAGE(f) do { fprintf(stderr, "  .. %s\n", #f); f(); } while (0)
 
+// --- the slider applies live -----------------------------------------------------
+//
+// novashots opens the catalogue and the slider sits behind a settings row, so it
+// cannot photograph it. The part worth guarding anyway is that moving it does
+// something NOW, not on the way out — brightness has to dim under the thumb — so
+// this checks the live callback actually reaches the hardware (a contrast write
+// is an I2C write, which the fake counts).
+static void test_slider(void) {
+    using namespace nova;
+    gui::go_home();
+    screens::open_display_settings();
+    ui::Screen *d = gui::top();
+    if (!d) { ok(false, "display settings opens"); return; }
+
+    d->on_event(EV_SELECT);                 // row 0 is Brightness -> the slider
+    ui::Screen *s = gui::top();
+    ok(s && s != d && !strcmp(s->title(), "Brightness"),
+       "brightness opens a slider titled after the row");
+    if (!s || s == d) return;
+
+    Canvas &c = gui::canvas();
+    c.clear(0); s->draw(c);
+    int lit = 0;
+    for (int y = 0; y < c.height(); y++)
+        for (int x = 0; x < c.width(); x++) if (c.get(x, y)) lit++;
+    ok(lit > 12, "the slider draws a value and a bar");
+
+    int w0 = g_i2c_writes;
+    s->on_event(EV_ROT_CW);
+    ok(g_i2c_writes > w0, "moving the brightness slider applies contrast live");
+    gui::go_home();
+}
+
 int main(void) {
     STAGE(test_single_instance);
     STAGE(test_one_detent_animates);
@@ -744,6 +777,7 @@ int main(void) {
     STAGE(test_media_parsing);
     STAGE(test_media_screens);
     STAGE(test_contact_readers);
+    STAGE(test_slider);
     STAGE(test_no_panel);
 
     printf("  %d checks", checks);

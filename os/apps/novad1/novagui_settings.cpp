@@ -602,10 +602,12 @@ protected:
                 else
                     ui::pinpad("Set PIN", pin_typed, nullptr, nullptr);
                 break;
-            case R_AUTO:
-                secs_ = next_in(kLockSteps, LOCK_STEPS, secs_);
-                dirty_ = true;
+            case R_AUTO: {
+                ui::Slider *s = gui::push<ui::Slider>();
+                if (s) s->set_stops("Auto-lock", secs_, kLockSteps, LOCK_STEPS,
+                                    ui::SL_SECONDS, on_auto_slide, this);
                 break;
+            }
             default:
                 // A readout, deliberately. This is the same OS latch the Network
                 // screen's Radio row owns, and two rows driving one switch is how
@@ -615,6 +617,14 @@ protected:
                 break;
         }
         return ui::ACT_STAY;
+    }
+
+    // The auto-lock timeout, scrubbed on the slider and saved with the rest on
+    // the way out. Routed through the owning screen so store() still writes it.
+    static void on_auto_slide(void *ctx, int v) {
+        SecuritySettings *s = (SecuritySettings *)ctx;
+        s->secs_ = v;
+        s->dirty_ = true;
     }
 
 private:

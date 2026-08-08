@@ -144,7 +144,7 @@ public:
 
     int help(const char **out, int max) const override {
         if (max < 2) return 0;
-        out[0] = "SELECT changes the row.";
+        out[0] = "SELECT opens or toggles it.";
         out[1] = "Changes are saved on BACK.";
         return 2;
     }
@@ -184,7 +184,7 @@ public:
     Action on_event(Event e) override {
         if (e == EV_ROT_CW)  { sel_ = (sel_ + 1) % ROWS; return ui::ACT_STAY; }
         if (e == EV_ROT_CCW) { sel_ = (sel_ + ROWS - 1) % ROWS; return ui::ACT_STAY; }
-        if (e == EV_SELECT)  { bump(); return ui::ACT_STAY; }
+        if (e == EV_SELECT)  { activate(); return ui::ACT_STAY; }
         return Screen::on_event(e);
     }
 
@@ -205,24 +205,49 @@ private:
         }
     }
 
-    void bump(void) {
-        dirty_ = true;
+    // The two things that are not levels stay taps; the three that ARE open the
+    // slider. Brightness in sixteen steps (fifteen clicks end to end, not the
+    // 255 a raw slider would be — the old objection was to a bad slider, not to
+    // sliders); the timeouts scrub the curated stops.
+    void activate(void) {
         switch (sel_) {
-            case 0:
-                // Steps of a quarter, wrapping. A slider adjusted one unit at a
-                // time out of 255 is 255 clicks of an encoder, which is not a
-                // control, it is a punishment.
-                bright_ += 64;
-                if (bright_ > 255) bright_ = 15;
-                display().contrast((uint8_t)bright_);
+            case 0: {
+                ui::Slider *s = gui::push<ui::Slider>();
+                if (s) s->set("Brightness", bright_, 15, 255, 16,
+                              ui::SL_PERCENT255, on_slide, this);
                 break;
-            case 1: dim_ = next_timeout(dim_); break;
-            case 2: off_ = next_timeout(off_); break;
+            }
+            case 1: {
+                ui::Slider *s = gui::push<ui::Slider>();
+                if (s) s->set_stops("Dim After", dim_, kTimeouts, TIMEOUTS,
+                                    ui::SL_SECONDS, on_slide, this);
+                break;
+            }
+            case 2: {
+                ui::Slider *s = gui::push<ui::Slider>();
+                if (s) s->set_stops("Screen Off", off_, kTimeouts, TIMEOUTS,
+                                    ui::SL_SECONDS, on_slide, this);
+                break;
+            }
             case 3:
+                dirty_ = true;
                 invert_ = !invert_;
                 display().invert(invert_);
                 break;
             default: next_panel(); break;
+        }
+    }
+
+    // Applied LIVE as the slider moves — brightness dims under your thumb — and
+    // saved with the rest on the way out of this screen. Routed by the row that
+    // opened the slider, since only one is ever open.
+    static void on_slide(void *ctx, int v) {
+        DisplaySettings *s = (DisplaySettings *)ctx;
+        s->dirty_ = true;
+        switch (s->sel_) {
+            case 0: s->bright_ = v; display().contrast((uint8_t)v); break;
+            case 1: s->dim_ = v; break;
+            case 2: s->off_ = v; break;
         }
     }
 
@@ -251,13 +276,14 @@ private:
                             "changes: novad1 service restart.");
     }
 
-    // The timeouts somebody actually wants, not every integer between them.
-    static int next_timeout(int cur) {
-        static const int kSteps[] = { 0, 15, 30, 60, 120, 300 };
-        for (unsigned i = 0; i < sizeof(kSteps) / sizeof(kSteps[0]) - 1; i++)
-            if (cur == kSteps[i]) return kSteps[i + 1];
-        return kSteps[0];
-    }
+    // The timeouts somebody actually wants, not every integer between them —
+    // the stops the slider scrubs through.
+    static constexpr int TIMEOUTS = 6;
+    static const int kTimeouts[TIMEOUTS];
+};
+
+const int DisplaySettings::kTimeouts[DisplaySettings::TIMEOUTS] = {
+    0, 15, 30, 60, 120, 300,
 };
 
 // The MicroPython suite's labels, exactly. Somebody who has used that device

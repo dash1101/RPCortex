@@ -3,6 +3,7 @@
 #include "novaui.h"
 
 #include <string.h>
+#include <stdio.h>
 
 namespace nova {
 namespace ui {
@@ -91,6 +92,90 @@ Action Menu::on_event(Event e) {
         default:
             return Screen::on_event(e);
     }
+}
+
+// --- the slider ----------------------------------------------------------------
+
+void Slider::set(const char *title, int value, int lo, int hi, int step,
+                 SliderFmt fmt, SliderFn on_change, void *ctx) {
+    title_ = title; cb_ = on_change; ctx_ = ctx; fmt_ = fmt;
+    stops_ = nullptr; n_ = 0; idx_ = 0;
+    lo_ = lo; hi_ = hi; step_ = step > 0 ? step : 1;
+    val_ = value < lo ? lo : value > hi ? hi : value;
+}
+
+void Slider::set_stops(const char *title, int value, const int *stops, int n,
+                       SliderFmt fmt, SliderFn on_change, void *ctx) {
+    title_ = title; cb_ = on_change; ctx_ = ctx; fmt_ = fmt;
+    stops_ = stops; n_ = n > 0 ? n : 1; step_ = 1;
+    lo_ = stops ? stops[0] : 0;
+    hi_ = stops ? stops[n_ - 1] : 0;
+    // Land on the stop nearest the current value, so opening the slider does not
+    // silently move the setting.
+    idx_ = 0;
+    for (int i = 1; i < n_; i++)
+        if (stops_[i] <= value) idx_ = i;
+    val_ = stops_ ? stops_[idx_] : value;
+}
+
+void Slider::move(int dir) {
+    if (stops_) {
+        idx_ += dir;
+        if (idx_ < 0) idx_ = 0;
+        if (idx_ >= n_) idx_ = n_ - 1;
+        val_ = stops_[idx_];
+    } else {
+        val_ += dir * step_;
+        if (val_ < lo_) val_ = lo_;
+        if (val_ > hi_) val_ = hi_;
+    }
+    if (cb_) cb_(ctx_, val_);
+}
+
+void Slider::fmt_value(char *out, unsigned cap) const {
+    switch (fmt_) {
+        case SL_PERCENT255:
+            snprintf(out, cap, "%d%%", val_ * 100 / 255);
+            break;
+        case SL_SECONDS:
+            if (!val_)               snprintf(out, cap, "never");
+            else if (val_ % 60 == 0) snprintf(out, cap, "%dm", val_ / 60);
+            else if (val_ < 60)      snprintf(out, cap, "%ds", val_);
+            else                     snprintf(out, cap, "%dm%ds", val_ / 60, val_ % 60);
+            break;
+        default:
+            snprintf(out, cap, "%d", val_);
+            break;
+    }
+}
+
+void Slider::draw(Canvas &c) {
+    // The reading, big and centred, above the bar.
+    char v[16];
+    fmt_value(v, sizeof(v));
+    c.text_centred(ui::TOP + 6, v, 1, 2, false);
+
+    // The track, and the fill. The fraction is by STOP position when there are
+    // stops — the gaps between timeouts are not equal in seconds and a bar that
+    // tried to be would bunch the useful values into a corner — and by value
+    // over the range otherwise.
+    const int bx = 8, bw = c.width() - 16, bh = 9;
+    const int by = c.height() - bh - 6;
+    c.rounded_rect(bx, by, bw, bh, 1, false);
+
+    int num, den;
+    if (stops_) { num = idx_; den = n_ > 1 ? n_ - 1 : 1; }
+    else        { num = val_ - lo_; den = hi_ > lo_ ? hi_ - lo_ : 1; }
+    int fill = (bw - 4) * num / den;
+    if (fill < 0) fill = 0;
+    if (fill > bw - 4) fill = bw - 4;
+    if (fill > 0) c.fill_rect(bx + 2, by + 2, fill, bh - 4, 1);
+}
+
+Action Slider::on_event(Event e) {
+    if (e == EV_ROT_CW)  { move(+1); return ACT_STAY; }
+    if (e == EV_ROT_CCW) { move(-1); return ACT_STAY; }
+    return Screen::on_event(e);
 }
 
 // --- helpers -------------------------------------------------------------------
