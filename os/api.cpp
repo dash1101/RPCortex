@@ -34,6 +34,9 @@
 #include "hardware/uart.h"
 #include "pico/rand.h"
 #include "pico/unique_id.h"
+#if defined(RPC_HAS_WIFI) && RPC_HAS_WIFI
+#include "pico/cyw43_arch.h"    // WL_GPIO2 is the only route to VBUS sense here
+#endif
 #include "pico/aon_timer.h"
 #include "sha256.h"
 #include "framebuf.h"
@@ -638,6 +641,30 @@ extern "C" int fw_power_dormant(unsigned ms, int pin, int high) {
     return power_sleep(ms, pin, high, /*dormant*/true);
 }
 extern "C" unsigned fw_power_min_sleep_ms(void) { return power_min_sleep_ms(); }
+
+// What is powering the board. See the note in rpc_app.h for why a package
+// cannot answer this itself.
+bool net_radio_up(void);
+extern "C" int fw_power_source(void) {
+    task_alive();
+#if defined(RPC_HAS_WIFI) && RPC_HAS_WIFI
+    // WL_GPIO2 on the CYW43 is the VBUS sense on a Pico W and a Pico 2 W. It
+    // can only be read through the radio driver, and ONLY while the radio is
+    // already up — asking otherwise would either fail or, worse, bring the chip
+    // up as a side effect of drawing a battery icon.
+    if (!net_radio_up()) return FW_POWER_UNKNOWN;
+    return cyw43_arch_gpio_get(CYW43_WL_GPIO_VBUS_PIN) ? FW_POWER_USB
+                                                       : FW_POWER_BATTERY;
+#elif defined(PICO_VBUS_PIN)
+    // A non-wireless board has it on an ordinary pin, and nothing else is using
+    // it there. Left as an input; the boot ROM has already configured it.
+    gpio_set_function(PICO_VBUS_PIN, GPIO_FUNC_SIO);
+    gpio_set_dir(PICO_VBUS_PIN, GPIO_IN);
+    return gpio_get(PICO_VBUS_PIN) ? FW_POWER_USB : FW_POWER_BATTERY;
+#else
+    return FW_POWER_UNKNOWN;
+#endif
+}
 
 // --- drawing ----------------------------------------------------------------
 //
@@ -1454,6 +1481,7 @@ static const ApiSymbol kSymbols[] = {
     SYM(fw_power_sleep),
     SYM(fw_power_dormant),
     SYM(fw_power_min_sleep_ms),
+    SYM(fw_power_source),
     SYM(fw_fb_bytes),
     SYM(fw_fb_fill),
     SYM(fw_fb_pixel),

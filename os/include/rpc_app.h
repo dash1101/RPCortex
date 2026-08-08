@@ -23,7 +23,7 @@ extern "C" {
 // MINOR: a symbol added — older-minor apps still run (everything they want is
 //        present); newer-minor apps refused (they may want something absent).
 #define RPC_API_MAJOR 1
-#define RPC_API_MINOR 19
+#define RPC_API_MINOR 20
 
 typedef struct {
     uint32_t magic;          // RPC_APP_MAGIC
@@ -316,6 +316,29 @@ int fw_power_dormant(unsigned ms, int wake_pin, int wake_high);
 // two seconds on RP2040, ten milliseconds on RP2350 — so a package that sleeps
 // on a schedule has to ask rather than pick a number.
 unsigned fw_power_min_sleep_ms(void);
+
+// What is powering this board, as far as it can tell.
+//
+// A PACKAGE CANNOT WORK THIS OUT FOR ITSELF on a wireless board, which is why
+// this exists. VBUS sense on a Pico W and a Pico 2 W is not an RP2 pin at all —
+// it is GPIO 2 on the CYW43 module — and GPIO 24, where it lives on the
+// non-wireless boards, is one of the four the firmware reserves for the radio
+// and refuses to hand out. A package reaching for it gets a refusal, and a
+// package guessing from an unwired ADC gets a confident wrong answer.
+//
+// FW_POWER_UNKNOWN is a real answer and the common one. It means the question
+// could not be asked — the radio is down, or this board has no way to tell —
+// and anything showing a power state must render that as "no reading" rather
+// than as "on battery". A board whose battery sense is not wired reporting
+// empty is exactly the confident wrong answer this is here to avoid.
+//
+// It NEVER brings the radio up to find out. Powering a radio to draw a battery
+// icon would cost more than the icon is worth and would make a passive readout
+// change the state of the device.
+#define FW_POWER_UNKNOWN 0
+#define FW_POWER_USB     1     // external power is present
+#define FW_POWER_BATTERY 2     // running from the cell
+int fw_power_source(void);
 
 // --- drawing ----------------------------------------------------------------
 //
