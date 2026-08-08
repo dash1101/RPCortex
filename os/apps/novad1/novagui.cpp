@@ -14,6 +14,8 @@
 #include "novagui_settings.h"
 #include "novagui_wifi.h"
 #include "novagui_ops.h"
+#include "novagui_apps.h"
+#include "novagui_ble.h"
 
 #include "rpc_app.h"
 #include <string.h>
@@ -134,9 +136,9 @@ void go_home(void) {
 static const App kApps[] = {
     // key          label         category      open      module
     { "wifi",       "WiFi",       CAT_WIRELESS, screens::open_wifi,      nullptr },
-    { "bt",         "BLE",        CAT_WIRELESS, nullptr,  "bt" },
-    { "radar",      "Radar",      CAT_WIRELESS, nullptr,  nullptr },
-    { "presence",   "Presence",   CAT_WIRELESS, nullptr,  nullptr },
+    { "bt",         "BLE",        CAT_WIRELESS, screens::open_ble,       "bt" },
+    { "radar",      "Radar",      CAT_WIRELESS, screens::open_radar,     nullptr },
+    { "presence",   "Presence",   CAT_WIRELESS, screens::open_presence,  nullptr },
     { "wardrive",   "Wardrive",   CAT_WIRELESS, screens::open_wardrive,  nullptr },
     { "pn532",      "NFC",        CAT_WIRELESS, nullptr,  "pn532" },
     // 'ir' is the app the MicroPython home used; ir_rx and ir_tx are the two
@@ -152,11 +154,11 @@ static const App kApps[] = {
     { "clock",      "Clock",      CAT_SENSORS,  screens::open_clock,     nullptr },
 
     { "files",      "Files",      CAT_TOOLS,    screens::open_files,     nullptr },
-    { "shell",      "Shell",      CAT_TOOLS,    nullptr,  nullptr },
+    { "shell",      "Shell",      CAT_TOOLS,    screens::open_shell,     nullptr },
     { "res",        "Resources",  CAT_TOOLS,    screens::open_resources, nullptr },
     { "notes",      "Alerts",     CAT_TOOLS,    screens::open_alerts,    nullptr },
-    { "scripts",    "Scripts",    CAT_TOOLS,    nullptr,  nullptr },
-    { "store",      "App Store",  CAT_TOOLS,    nullptr,  nullptr },
+    { "scripts",    "Scripts",    CAT_TOOLS,    screens::open_scripts,   nullptr },
+    { "store",      "App Store",  CAT_TOOLS,    screens::open_store,     nullptr },
     { "cmds",       "Commands",   CAT_TOOLS,    screens::open_commands,  nullptr },
     { "logs",       "Logs",       CAT_TOOLS,    screens::open_logs,      nullptr },
 
@@ -498,22 +500,12 @@ static void open_category(void) {
 }
 
 // --- the power menu -----------------------------------------------------------------
-
-static Action power_reboot(void *, int) { fw_reboot(); return ACT_STAY; }
-
-static const ui::MenuItem kPowerItems[] = {
-    { "Lock",       nullptr,      nullptr },
-    { "Incognito",  nullptr,      nullptr },
-    { "Controls",   nullptr,      nullptr },
-    { "Reload",     nullptr,      nullptr },
-    { "Reboot",     power_reboot, nullptr },
-    { "Shutdown",   nullptr,      nullptr },
-};
-
-class PowerMenu : public ui::Menu {
-public:
-    void enter(void) override { set("Power", kPowerItems, 6); }
-};
+//
+// The real one lives in novagui_ops.cpp. This used to be a six-row menu with
+// five inert rows, written before there was anything behind them — and holding
+// HOME went on opening it after the real screen arrived, because this is what
+// the runner pushed. A stub that outlives its replacement is worse than no stub
+// at all: the feature exists and cannot be reached.
 
 // --- the loop --------------------------------------------------------------------
 
@@ -632,7 +624,7 @@ void run(void) {
             // does not stack a second copy on itself.
             if (e == EV_HOME_HOLD) {
                 Screen *s = top();
-                if (!s || !nova::ieq(s->title(), "Power")) push<PowerMenu>();
+                if (!s || !nova::ieq(s->title(), "Power")) screens::open_power();
                 g_dirty = true;
                 continue;
             }

@@ -34,7 +34,19 @@ static void index_add(const char *name, const char *version) {
     uint32_t n = storage_read_file(PKG_INDEX, (uint8_t *)buf, IDX_BUF - 1);
     buf[n] = 0;
     uint32_t nn = pkgindex_add(buf, n, IDX_BUF, name, version);
-    if (nn != n) storage_write_file(PKG_INDEX, (uint8_t *)buf, nn);
+    // ALWAYS written, never "only if the length changed".
+    //
+    // That guard was correct while pkgindex_add refused to touch a package it
+    // already knew, because then an unchanged length really did mean unchanged
+    // content. Now it rewrites the version in place — and 0.95.0 to 0.98.0 is
+    // the same number of characters, so the buffer changed and the length did
+    // not. The device installed 0.98.0, ran 0.98.0, and went on reporting
+    // 0.95.0 in `pkg list`, which is the exact bug the rewrite was for.
+    //
+    // An install has just written a package to flash. One more small write is
+    // not worth a cleverer comparison than "did we mean to record something".
+    (void)n;
+    storage_write_file(PKG_INDEX, (uint8_t *)buf, nn);
     free(buf);
 }
 
@@ -132,8 +144,28 @@ bool pkg_install_file(const char *file, bool quiet, bool consume) {
         if (rc == LOAD_ERR_OOM) {
             out_multi("  %lu bytes free. The image needs its size in ONE piece,",
                       (unsigned long)heap_free());
-            out_multi("  so free memory alone is not enough; 'meminfo' shows the");
-            out_multi("  largest block. 'unload' something, or reboot and retry.");
+            out_multi("  so the total is not the number that decides it —");
+            out_multi("  'meminfo' shows the largest block, which is.");
+            out_multi("  ");
+            // The specific shape this takes, said out loud, because working it
+            // out from "largest block" takes longer than it should.
+            //
+            // Upgrading a package that GREW is the hard case: the copy being
+            // replaced is unloaded first, but the hole it leaves is its own old
+            // size, and the new image does not fit in it. Everything else on
+            // the heap is still where it was, so the total climbs and the
+            // largest block does not.
+            //
+            // Starting from a boot with the package not loaded at all gives one
+            // large region instead of two medium ones, and that is the whole
+            // difference between this failing and succeeding.
+            out_multi("  An upgrade to a LARGER package is the hard case: the old");
+            out_multi("  copy's space is its own old size, and the new one does");
+            out_multi("  not fit in it. What works:");
+            out_multi("    service clear      so nothing loads it at boot");
+            out_multi("    reboot");
+            out_multi("    pkg install %s", name);
+            out_multi("    novad1 setup       to put the service back");
         }
         // Put back what was working. The file was never touched, so this is a
         // genuine restore rather than a hope — and a failed upgrade leaving the
