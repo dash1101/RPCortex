@@ -732,13 +732,24 @@ void SysCheckScreen::run_check(int i) {
                     res_[i] = C_GOOD;
                     nova::copy(d, cap, "USB");
                     break;
-                case power::PWR_BATTERY:
-                    res_[i] = power::low() ? C_BAD : C_GOOD;
-                    snprintf(d, cap, "battery %d%%", power::percent());
+                case power::PWR_BATTERY: {
+                    // Knowing it is on the cell is not knowing how full it is:
+                    // that needs the battery divider, which the profile leaves
+                    // unset. Without one there is no percentage to print, and
+                    // "battery -1%" is not an answer.
+                    int p = power::percent();
+                    if (p < 0) {
+                        res_[i] = C_SKIP;
+                        nova::copy(d, cap, "battery, no sense pin");
+                    } else {
+                        res_[i] = power::low() ? C_BAD : C_GOOD;
+                        snprintf(d, cap, "battery %d%%", p);
+                    }
                     break;
+                }
                 default:
                     res_[i] = C_SKIP;
-                    nova::copy(d, cap, "no sense pin");
+                    nova::copy(d, cap, "not known");
                     break;
             }
             break;

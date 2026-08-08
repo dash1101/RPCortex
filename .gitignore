@@ -1,6 +1,9 @@
 # Vendored upstream, cloned by setup rather than committed. See the README.
 sdk/
 littlefs/
+littlefs        # the bare name too: a SYMLINK named littlefs is not matched
+                # by "littlefs/", and one committed from a worktree replaced
+                # the vendored checkout on merge
 
 # Build directories
 build/

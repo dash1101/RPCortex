@@ -14,14 +14,23 @@ namespace nova {
 namespace power {
 
 enum Source {
-    PWR_UNKNOWN = 0,    // nothing wired that could say
+    PWR_UNKNOWN = 0,    // nothing could say — not the same as "no power"
     PWR_USB,            // on USB, however the battery is doing
-    PWR_BATTERY,        // running off the cell
+    PWR_BATTERY,        // running off the cell, at some unstated level
 };
 
 // Where the power is coming from. USB wins when it is detected at all, because
 // on USB the battery reading is a charging voltage rather than a state of charge
 // and showing it as a level would be a lie that moves.
+//
+// THE SOURCE AND THE LEVEL ARE SEPARATE QUESTIONS, and PWR_BATTERY does not
+// promise percent() will answer. The firmware knows what is powering the board
+// — VBUS sense lives on the radio module and only it can reach it — while the
+// level needs a divider on the battery pin, which the profile deliberately
+// leaves unset. So a board can know it is on the cell and have nothing to say
+// about how full it is; a caller printing a level has to check for itself.
+//
+// Cached for a second, because the status bar asks on every frame.
 Source source(void);
 
 // 0-100, or -1 when there is no divider wired and no way to know. Cached for a

@@ -29,8 +29,47 @@ constexpr int TOP  = BARH + 1;      // 10 — where a screen's body starts
 constexpr int ROWH = FH + 2;        // 9
 constexpr int SB_W = 3;             // the scrollbar lane
 
+// The slot the power indicator takes at the right of the status bar: the cell,
+// its terminal, and two pixels of air before the clock. One width for all three
+// of the states it can be in, so the WiFi bars and the title beside it do not
+// shuffle sideways when the power state changes.
+constexpr int POWER_W = 16;
+
 // Rows a list can show on this canvas.
 inline int rows_for(const Canvas &c) { return (c.height() - TOP) / ROWH; }
+
+// --- the gallery -------------------------------------------------------------
+//
+// The home screen and the folders inside it are laid out from the BOTTOM up: the
+// position pips on the last usable row, the label above them, and the ring of
+// icons in what is left.
+//
+// Here with the rest of the layout rather than inside the gallery because the
+// host renderer composes the same frame from the same numbers. Two copies of
+// "twenty pixels down from TOP" is how the renderer and the panel drifted apart
+// before, and a renderer that disagrees with the device is worse than none.
+
+constexpr int ICON_BIG     = 12;    // the icon under the cursor
+constexpr int ICON_SMALL   = 5;     // its neighbours
+constexpr int ICON_SPACING = 38;    // between icon centres, for three across
+constexpr int PIP_H        = 2;     // a lit pip is two pixels square
+constexpr int PIP_PITCH    = 3;     // ...and the air after it
+
+// Blank rows between the top of the body and the top of the big icon. The ring
+// used to start eight rows down because the pips took the first two; with the
+// pips moved to the foot of the panel it comes up to six, which keeps the air
+// above the ring looking the way it did while the clutter under the status bar
+// goes away.
+constexpr int RING_GAP = 6;
+constexpr int RING_Y   = TOP + RING_GAP + ICON_BIG;
+
+// One row of margin is left under the pips deliberately. Nothing on the host can
+// see whether the bezel eats the last row of the glass, and a position indicator
+// that is half hidden is worse than one a pixel higher.
+inline int pip_y(const Canvas &c)   { return c.height() - PIP_H - 1; }
+// Two rows of air between the label and the pips: enough that they read as a
+// label with an indicator under it rather than as one block.
+inline int label_y(const Canvas &c) { return pip_y(c) - FH - 2; }
 
 // --- the Screen protocol ------------------------------------------------------
 
@@ -157,6 +196,22 @@ int wrap(const char *s, int cols, char *store, unsigned store_cap,
 // Draw a title bar row for a screen that wants one inside its own body — a
 // heading with a rule under it, at the top of the body area.
 void heading(Canvas &c, const char *text);
+
+// The power indicator, drawn from `x` and occupying POWER_W. Three states, and
+// which one shows is decided by what is actually KNOWN rather than by a guess:
+//
+//   usb              the USB trident, and no level — on external power a cell
+//                    reads as a charging voltage, and drawing that as a level
+//                    would be a number that moves for the wrong reason
+//   pct < 0          a plain cell outline: powered, and no way to say how much.
+//                    The ordinary state of a board whose battery sense pin is
+//                    not wired, and it must not show a level it does not have
+//   pct >= 0         the cell filled in proportion, with the number inside it
+//
+// Plain arguments rather than a power::Source, so this file goes on knowing
+// about the canvas and nothing else and the host renderer can call it without
+// dragging a driver in behind it.
+void power_badge(Canvas &c, int x, bool usb, int pct);
 
 }  // namespace ui
 }  // namespace nova

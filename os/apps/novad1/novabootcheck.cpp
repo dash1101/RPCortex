@@ -106,14 +106,23 @@ void BootCheckScreen::run_step(int i) {
                     nova::copy(d, cap, "USB");
                     break;
                 case power::PWR_BATTERY: {
+                    // Knowing it is on the cell is not knowing how full it is:
+                    // that needs the battery divider, which the profile leaves
+                    // unset. Without one there is no percentage to print, and
+                    // "battery -1%" is not an answer.
                     int p = power::percent();
-                    result_[i] = power::low() ? R_BAD : R_GOOD;
-                    snprintf(d, cap, "battery %d%%", p);
+                    if (p < 0) {
+                        result_[i] = R_SKIP;
+                        nova::copy(d, cap, "battery, no sense pin");
+                    } else {
+                        result_[i] = power::low() ? R_BAD : R_GOOD;
+                        snprintf(d, cap, "battery %d%%", p);
+                    }
                     break;
                 }
                 default:
                     result_[i] = R_SKIP;
-                    nova::copy(d, cap, "no sense pin");
+                    nova::copy(d, cap, "not known");
                     break;
             }
             break;

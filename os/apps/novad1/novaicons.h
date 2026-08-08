@@ -17,8 +17,11 @@
 namespace nova {
 namespace icons {
 
-// Draw `key` centred on (cx, cy) at about `r` pixels of radius. Icons are
-// designed at r = 12 for the gallery centre and r = 6 for its neighbours.
+// Draw `key` centred on (cx, cy) at about `r` pixels of radius. Icons were drawn
+// against r = 12 for the gallery centre and r = 6 for its neighbours, which is
+// the pair the port was checked at and the pair tools/icondiff.py still compares.
+// The gallery now asks for ui::ICON_SMALL, a pixel under that; anything added
+// here has to stay legible a size below the one it was drawn at.
 void draw(Canvas &c, const char *key, int cx, int cy, int r, const char *label_fallback);
 
 }  // namespace icons

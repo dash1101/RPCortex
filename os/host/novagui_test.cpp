@@ -143,6 +143,11 @@ void fw_random_bytes(void *buf, unsigned len) { for (unsigned i = 0; i < len; i+
 int fw_power_sleep(unsigned, int, int) { return 0; }
 int fw_power_dormant(unsigned, int, int) { return 0; }
 unsigned fw_power_min_sleep_ms(void) { return 1; }
+// What is powering the board. UNKNOWN is the honest default for a harness with
+// no radio and no battery divider, and it is the state the status bar has to
+// render as "no reading" rather than as empty.
+static int g_power_source = FW_POWER_UNKNOWN;
+int fw_power_source(void) { return g_power_source; }
 
 }  // extern "C"
 

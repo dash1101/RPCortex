@@ -137,5 +137,120 @@ void heading(Canvas &c, const char *text) {
     c.hline(0, TOP + FH + 1, c.width(), 1);
 }
 
+// --- the power indicator --------------------------------------------------------
+
+// Digits at three by five, because the panel font does not fit inside a battery.
+//
+// A cell tall enough to hold a 5x7 glyph and its border would be nine rows and
+// the status bar has eight before the rule, so the number inside had to be its
+// own alphabet. Only the ten digits exist: this draws percentages and nothing
+// else, and a general small font is a thing to add when something needs one.
+//
+// One byte a row, bit 2 leftmost, written in binary so each literal reads as the
+// pixels it draws.
+static const uint8_t kDigit[10][5] = {
+    { 0b111, 0b101, 0b101, 0b101, 0b111 },   // 0
+    { 0b010, 0b110, 0b010, 0b010, 0b111 },   // 1
+    { 0b111, 0b001, 0b111, 0b100, 0b111 },   // 2
+    { 0b111, 0b001, 0b111, 0b001, 0b111 },   // 3
+    { 0b101, 0b101, 0b111, 0b001, 0b001 },   // 4
+    { 0b111, 0b100, 0b111, 0b001, 0b111 },   // 5
+    { 0b111, 0b100, 0b111, 0b101, 0b111 },   // 6
+    { 0b111, 0b001, 0b001, 0b001, 0b001 },   // 7
+    { 0b111, 0b101, 0b111, 0b101, 0b111 },   // 8
+    { 0b111, 0b101, 0b111, 0b001, 0b111 },   // 9
+};
+
+constexpr int DIGIT_W = 3;
+constexpr int DIGIT_H = 5;
+
+// The cell, sized from the slot so the two cannot disagree: POWER_W is the shell
+// plus its terminal plus the air before the clock.
+constexpr int CELL_W = POWER_W - 3;
+// Eight rows, which is one more than everything else in the bar and is the
+// tallest a shell can be without touching the rule. The interior has to hold a
+// five-row digit and a row of air, or the top of an 8 merges into the border and
+// the number stops being a number.
+constexpr int CELL_H = 8;
+
+void power_badge(Canvas &c, int x, bool usb, int pct) {
+    if (usb) {
+        // A USB trident: the stem, the round tip, the square tip, the fork.
+        // Centred in the slot the cell would have taken, so the bar does not
+        // shift when a cable goes in.
+        int sx = x + (CELL_W + 1 - 10) / 2;
+        int y  = 4;
+        c.hline(sx, y, 10, 1);
+        c.fill_rect(sx, y - 1, 2, 3, 1);
+        c.line(sx + 4, y, sx + 6, y - 3, 1);
+        c.fill_rect(sx + 6, y - 4, 2, 2, 1);
+        c.line(sx + 4, y, sx + 6, y + 3, 1);
+        c.rect(sx + 6, y + 2, 2, 2, 1);
+        return;
+    }
+
+    // The shell, corners knocked off, with its terminal on the right. A hard
+    // rectangle in a bar of drawn shapes reads as a debug overlay.
+    c.rounded_rect(x, 0, CELL_W, CELL_H, 1, false);
+    c.fill_rect(x + CELL_W, 3, 1, 2, 1);
+
+    if (pct < 0) return;        // powered, and nothing honest to say about how much
+    if (pct > 100) pct = 100;
+
+    // Inside the border: the interior the fill and the number share.
+    const int ix = x + 1;
+    const int iy = 1;
+    const int iw = CELL_W - 2;
+    const int ih = CELL_H - 2;
+
+    const int fill_w = pct * iw / 100;
+    if (fill_w > 0) c.fill_rect(ix, iy, fill_w, ih, 1);
+
+    // The number, in the background colour where the fill is behind it and the
+    // foreground colour where it is not — the way a phone does it, and the only
+    // way it stays readable at both ends of the range on a panel with no greys.
+    int d[3], n = 0;
+    if      (pct >= 100) { d[n++] = 1; d[n++] = 0; d[n++] = 0; }
+    else if (pct >= 10)  { d[n++] = pct / 10; d[n++] = pct % 10; }
+    else                 { d[n++] = pct; }
+
+    const int num_w = n * DIGIT_W + (n - 1);
+    // Sat on the bottom of the interior rather than centred in it: the spare row
+    // goes above, so the digits share a baseline with the border under them the
+    // way text sits on a line. At 100% the number fills the width exactly, which
+    // is the one case where every pixel of it is dark against a full fill and
+    // has the border to lean on.
+    int dx = ix + (iw - num_w) / 2;
+    const int dy = iy + ih - DIGIT_H;
+
+    // ONE COLOUR PER DIGIT, decided by where the digit's middle falls.
+    //
+    // Inverting per COLUMN is what a phone does and it is wrong here. A digit is
+    // three pixels wide, so a fill edge landing inside one leaves it two pixels
+    // knocked out and one solid — which at this size is not a damaged digit, it
+    // is not a digit. Every level between about 35 and 75 per cent put the edge
+    // through one.
+    //
+    // Choosing by the middle means the boundary does not cut a glyph, at the
+    // cost of a digit that is very slightly the wrong colour for a pixel or two
+    // of its width. That trade is only worth making because there are three
+    // pixels: at any size where per-column inversion reads, it is the better
+    // answer, and this comment is here so nobody 'fixes' it back on a bigger
+    // panel without knowing why.
+    const int fill_edge = ix + fill_w;
+    for (int i = 0; i < n; i++) {
+        const uint8_t *g = kDigit[d[i]];
+        const bool over_fill = (dx + DIGIT_W / 2) < fill_edge;
+        const int colour = over_fill ? 0 : 1;
+        for (int row = 0; row < DIGIT_H; row++) {
+            for (int col = 0; col < DIGIT_W; col++) {
+                if (!((g[row] >> (DIGIT_W - 1 - col)) & 1u)) continue;
+                c.pixel(dx + col, dy + row, colour);
+            }
+        }
+        dx += DIGIT_W + 1;
+    }
+}
+
 }  // namespace ui
 }  // namespace nova
