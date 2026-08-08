@@ -46,6 +46,7 @@
 #include "../apps/novad1/novagui_ops.cpp"
 #include "../apps/novad1/novagui_apps.cpp"
 #include "../apps/novad1/novagui_ble.cpp"
+#include "../apps/novad1/novagui_media.cpp"
 #include "../apps/novad1/novagui_tasks.cpp"
 #include "../apps/novad1/novagui.cpp"
 
@@ -393,6 +394,245 @@ static void test_catalogue(void) {
     ok(with_screen > 0, "some of them open something");
 }
 
+// --- the media player -------------------------------------------------------------------
+//
+// novashots opens the CATALOGUE, and the player is one row of it with three
+// screens behind it: a browser, a now-playing view and a speaker picker. None of
+// those three can be photographed, so what a dump would have shown is asserted
+// here instead — that they draw something, that they call themselves what they
+// are, and that the four things underneath them are right.
+//
+// The four are the parts a device would otherwise be the first to find out
+// about: the .wav filter, the WAV header reader, the command strings handed to
+// the shell, and the parse of what btaudio prints back.
+
+static int lit_pixels(void) {
+    using namespace nova;
+    Canvas &c = gui::canvas();
+    ui::Screen *s = gui::top();
+    if (!s) return 0;
+    c.clear(0);
+    s->draw(c);
+    int n = 0;
+    for (int y = 0; y < c.height(); y++)
+        for (int x = 0; x < c.width(); x++) if (c.get(x, y)) n++;
+    return n;
+}
+
+static void settle_top(int frames, uint32_t dt) {
+    using namespace nova;
+    for (int i = 0; i < frames; i++) {
+        ui::Screen *s = gui::top();
+        if (!s) return;
+        s->tick(dt);
+        g_ms += dt;
+    }
+}
+
+static void test_media_parsing(void) {
+    using namespace nova::screens;
+
+    // The extension filter. readme.txt is in the fake filesystem for exactly
+    // this: a music browser that lists it is a file manager.
+    ok(media_is_wav("drift.wav"), "a .wav is playable");
+    ok(media_is_wav("DRIFT.WAV"), "and the check is case-insensitive");
+    ok(!media_is_wav("readme.txt"), "a .txt is not");
+    ok(!media_is_wav("wav"), "and neither is a name that merely contains it");
+
+    // The header, read through the ABI from the fake's synthesised RIFF. drift
+    // carries a LIST/INFO chunk BEFORE its data chunk, which is the layout a
+    // walk that assumes fmt-then-data reads as samples.
+    MediaWav w;
+    media_wav_read("/nova/music/Ambient/drift.wav", &w);
+    eq(w.why, MEDIA_WAV_OK, "a tagged WAV parses");
+    eq((int)w.rate, 44100, "its rate is read");
+    eq((int)w.channels, 2, "and its channel count");
+    ok(!strcmp(w.name, "Drift"), "INAM is the title");
+    ok(!strcmp(w.artist, "Nova Labs"), "IART is the artist");
+    eq((int)media_seconds(w), 3528044 / (44100 * 2 * 2), "and the length is arithmetic");
+
+    // A file with no INFO must report NO artist rather than one invented from
+    // its name. This is the check that stops the screen making something up.
+    media_wav_read("/nova/music/beacon.wav", &w);
+    eq(w.why, MEDIA_WAV_OK, "an untagged WAV parses too");
+    ok(!w.artist[0], "and carries no artist at all");
+    ok(!w.name[0], "and no title");
+    eq((int)w.channels, 1, "mono is read as mono");
+
+    media_wav_read("/nova/music/readme.txt", &w);
+    eq(w.why, MEDIA_WAV_NONE, "something that is not a WAV is not read as one");
+
+    // The stem is what a file with no INAM is called on screen.
+    char stem[26];
+    media_stem(stem, sizeof(stem), "signal-lost.wav");
+    ok(!strcmp(stem, "signal-lost"), "the extension comes off the title");
+    media_stem(stem, sizeof(stem), "noext");
+    ok(!strcmp(stem, "noext"), "and a name with no extension survives whole");
+
+    // The command handed to the shell. A space in a name is ordinary in music
+    // and `btaudio play` takes one argument, so it has to be quoted.
+    char line[RPC_SHELL_LINE_MAX];
+    ok(media_play_line(line, sizeof(line), "/nova/music/my song.wav"),
+       "a path with a space is accepted");
+    ok(!strcmp(line, "btaudio play \"/nova/music/my song.wav\""),
+       "and comes out quoted");
+    // The tokeniser understands double quotes and nothing else, so a path with
+    // one in it has no encoding and must be refused rather than mis-run.
+    ok(!media_play_line(line, sizeof(line), "/nova/music/say \"hi\".wav"),
+       "a path containing a quote is refused");
+    char huge[300];
+    memset(huge, 'a', sizeof(huge) - 1);
+    huge[sizeof(huge) - 1] = 0;
+    ok(!media_play_line(line, sizeof(line), huge),
+       "and a path too long for the shell is refused, not truncated");
+
+    // What btaudio prints back. The text is the fake's, which is copied from the
+    // real out_multi format strings.
+    media_status_read(
+        "[:] Bluetooth audio\n"
+        "  Name       RPCortex\n"
+        "  Speaker    C8:7B:23:11:04:9A\n"
+        "  Playing    /nova/music/Ambient/drift.wav\n"
+        "  Position   37%  (44100 Hz, 2 channels)\n"
+        "  Volume     65%\n"
+        "  Underruns  4\n");
+    ok(g_media_linked, "a connected speaker is read as connected");
+    ok(!strcmp(g_media_peer, "C8:7B:23:11:04:9A"), "and its address kept");
+    eq(g_media_state, MEDIA_PLAYING, "a track is read as playing");
+    eq(g_media_vol, 65, "the volume comes off the row");
+    eq(g_media_prog, 37, "and the position");
+    eq((int)g_media_under, 4, "and the underrun count");
+
+    media_status_read(
+        "[:] Bluetooth audio\n"
+        "  Name       RPCortex\n"
+        "  Speaker    not connected\n"
+        "  Playing    nothing\n"
+        "  Volume     80%\n"
+        "  Underruns  0\n");
+    ok(!g_media_linked, "'not connected' is not an address");
+    eq(g_media_state, MEDIA_IDLE, "and 'nothing' is not a track");
+    eq(g_media_prog, -1, "with no position printed, there is no progress to draw");
+
+    // An EMPTY reply is a capture somebody else held, not an empty answer. It
+    // must leave the picture alone rather than reporting a speaker gone.
+    g_media_linked = true;
+    media_status_read("");
+    ok(g_media_linked, "an empty reply changes nothing");
+    g_media_linked = false;
+}
+
+static void test_media_screens(void) {
+    using namespace nova;
+    using namespace nova::screens;
+
+    gui::go_home();
+    screens::open_media();
+    ui::Screen *root = gui::top();
+    if (!root) { ok(false, "the player opens"); return; }
+    // The same rule novashots enforces on every catalogue row, checked here too
+    // because this one is reached from a folder as well.
+    ok(!strcmp(root->title(), "Media"), "the player titles itself as the row says");
+    settle_top(4, 33);
+    ok(lit_pixels() > 12, "and draws something");
+
+    // Music -> the browser. Three rows, not four: readme.txt is filtered.
+    root->on_event(EV_SELECT);
+    ui::Screen *browse = gui::top();
+    if (!browse || browse == root) { ok(false, "Music opens the browser"); return; }
+    settle_top(2, 33);
+    ok(lit_pixels() > 12, "the browser draws something");
+    eq(g_media_rows, 3, "the browser lists folders and .wav files only");
+
+    // Into Ambient, whose three tracks become the queue.
+    browse->on_event(EV_SELECT);            // row 0 is the Ambient folder
+    ui::Screen *amb = gui::top();
+    if (!amb || amb == browse) { ok(false, "a folder opens"); return; }
+    ok(!strcmp(amb->title(), "Ambient"), "and titles itself with the folder");
+    eq(g_media_rows, 3, "which holds three tracks");
+
+    // Play the first. The worker is run inline for this, so the whole round trip
+    // happens: a command built, the shell answering, the reply parsed.
+    g_run_spawned = 1;
+    amb->on_event(EV_SELECT);
+    ui::Screen *now = gui::top();
+    if (!now || now == amb) { ok(false, "a track opens Now Playing"); g_run_spawned = 0; return; }
+    ok(!strcmp(now->title(), "Now Playing"), "the transport titles itself");
+    eq(g_media_qn, 3, "the folder became the queue");
+    eq(g_media_pos, 0, "starting at the track that was chosen");
+    ok(!strcmp(g_media_cmd, "btaudio play \"/nova/music/Ambient/drift.wav\""),
+       "and the command names that track");
+
+    // One tick reaps the reply; the poll behind it then reads the real state
+    // back, which with the fake reporting nothing connected is 'not playing'.
+    now->tick(33);
+    ok(lit_pixels() > 12, "Now Playing draws something");
+
+    // With the fake reporting a stream, the poll has to find it. This is the
+    // path that also drives the end-of-track hand-off.
+    g_bta_playing = 1;
+    settle_top(2, 1600);
+    eq(g_media_state, MEDIA_PLAYING, "a stream reported by status is picked up");
+    ok(lit_pixels() > 12, "and the streaming layout still draws");
+
+    // NEXT while playing stops first, because btaudio refuses a play over a
+    // stream — and then starts the track it moved to.
+    now->on_event(EV_ROT_CW);               // PLAY -> NEXT
+    now->on_event(EV_SELECT);
+    now->tick(33);
+    eq(g_media_pos, 1, "NEXT moves to the second track");
+    ok(!strcmp(g_media_cmd, "btaudio play \"/nova/music/Ambient/halo.wav\""),
+       "and plays it once the stop has landed");
+
+    // PREV from the first track wraps to the last rather than doing nothing.
+    g_media_pos = 0;
+    g_media_state = MEDIA_IDLE;
+    now->on_event(EV_ROT_CCW);              // NEXT -> PLAY
+    now->on_event(EV_ROT_CCW);              // PLAY -> PREV
+    now->on_event(EV_SELECT);
+    eq(g_media_pos, 2, "PREV from the first track wraps to the last");
+
+    g_bta_playing = 0;
+    g_run_spawned = 0;
+
+    // The speaker picker, and what a scan gives it.
+    gui::go_home();
+    screens::open_media();
+    root = gui::top();
+    root->on_event(EV_ROT_CW);
+    root->on_event(EV_ROT_CW);
+    root->on_event(EV_SELECT);
+    ui::Screen *spk = gui::top();
+    if (!spk || spk == root) { ok(false, "the speaker picker opens"); return; }
+    ok(!strcmp(spk->title(), "Speaker"), "and is called Speaker");
+    settle_top(2, 33);
+    ok(lit_pixels() > 12, "it draws something with nothing saved");
+
+    // A classic inquiry, because A2DP is Classic and an LE scan finds a
+    // different address that will not accept audio.
+    g_run_spawned = 1;
+    spk->on_event(EV_ROT_CW);
+    spk->on_event(EV_SELECT);
+    ok(!strcmp(g_media_cmd, "bt scan classic 10"), "the scan is a CLASSIC inquiry");
+    spk->tick(33);
+    eq(g_media_found_n, 2, "and its rows are parsed");
+    ok(!strcmp(g_media_found[0].mac, "C8:7B:23:11:04:9A"), "address first");
+    ok(!strcmp(g_media_found[0].name, "JBL Flip 5"), "then the name, spaces and all");
+    ok(lit_pixels() > 12, "the found list draws");
+
+    // Connecting to one remembers it — and only on success, or the next boot
+    // offers a speaker that was never there.
+    spk->on_event(EV_SELECT);               // the cursor is on the first result
+    ok(!strcmp(g_media_cmd, "btaudio connect C8:7B:23:11:04:9A"),
+       "connecting names the chosen address");
+    spk->tick(33);
+    ok(!strcmp(nova::reg(NOVA_KEY_PREFIX "Speaker", ""), "C8:7B:23:11:04:9A"),
+       "a speaker that answered is remembered");
+
+    g_run_spawned = 0;
+    gui::go_home();
+}
+
 #define STAGE(f) do { fprintf(stderr, "  .. %s\n", #f); f(); } while (0)
 
 int main(void) {
@@ -404,6 +644,8 @@ int main(void) {
     STAGE(test_stack_bounds);
     STAGE(test_one_step_per_frame);
     STAGE(test_catalogue);
+    STAGE(test_media_parsing);
+    STAGE(test_media_screens);
     STAGE(test_no_panel);
 
     printf("  %d checks", checks);

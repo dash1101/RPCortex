@@ -403,6 +403,28 @@ static void ic_store(Canvas &c, int cx, int cy, int r) {        // App Store
     c.hline(cx - hw + 1, hy, 2 * hw - 1, 1);
 }
 
+static void ic_note(Canvas &c, int cx, int cy, int r) {         // Media
+    // A quaver: the head low and left, the stem up its right side, and a flag
+    // off the top.
+    //
+    // Drawn from the HEAD outwards, with a floor of two pixels on its radius.
+    // At r = 5 the whole glyph is ten pixels tall, and a head of one pixel
+    // merges into the stem and leaves a bare vertical line that reads as
+    // nothing — which is the failure novaicons.h warns about, and it is only
+    // visible in a dump.
+    const int hr = imax(2, r / 3);
+    const int hx = cx - r / 3;                  // the head's centre
+    const int hy = cy + r / 2;
+    const int sx = hx + hr;                     // the stem, up its right edge
+    const int fx = sx + imax(3, r / 2);         // how far the flags reach
+    c.fill_circle(hx, hy, hr, 1);
+    c.vline(sx, cy - r, hy - (cy - r) + 1, 1);
+    c.line(sx, cy - r, fx, cy - r / 2, 1);
+    // The second flag only where the two can be told apart. Below that it is
+    // one more line in a glyph that already has three.
+    if (r >= 9) c.line(sx, cy - r / 2, fx, cy, 1);
+}
+
 static void ic_notes(Canvas &c, int cx, int cy, int r) {        // Alerts
     // Built by mirroring around cx, so it can never end up visually off-centre.
     int top = cy - r + 1;
@@ -625,6 +647,7 @@ static const Entry kMap[] = {
     { "cmds",        ic_cmdlist },
     { "kbd",         ic_kbd },
     { "store",       ic_store },
+    { "media",       ic_note },
     { "diag",        ic_stetho },
     { "wardrive",    ic_wardrive },
     { "radar",       ic_radar },

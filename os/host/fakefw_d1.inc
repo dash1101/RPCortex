@@ -34,7 +34,13 @@ static char     g_reg[32][2][128];
 static int      g_regn;
 static bool     g_panel_present = true;
 static int      g_spawned;
+static int      g_run_spawned;      // see fw_task_spawn
 static int      g_i2c_writes;
+
+// Whether the faked btaudio has a speaker and a track. Two shapes rather than
+// one, because the media screens have to render both and the not-connected one
+// is what a device out of the box actually says.
+static int      g_bta_playing;
 
 extern "C" {
 
@@ -52,8 +58,20 @@ void     fw_reboot(void) {}
 // Spawning is COUNTED rather than performed. A second runner is what this
 // harness is here to catch, and counting the attempt is how it catches it
 // without needing threads.
-int fw_task_spawn(const char *, int (*)(void *), void *, uint32_t) {
-    return ++g_spawned + 10;
+//
+// g_run_spawned makes it RUN the body instead, inline, on the caller's stack.
+// Off by default, because every screen that spawns a worker would otherwise
+// complete it before the frame it was asked on and no shot would ever show the
+// spinner state a device really does spend seconds in. A test that wants the
+// round trip — a command sent, a reply parsed, a screen updated — turns it on
+// around itself and turns it off again.
+//
+// NEVER around gui::begin(). The input task's body is a loop that only ends
+// when the runner stops, so running it inline never returns.
+int fw_task_spawn(const char *, int (*fn)(void *), void *arg, uint32_t) {
+    g_spawned++;
+    if (g_run_spawned && fn) fn(arg);
+    return g_spawned + 10;
 }
 int fw_task_kill(int) { return 1; }
 
@@ -98,11 +116,49 @@ static const char *fake_shell(const char *line) {
                "  Largest block : 29 KB\n";
     if (!strncmp(line, "radio", 5))
         return "  Radio  : on\n  Link   : connected\n  Network: dash_\n";
+    // Before the generic "bt " below, because a classic inquiry finds speakers
+    // and an LE scan does not — the media player asks for one and would
+    // otherwise be handed the other, which is the mistake the ordering here
+    // exists to stop somebody making again.
+    if (!strncmp(line, "bt scan classic", 15))
+        return "[:] Scanning for 10 seconds...\n"
+               "[:] 2 devices\n"
+               "  C8:7B:23:11:04:9A  BR    -62 dBm  JBL Flip 5\n"
+               "  30:21:5B:9E:44:10  BR    -77 dBm  Soundcore 2\n";
     if (!strncmp(line, "bt ", 3))
         return "[:] 3 devices\n"
                "  D9:33:36:32:1B:59  LE    -78 dBm  Govee_H6199_1B59\n"
                "  37:96:7B:89:C2:EB  LE    -80 dBm  \n"
                "  53:0A:FB:D0:FF:87  LE    -92 dBm  Quest 3S\n";
+
+    // btaudio, copied from the out_multi format strings in os/shell/btaudio.cpp
+    // — the two-space indent and the column padding included, because the media
+    // screens parse this and a prettier fake would pass while the real thing
+    // failed.
+    if (!strncmp(line, "btaudio status", 14))
+        return g_bta_playing
+            ? "[:] Bluetooth audio\n"
+              "  Name       RPCortex\n"
+              "  Speaker    C8:7B:23:11:04:9A\n"
+              "  Playing    /nova/music/Ambient/drift.wav\n"
+              "  Position   37%  (44100 Hz, 2 channels)\n"
+              "  Volume     65%\n"
+              "  Underruns  0\n"
+            : "[:] Bluetooth audio\n"
+              "  Name       RPCortex\n"
+              "  Speaker    not connected\n"
+              "  Playing    nothing\n"
+              "  Volume     80%\n"
+              "  Underruns  0\n";
+    if (!strncmp(line, "btaudio connect", 15))
+        return "[:] Connecting to C8:7B:23:11:04:9A...\n"
+               "[@] Connected to C8:7B:23:11:04:9A.\n";
+    if (!strncmp(line, "btaudio play", 12))
+        return "[@] Playing /nova/music/Ambient/drift.wav (44100 Hz, 2 channels).\n";
+    if (!strncmp(line, "btaudio stop", 12))
+        return "[@] Stopped.\n";
+    if (!strncmp(line, "btaudio volume", 14))
+        return "[@] Volume 65%.\n";
     return "";
 }
 
@@ -185,10 +241,120 @@ int fw_time_get(struct FwTime *out) { (void)out; return 0; }
 int fw_unique_id(char *out, unsigned cap) { snprintf(out, cap, "E6614104037A5E2F"); return 1; }
 uint32_t fw_clock_hz(void) { return 150000000u; }
 int fw_net_scan(FwNetAp *out, unsigned max) { (void)out; (void)max; return 0; }
-int fw_dir_count(const char *) { return 0; }
-int fw_dir_entry(const char *, unsigned, FwDirEntry *) { return 0; }
-uint32_t fw_file_size(const char *) { return 0; }
-uint32_t fw_file_read_at(const char *, uint32_t, void *, uint32_t) { return 0; }
+
+// --- a little music library -------------------------------------------------------
+//
+// PATH-KEYED, deliberately. Every directory answered zero before and the file
+// browser's shot is a picture of that; a fake filesystem that answered
+// everywhere would change a screen this has nothing to do with. Only the paths
+// below have anything in them, so /nova/music has music and / is still empty.
+struct FakeEntry {
+    const char *dir;
+    const char *name;
+    int         is_dir;
+    uint32_t    size;
+    uint32_t    rate;           // 0 for anything that is not a WAV
+    uint16_t    channels;
+    const char *inam;           // the RIFF INFO title, when the file carries one
+    const char *iart;
+};
+
+static const FakeEntry g_fake_fs[] = {
+    { "/nova/music", "Ambient",         1,       0,     0, 0, nullptr, nullptr },
+    { "/nova/music", "beacon.wav",      0,  882088, 22050, 1, nullptr, nullptr },
+    // Not a WAV, so it must not appear in the media browser at all. It is here
+    // precisely to prove the filter is doing something.
+    { "/nova/music", "readme.txt",      0,     240,     0, 0, nullptr, nullptr },
+    { "/nova/music", "signal-lost.wav", 0, 2822444, 44100, 2, nullptr, nullptr },
+    // The one file with an INFO chunk, so the metadata path is exercised rather
+    // than merely compiled.
+    { "/nova/music/Ambient", "drift.wav", 0, 3528044, 44100, 2, "Drift", "Nova Labs" },
+    { "/nova/music/Ambient", "halo.wav",  0, 1764044, 44100, 2, nullptr, nullptr },
+    { "/nova/music/Ambient", "tide.wav",  0,  882044, 44100, 2, nullptr, nullptr },
+};
+static const unsigned FAKE_FS_N = sizeof(g_fake_fs) / sizeof(g_fake_fs[0]);
+
+static const FakeEntry *fake_find(const char *path) {
+    for (unsigned i = 0; i < FAKE_FS_N; i++) {
+        char full[160];
+        snprintf(full, sizeof(full), "%s/%s", g_fake_fs[i].dir, g_fake_fs[i].name);
+        if (!strcmp(full, path)) return &g_fake_fs[i];
+    }
+    return nullptr;
+}
+
+int fw_dir_count(const char *path) {
+    int n = 0;
+    for (unsigned i = 0; i < FAKE_FS_N; i++)
+        if (!strcmp(g_fake_fs[i].dir, path)) n++;
+    return n;
+}
+
+int fw_dir_entry(const char *path, unsigned index, FwDirEntry *out) {
+    unsigned n = 0;
+    for (unsigned i = 0; i < FAKE_FS_N; i++) {
+        if (strcmp(g_fake_fs[i].dir, path)) continue;
+        if (n++ != index) continue;
+        snprintf(out->name, FW_NAME_MAX, "%s", g_fake_fs[i].name);
+        out->is_dir = g_fake_fs[i].is_dir;
+        out->size   = g_fake_fs[i].size;
+        return 1;
+    }
+    return 0;
+}
+
+uint32_t fw_file_size(const char *path) {
+    const FakeEntry *e = fake_find(path);
+    return e ? e->size : 0;
+}
+
+// A REAL RIFF header, built byte for byte, because the media screens parse one
+// and a hand-written stub of the right length would prove nothing about the
+// parser. Chunks in the awkward order too — LIST before data — since that is
+// the order the tag actually turns up in and the order a naive walk gets wrong.
+static uint32_t fake_wav_header(const FakeEntry *e, uint8_t *b, uint32_t cap) {
+    uint32_t n = 0;
+    auto put   = [&](const char *s) { for (int i = 0; i < 4; i++) if (n < cap) b[n++] = (uint8_t)s[i]; };
+    auto put32 = [&](uint32_t v) { for (int i = 0; i < 4; i++) if (n < cap) b[n++] = (uint8_t)(v >> (8 * i)); };
+    auto put16 = [&](uint16_t v) { for (int i = 0; i < 2; i++) if (n < cap) b[n++] = (uint8_t)(v >> (8 * i)); };
+    auto putstr = [&](const char *s) {
+        uint32_t len = (uint32_t)strlen(s) + 1;
+        if (len & 1) len++;                         // padded to an even length
+        put32(len);
+        for (uint32_t i = 0; i < len; i++) if (n < cap) b[n++] = (uint8_t)(i < strlen(s) ? s[i] : 0);
+    };
+
+    put("RIFF"); put32(e->size + 36); put("WAVE");
+    put("fmt "); put32(16);
+    put16(1);                                       // PCM
+    put16(e->channels);
+    put32(e->rate);
+    put32(e->rate * e->channels * 2);               // byte rate
+    put16((uint16_t)(e->channels * 2));             // block align
+    put16(16);                                      // bits
+    if (e->inam || e->iart) {
+        uint32_t body = 4;
+        if (e->inam) body += 8 + (uint32_t)((strlen(e->inam) + 2) & ~1u);
+        if (e->iart) body += 8 + (uint32_t)((strlen(e->iart) + 2) & ~1u);
+        put("LIST"); put32(body); put("INFO");
+        if (e->inam) { put("INAM"); putstr(e->inam); }
+        if (e->iart) { put("IART"); putstr(e->iart); }
+    }
+    put("data"); put32(e->size);
+    return n;
+}
+
+uint32_t fw_file_read_at(const char *path, uint32_t off, void *buf, uint32_t cap) {
+    const FakeEntry *e = fake_find(path);
+    if (!e || !e->rate) return 0;
+    uint8_t head[256];
+    const uint32_t n = fake_wav_header(e, head, sizeof(head));
+    if (off >= n) return 0;
+    uint32_t take = n - off;
+    if (take > cap) take = cap;
+    memcpy(buf, head + off, take);
+    return take;
+}
 unsigned long fw_random(void) { return 4; }
 void fw_random_bytes(void *buf, unsigned len) { for (unsigned i = 0; i < len; i++) ((unsigned char *)buf)[i] = 0; }
 int fw_power_sleep(unsigned, int, int) { return 0; }
