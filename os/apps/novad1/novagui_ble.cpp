@@ -47,6 +47,16 @@
 namespace nova {
 namespace screens {
 
+// How long one step of a spinner lasts. The same 140 ms the Tools screens
+// use, so every wheel on the device turns at one rate.
+//
+// These three counted FRAMES rather than milliseconds. That was survivable
+// while a still screen redrew three times a second and became a blur the
+// moment the loop ran at sixty — the wheel spun so fast it read as a static
+// smudge, which is the opposite of what a spinner is for.
+#define BLE_SPIN_MS 140
+
+
 using ui::Screen;
 using ui::Action;
 
@@ -673,8 +683,7 @@ public:
     bool animating(void) const override { return true; }
 
     bool tick(uint32_t dt) override {
-        (void)dt;
-        phase_++;
+        phase_ += dt;
         // No rest at all. Every other screen here spaces its scans out to keep
         // the radio off, and this is the one where that trade goes the other way:
         // hunting for a device IS the activity, it lasts as long as somebody is
@@ -691,7 +700,7 @@ public:
         if (d) dev_label(*d, label, sizeof(label));
         else   nova::copy(label, sizeof(label), g_focus);
         c.text_fit(2, ui::TOP, label, 1, c.width() - 14, false);
-        if (g_ble_busy) c.spinner(c.width() - 9, ui::TOP, phase_, 1);
+        if (g_ble_busy) c.spinner(c.width() - 9, ui::TOP, phase_ / BLE_SPIN_MS, 1);
 
         // The meter. A proportion reads faster as a length than as a number, and
         // it is the only thing on this screen that is a picture.
@@ -906,8 +915,7 @@ public:
     bool animating(void) const override { return g_ble_busy != 0; }
 
     bool tick(uint32_t dt) override {
-        (void)dt;
-        phase_++;
+        phase_ += dt;
         // One scan on arrival and then nothing until asked. This screen answers
         // "what is here" once; Radar is the one that keeps looking, and doing it
         // here as well would hold the radio on two screens instead of one.
@@ -929,7 +937,7 @@ public:
         if (g_nidx == 0) {
             c.text(2, ui::TOP, g_ble_busy ? "Scanning..." : "Nothing answered.", 1);
             if (g_ble_busy) {
-                c.spinner(c.width() - 9, ui::TOP, phase_, 1);
+                c.spinner(c.width() - 9, ui::TOP, phase_ / BLE_SPIN_MS, 1);
             } else if (g_state == SC_OK) {
                 c.text(2, ui::TOP + ui::ROWH, "Only devices that are", 1);
                 c.text(2, ui::TOP + 2 * ui::ROWH, "advertising can be seen.", 1);
@@ -1089,8 +1097,7 @@ public:
     bool animating(void) const override { return g_ble_busy != 0; }
 
     bool tick(uint32_t dt) override {
-        (void)dt;
-        phase_++;
+        phase_ += dt;
         // Classic devices are only found by a classic inquiry, so the BR filter
         // asks for one. Every other mode scans LE, which is where nearly
         // everything actually is.
@@ -1188,8 +1195,7 @@ public:
     bool animating(void) const override { return g_ble_busy != 0; }
 
     bool tick(uint32_t dt) override {
-        (void)dt;
-        phase_++;
+        phase_ += dt;
         const bool changed = scan_pump(5, rest_ms(), false);
         return changed || g_ble_busy;
     }
