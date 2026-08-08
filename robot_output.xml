@@ -1,0 +1,835 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<robot generator="Rebot 6.1 (Python 3.13.5 on linux)" generated="20260807 21:02:07.064" rpa="false" schemaversion="4">
+<suite id="s1" name="Test Suite" source="/tmp/t.robot">
+<kw name="Setup" library="renode-keywords" type="SETUP">
+<msg timestamp="20260807 20:55:27.092" level="TRACE">Arguments: [  ]</msg>
+<kw name="Evaluate" library="BuiltIn">
+<var>${SYSTEM}</var>
+<arg>platform.system()</arg>
+<arg>modules=platform</arg>
+<doc>Evaluates the given expression in Python and returns the result.</doc>
+<msg timestamp="20260807 20:55:27.092" level="TRACE">Arguments: [ 'platform.system()' | modules='platform' ]</msg>
+<msg timestamp="20260807 20:55:27.093" level="TRACE">Return: 'Linux'</msg>
+<msg timestamp="20260807 20:55:27.093" level="INFO">${SYSTEM} = Linux</msg>
+<status status="PASS" starttime="20260807 20:55:27.092" endtime="20260807 20:55:27.093"/>
+</kw>
+<kw name="Set Variable If" library="BuiltIn">
+<var>${CONFIGURATION}</var>
+<arg>not ${SKIP_RUNNING_SERVER} and ${SERVER_REMOTE_DEBUG}</arg>
+<arg>Debug</arg>
+<arg>${CONFIGURATION}</arg>
+<doc>Sets variable based on the given condition.</doc>
+<msg timestamp="20260807 20:55:27.093" level="TRACE">Arguments: [ 'not True and False' | 'Debug' | '${CONFIGURATION}' ]</msg>
+<msg timestamp="20260807 20:55:27.093" level="TRACE">Return: 'Release'</msg>
+<msg timestamp="20260807 20:55:27.093" level="INFO">${CONFIGURATION} = Release</msg>
+<status status="PASS" starttime="20260807 20:55:27.093" endtime="20260807 20:55:27.093"/>
+</kw>
+<kw name="Create List" library="BuiltIn">
+<var>@{PARAMS}</var>
+<arg>--robot-server-port</arg>
+<arg>${PORT_NUMBER}</arg>
+<arg>--hide-log</arg>
+<doc>Returns a list containing given items.</doc>
+<msg timestamp="20260807 20:55:27.093" level="TRACE">Arguments: [ '--robot-server-port' | '49152' | '--hide-log' ]</msg>
+<msg timestamp="20260807 20:55:27.093" level="TRACE">Return: ['--robot-server-port', '49152', '--hide-log']</msg>
+<msg timestamp="20260807 20:55:27.093" level="INFO">@{PARAMS} = [ --robot-server-port | 49152 | --hide-log ]</msg>
+<status status="PASS" starttime="20260807 20:55:27.093" endtime="20260807 20:55:27.093"/>
+</kw>
+<if>
+<branch type="IF" condition="${DISABLE_GUI}">
+<kw name="Insert Into List" library="Collections">
+<arg>${PARAMS}</arg>
+<arg>0</arg>
+<arg>--disable-gui</arg>
+<doc>Inserts ``value`` into ``list`` to the position specified with ``index``.</doc>
+<status status="NOT RUN" starttime="20260807 20:55:27.093" endtime="20260807 20:55:27.093"/>
+</kw>
+<status status="NOT RUN" starttime="20260807 20:55:27.093" endtime="20260807 20:55:27.093"/>
+</branch>
+<status status="PASS" starttime="20260807 20:55:27.093" endtime="20260807 20:55:27.093"/>
+</if>
+<if>
+<branch type="IF" condition="not ${SKIP_RUNNING_SERVER}">
+<kw name="File Should Exist" library="OperatingSystem">
+<arg>${DIRECTORY}/${BINARY_NAME}</arg>
+<arg>msg=Robot Framework remote server binary not found (${DIRECTORY}/${BINARY_NAME}). Did you forget to build it in ${CONFIGURATION} configuration?</arg>
+<doc>Fails unless the given ``path`` points to an existing file.</doc>
+<status status="NOT RUN" starttime="20260807 20:55:27.093" endtime="20260807 20:55:27.093"/>
+</kw>
+<status status="NOT RUN" starttime="20260807 20:55:27.093" endtime="20260807 20:55:27.093"/>
+</branch>
+<status status="PASS" starttime="20260807 20:55:27.093" endtime="20260807 20:55:27.093"/>
+</if>
+<if>
+<branch type="IF" condition="not ${SKIP_RUNNING_SERVER} and not ${SERVER_REMOTE_DEBUG} and not '${SYSTEM}' == 'Windows' and not ${NET_PLATFORM}">
+<kw name="Start Process" library="Process">
+<arg>mono</arg>
+<arg>${BINARY_NAME}</arg>
+<arg>@{PARAMS}</arg>
+<arg>cwd=${DIRECTORY}</arg>
+<doc>Starts a new process on background.</doc>
+<status status="NOT RUN" starttime="20260807 20:55:27.094" endtime="20260807 20:55:27.094"/>
+</kw>
+<status status="NOT RUN" starttime="20260807 20:55:27.094" endtime="20260807 20:55:27.094"/>
+</branch>
+<status status="PASS" starttime="20260807 20:55:27.094" endtime="20260807 20:55:27.094"/>
+</if>
+<if>
+<branch type="IF" condition="not ${SKIP_RUNNING_SERVER} and not ${SERVER_REMOTE_DEBUG} and '${SYSTEM}' == 'Windows'">
+<kw name="Start Process" library="Process">
+<arg>${BINARY_NAME}</arg>
+<arg>@{PARAMS}</arg>
+<arg>cwd=${DIRECTORY}</arg>
+<arg>shell=true</arg>
+<doc>Starts a new process on background.</doc>
+<status status="NOT RUN" starttime="20260807 20:55:27.094" endtime="20260807 20:55:27.094"/>
+</kw>
+<status status="NOT RUN" starttime="20260807 20:55:27.094" endtime="20260807 20:55:27.094"/>
+</branch>
+<status status="PASS" starttime="20260807 20:55:27.094" endtime="20260807 20:55:27.094"/>
+</if>
+<if>
+<branch type="IF" condition="not ${SKIP_RUNNING_SERVER} and not ${SERVER_REMOTE_DEBUG} and ${NET_PLATFORM}">
+<kw name="Start Process" library="Process">
+<arg>dotnet ${BINARY_NAME}</arg>
+<arg>@{PARAMS}</arg>
+<arg>cwd=${DIRECTORY}</arg>
+<arg>shell=true</arg>
+<doc>Starts a new process on background.</doc>
+<status status="NOT RUN" starttime="20260807 20:55:27.094" endtime="20260807 20:55:27.094"/>
+</kw>
+<status status="NOT RUN" starttime="20260807 20:55:27.094" endtime="20260807 20:55:27.094"/>
+</branch>
+<status status="PASS" starttime="20260807 20:55:27.094" endtime="20260807 20:55:27.094"/>
+</if>
+<if>
+<branch type="IF" condition="not ${SKIP_RUNNING_SERVER} and ${SERVER_REMOTE_DEBUG} and not '${SYSTEM}' == 'Windows' and not ${NET_PLATFORM}">
+<kw name="Start Process" library="Process">
+<arg>mono</arg>
+<arg>--debug</arg>
+<arg>--debugger-agent\=transport\=dt_socket,address\=0.0.0.0:${SERVER_REMOTE_PORT},server\=y,suspend\=${SERVER_REMOTE_SUSPEND}</arg>
+<arg>${BINARY_NAME}</arg>
+<arg>@{PARAMS}</arg>
+<arg>cwd=${DIRECTORY}</arg>
+<doc>Starts a new process on background.</doc>
+<status status="NOT RUN" starttime="20260807 20:55:27.094" endtime="20260807 20:55:27.094"/>
+</kw>
+<status status="NOT RUN" starttime="20260807 20:55:27.094" endtime="20260807 20:55:27.094"/>
+</branch>
+<status status="PASS" starttime="20260807 20:55:27.094" endtime="20260807 20:55:27.094"/>
+</if>
+<if>
+<branch type="IF" condition="not ${SKIP_RUNNING_SERVER} and ${SERVER_REMOTE_DEBUG} and '${SYSTEM}' == 'Windows'">
+<kw name="Fatal Error" library="BuiltIn">
+<arg>Windows doesn't support server remote debug option.</arg>
+<doc>Stops the whole test execution.</doc>
+<status status="NOT RUN" starttime="20260807 20:55:27.094" endtime="20260807 20:55:27.094"/>
+</kw>
+<status status="NOT RUN" starttime="20260807 20:55:27.094" endtime="20260807 20:55:27.094"/>
+</branch>
+<status status="PASS" starttime="20260807 20:55:27.094" endtime="20260807 20:55:27.094"/>
+</if>
+<if>
+<branch type="IF" condition="not '${SYSTEM}' == 'Windows'">
+<kw name="Wait Until Keyword Succeeds" library="BuiltIn">
+<arg>60s</arg>
+<arg>1s</arg>
+<arg>Import Library</arg>
+<arg>Remote</arg>
+<arg>http://127.0.0.1:${PORT_NUMBER}/</arg>
+<doc>Runs the specified keyword and retries if it fails.</doc>
+<msg timestamp="20260807 20:55:27.095" level="TRACE">Arguments: [ '60s' | '1s' | 'Import Library' | 'Remote' | 'http://127.0.0.1:${PORT_NUMBER}/' ]</msg>
+<kw name="Import Library" library="BuiltIn">
+<arg>Remote</arg>
+<arg>http://127.0.0.1:${PORT_NUMBER}/</arg>
+<doc>Imports a library with the given name and optional arguments.</doc>
+<msg timestamp="20260807 20:55:27.095" level="TRACE">Arguments: [ 'Remote' | 'http://127.0.0.1:${PORT_NUMBER}/' ]</msg>
+<msg timestamp="20260807 20:55:27.247" level="TRACE">Return: None</msg>
+<status status="PASS" starttime="20260807 20:55:27.095" endtime="20260807 20:55:27.247"/>
+</kw>
+<msg timestamp="20260807 20:55:27.247" level="TRACE">Return: None</msg>
+<status status="PASS" starttime="20260807 20:55:27.094" endtime="20260807 20:55:27.247"/>
+</kw>
+<status status="PASS" starttime="20260807 20:55:27.094" endtime="20260807 20:55:27.248"/>
+</branch>
+<status status="PASS" starttime="20260807 20:55:27.094" endtime="20260807 20:55:27.248"/>
+</if>
+<if>
+<branch type="IF" condition="'${SYSTEM}' == 'Windows'">
+<kw name="Wait Until Keyword Succeeds" library="BuiltIn">
+<arg>60s</arg>
+<arg>1s</arg>
+<arg>Import Library</arg>
+<arg>Remote</arg>
+<arg>http://localhost:${PORT_NUMBER}/</arg>
+<doc>Runs the specified keyword and retries if it fails.</doc>
+<status status="NOT RUN" starttime="20260807 20:55:27.248" endtime="20260807 20:55:27.248"/>
+</kw>
+<status status="NOT RUN" starttime="20260807 20:55:27.248" endtime="20260807 20:55:27.248"/>
+</branch>
+<status status="PASS" starttime="20260807 20:55:27.248" endtime="20260807 20:55:27.248"/>
+</if>
+<kw name="Setup Renode" library="renode-keywords">
+<msg timestamp="20260807 20:55:27.248" level="TRACE">Arguments: [  ]</msg>
+<kw name="Set Default Uart Timeout" library="Remote">
+<arg>${DEFAULT_UART_TIMEOUT}</arg>
+<msg timestamp="20260807 20:55:27.248" level="TRACE">Arguments: [ '8' ]</msg>
+<msg timestamp="20260807 20:55:27.263" level="TRACE">Return: ''</msg>
+<status status="PASS" starttime="20260807 20:55:27.248" endtime="20260807 20:55:27.263"/>
+</kw>
+<if>
+<branch type="IF" condition="${SAVE_LOGS}">
+<kw name="Enable Logging To Cache" library="Remote">
+<msg timestamp="20260807 20:55:27.264" level="TRACE">Arguments: [  ]</msg>
+<msg timestamp="20260807 20:55:27.267" level="TRACE">Return: ''</msg>
+<status status="PASS" starttime="20260807 20:55:27.264" endtime="20260807 20:55:27.267"/>
+</kw>
+<status status="PASS" starttime="20260807 20:55:27.263" endtime="20260807 20:55:27.267"/>
+</branch>
+<status status="PASS" starttime="20260807 20:55:27.263" endtime="20260807 20:55:27.267"/>
+</if>
+<kw name="Set Variable" library="BuiltIn">
+<var>${allowed_chars}</var>
+<arg>abcdefghijklmnopqrstuvwxyz01234567890_-</arg>
+<doc>Returns the given values which can then be assigned to a variables.</doc>
+<msg timestamp="20260807 20:55:27.267" level="TRACE">Arguments: [ 'abcdefghijklmnopqrstuvwxyz01234567890_-' ]</msg>
+<msg timestamp="20260807 20:55:27.267" level="TRACE">Return: 'abcdefghijklmnopqrstuvwxyz01234567890_-'</msg>
+<msg timestamp="20260807 20:55:27.267" level="INFO">${allowed_chars} = abcdefghijklmnopqrstuvwxyz01234567890_-</msg>
+<status status="PASS" starttime="20260807 20:55:27.267" endtime="20260807 20:55:27.267"/>
+</kw>
+<kw name="Convert To Lower Case" library="String">
+<var>${metrics_fname}</var>
+<arg>${SUITE_NAME}</arg>
+<doc>Converts string to lower case.</doc>
+<msg timestamp="20260807 20:55:27.267" level="TRACE">Arguments: [ 't' ]</msg>
+<msg timestamp="20260807 20:55:27.267" level="TRACE">Return: 't'</msg>
+<msg timestamp="20260807 20:55:27.268" level="INFO">${metrics_fname} = t</msg>
+<status status="PASS" starttime="20260807 20:55:27.267" endtime="20260807 20:55:27.268"/>
+</kw>
+<kw name="Replace String" library="String">
+<var>${metrics_fname}</var>
+<arg>${metrics_fname}</arg>
+<arg>${SPACE}</arg>
+<arg>_</arg>
+<doc>Replaces ``search_for`` in the given ``string`` with ``replace_with``.</doc>
+<msg timestamp="20260807 20:55:27.268" level="TRACE">Arguments: [ 't' | ' ' | '_' ]</msg>
+<msg timestamp="20260807 20:55:27.268" level="TRACE">Return: 't'</msg>
+<msg timestamp="20260807 20:55:27.268" level="INFO">${metrics_fname} = t</msg>
+<status status="PASS" starttime="20260807 20:55:27.268" endtime="20260807 20:55:27.268"/>
+</kw>
+<kw name="Replace String Using Regexp" library="String">
+<var>${metrics_fname}</var>
+<arg>${metrics_fname}</arg>
+<arg>[^${allowed_chars}]+</arg>
+<arg>${EMPTY}</arg>
+<doc>Replaces ``pattern`` in the given ``string`` with ``replace_with``.</doc>
+<msg timestamp="20260807 20:55:27.268" level="TRACE">Arguments: [ 't' | '[^abcdefghijklmnopqrstuvwxyz01234567890_-]+' | '' ]</msg>
+<msg timestamp="20260807 20:55:27.268" level="TRACE">Return: 't'</msg>
+<msg timestamp="20260807 20:55:27.268" level="INFO">${metrics_fname} = t</msg>
+<status status="PASS" starttime="20260807 20:55:27.268" endtime="20260807 20:55:27.268"/>
+</kw>
+<kw name="Join Path" library="OperatingSystem">
+<var>${metrics_path}</var>
+<arg>${RESULTS_DIRECTORY}</arg>
+<arg>profiler-${metrics_fname}</arg>
+<doc>Joins the given path part(s) to the given base path.</doc>
+<msg timestamp="20260807 20:55:27.268" level="TRACE">Arguments: [ '/home/dash/RPC-Workspace/RPCortex-v2/' | 'profiler-t' ]</msg>
+<msg timestamp="20260807 20:55:27.268" level="TRACE">Return: '/home/dash/RPC-Workspace/RPCortex-v2/profiler-t'</msg>
+<msg timestamp="20260807 20:55:27.268" level="INFO">${metrics_path} = /home/dash/RPC-Workspace/RPCortex-v2/profiler-t</msg>
+<status status="PASS" starttime="20260807 20:55:27.268" endtime="20260807 20:55:27.268"/>
+</kw>
+<if>
+<branch type="IF" condition="${CREATE_EXECUTION_METRICS}">
+<kw name="Execute Command" library="Remote">
+<arg>EnableProfilerGlobally "${metrics_path}"</arg>
+<status status="NOT RUN" starttime="20260807 20:55:27.269" endtime="20260807 20:55:27.269"/>
+</kw>
+<status status="NOT RUN" starttime="20260807 20:55:27.269" endtime="20260807 20:55:27.269"/>
+</branch>
+<status status="PASS" starttime="20260807 20:55:27.269" endtime="20260807 20:55:27.269"/>
+</if>
+<kw name="Reset Emulation" library="Remote">
+<msg timestamp="20260807 20:55:27.269" level="TRACE">Arguments: [  ]</msg>
+<msg timestamp="20260807 20:55:27.277" level="TRACE">Return: ''</msg>
+<status status="PASS" starttime="20260807 20:55:27.269" endtime="20260807 20:55:27.277"/>
+</kw>
+<msg timestamp="20260807 20:55:27.277" level="TRACE">Return: None</msg>
+<status status="PASS" starttime="20260807 20:55:27.248" endtime="20260807 20:55:27.277"/>
+</kw>
+<msg timestamp="20260807 20:55:27.277" level="TRACE">Return: None</msg>
+<status status="PASS" starttime="20260807 20:55:27.091" endtime="20260807 20:55:27.277"/>
+</kw>
+<test id="s1-t1" name="Boots Formats And Runs Commands" line="42">
+<kw name="Reset Emulation" library="Remote" type="SETUP">
+<msg timestamp="20260807 20:55:27.278" level="TRACE">Arguments: [  ]</msg>
+<msg timestamp="20260807 20:55:27.280" level="TRACE">Return: ''</msg>
+<status status="PASS" starttime="20260807 20:55:27.278" endtime="20260807 20:55:27.280"/>
+</kw>
+<kw name="Boot RPCortex">
+<msg timestamp="20260807 20:55:27.280" level="TRACE">Arguments: [  ]</msg>
+<kw name="Execute Command" library="Remote">
+<arg>$machine_name?="rpcortex"</arg>
+<msg timestamp="20260807 20:55:27.280" level="TRACE">Arguments: [ '$machine_name?="rpcortex"' ]</msg>
+<msg timestamp="20260807 20:55:27.291" level="TRACE">Return: ''</msg>
+<status status="PASS" starttime="20260807 20:55:27.280" endtime="20260807 20:55:27.291"/>
+</kw>
+<kw name="Execute Command" library="Remote">
+<arg>$platform_file?=@${PLAT}/boards/raspberry_pico.repl</arg>
+<msg timestamp="20260807 20:55:27.292" level="TRACE">Arguments: [ '$platform_file?=@/home/dash/RPC-Workspace/RPCortex-v2/emu/Renode_RP2040/boards/raspberry_pico.repl' ]</msg>
+<msg timestamp="20260807 20:55:27.294" level="TRACE">Return: ''</msg>
+<status status="PASS" starttime="20260807 20:55:27.292" endtime="20260807 20:55:27.294"/>
+</kw>
+<kw name="Execute Command" library="Remote">
+<arg>include @${PLAT}/boards/initialize_custom_board.resc</arg>
+<msg timestamp="20260807 20:55:27.294" level="TRACE">Arguments: [ 'include @/home/dash/RPC-Workspace/RPCortex-v2/emu/Renode_RP2040/boards/initialize_custom_board.resc' ]</msg>
+<msg timestamp="20260807 20:55:28.653" level="TRACE">Return: ''</msg>
+<status status="PASS" starttime="20260807 20:55:27.294" endtime="20260807 20:55:28.653"/>
+</kw>
+<kw name="Execute Command" library="Remote">
+<arg>sysbus LoadELF @${ELF}</arg>
+<msg timestamp="20260807 20:55:28.654" level="TRACE">Arguments: [ 'sysbus LoadELF @/home/dash/RPC-Workspace/RPCortex-v2/os/build_pico-emu/rpcortex_v2.elf' ]</msg>
+<msg timestamp="20260807 20:55:28.736" level="TRACE">Return: ''</msg>
+<status status="PASS" starttime="20260807 20:55:28.654" endtime="20260807 20:55:28.736"/>
+</kw>
+<kw name="Execute Command" library="Remote">
+<arg>sysbus.cpu0 VectorTableOffset 0x00000000</arg>
+<msg timestamp="20260807 20:55:28.737" level="TRACE">Arguments: [ 'sysbus.cpu0 VectorTableOffset 0x00000000' ]</msg>
+<msg timestamp="20260807 20:55:28.754" level="TRACE">Return: ''</msg>
+<status status="PASS" starttime="20260807 20:55:28.736" endtime="20260807 20:55:28.754"/>
+</kw>
+<kw name="Execute Command" library="Remote">
+<arg>sysbus.cpu1 VectorTableOffset 0x00000000</arg>
+<msg timestamp="20260807 20:55:28.754" level="TRACE">Arguments: [ 'sysbus.cpu1 VectorTableOffset 0x00000000' ]</msg>
+<msg timestamp="20260807 20:55:28.762" level="TRACE">Return: ''</msg>
+<status status="PASS" starttime="20260807 20:55:28.754" endtime="20260807 20:55:28.762"/>
+</kw>
+<kw name="Execute Command" library="Remote">
+<arg>logLevel 3 sysbus</arg>
+<msg timestamp="20260807 20:55:28.762" level="TRACE">Arguments: [ 'logLevel 3 sysbus' ]</msg>
+<msg timestamp="20260807 20:55:28.767" level="TRACE">Return: ''</msg>
+<status status="PASS" starttime="20260807 20:55:28.762" endtime="20260807 20:55:28.767"/>
+</kw>
+<kw name="Create Terminal Tester" library="Remote">
+<arg>sysbus.uart0</arg>
+<arg>timeout=45</arg>
+<msg timestamp="20260807 20:55:28.767" level="TRACE">Arguments: [ 'sysbus.uart0' | 'timeout=45' ]</msg>
+<msg timestamp="20260807 20:55:28.772" level="TRACE">Return: 0</msg>
+<status status="PASS" starttime="20260807 20:55:28.767" endtime="20260807 20:55:28.772"/>
+</kw>
+<kw name="Start Emulation" library="Remote">
+<msg timestamp="20260807 20:55:28.772" level="TRACE">Arguments: [  ]</msg>
+<msg timestamp="20260807 20:55:28.881" level="TRACE">Return: ''</msg>
+<status status="PASS" starttime="20260807 20:55:28.772" endtime="20260807 20:55:28.881"/>
+</kw>
+<msg timestamp="20260807 20:55:28.882" level="TRACE">Return: None</msg>
+<status status="PASS" starttime="20260807 20:55:27.280" endtime="20260807 20:55:28.882"/>
+</kw>
+<kw name="Wait For Line On Uart" library="Remote">
+<arg>RPCortex v2.0.0</arg>
+<msg timestamp="20260807 20:55:28.882" level="TRACE">Arguments: [ 'RPCortex v2.0.0' ]</msg>
+<msg timestamp="20260807 20:55:34.285" level="TRACE">Return: {'Groups': [],
+ 'IsFailingString': False,
+ 'Line': '        RPCortex v2.0.0 - Vela II',
+ 'Timestamp': 3155.9}</msg>
+<status status="PASS" starttime="20260807 20:55:28.882" endtime="20260807 20:55:34.285"/>
+</kw>
+<kw name="Wait For Line On Uart" library="Remote">
+<arg>Filesystem mounted</arg>
+<msg timestamp="20260807 20:55:34.285" level="TRACE">Arguments: [ 'Filesystem mounted' ]</msg>
+<msg timestamp="20260807 20:55:34.341" level="TRACE">Return: {'Groups': [],
+ 'IsFailingString': False,
+ 'Line': '[@] [POST] Filesystem mounted  (1272 KB free)',
+ 'Timestamp': 3158.0}</msg>
+<status status="PASS" starttime="20260807 20:55:34.285" endtime="20260807 20:55:34.341"/>
+</kw>
+<kw name="First Run">
+<msg timestamp="20260807 20:55:34.341" level="TRACE">Arguments: [  ]</msg>
+<kw name="Wait For Line On Uart" library="Remote">
+<arg>First Run Setup</arg>
+<arg>timeout=30</arg>
+<msg timestamp="20260807 20:55:34.341" level="TRACE">Arguments: [ 'First Run Setup' | 'timeout=30' ]</msg>
+<status status="FAIL" starttime="20260807 20:55:34.341" endtime="20260807 21:02:05.453"/>
+</kw>
+<status status="FAIL" starttime="20260807 20:55:34.341" endtime="20260807 21:02:05.453"/>
+</kw>
+<for flavor="IN">
+<var>${a}</var>
+<value>rpcortex</value>
+<value>rpcortex</value>
+<value>dash</value>
+<value>vela</value>
+<value>n</value>
+<value>n</value>
+<iter>
+<var name="${a}"/>
+<kw name="Answer">
+<arg>${a}</arg>
+<status status="NOT RUN" starttime="20260807 21:02:05.454" endtime="20260807 21:02:05.454"/>
+</kw>
+<status status="NOT RUN" starttime="20260807 21:02:05.453" endtime="20260807 21:02:05.454"/>
+</iter>
+<status status="NOT RUN" starttime="20260807 21:02:05.453" endtime="20260807 21:02:05.454"/>
+</for>
+<kw name="Wait For Line On Uart" library="Remote">
+<arg>All set!</arg>
+<arg>timeout=45</arg>
+<status status="NOT RUN" starttime="20260807 21:02:05.454" endtime="20260807 21:02:05.454"/>
+</kw>
+<kw name="Test Teardown" library="renode-keywords" type="TEARDOWN">
+<msg timestamp="20260807 21:02:05.454" level="TRACE">Arguments: [  ]</msg>
+<kw name="Stop Profiler" library="renode-keywords">
+<msg timestamp="20260807 21:02:05.454" level="TRACE">Arguments: [  ]</msg>
+<if>
+<branch type="IF" condition="${PROFILER_PROCESS}">
+<kw name="Terminate Process" library="Process">
+<arg>${PROFILER_PROCESS}</arg>
+<doc>Stops the process gracefully or forcefully.</doc>
+<status status="NOT RUN" starttime="20260807 21:02:05.454" endtime="20260807 21:02:05.455"/>
+</kw>
+<kw name="Set Test Variable" library="BuiltIn">
+<arg>${PROFILER_PROCESS}</arg>
+<arg>None</arg>
+<doc>Makes a variable available everywhere within the scope of the current test.</doc>
+<status status="NOT RUN" starttime="20260807 21:02:05.455" endtime="20260807 21:02:05.455"/>
+</kw>
+<status status="NOT RUN" starttime="20260807 21:02:05.454" endtime="20260807 21:02:05.455"/>
+</branch>
+<status status="PASS" starttime="20260807 21:02:05.454" endtime="20260807 21:02:05.455"/>
+</if>
+<msg timestamp="20260807 21:02:05.455" level="TRACE">Return: None</msg>
+<status status="PASS" starttime="20260807 21:02:05.454" endtime="20260807 21:02:05.455"/>
+</kw>
+<kw name="Run Keyword If Test Failed" library="BuiltIn">
+<var>${failed}</var>
+<arg>Set Variable</arg>
+<arg>True</arg>
+<doc>Runs the given keyword with the given arguments, if the test failed.</doc>
+<msg timestamp="20260807 21:02:05.455" level="TRACE">Arguments: [ 'Set Variable' | 'True' ]</msg>
+<kw name="Set Variable" library="BuiltIn">
+<arg>True</arg>
+<doc>Returns the given values which can then be assigned to a variables.</doc>
+<msg timestamp="20260807 21:02:05.455" level="TRACE">Arguments: [ 'True' ]</msg>
+<msg timestamp="20260807 21:02:05.455" level="TRACE">Return: 'True'</msg>
+<status status="PASS" starttime="20260807 21:02:05.455" endtime="20260807 21:02:05.455"/>
+</kw>
+<msg timestamp="20260807 21:02:05.455" level="TRACE">Return: 'True'</msg>
+<msg timestamp="20260807 21:02:05.455" level="INFO">${failed} = True</msg>
+<status status="PASS" starttime="20260807 21:02:05.455" endtime="20260807 21:02:05.455"/>
+</kw>
+<if>
+<branch type="IF" condition="${failed}">
+<kw name="Strip String" library="String">
+<var>${message}</var>
+<arg>${TEST_MESSAGE}</arg>
+<arg>mode=right</arg>
+<doc>Remove leading and/or trailing whitespaces from the given string.</doc>
+<msg timestamp="20260807 21:02:05.455" level="TRACE">Arguments: [ 'Execution terminated by signal' | mode='right' ]</msg>
+<msg timestamp="20260807 21:02:05.455" level="TRACE">Return: 'Execution terminated by signal'</msg>
+<msg timestamp="20260807 21:02:05.455" level="INFO">${message} = Execution terminated by signal</msg>
+<status status="PASS" starttime="20260807 21:02:05.455" endtime="20260807 21:02:05.455"/>
+</kw>
+<kw name="Set Test Message" library="BuiltIn">
+<arg>${message}</arg>
+<doc>Sets message for the current test case.</doc>
+<msg timestamp="20260807 21:02:05.455" level="TRACE">Arguments: [ 'Execution terminated by signal' ]</msg>
+<msg timestamp="20260807 21:02:05.455" level="INFO">Set test message to:
+Execution terminated by signal</msg>
+<msg timestamp="20260807 21:02:05.455" level="TRACE">Return: None</msg>
+<status status="PASS" starttime="20260807 21:02:05.455" endtime="20260807 21:02:05.455"/>
+</kw>
+<status status="PASS" starttime="20260807 21:02:05.455" endtime="20260807 21:02:05.455"/>
+</branch>
+<status status="PASS" starttime="20260807 21:02:05.455" endtime="20260807 21:02:05.455"/>
+</if>
+<kw name="Run Keyword If Timeout Occurred" library="BuiltIn">
+<var>${timed_out}</var>
+<arg>Set Variable</arg>
+<arg>True</arg>
+<doc>Runs the given keyword if either a test or a keyword timeout has occurred.</doc>
+<msg timestamp="20260807 21:02:05.456" level="TRACE">Arguments: [ 'Set Variable' | 'True' ]</msg>
+<msg timestamp="20260807 21:02:05.456" level="TRACE">Return: None</msg>
+<msg timestamp="20260807 21:02:05.456" level="INFO">${timed_out} = None</msg>
+<status status="PASS" starttime="20260807 21:02:05.455" endtime="20260807 21:02:05.456"/>
+</kw>
+<if>
+<branch type="IF" condition="${timed_out}">
+<return>
+<status status="NOT RUN" starttime="20260807 21:02:05.456" endtime="20260807 21:02:05.456"/>
+</return>
+<status status="NOT RUN" starttime="20260807 21:02:05.456" endtime="20260807 21:02:05.456"/>
+</branch>
+<status status="PASS" starttime="20260807 21:02:05.456" endtime="20260807 21:02:05.456"/>
+</if>
+<if>
+<branch type="IF" condition="${CREATE_SNAPSHOT_ON_FAIL}">
+<kw name="Run Keyword If Test Failed" library="BuiltIn">
+<arg>Create Snapshot Of Failed Test</arg>
+<doc>Runs the given keyword with the given arguments, if the test failed.</doc>
+<msg timestamp="20260807 21:02:05.456" level="TRACE">Arguments: [ 'Create Snapshot Of Failed Test' ]</msg>
+<kw name="Create Snapshot Of Failed Test" library="renode-keywords">
+<msg timestamp="20260807 21:02:05.456" level="TRACE">Arguments: [  ]</msg>
+<kw name="Return From Keyword If" library="BuiltIn">
+<arg>'skipped' in @{TEST TAGS}</arg>
+<doc>Returns from the enclosing user keyword if ``condition`` is true.</doc>
+<msg timestamp="20260807 21:02:05.456" level="TRACE">Arguments: [ "'skipped' in []" ]</msg>
+<msg timestamp="20260807 21:02:05.456" level="TRACE">Return: None</msg>
+<status status="PASS" starttime="20260807 21:02:05.456" endtime="20260807 21:02:05.456"/>
+</kw>
+<kw name="Get Variable Value" library="BuiltIn">
+<var>${retry_index}</var>
+<arg>\${RETRYFAILED_RETRY_INDEX}</arg>
+<arg>0</arg>
+<doc>Returns variable value or ``default`` if the variable does not exist.</doc>
+<msg timestamp="20260807 21:02:05.456" level="TRACE">Arguments: [ '\\${RETRYFAILED_RETRY_INDEX}' | '0' ]</msg>
+<msg timestamp="20260807 21:02:05.457" level="TRACE">Return: '0'</msg>
+<msg timestamp="20260807 21:02:05.457" level="INFO">${retry_index} = 0</msg>
+<status status="PASS" starttime="20260807 21:02:05.456" endtime="20260807 21:02:05.457"/>
+</kw>
+<kw name="Set Variable" library="BuiltIn">
+<var>${test_name}</var>
+<arg>${SUITE NAME}.${TEST NAME}.fail${retry_index}.save</arg>
+<doc>Returns the given values which can then be assigned to a variables.</doc>
+<msg timestamp="20260807 21:02:05.457" level="TRACE">Arguments: [ 't.Boots Formats And Runs Commands.fail0.save' ]</msg>
+<msg timestamp="20260807 21:02:05.457" level="TRACE">Return: 't.Boots Formats And Runs Commands.fail0.save'</msg>
+<msg timestamp="20260807 21:02:05.457" level="INFO">${test_name} = t.Boots Formats And Runs Commands.fail0.save</msg>
+<status status="PASS" starttime="20260807 21:02:05.457" endtime="20260807 21:02:05.457"/>
+</kw>
+<kw name="Sanitize Test Name" library="renode-keywords">
+<var>${test_name}</var>
+<arg>${test_name}</arg>
+<msg timestamp="20260807 21:02:05.458" level="TRACE">Arguments: [ ${test_name}='t.Boots Formats And Runs Commands.fail0.save' ]</msg>
+<kw name="Replace String" library="String">
+<var>${test_name}</var>
+<arg>${test_name}</arg>
+<arg>${SPACE}</arg>
+<arg>_</arg>
+<doc>Replaces ``search_for`` in the given ``string`` with ``replace_with``.</doc>
+<msg timestamp="20260807 21:02:05.458" level="TRACE">Arguments: [ 't.Boots Formats And Runs Commands.fail0.save' | ' ' | '_' ]</msg>
+<msg timestamp="20260807 21:02:05.458" level="TRACE">Return: 't.Boots_Formats_And_Runs_Commands.fail0.save'</msg>
+<msg timestamp="20260807 21:02:05.458" level="INFO">${test_name} = t.Boots_Formats_And_Runs_Commands.fail0.save</msg>
+<status status="PASS" starttime="20260807 21:02:05.458" endtime="20260807 21:02:05.458"/>
+</kw>
+<kw name="Replace String Using Regexp" library="String">
+<var>${test_name}</var>
+<arg>${test_name}</arg>
+<arg>[/""]</arg>
+<arg>-</arg>
+<doc>Replaces ``pattern`` in the given ``string`` with ``replace_with``.</doc>
+<msg timestamp="20260807 21:02:05.459" level="TRACE">Arguments: [ 't.Boots_Formats_And_Runs_Commands.fail0.save' | '[/""]' | '-' ]</msg>
+<msg timestamp="20260807 21:02:05.459" level="TRACE">Return: 't.Boots_Formats_And_Runs_Commands.fail0.save'</msg>
+<msg timestamp="20260807 21:02:05.459" level="INFO">${test_name} = t.Boots_Formats_And_Runs_Commands.fail0.save</msg>
+<status status="PASS" starttime="20260807 21:02:05.459" endtime="20260807 21:02:05.459"/>
+</kw>
+<return>
+<value>${test_name}</value>
+<status status="PASS" starttime="20260807 21:02:05.459" endtime="20260807 21:02:05.459"/>
+</return>
+<msg timestamp="20260807 21:02:05.459" level="TRACE">Return: 't.Boots_Formats_And_Runs_Commands.fail0.save'</msg>
+<msg timestamp="20260807 21:02:05.459" level="INFO">${test_name} = t.Boots_Formats_And_Runs_Commands.fail0.save</msg>
+<status status="PASS" starttime="20260807 21:02:05.457" endtime="20260807 21:02:05.459"/>
+</kw>
+<kw name="Set Variable" library="BuiltIn">
+<var>${snapshots_dir}</var>
+<arg>${RESULTS_DIRECTORY}/snapshots</arg>
+<doc>Returns the given values which can then be assigned to a variables.</doc>
+<msg timestamp="20260807 21:02:05.459" level="TRACE">Arguments: [ '/home/dash/RPC-Workspace/RPCortex-v2//snapshots' ]</msg>
+<msg timestamp="20260807 21:02:05.459" level="TRACE">Return: '/home/dash/RPC-Workspace/RPCortex-v2//snapshots'</msg>
+<msg timestamp="20260807 21:02:05.459" level="INFO">${snapshots_dir} = /home/dash/RPC-Workspace/RPCortex-v2//snapshots</msg>
+<status status="PASS" starttime="20260807 21:02:05.459" endtime="20260807 21:02:05.459"/>
+</kw>
+<kw name="Create Directory" library="OperatingSystem">
+<arg>${snapshots_dir}</arg>
+<doc>Creates the specified directory.</doc>
+<msg timestamp="20260807 21:02:05.459" level="TRACE">Arguments: [ '/home/dash/RPC-Workspace/RPCortex-v2//snapshots' ]</msg>
+<msg timestamp="20260807 21:02:05.459" level="INFO" html="true">Directory '&lt;a href="file:///home/dash/RPC-Workspace/RPCortex-v2/snapshots"&gt;/home/dash/RPC-Workspace/RPCortex-v2/snapshots&lt;/a&gt;' already exists.</msg>
+<msg timestamp="20260807 21:02:05.459" level="TRACE">Return: None</msg>
+<status status="PASS" starttime="20260807 21:02:05.459" endtime="20260807 21:02:05.459"/>
+</kw>
+<kw name="Set Variable" library="BuiltIn">
+<var>${snapshot_path}</var>
+<arg>"${snapshots_dir}/${test_name}"</arg>
+<doc>Returns the given values which can then be assigned to a variables.</doc>
+<msg timestamp="20260807 21:02:05.460" level="TRACE">Arguments: [ '"/home/dash/RPC-Workspace/RPCortex-v2//snapshots/t.Boots_Formats_And_Runs_Commands.fail0.save"' ]</msg>
+<msg timestamp="20260807 21:02:05.460" level="TRACE">Return: '"/home/dash/RPC-Workspace/RPCortex-v2//snapshots/t.Boots_Formats_And_Runs_Commands.fail0.save"'</msg>
+<msg timestamp="20260807 21:02:05.460" level="INFO">${snapshot_path} = "/home/dash/RPC-Workspace/RPCortex-v2//snapshots/t.Boots_Formats_And_Runs_Commands.fail0.save"</msg>
+<status status="PASS" starttime="20260807 21:02:05.459" endtime="20260807 21:02:05.460"/>
+</kw>
+<kw name="Execute Command" library="Remote">
+<arg>Save ${snapshot_path}</arg>
+<msg timestamp="20260807 21:02:05.460" level="TRACE">Arguments: [ 'Save "/home/dash/RPC-Workspace/RPCortex-v2//snapshots/t.Boots_Formats_And_Runs_Commands.fail0.save"' ]</msg>
+<msg timestamp="20260807 21:02:05.523" level="TRACE">Return: None</msg>
+<msg timestamp="20260807 21:02:05.523" level="FAIL">Connection to remote server broken: [Errno 111] Connection refused</msg>
+<msg timestamp="20260807 21:02:05.524" level="DEBUG">Traceback (most recent call last):
+  None
+RuntimeError: Connection to remote server broken: [Errno 111] Connection refused</msg>
+<status status="FAIL" starttime="20260807 21:02:05.460" endtime="20260807 21:02:05.524"/>
+</kw>
+<kw name="Log To Console" library="BuiltIn">
+<arg>!!!!! Emulation's state saved to ${snapshot_path}</arg>
+<doc>Logs the given message to the console.</doc>
+<msg timestamp="20260807 21:02:05.524" level="TRACE">Arguments: [ '!!!!! Emulation\'s state saved to "/home/dash/RPC-Workspace/RPCortex-v2//snapshots/t.Boots_Formats_And_Runs_Commands.fail0.save"' ]</msg>
+<msg timestamp="20260807 21:02:05.524" level="TRACE">Return: None</msg>
+<status status="PASS" starttime="20260807 21:02:05.524" endtime="20260807 21:02:05.524"/>
+</kw>
+<msg timestamp="20260807 21:02:05.524" level="TRACE">Return: None</msg>
+<status status="FAIL" starttime="20260807 21:02:05.456" endtime="20260807 21:02:05.524"/>
+</kw>
+<msg timestamp="20260807 21:02:05.524" level="TRACE">Return: None</msg>
+<status status="FAIL" starttime="20260807 21:02:05.456" endtime="20260807 21:02:05.524"/>
+</kw>
+<status status="FAIL" starttime="20260807 21:02:05.456" endtime="20260807 21:02:05.524"/>
+</branch>
+<status status="FAIL" starttime="20260807 21:02:05.456" endtime="20260807 21:02:05.524"/>
+</if>
+<if>
+<branch type="IF" condition="${SAVE_LOGS}">
+<if>
+<branch type="IF" condition="&quot;${SAVE_LOGS_WHEN}&quot; == &quot;Always&quot;">
+<kw name="Save Test Log" library="renode-keywords">
+<status status="NOT RUN" starttime="20260807 21:02:05.525" endtime="20260807 21:02:05.525"/>
+</kw>
+<status status="NOT RUN" starttime="20260807 21:02:05.524" endtime="20260807 21:02:05.525"/>
+</branch>
+<branch type="ELSE IF" condition="&quot;${SAVE_LOGS_WHEN}&quot; == &quot;Fail&quot;">
+<kw name="Run Keyword If Test Failed" library="BuiltIn">
+<arg>Save Test Log</arg>
+<doc>Runs the given keyword with the given arguments, if the test failed.</doc>
+<msg timestamp="20260807 21:02:05.525" level="TRACE">Arguments: [ 'Save Test Log' ]</msg>
+<kw name="Save Test Log" library="renode-keywords">
+<msg timestamp="20260807 21:02:05.525" level="TRACE">Arguments: [  ]</msg>
+<kw name="Return From Keyword If" library="BuiltIn">
+<arg>'skipped' in @{TEST TAGS}</arg>
+<doc>Returns from the enclosing user keyword if ``condition`` is true.</doc>
+<msg timestamp="20260807 21:02:05.525" level="TRACE">Arguments: [ "'skipped' in []" ]</msg>
+<msg timestamp="20260807 21:02:05.525" level="TRACE">Return: None</msg>
+<status status="PASS" starttime="20260807 21:02:05.525" endtime="20260807 21:02:05.525"/>
+</kw>
+<kw name="Get Variable Value" library="BuiltIn">
+<var>${retry_index}</var>
+<arg>\${RETRYFAILED_RETRY_INDEX}</arg>
+<arg>0</arg>
+<doc>Returns variable value or ``default`` if the variable does not exist.</doc>
+<msg timestamp="20260807 21:02:05.525" level="TRACE">Arguments: [ '\\${RETRYFAILED_RETRY_INDEX}' | '0' ]</msg>
+<msg timestamp="20260807 21:02:05.526" level="TRACE">Return: '0'</msg>
+<msg timestamp="20260807 21:02:05.526" level="INFO">${retry_index} = 0</msg>
+<status status="PASS" starttime="20260807 21:02:05.525" endtime="20260807 21:02:05.526"/>
+</kw>
+<kw name="Set Variable" library="BuiltIn">
+<var>${test_name}</var>
+<arg>${SUITE NAME}.${TEST NAME}.fail${retry_index}</arg>
+<doc>Returns the given values which can then be assigned to a variables.</doc>
+<msg timestamp="20260807 21:02:05.526" level="TRACE">Arguments: [ 't.Boots Formats And Runs Commands.fail0' ]</msg>
+<msg timestamp="20260807 21:02:05.526" level="TRACE">Return: 't.Boots Formats And Runs Commands.fail0'</msg>
+<msg timestamp="20260807 21:02:05.526" level="INFO">${test_name} = t.Boots Formats And Runs Commands.fail0</msg>
+<status status="PASS" starttime="20260807 21:02:05.526" endtime="20260807 21:02:05.526"/>
+</kw>
+<kw name="Sanitize Test Name" library="renode-keywords">
+<var>${test_name}</var>
+<arg>${test_name}</arg>
+<msg timestamp="20260807 21:02:05.526" level="TRACE">Arguments: [ ${test_name}='t.Boots Formats And Runs Commands.fail0' ]</msg>
+<kw name="Replace String" library="String">
+<var>${test_name}</var>
+<arg>${test_name}</arg>
+<arg>${SPACE}</arg>
+<arg>_</arg>
+<doc>Replaces ``search_for`` in the given ``string`` with ``replace_with``.</doc>
+<msg timestamp="20260807 21:02:05.526" level="TRACE">Arguments: [ 't.Boots Formats And Runs Commands.fail0' | ' ' | '_' ]</msg>
+<msg timestamp="20260807 21:02:05.527" level="TRACE">Return: 't.Boots_Formats_And_Runs_Commands.fail0'</msg>
+<msg timestamp="20260807 21:02:05.527" level="INFO">${test_name} = t.Boots_Formats_And_Runs_Commands.fail0</msg>
+<status status="PASS" starttime="20260807 21:02:05.526" endtime="20260807 21:02:05.527"/>
+</kw>
+<kw name="Replace String Using Regexp" library="String">
+<var>${test_name}</var>
+<arg>${test_name}</arg>
+<arg>[/""]</arg>
+<arg>-</arg>
+<doc>Replaces ``pattern`` in the given ``string`` with ``replace_with``.</doc>
+<msg timestamp="20260807 21:02:05.527" level="TRACE">Arguments: [ 't.Boots_Formats_And_Runs_Commands.fail0' | '[/""]' | '-' ]</msg>
+<msg timestamp="20260807 21:02:05.527" level="TRACE">Return: 't.Boots_Formats_And_Runs_Commands.fail0'</msg>
+<msg timestamp="20260807 21:02:05.527" level="INFO">${test_name} = t.Boots_Formats_And_Runs_Commands.fail0</msg>
+<status status="PASS" starttime="20260807 21:02:05.527" endtime="20260807 21:02:05.527"/>
+</kw>
+<return>
+<value>${test_name}</value>
+<status status="PASS" starttime="20260807 21:02:05.527" endtime="20260807 21:02:05.527"/>
+</return>
+<msg timestamp="20260807 21:02:05.527" level="TRACE">Return: 't.Boots_Formats_And_Runs_Commands.fail0'</msg>
+<msg timestamp="20260807 21:02:05.527" level="INFO">${test_name} = t.Boots_Formats_And_Runs_Commands.fail0</msg>
+<status status="PASS" starttime="20260807 21:02:05.526" endtime="20260807 21:02:05.527"/>
+</kw>
+<kw name="Set Variable" library="BuiltIn">
+<var>${logs_dir}</var>
+<arg>${RESULTS_DIRECTORY}/logs</arg>
+<doc>Returns the given values which can then be assigned to a variables.</doc>
+<msg timestamp="20260807 21:02:05.527" level="TRACE">Arguments: [ '/home/dash/RPC-Workspace/RPCortex-v2//logs' ]</msg>
+<msg timestamp="20260807 21:02:05.527" level="TRACE">Return: '/home/dash/RPC-Workspace/RPCortex-v2//logs'</msg>
+<msg timestamp="20260807 21:02:05.527" level="INFO">${logs_dir} = /home/dash/RPC-Workspace/RPCortex-v2//logs</msg>
+<status status="PASS" starttime="20260807 21:02:05.527" endtime="20260807 21:02:05.527"/>
+</kw>
+<kw name="Create Directory" library="OperatingSystem">
+<arg>${logs_dir}</arg>
+<doc>Creates the specified directory.</doc>
+<msg timestamp="20260807 21:02:05.527" level="TRACE">Arguments: [ '/home/dash/RPC-Workspace/RPCortex-v2//logs' ]</msg>
+<msg timestamp="20260807 21:02:05.527" level="INFO" html="true">Directory '&lt;a href="file:///home/dash/RPC-Workspace/RPCortex-v2/logs"&gt;/home/dash/RPC-Workspace/RPCortex-v2/logs&lt;/a&gt;' already exists.</msg>
+<msg timestamp="20260807 21:02:05.527" level="TRACE">Return: None</msg>
+<status status="PASS" starttime="20260807 21:02:05.527" endtime="20260807 21:02:05.527"/>
+</kw>
+<kw name="Set Variable" library="BuiltIn">
+<var>${log_path}</var>
+<arg>${logs_dir}/${test_name}.log</arg>
+<doc>Returns the given values which can then be assigned to a variables.</doc>
+<msg timestamp="20260807 21:02:05.527" level="TRACE">Arguments: [ '/home/dash/RPC-Workspace/RPCortex-v2//logs/t.Boots_Formats_And_Runs_Commands.fail0.log' ]</msg>
+<msg timestamp="20260807 21:02:05.527" level="TRACE">Return: '/home/dash/RPC-Workspace/RPCortex-v2//logs/t.Boots_Formats_And_Runs_Commands.fail0.log'</msg>
+<msg timestamp="20260807 21:02:05.527" level="INFO">${log_path} = /home/dash/RPC-Workspace/RPCortex-v2//logs/t.Boots_Formats_And_Runs_Commands.fail0.log</msg>
+<status status="PASS" starttime="20260807 21:02:05.527" endtime="20260807 21:02:05.527"/>
+</kw>
+<kw name="Log To Console" library="BuiltIn">
+<arg>!!!!! Log saved to "${log_path}"</arg>
+<doc>Logs the given message to the console.</doc>
+<msg timestamp="20260807 21:02:05.527" level="TRACE">Arguments: [ '!!!!! Log saved to "/home/dash/RPC-Workspace/RPCortex-v2//logs/t.Boots_Formats_And_Runs_Commands.fail0.log"' ]</msg>
+<msg timestamp="20260807 21:02:05.528" level="TRACE">Return: None</msg>
+<status status="PASS" starttime="20260807 21:02:05.527" endtime="20260807 21:02:05.528"/>
+</kw>
+<kw name="Save Cached Log" library="Remote">
+<arg>${log_path}</arg>
+<msg timestamp="20260807 21:02:05.528" level="TRACE">Arguments: [ '/home/dash/RPC-Workspace/RPCortex-v2//logs/t.Boots_Formats_And_Runs_Commands.fail0.log' ]</msg>
+<msg timestamp="20260807 21:02:05.528" level="TRACE">Return: None</msg>
+<msg timestamp="20260807 21:02:05.528" level="FAIL">Connection to remote server broken: [Errno 111] Connection refused</msg>
+<msg timestamp="20260807 21:02:05.528" level="DEBUG">Traceback (most recent call last):
+  None
+RuntimeError: Connection to remote server broken: [Errno 111] Connection refused</msg>
+<status status="FAIL" starttime="20260807 21:02:05.528" endtime="20260807 21:02:05.528"/>
+</kw>
+<msg timestamp="20260807 21:02:05.528" level="TRACE">Return: None</msg>
+<status status="FAIL" starttime="20260807 21:02:05.525" endtime="20260807 21:02:05.528"/>
+</kw>
+<msg timestamp="20260807 21:02:05.528" level="TRACE">Return: None</msg>
+<status status="FAIL" starttime="20260807 21:02:05.525" endtime="20260807 21:02:05.528"/>
+</kw>
+<status status="FAIL" starttime="20260807 21:02:05.525" endtime="20260807 21:02:05.528"/>
+</branch>
+<status status="FAIL" starttime="20260807 21:02:05.524" endtime="20260807 21:02:05.528"/>
+</if>
+<status status="FAIL" starttime="20260807 21:02:05.524" endtime="20260807 21:02:05.528"/>
+</branch>
+<status status="FAIL" starttime="20260807 21:02:05.524" endtime="20260807 21:02:05.528"/>
+</if>
+<if>
+<branch type="IF" condition="${HOLD_ON_ERROR}">
+<kw name="Run Keyword If Test Failed" library="BuiltIn">
+<var>${res}</var>
+<arg>Run Keyword And Ignore Error</arg>
+<arg>Import Library</arg>
+<arg>Dialogs</arg>
+<doc>Runs the given keyword with the given arguments, if the test failed.</doc>
+<status status="NOT RUN" starttime="20260807 21:02:05.528" endtime="20260807 21:02:05.528"/>
+</kw>
+<kw name="Run Keyword If Test Failed" library="BuiltIn">
+<arg>Run Keywords</arg>
+<arg>Run Keyword If</arg>
+<arg>'${res[0]}' == 'FAIL'</arg>
+<arg>Log</arg>
+<arg>Couldn't load the Dialogs library - interactive debugging is not possible</arg>
+<arg>console=True</arg>
+<arg>AND</arg>
+<arg>Run Keyword If</arg>
+<arg>'${res[0]}' != 'FAIL'</arg>
+<arg>Open GUI</arg>
+<arg>AND</arg>
+<arg>Run Keyword If</arg>
+<arg>'${res[0]}' != 'FAIL'</arg>
+<arg>Pause Execution</arg>
+<arg>Test failed. Press OK once done debugging.</arg>
+<arg>AND</arg>
+<arg>Run Keyword If</arg>
+<arg>'${res[0]}' != 'FAIL'</arg>
+<arg>Close GUI</arg>
+<doc>Runs the given keyword with the given arguments, if the test failed.</doc>
+<status status="NOT RUN" starttime="20260807 21:02:05.529" endtime="20260807 21:02:05.529"/>
+</kw>
+<status status="NOT RUN" starttime="20260807 21:02:05.528" endtime="20260807 21:02:05.529"/>
+</branch>
+<status status="PASS" starttime="20260807 21:02:05.528" endtime="20260807 21:02:05.529"/>
+</if>
+<kw name="Reset Emulation" library="Remote">
+<msg timestamp="20260807 21:02:05.529" level="TRACE">Arguments: [  ]</msg>
+<msg timestamp="20260807 21:02:05.529" level="TRACE">Return: None</msg>
+<msg timestamp="20260807 21:02:05.529" level="FAIL">Connection to remote server broken: [Errno 111] Connection refused</msg>
+<msg timestamp="20260807 21:02:05.529" level="DEBUG">Traceback (most recent call last):
+  None
+RuntimeError: Connection to remote server broken: [Errno 111] Connection refused</msg>
+<status status="FAIL" starttime="20260807 21:02:05.529" endtime="20260807 21:02:05.529"/>
+</kw>
+<kw name="Clear Cached Log" library="Remote">
+<msg timestamp="20260807 21:02:05.529" level="TRACE">Arguments: [  ]</msg>
+<msg timestamp="20260807 21:02:05.529" level="TRACE">Return: None</msg>
+<msg timestamp="20260807 21:02:05.529" level="FAIL">Connection to remote server broken: [Errno 111] Connection refused</msg>
+<msg timestamp="20260807 21:02:05.529" level="DEBUG">Traceback (most recent call last):
+  None
+RuntimeError: Connection to remote server broken: [Errno 111] Connection refused</msg>
+<status status="FAIL" starttime="20260807 21:02:05.529" endtime="20260807 21:02:05.529"/>
+</kw>
+<msg timestamp="20260807 21:02:05.529" level="TRACE">Return: None</msg>
+<status status="FAIL" starttime="20260807 21:02:05.454" endtime="20260807 21:02:05.529">Several failures occurred:
+
+1) Connection to remote server broken: [Errno 111] Connection refused
+
+2) Connection to remote server broken: [Errno 111] Connection refused
+
+3) Connection to remote server broken: [Errno 111] Connection refused
+
+4) Connection to remote server broken: [Errno 111] Connection refused</status>
+</kw>
+<status status="FAIL" starttime="20260807 20:55:27.277" endtime="20260807 21:02:05.529">Execution terminated by signal
+
+Also teardown failed:
+Several failures occurred:
+
+1) Connection to remote server broken: [Errno 111] Connection refused
+
+2) Connection to remote server broken: [Errno 111] Connection refused
+
+3) Connection to remote server broken: [Errno 111] Connection refused
+
+4) Connection to remote server broken: [Errno 111] Connection refused</status>
+</test>
+<kw name="Teardown" library="renode-keywords" type="TEARDOWN">
+<msg timestamp="20260807 21:02:05.530" level="TRACE">Arguments: [  ]</msg>
+<if>
+<branch type="IF" condition="not ${SKIP_RUNNING_SERVER}">
+<kw name="Stop Remote Server" library="Remote">
+<status status="NOT RUN" starttime="20260807 21:02:05.530" endtime="20260807 21:02:05.530"/>
+</kw>
+<status status="NOT RUN" starttime="20260807 21:02:05.530" endtime="20260807 21:02:05.530"/>
+</branch>
+<status status="PASS" starttime="20260807 21:02:05.530" endtime="20260807 21:02:05.530"/>
+</if>
+<if>
+<branch type="IF" condition="not ${SKIP_RUNNING_SERVER}">
+<kw name="Wait For Process" library="Process">
+<doc>Waits for the process to complete or to reach the given timeout.</doc>
+<status status="NOT RUN" starttime="20260807 21:02:05.530" endtime="20260807 21:02:05.530"/>
+</kw>
+<status status="NOT RUN" starttime="20260807 21:02:05.530" endtime="20260807 21:02:05.530"/>
+</branch>
+<status status="PASS" starttime="20260807 21:02:05.530" endtime="20260807 21:02:05.530"/>
+</if>
+<msg timestamp="20260807 21:02:05.530" level="TRACE">Return: None</msg>
+<status status="PASS" starttime="20260807 21:02:05.530" endtime="20260807 21:02:05.530"/>
+</kw>
+<meta name="HotSpot_Action">-</meta>
+<status status="FAIL" starttime="20260807 20:55:27.067" endtime="20260807 21:02:05.530"/>
+</suite>
+<statistics>
+<total>
+<stat pass="0" fail="1" skip="0">All Tests</stat>
+</total>
+<tag>
+</tag>
+<suite>
+<stat pass="0" fail="1" skip="0" id="s1" name="Test Suite">Test Suite</stat>
+</suite>
+</statistics>
+<errors>
+</errors>
+</robot>
