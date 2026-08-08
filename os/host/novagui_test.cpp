@@ -168,6 +168,7 @@ unsigned fw_power_min_sleep_ms(void) { return 1; }
 #include "../apps/novad1/novagui_ops.cpp"
 #include "../apps/novad1/novagui_apps.cpp"
 #include "../apps/novad1/novagui_ble.cpp"
+#include "../apps/novad1/novagui_tasks.cpp"
 #include "../apps/novad1/novagui.cpp"
 
 static int checks, failures;

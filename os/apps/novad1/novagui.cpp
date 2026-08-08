@@ -16,6 +16,7 @@
 #include "novagui_ops.h"
 #include "novagui_apps.h"
 #include "novagui_ble.h"
+#include "novagui_tasks.h"
 
 #include "rpc_app.h"
 #include <string.h>
@@ -163,6 +164,7 @@ static const App kApps[] = {
     { "logs",       "Logs",       CAT_TOOLS,    screens::open_logs,      nullptr },
 
     { "diag",       "Hardware",   CAT_SYSTEM,   screens::open_hardware,  nullptr },
+    { "tasks",      "Tasks",      CAT_SYSTEM,   screens::open_tasks,     nullptr },
     { "check",      "Sys Check",  CAT_SYSTEM,   screens::open_check,     nullptr },
     { "fix",        "Repair",     CAT_SYSTEM,   screens::open_repair,    nullptr },
     { "power",      "Power",      CAT_SYSTEM,   screens::open_power,     nullptr },

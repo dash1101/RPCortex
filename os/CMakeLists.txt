@@ -484,8 +484,17 @@ function(rpc_add_app name)
                 ${CMAKE_BINARY_DIR}/apps/${name}.app
                 ${OS_ROOT}/api.cpp
                 ${CMAKE_NM}
+        # And that no two of the package's files share a file-scope name.
+        # Separate translation units make that legal on the device and it is
+        # a redefinition in novagui_test, which compiles the whole package into
+        # one unit so it can drive the runner. Three separate merges have now
+        # produced one — g_out, DeviceScreen, shell_task, Pending — each time
+        # discovered as a wall of template errors in a harness nobody had run
+        # yet. Refused here instead, naming both files.
+        COMMAND ${CMAKE_COMMAND} -E env python3 ${OS_ROOT}/tools_checkuniq.py
         DEPENDS ${app_srcs} ${OS_ROOT}/include/rpc_app.h
                 ${OS_ROOT}/api.cpp ${OS_ROOT}/tools_checkapp.py
+                ${OS_ROOT}/tools_checkuniq.py
         VERBATIM)
     add_custom_target(app_${name} ALL DEPENDS ${CMAKE_BINARY_DIR}/apps/${name}.app)
 endfunction()

@@ -17,7 +17,7 @@ namespace nova {
 
 // One row per check. The order is deliberate: the things everything else depends
 // on first, so a failure appears before the checks it would have invalidated.
-static const char *const kNames[BootCheckScreen::STEPS] = {
+static const char *const kBootStepNames[BootCheckScreen::STEPS] = {
     "Display",
     "Storage",
     "Memory",
@@ -216,7 +216,7 @@ void BootCheckScreen::draw(Canvas &c) {
         const char *mark = result_[i] == R_GOOD ? "+"
                          : result_[i] == R_BAD  ? "!" : "-";
         c.text(0, y, mark, 1);
-        c.text(8, y, kNames[i], 1);
+        c.text(8, y, kBootStepNames[i], 1);
         int w = c.text_width(detail_[i], 1, true);
         c.text(c.width() - w, y, detail_[i], 1, 1, true);
         y += ui::ROWH;
