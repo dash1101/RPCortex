@@ -380,6 +380,20 @@ static int cmd_factoryreset(int, char **) {
         out_info("Cancelled. Nothing was changed.");
         return 1;
     }
+    // And the password, last. Typing "yes" is a decision an unattended shell
+    // can be talked into by anyone who walks past it; this is the one step that
+    // asks for something only the account holder has.
+    //
+    // This IS the recovery path, so refusing it has to come with the way out.
+    // Losing a password must not mean losing the hardware, and the honest
+    // answer is that the boot ROM does not care about any of this.
+    if (!session_reauth("erase this device")) {
+        out_blank();
+        out_multi("  A forgotten password is not the end of the device: hold BOOTSEL");
+        out_multi("  while plugging it in and write the firmware image again. That");
+        out_multi("  clears the accounts along with everything else.");
+        return 1;
+    }
 
     log_add(LOG_K_WARN, "factoryreset: erasing");
     out_info("Erasing...");

@@ -64,6 +64,9 @@ static int cmd_users(int, char **) {
 // mkacct <name> [--admin] [--nopass]
 static int cmd_mkacct(int argc, char **argv) {
     if (!require_admin("mkacct")) return 1;
+    // A new account is a new way into this device. Being admin says the session
+    // is allowed to make one; the password says which admin is making it.
+    if (!session_reauth("create an account")) return 1;
 
     char name[USR_NAME_MAX];
     bool admin = false, nopass = false;
@@ -132,6 +135,15 @@ static int cmd_usermod(int argc, char **argv) {
     const char *sub  = argv[2];
     if (!users_exists(user)) { out_err("User '%s' not found.", user); return 1; }
 
+    // Every branch below hands somebody an account, or hands somebody else's
+    // account to whoever is at the keyboard: a new password on an account that
+    // is not theirs, admin, or sign-in with no password at all. Being admin is
+    // what makes it ALLOWED; the password is what makes it THIS admin.
+    //
+    // `passwd` for your own account already asks for the current one and does
+    // not come through here.
+    if (!session_reauth("change an account")) return 1;
+
     if (!strcmp(sub, "passwd")) {
         char pw[40], msg[64];
         snprintf(msg, sizeof(msg), "New password for '%s'", user);
@@ -191,6 +203,7 @@ static int cmd_usermod(int argc, char **argv) {
 static int cmd_rmuser(int argc, char **argv) {
     if (!require_admin("rmuser")) return 1;
     if (argc < 2) { out_warn("Usage: rmuser <username>"); return 1; }
+    if (!session_reauth("remove an account")) return 1;
     const char *target = argv[1];
     if (!strcmp(target, "root") || !strcmp(target, "guest")) {
         out_err("'%s' is a protected account and cannot be removed.", target);

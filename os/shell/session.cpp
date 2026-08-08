@@ -40,7 +40,7 @@ static char g_user[24] = "root";
 static uint32_t g_login_fails;
 
 const char *session_user(void) { return g_user; }
-void session_logout(void) { g_user[0] = 0; }
+void session_logout(void) { g_user[0] = 0; session_reauth_forget(); }
 
 // Line input with optional masking. Separate from the shell's reader because a
 // password must not echo its characters — it prints '•' instead, which shows the
@@ -93,6 +93,11 @@ static int cmd_autonomy(int argc, char **argv) {
     }
 
     if (strcmp(sub, "off") == 0) {
+        // Turning it OFF is protected too, and that is not symmetry for its own
+        // sake: on a device that boots straight to a shell, `autonomy off`
+        // followed by a reboot is how somebody locks the owner out of their own
+        // hardware. Both directions change who can reach this device.
+        if (!session_reauth("turn autonomy off")) return 1;
         reg_set("System.Autonomous", "");
         persist_save_dirty();
         out_ok("Autonomy off. This device will ask for a login.");
@@ -109,6 +114,14 @@ static int cmd_autonomy(int argc, char **argv) {
         out_warn("This device will boot straight to a shell as '%s'.", who);
         out_multi("  Anyone with physical access has that account without a password.");
         if (!session_confirm("Enable autonomy")) { out_info("Cancelled."); return 1; }
+        // The password AFTER the warning and the yes, so somebody who did not
+        // mean it has already left, and the one prompt that costs real effort is
+        // the last thing between the intent and the change.
+        //
+        // Turning the login prompt off is the single largest change to this
+        // device's security posture that one command can make, and it was
+        // reachable from an unattended admin shell with the word "yes".
+        if (!session_reauth("turn autonomy on")) return 1;
         reg_set("System.Autonomous", who);
         persist_save_dirty();
         out_ok("Autonomy on, as '%s'.", who);
@@ -138,6 +151,67 @@ bool session_confirm(const char *msg) {
     snprintf(q, sizeof(q), "%s (yes/no)", msg);
     read_field(q, ans, sizeof(ans), false);
     return strcmp(ans, "yes") == 0;
+}
+
+// --- re-authentication --------------------------------------------------------
+//
+// See the note in session.h for why "are you sure" is not enough on its own.
+
+static char     g_reauth_user[USR_NAME_MAX + 1];
+static uint32_t g_reauth_at;
+static bool     g_reauth_have;
+
+void session_reauth_forget(void) {
+    g_reauth_have = false;
+    g_reauth_user[0] = 0;
+    // The password itself is never stored — only the fact that one was checked
+    // and when. There is nothing here to wipe beyond the name and the clock.
+}
+
+bool session_reauth(const char *what_for) {
+    const char *who = session_user();
+    if (!who || !who[0]) { out_err("Nobody is signed in."); return false; }
+
+    // A NOPASS account has no secret to prove. Waving it through would make the
+    // check theatre on exactly the accounts where it matters most.
+    if (users_is_nopass(who)) {
+        out_errp("auth", "'%s' signs in without a password, so it cannot "
+                         "authorise this.", who);
+        out_multi("  `passwd %s` gives it one.", who);
+        return false;
+    }
+
+    uint32_t now = task_now_ms();
+    if (g_reauth_have && strcmp(g_reauth_user, who) == 0 &&
+        (uint32_t)(now - g_reauth_at) < REAUTH_GRACE_MS) {
+        return true;
+    }
+
+    // Three attempts, then a refusal. The same shape as the login loop rather
+    // than a new one — somebody mistyping a password should meet the behaviour
+    // they already know.
+    for (int tries = 0; tries < 3; tries++) {
+        char pw[USR_CRED_MAX];
+        char prompt[96];
+        snprintf(prompt, sizeof(prompt), "Password for %s, to %s", who, what_for);
+        read_field(prompt, pw, sizeof(pw), true);
+
+        bool ok = users_verify(who, pw);
+        // Not left on the stack for whatever runs next in this frame.
+        for (unsigned i = 0; i < sizeof(pw); i++) pw[i] = 0;
+
+        if (ok) {
+            snprintf(g_reauth_user, sizeof(g_reauth_user), "%s", who);
+            g_reauth_at   = now;
+            g_reauth_have = true;
+            return true;
+        }
+        out_err("Wrong password.");
+    }
+    // LOGGED, always. A refused privileged action is the one somebody wants to
+    // find afterwards, and it is the only record that the attempt happened.
+    log_addf(LOG_K_WARN, "auth: refused '%s' three times, to %s", who, what_for);
+    return false;
 }
 
 // A [Y/n] question: blank means yes. v1's default for anything it wanted people
