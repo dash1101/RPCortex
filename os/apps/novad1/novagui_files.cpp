@@ -593,7 +593,7 @@ private:
 // which is what the person picking between them actually wants to see.
 
 // A memory-chip glyph for on-board flash: a body with legs down each side.
-static void ic_flash(Canvas &c, int x, int y, int col) {
+static void root_ic_flash(Canvas &c, int x, int y, int col) {
     c.rect(x + 1, y, 5, 6, col);
     c.pixel(x, y + 1, col);   c.pixel(x, y + 3, col);      // left legs
     c.pixel(x + 6, y + 1, col); c.pixel(x + 6, y + 3, col); // right legs
@@ -602,7 +602,7 @@ static void ic_flash(Canvas &c, int x, int y, int col) {
 
 // An SD card: a body with the top-right corner cut off, the way a real one is
 // keyed so it only goes in one way.
-static void ic_sd(Canvas &c, int x, int y, int col) {
+static void root_ic_sd(Canvas &c, int x, int y, int col) {
     // Outline with the corner notched.
     c.hline(x, y, 5, col);            // top, short of the corner
     c.line(x + 5, y, x + 6, y + 1, col);
@@ -655,8 +655,8 @@ public:
             if (on) c.rounded_rect(0, y - 1, right, ui::ROWH, 1, true);
             const int col = on ? 0 : 1;
 
-            if (roots_[i].kind == FW_ROOT_SD) ic_sd(c, 3, y, col);
-            else                              ic_flash(c, 3, y, col);
+            if (roots_[i].kind == FW_ROOT_SD) root_ic_sd(c, 3, y, col);
+            else                              root_ic_flash(c, 3, y, col);
             c.text(14, y, roots_[i].label, col);
 
             char v[16];

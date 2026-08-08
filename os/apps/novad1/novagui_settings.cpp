@@ -783,6 +783,130 @@ static void bump_cpu_clock(void) {
 // server in another. Sync is a clock action that happens to need a radio, so it
 // is here with the rest of them.
 
+// --- Set Time ---------------------------------------------------------------------
+//
+// The clock, set by hand. v1 had this and v2 dropped it, which left a handheld
+// with only Sync Clock — and Sync needs a network. A Nova D1 out in a field with
+// no WiFi had no way to set its clock at all, which is exactly where it matters
+// most.
+//
+// It drives the shell's own `date set`, so there is one setter on the device and
+// this is a face for it, not a second path into the RTC. The fields are edited
+// one at a time with the encoder; SELECT steps to the next and commits on the
+// last, the way the PIN screen walks its digits.
+class SetTimeScreen : public Screen {
+public:
+    void begin(void) {
+        FwTime t;
+        if (fw_time_get(&t) == 1 && t.year >= 2000) {
+            v_[F_Y] = t.year; v_[F_MO] = t.month; v_[F_D] = t.day;
+            v_[F_H] = t.hour; v_[F_MI] = t.minute;
+        } else {
+            // The clock is running but not right (kboot seeds a placeholder), so
+            // start somewhere sane rather than at 1970.
+            v_[F_Y] = 2026; v_[F_MO] = 1; v_[F_D] = 1; v_[F_H] = 0; v_[F_MI] = 0;
+        }
+        f_ = F_Y;
+    }
+
+    const char *title(void) const override { return "Set Time"; }
+
+    int help(const char **out, int max) const override {
+        if (max < 3) return 0;
+        out[0] = "Turn to change the field,";
+        out[1] = "SELECT for the next. The last";
+        out[2] = "one sets the clock.";
+        return 3;
+    }
+
+    void draw(Canvas &c) override {
+        char date[16], time[8];
+        snprintf(date, sizeof(date), "%04d-%02d-%02d", v_[F_Y], v_[F_MO], v_[F_D]);
+        snprintf(time, sizeof(time), "%02d:%02d", v_[F_H], v_[F_MI]);
+
+        const int y1 = ui::TOP + 4;
+        c.text_centred(y1, date, 1, 2, false);
+        c.text_centred(y1 + 18, time, 1, 2, false);
+
+        // Underline the field being edited, positioned under its digits. The
+        // date row is "YYYY-MM-DD" at scale 2; each glyph is FW*2+2 wide. The
+        // field starts are counted in glyphs from the left of the centred text.
+        underline_field(c, date, time, y1, y1 + 18);
+
+        c.text_centred(c.height() - ui::FH, f_ == F_LAST ? "SELECT sets it" : "SELECT: next", 1);
+    }
+
+    Action on_event(Event e) override {
+        if (e == EV_ROT_CW)  { bump(+1); return ui::ACT_STAY; }
+        if (e == EV_ROT_CCW) { bump(-1); return ui::ACT_STAY; }
+        if (e == EV_SELECT) {
+            if (f_ < F_LAST) { f_ = f_ + 1; return ui::ACT_STAY; }
+            return commit();
+        }
+        if (e == EV_SELECT_HOLD) return commit();
+        return Screen::on_event(e);
+    }
+
+private:
+    enum { F_Y = 0, F_MO, F_D, F_H, F_MI, F_COUNT, F_LAST = F_MI };
+    int v_[F_COUNT];
+    int f_;
+
+    static int days_in_month(int y, int m) {
+        static const int d[] = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+        if (m == 2 && ((y % 4 == 0 && y % 100 != 0) || y % 400 == 0)) return 29;
+        return (m >= 1 && m <= 12) ? d[m - 1] : 31;
+    }
+
+    void bump(int dir) {
+        switch (f_) {
+            case F_Y:  v_[F_Y] = wrap(v_[F_Y] + dir, 2020, 2099); break;
+            case F_MO: v_[F_MO] = wrap(v_[F_MO] + dir, 1, 12); break;
+            case F_D:  v_[F_D] = wrap(v_[F_D] + dir, 1, days_in_month(v_[F_Y], v_[F_MO])); break;
+            case F_H:  v_[F_H] = wrap(v_[F_H] + dir, 0, 23); break;
+            case F_MI: v_[F_MI] = wrap(v_[F_MI] + dir, 0, 59); break;
+        }
+        // A day left dangling by a month change (31st, then to February) is
+        // pulled back to that month's last day so the value is never impossible.
+        int dim = days_in_month(v_[F_Y], v_[F_MO]);
+        if (v_[F_D] > dim) v_[F_D] = dim;
+    }
+
+    static int wrap(int val, int lo, int hi) {
+        if (val < lo) return hi;
+        if (val > hi) return lo;
+        return val;
+    }
+
+    // Draw the cursor bar under whichever field is live.
+    void underline_field(Canvas &c, const char *date, const char *time, int yd, int yt) const {
+        // Glyph offset (in characters) of each field's first digit, and its width.
+        int off, wid, y;
+        const char *s;
+        switch (f_) {
+            case F_Y:  s = date; off = 0; wid = 4; y = yd; break;
+            case F_MO: s = date; off = 5; wid = 2; y = yd; break;
+            case F_D:  s = date; off = 8; wid = 2; y = yd; break;
+            case F_H:  s = time; off = 0; wid = 2; y = yt; break;
+            default:   s = time; off = 3; wid = 2; y = yt; break;
+        }
+        int total = c.text_width(s, 2, false);
+        int left = (c.width() - total) / 2;
+        int glyph = c.text_width("0", 2, false) + 2;   // scale-2 advance
+        int x = left + off * glyph;
+        c.hline(x, y + ui::FH * 2 + 1, wid * glyph - 2, 1);
+    }
+
+    Action commit(void) {
+        char line[40], out[80];
+        snprintf(line, sizeof(line), "date set %04d-%02d-%02d %02d:%02d:00",
+                 v_[F_Y], v_[F_MO], v_[F_D], v_[F_H], v_[F_MI]);
+        fw_shell_run(line, out, sizeof(out));
+        ui::notice("Set Time", out[0] ? out : "Clock set.");
+        return ui::ACT_BACK;
+    }
+};
+
 class ClockSettings : public SettingsList {
 public:
     const char *title(void) const override { return "Clock"; }
@@ -804,7 +928,7 @@ public:
     }
 
 protected:
-    enum { R_TZ = 0, R_24H, R_CPU, R_SYNC, R_COUNT };
+    enum { R_SET = 0, R_TZ, R_24H, R_CPU, R_SYNC, R_COUNT };
 
     int count(void) const override { return R_COUNT; }
     const char *label(int i) const override { return kLabels[i]; }
@@ -814,6 +938,7 @@ protected:
 
     void value(int i, char *out, unsigned cap) const override {
         switch (i) {
+            case R_SET: nova::copy(out, cap, ">"); break;
             case R_TZ: {
                 int off = nova::reg_int("System.TZ_Offset", 0);
                 snprintf(out, cap, "UTC%c%d", off < 0 ? '-' : '+', off < 0 ? -off : off);
@@ -834,6 +959,7 @@ protected:
 
     Action activate(int i) override {
         switch (i) {
+            case R_SET: { SetTimeScreen *s = gui::push<SetTimeScreen>(); if (s) s->begin(); break; }
             case R_TZ:  gui::push<TimezoneScreen>(); break;
             case R_24H: h24_ = !h24_; dirty_ = true; break;
             case R_CPU: bump_cpu_clock(); break;
@@ -854,7 +980,7 @@ private:
 };
 
 const char *const ClockSettings::kLabels[ClockSettings::R_COUNT] = {
-    "Timezone", "24-hour", "CPU", "Sync Clock",
+    "Set Time", "Timezone", "24-hour", "CPU", "Sync Clock",
 };
 
 static void open_clock_settings(void) {
