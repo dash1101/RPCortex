@@ -10,7 +10,7 @@
 
 // Single source of truth for version + codename, as v1 kept them in
 // RPCortex.py. The banner and `ver` both read these.
-#define RPC_OS_VERSION  "v2.1.0"
+#define RPC_OS_VERSION  "v2.2.0"
 #define RPC_OS_CODENAME "Vela II"
 
 enum LogLevel { LOG_INFO = 0, LOG_WARN = 1, LOG_ERROR = 2 };

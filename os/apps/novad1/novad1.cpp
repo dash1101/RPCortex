@@ -25,7 +25,7 @@
 // help` and `novad1 info` — and three copies of a number that must agree is a
 // version that eventually disagrees with itself in a way nobody notices until a
 // bug report quotes the wrong one.
-#define NOVAD1_VER "1.2.2"
+#define NOVAD1_VER "1.3.0"
 
 RPC_APP_VER("novad1", NOVAD1_VER);
 

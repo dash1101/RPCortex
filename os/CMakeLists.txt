@@ -103,6 +103,8 @@ add_executable(rpcortex_v2
     ${OS_ROOT}/shell/btaudio.cpp
     ${OS_ROOT}/shell/nfc.cpp
     ${OS_ROOT}/shell/ibutton.cpp
+    ${OS_ROOT}/shell/cc1101.cpp
+    ${OS_ROOT}/shell/sx1276.cpp
     ${OS_ROOT}/core/pcmring.cpp
     ${OS_ROOT}/core/wav.cpp
     ${OS_ROOT}/core/btname.cpp

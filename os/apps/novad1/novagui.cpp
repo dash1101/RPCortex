@@ -19,6 +19,7 @@
 #include "novagui_ble.h"
 #include "novagui_media.h"
 #include "novagui_contact.h"
+#include "novagui_radios.h"
 #include "novagui_tasks.h"
 
 #include "rpc_app.h"
@@ -148,8 +149,8 @@ static const App kApps[] = {
     // 'ir' is the app the MicroPython home used; ir_rx and ir_tx are the two
     // halves of the hardware behind it, and they have their own icons.
     { "ir",         "IR",         CAT_WIRELESS, nullptr,  "ir_rx" },
-    { "cc1101",     "Sub-GHz",    CAT_WIRELESS, nullptr,  "cc1101" },
-    { "sx1276",     "LoRa",       CAT_WIRELESS, nullptr,  "sx1276" },
+    { "cc1101",     "Sub-GHz",    CAT_WIRELESS, screens::open_subghz, "cc1101" },
+    { "sx1276",     "LoRa",       CAT_WIRELESS, screens::open_lora,   "sx1276" },
     { "msg",        "Messages",   CAT_WIRELESS, nullptr,  "sx1276" },
 
     { "gps",        "GPS",        CAT_SENSORS,  nullptr,  "gps" },
