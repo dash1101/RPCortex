@@ -53,6 +53,7 @@
 #include "../apps/novad1/novagui_ops.cpp"
 #include "../apps/novad1/novagui_apps.cpp"
 #include "../apps/novad1/novagui_ble.cpp"
+#include "../apps/novad1/novagui_contact.cpp"
 #include "../apps/novad1/novagui_tasks.cpp"
 #include "../apps/novad1/novagui.cpp"
 

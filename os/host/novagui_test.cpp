@@ -46,6 +46,7 @@
 #include "../apps/novad1/novagui_ops.cpp"
 #include "../apps/novad1/novagui_apps.cpp"
 #include "../apps/novad1/novagui_ble.cpp"
+#include "../apps/novad1/novagui_contact.cpp"
 #include "../apps/novad1/novagui_tasks.cpp"
 #include "../apps/novad1/novagui.cpp"
 
@@ -393,6 +394,101 @@ static void test_catalogue(void) {
     ok(with_screen > 0, "some of them open something");
 }
 
+// --- the contact readers read the commands back correctly --------------------------
+//
+// novashots cannot reach this and must not be changed so that it can. Its
+// fw_task_spawn COUNTS a spawn rather than running it, deliberately — that is
+// what catches a second runner — so the worker never calls fw_shell_run and the
+// reply is never parsed. The photograph is of the waiting state and nothing
+// else.
+//
+// The parse is the half of these two screens that can be wrong without looking
+// wrong: a row found by the wrong name puts a UID in the type line and reads as
+// a fault in the reader. So the reply is fed straight in here, in the exact text
+// shell/nfc.cpp and shell/ibutton.cpp print — the same strings the fake shell
+// serves, kept in step with it on purpose.
+static void test_contact_readers(void) {
+    using namespace nova::screens;
+
+    // A tag.
+    snprintf(g_ct_out, sizeof(g_ct_out), "%s",
+             "[:] Tag\n"
+             "  UID       04 A2 B3 C4 D5 E6 F7\n"
+             "  Type      NTAG / Ultralight\n"
+             "  ATQA      44 00\n"
+             "  SAK       00\n");
+    g_ct_rc = 0;
+    g_ct_ready = 1;
+    ok(ct_collect("UID", "Type", "SAK"), "an nfc read is taken in");
+    eq(g_ct_state, CT_OK, "and counts as a read");
+    ok(!strcmp(g_ct_l1, "04 A2 B3 C4 D5 E6 F7"), "the UID row is the UID");
+    ok(!strcmp(g_ct_l2, "NTAG / Ultralight"), "the Type row is the type");
+    ok(!strcmp(g_ct_l3, "SAK 00"), "and the third row carries its own label");
+
+    // A key.
+    snprintf(g_ct_out, sizeof(g_ct_out), "%s",
+             "[:] iButton\n"
+             "  ROM       01 A2 B3 C4 D5 E6 F7 3D\n"
+             "  Family    01  DS1990A / DS2401\n"
+             "  CRC       ok\n");
+    g_ct_rc = 0;
+    g_ct_ready = 1;
+    ok(ct_collect("ROM", "Family", "CRC"), "an ibutton read is taken in");
+    ok(!strcmp(g_ct_l1, "01 A2 B3 C4 D5 E6 F7 3D"), "the ROM row is the ROM");
+    ok(!strcmp(g_ct_l2, "01  DS1990A / DS2401"), "the family byte and its part");
+    ok(!strcmp(g_ct_l3, "CRC ok"), "and the checksum is labelled");
+
+    // THE ONE THAT MATTERS. A key whose checksum failed still prints a ROM row,
+    // on purpose, so somebody at a terminal can see what came back. If the
+    // screen looked for the field before the exit status it would find it and
+    // show a rejected key as a good one — which is the whole failure the CRC
+    // exists to prevent, reintroduced one layer up.
+    // The tags are out.cpp's own: [:] info, [@] ok, [?] warn, [!] error. Worth
+    // getting right even though nothing below keys off them — a fake carrying
+    // the wrong prefix is a fake that would still pass while telling the next
+    // person the wrong thing about the format.
+    snprintf(g_ct_out, sizeof(g_ct_out), "%s",
+             "[!] The key did not check out.\n"
+             "  ROM       01 A2 B3 C4 D5 E6 F7 4C\n"
+             "  CRC       bad - got 4C, wanted 3D\n");
+    g_ct_rc = 1;
+    g_ct_ready = 1;
+    ct_collect("ROM", "Family", "CRC");
+    eq(g_ct_state, CT_FAILED, "a rejected key is not reported as a read");
+    ok(!strcmp(g_ct_why, "bad checksum - hold still"), "and it says why");
+    ok(g_ct_l1[0] == 0, "with no ROM left on the screen");
+
+    // Nothing presented is its own answer, not a fault.
+    snprintf(g_ct_out, sizeof(g_ct_out), "%s",
+             "[?] No tag.\n"
+             "  Hold a card flat against the antenna while it reads.\n");
+    g_ct_rc = 1;
+    g_ct_ready = 1;
+    ct_collect("UID", "Type", "SAK");
+    eq(g_ct_state, CT_NOTHING, "an empty antenna is not a broken reader");
+
+    snprintf(g_ct_out, sizeof(g_ct_out), "%s",
+             "[!] No PN532 answered at 0x24 on I2C0.\n"
+             "  Check the wiring and that the module's DIP switches select I2C.\n");
+    g_ct_rc = 1;
+    g_ct_ready = 1;
+    ct_collect("UID", "Type", "SAK");
+    eq(g_ct_state, CT_FAILED, "a missing reader is");
+    ok(!strcmp(g_ct_why, "no reader answered"), "and is named as one");
+
+    // An empty buffer is NOT an empty reader. There is one output capture in
+    // the OS and a command whose output could not be captured comes back
+    // untouched, which would otherwise read as "nothing was presented".
+    g_ct_out[0] = 0;
+    g_ct_rc = 0;
+    g_ct_ready = 1;
+    ct_collect("UID", "Type", "SAK");
+    eq(g_ct_state, CT_BUSY_BUF, "an uncaptured command is not an empty antenna");
+
+    ok(!ct_collect("UID", "Type", "SAK"), "and nothing pending collects nothing");
+    g_ct_state = CT_NEVER;
+}
+
 #define STAGE(f) do { fprintf(stderr, "  .. %s\n", #f); f(); } while (0)
 
 int main(void) {
@@ -404,6 +500,7 @@ int main(void) {
     STAGE(test_stack_bounds);
     STAGE(test_one_step_per_frame);
     STAGE(test_catalogue);
+    STAGE(test_contact_readers);
     STAGE(test_no_panel);
 
     printf("  %d checks", checks);

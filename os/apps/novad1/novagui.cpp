@@ -17,6 +17,7 @@
 #include "novagui_ops.h"
 #include "novagui_apps.h"
 #include "novagui_ble.h"
+#include "novagui_contact.h"
 #include "novagui_tasks.h"
 
 #include "rpc_app.h"
@@ -142,7 +143,7 @@ static const App kApps[] = {
     { "radar",      "Radar",      CAT_WIRELESS, screens::open_radar,     nullptr },
     { "presence",   "Presence",   CAT_WIRELESS, screens::open_presence,  nullptr },
     { "wardrive",   "Wardrive",   CAT_WIRELESS, screens::open_wardrive,  nullptr },
-    { "pn532",      "NFC",        CAT_WIRELESS, nullptr,  "pn532" },
+    { "pn532",      "NFC",        CAT_WIRELESS, screens::open_nfc,       "pn532" },
     // 'ir' is the app the MicroPython home used; ir_rx and ir_tx are the two
     // halves of the hardware behind it, and they have their own icons.
     { "ir",         "IR",         CAT_WIRELESS, nullptr,  "ir_rx" },
@@ -163,6 +164,12 @@ static const App kApps[] = {
     { "store",      "App Store",  CAT_TOOLS,    screens::open_store,     nullptr },
     { "cmds",       "Commands",   CAT_TOOLS,    screens::open_commands,  nullptr },
     { "logs",       "Logs",       CAT_TOOLS,    screens::open_logs,      nullptr },
+    // The module table files iButton under Testing, and this row is in Tools
+    // ON PURPOSE. No app has ever been in the Testing category, and build_catalogue
+    // makes a home-screen folder for every category that has anything in it — so
+    // putting it there would grow a new "Testing" folder holding one app. It is a
+    // tool in the sense Files and Commands are: a thing you open to do a job.
+    { "ibutton",    "iButton",    CAT_TOOLS,    screens::open_ibutton,   "ibutton" },
 
     { "diag",       "Hardware",   CAT_SYSTEM,   screens::open_hardware,  nullptr },
     { "tasks",      "Tasks",      CAT_SYSTEM,   screens::open_tasks,     nullptr },

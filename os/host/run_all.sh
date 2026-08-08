@@ -53,6 +53,11 @@ declare -A SRC=(
     [wav_test]="$CORE/wav.cpp"
     [pcmring_test]="$CORE/pcmring.cpp"
     [btname_test]="$CORE/btname.cpp"
+    # The two contact readers. Their bus transactions need a chip on the end and
+    # cannot be run here at all; the frames and the checksum those transactions
+    # carry are arithmetic, and every way one can be wrong is reachable.
+    [nfcframe_test]="$CORE/nfcframe.cpp"
+    [onewire_test]="$CORE/onewire.cpp"
     [power_test]="$CORE/powerpolicy.cpp"
     [framebuf_test]="$CORE/framebuf.cpp"
     # The Nova D1 canvas is INCLUDED by its test, the same as the packages above:

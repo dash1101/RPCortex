@@ -103,6 +103,33 @@ static const char *fake_shell(const char *line) {
                "  D9:33:36:32:1B:59  LE    -78 dBm  Govee_H6199_1B59\n"
                "  37:96:7B:89:C2:EB  LE    -80 dBm  \n"
                "  53:0A:FB:D0:FF:87  LE    -92 dBm  Quest 3S\n";
+    // The two contact readers. Column positions copied from the real commands
+    // in shell/nfc.cpp and shell/ibutton.cpp — every value starts at column 12
+    // — because the screens find a row by its NAME and then step over the
+    // spacing, and a fake that was merely tidy would pass while the real
+    // format failed.
+    //
+    // The iButton ROM below is a REAL one in the sense that matters: 3D is the
+    // genuine Dallas CRC of the seven bytes in front of it, so a screen that
+    // ever grows a checksum test of its own agrees with this rather than
+    // rejecting it.
+    if (!strncmp(line, "nfc status", 10))
+        return "[:] NFC\n"
+               "  Chip      PN532 on I2C0, GPIO 0/1 at 400 kHz\n"
+               "  Address   0x24 answered\n"
+               "  Shared    the same at the rate the panel uses\n"
+               "  Firmware  PN532 v1.6\n";
+    if (!strncmp(line, "nfc read", 8))
+        return "[:] Tag\n"
+               "  UID       04 A2 B3 C4 D5 E6 F7\n"
+               "  Type      NTAG / Ultralight\n"
+               "  ATQA      44 00\n"
+               "  SAK       00\n";
+    if (!strncmp(line, "ibutton read", 12))
+        return "[:] iButton\n"
+               "  ROM       01 A2 B3 C4 D5 E6 F7 3D\n"
+               "  Family    01  DS1990A / DS2401\n"
+               "  CRC       ok\n";
     return "";
 }
 
