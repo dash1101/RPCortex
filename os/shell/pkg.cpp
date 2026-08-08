@@ -173,8 +173,20 @@ bool pkg_install_file(const char *file, bool quiet, bool consume) {
         // upgrade not happening.
         if (was_resident) {
             char back[40]; pkg_path(name, back, sizeof(back));
-            if (apps_launch(back, 0, /*quiet*/true) >= 0)
+            if (apps_launch(back, 0, /*quiet*/true) >= 0) {
                 out_multi("  '%s' is still installed and has been reloaded.", name);
+            } else {
+                // SAID OUT LOUD. The reload fails for the same reason the
+                // install did — there is no room — and this branch used to be
+                // silent, which left a device whose commands had just vanished
+                // with nothing on screen explaining it or saying they come
+                // back. The file was never touched, so this is a message
+                // rather than a recovery.
+                out_multi("  '%s' could not be reloaded — the same memory it "
+                          "needed to install.", name);
+                out_multi("  The installed copy on flash is untouched. A reboot "
+                          "brings its commands back.");
+            }
         }
         return false;
     }
