@@ -54,6 +54,8 @@ void btaudio_register(void);
 #if defined(RPC_HAS_SD) && RPC_HAS_SD
 void sd_register(void);
 #endif
+void nfc_register(void);
+void ibutton_register(void);
 void http_register(void);
 void net_autoconnect_report(void);
 void diag_register(void);
@@ -474,6 +476,8 @@ void shell_register_builtins(void) {
     power_register();       // sleep
     bt_register();          // bluetooth
     btaudio_register();     // a2dp sink
+    nfc_register();         // pn532 reader
+    ibutton_register();     // ds1990a reader
     netapps_register();     // ping / nslookup / ntp
     http_register();        // wget
     fetch_register();       // fetch / neofetch

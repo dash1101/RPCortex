@@ -101,9 +101,13 @@ add_executable(rpcortex_v2
     ${OS_ROOT}/shell/power.cpp
     ${OS_ROOT}/shell/bt.cpp
     ${OS_ROOT}/shell/btaudio.cpp
+    ${OS_ROOT}/shell/nfc.cpp
+    ${OS_ROOT}/shell/ibutton.cpp
     ${OS_ROOT}/core/pcmring.cpp
     ${OS_ROOT}/core/wav.cpp
     ${OS_ROOT}/core/btname.cpp
+    ${OS_ROOT}/core/nfcframe.cpp
+    ${OS_ROOT}/core/onewire.cpp
     ${OS_ROOT}/core/powerpolicy.cpp
     ${OS_ROOT}/core/framebuf.cpp
     ${OS_ROOT}/core/task.cpp
