@@ -24,4 +24,21 @@ void persist_save_registry(void);
 void persist_save_users(void);
 void persist_save_dirty(void);   // save whichever changed; called after commands
 
+// --- the signed-in user's own settings ----------------------------------------
+//
+// The "User." half of the registry lives in that person's home directory and is
+// swapped in at login. See the note in registry.h for which keys those are and
+// why it is not simply everything an app owns.
+
+// Load <user>'s settings and make them the active scope. Called once a login
+// has succeeded, and safe on a user who has never had any.
+void persist_scope_enter(const char *user);
+
+// Write them back if they changed, then forget them. Called at logout, and
+// before a login replaces the scope with somebody else's.
+void persist_scope_leave(void);
+
+// Write them out now, without leaving the scope. persist_save_dirty calls this.
+void persist_save_scope(void);
+
 #endif  // RPC_PERSIST_H

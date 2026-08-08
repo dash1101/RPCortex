@@ -4,6 +4,7 @@
 #include "storage.h"
 
 #include <stdlib.h>
+#include <stdio.h>
 
 // Config files are small; a few KB each is generous. The read helper caps at
 // this, so a corrupted oversized file is truncated rather than eating the heap.
@@ -117,6 +118,56 @@ void persist_save_users(void) {
 }
 
 void persist_save_dirty(void) {
-    if (reg_dirty())   persist_save_registry();
-    if (users_dirty()) persist_save_users();
+    if (reg_dirty())       persist_save_registry();
+    if (users_dirty())     persist_save_users();
+    if (reg_scope_dirty()) persist_save_scope();
+}
+
+// --- the signed-in user's own settings ----------------------------------------
+
+// "/home/<user>/settings.cfg". Built here rather than from reg_note_home so the
+// trailing slash question has one answer in one place.
+static bool scope_path(const char *user, char *out, uint32_t cap) {
+    if (!user || !user[0]) return false;
+    // A name with a separator in it would write outside the home directory it
+    // is supposed to be confined to. Accounts cannot contain one today; this is
+    // here so that stays true if the rules for a name ever loosen.
+    for (const char *p = user; *p; p++)
+        if (*p == '/' || *p == '\\' || *p == ':') return false;
+    snprintf(out, cap, "/home/%s/settings.cfg", user);
+    return true;
+}
+
+void persist_save_scope(void) {
+    const char *user = reg_scope_user();
+    char path[64];
+    if (!scope_path(user, path, sizeof(path))) return;
+    // The home directory is made by fsinit at boot and again when an account is
+    // created, but a factory reset wipes /home wholesale and the next save
+    // would land nowhere. Cheap to be sure.
+    char dir[64];
+    snprintf(dir, sizeof(dir), "/home/%s", user);
+    storage_mkdir(dir);
+    save_one(path, reg_scope_serialize);
+    reg_scope_mark_clean();
+}
+
+void persist_scope_enter(const char *user) {
+    // Whoever was here before goes first, with their changes written out. A
+    // login that replaced the scope without saving would silently discard the
+    // previous session's settings.
+    persist_scope_leave();
+    if (!user || !user[0]) return;
+
+    char path[64];
+    if (!scope_path(user, path, sizeof(path))) return;
+    reg_scope_load(nullptr, 0);              // start from nothing, not from the last user
+    load_one(path, reg_scope_load);
+    reg_scope_set(user);
+    reg_scope_mark_clean();
+}
+
+void persist_scope_leave(void) {
+    if (reg_scope_dirty()) persist_save_scope();
+    reg_scope_clear();
 }

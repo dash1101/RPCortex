@@ -40,7 +40,14 @@ static char g_user[24] = "root";
 static uint32_t g_login_fails;
 
 const char *session_user(void) { return g_user; }
-void session_logout(void) { g_user[0] = 0; session_reauth_forget(); }
+void session_logout(void) {
+    // Their settings are written back and put away before the name goes. In the
+    // other order there is no scope left to save and the session's changes are
+    // simply lost.
+    persist_scope_leave();
+    g_user[0] = 0;
+    session_reauth_forget();
+}
 
 // Line input with optional masking. Separate from the shell's reader because a
 // password must not echo its characters — it prints '•' instead, which shows the
@@ -355,6 +362,10 @@ static void accept(const char *name) {
     g_login_fails = 0;
     snprintf(g_user, sizeof(g_user), "%s", name);
     reg_set("System.Active_User", g_user);
+    // Their own settings, before anything reads one. Any "User." key looked up
+    // between here and the prompt would otherwise get the device default and
+    // then be written back as theirs.
+    persist_scope_enter(g_user);
     persist_save_dirty();
     out_ok("Welcome, %s!", g_user);
 }

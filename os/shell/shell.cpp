@@ -401,6 +401,20 @@ static int cmd_reg(int argc, char **argv) {
             const char *k = reg_key_at(i);
             out_multi("  %s%s%s = %s", C_CYAN, k, C_RESET, reg_get(k, ""));
         }
+        // The signed-in user's own, shown SEPARATELY and after.
+        //
+        // Mixing them would hide the one thing worth knowing: a "User." key
+        // that appears in both lists is a personal value shadowing a device
+        // default, and somebody reading a flat list has no way to tell which is
+        // in force or which file a change would land in.
+        if (reg_scope_count()) {
+            out_blank();
+            out_infop("reg", "%s's own", reg_scope_user());
+            for (uint32_t i = 0; i < reg_scope_count(); i++) {
+                const char *k = reg_scope_key_at(i);
+                out_multi("  %s%s%s = %s", C_CYAN, k, C_RESET, reg_get(k, ""));
+            }
+        }
         return 0;
     }
     if (!strcmp(argv[1], "get") && argc >= 3) {
@@ -413,6 +427,8 @@ static int cmd_reg(int argc, char **argv) {
         return 0;   // written to flash by the shell's post-command save
     }
     out_multi("Usage: reg | reg get <key> | reg set <key> <value>");
+    out_multi("  A key beginning 'User.' belongs to whoever is signed in and is");
+    out_multi("  kept in their home directory. Everything else is the device's.");
     return 1;
 }
 

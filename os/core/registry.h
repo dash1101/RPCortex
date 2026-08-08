@@ -54,4 +54,53 @@ uint32_t reg_serialize(char *buf, uint32_t cap);
 bool reg_dirty(void);
 void reg_mark_clean(void);
 
+// --- the per-user table -------------------------------------------------------
+//
+// A second, smaller table holding the settings that belong to a PERSON rather
+// than to the device, kept in that person's home directory and swapped in at
+// login.
+//
+// WHICH KEYS: exactly the ones beginning "User.", and nothing else. Not the
+// "Apps." namespace, which was the obvious answer and is wrong — the Nova D1
+// keeps `Apps.NovaD1_PIN_sda` there, and which pin the display is wired to is a
+// fact about the hardware. It does not change when somebody else logs in. So a
+// package that wants a preference to follow the person names it "User.<thing>"
+// and gets that behaviour; everything else stays device-wide by default, which
+// is the safe direction to be wrong in.
+//
+// READS prefer the signed-in user's value and fall back to the device table. A
+// device-wide "User." key is therefore the DEFAULT everyone starts from, which
+// is what makes an existing setting survive this becoming per-user at all.
+//
+// WRITES with a scope active go to the user's table. Writes with NO scope are
+// REFUSED for a "User." key — see reg_set. A background service running before
+// anyone logs in must not quietly turn its own preference into the device
+// default that everybody afterwards inherits.
+#define REG_USER_MAX 24
+
+// Whose settings are loaded, or "" when nobody is signed in.
+const char *reg_scope_user(void);
+
+// Name the scope. Does no I/O — the device layer loads the file and calls this.
+void reg_scope_set(const char *user);
+
+// Replace the user table from "key=value" lines, as reg_load does for the
+// device table. Clears first.
+void reg_scope_load(const char *text, uint32_t len);
+
+// Write the user table out. SEPARATE from reg_serialize, which must go on
+// emitting the device table alone — otherwise the shared registry file gains
+// every user's keys and the split stops meaning anything.
+uint32_t reg_scope_serialize(char *buf, uint32_t cap);
+
+void reg_scope_clear(void);
+bool reg_scope_dirty(void);
+void reg_scope_mark_clean(void);
+
+uint32_t    reg_scope_count(void);
+const char *reg_scope_key_at(uint32_t i);
+
+// Is this a key that belongs to a person? The one place the rule is written.
+bool reg_is_user_key(const char *key);
+
 #endif  // RPC_REGISTRY_H

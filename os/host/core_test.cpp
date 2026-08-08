@@ -77,6 +77,88 @@ int main(void) {
     ck(reg_count() == REG_MAX, "the registry is capped, not unbounded");
     (void)overflow_ok;
 
+    // --- the per-user half of the registry -----------------------------------
+    //
+    // The whole contract, in the order it happens on a device: a device-wide
+    // value is what everybody starts from, signing in shadows it, and signing
+    // out puts it back.
+    reg_clear();
+    reg_scope_clear();
+
+    ck(reg_is_user_key("User.Home"), "'User.' names a per-person key");
+    ck(!reg_is_user_key("Apps.NovaD1_PIN_sda"), "an app key is not one");
+    ck(!reg_is_user_key("System.TZ"), "nor a system key");
+
+    // No scope: a "User." write is REFUSED rather than becoming the device
+    // default. A background service that runs before anyone logs in must not
+    // set the preference every later account inherits.
+    ck(!reg_set("User.Home", "gallery"), "with nobody signed in, a User. write is refused");
+    ck(reg_count() == 0, "and nothing was written anywhere");
+
+    // A device-wide default, put there deliberately by loading the file — which
+    // is also how a setting that USED to be global survives becoming per-user.
+    const char *devfile = "User.Home=folders\nSystem.TZ=-4\n";
+    reg_load(devfile, (uint32_t)strlen(devfile));
+    ck(strcmp(reg_get("User.Home", "?"), "folders") == 0, "the device value is the default");
+
+    reg_scope_set("ada");
+    ck(strcmp(reg_get("User.Home", "?"), "folders") == 0,
+       "a user who has set nothing still sees the device default");
+
+    ck(reg_set("User.Home", "gallery"), "in a scope, the write lands");
+    ck(strcmp(reg_get("User.Home", "?"), "folders") != 0, "and shadows the default");
+    ck(strcmp(reg_get("User.Home", "?"), "gallery") == 0, "with their own value");
+    ck(reg_scope_count() == 1, "in the user table");
+    ck(reg_scope_dirty(), "which is now worth writing out");
+
+    // The device file must NOT gain the user's key. reg_serialize is what
+    // writes /os/registry.cfg, and one shared serializer would put every
+    // account's preferences in it.
+    char ubuf[256];
+    uint32_t un2 = reg_serialize(ubuf, sizeof(ubuf));
+    (void)un2;
+    ck(strstr(ubuf, "gallery") == nullptr, "the device file does not gain a user's value");
+    ck(strstr(ubuf, "User.Home=folders") != nullptr, "and keeps the default it had");
+
+    uint32_t sn = reg_scope_serialize(ubuf, sizeof(ubuf));
+    ck(strcmp(ubuf, "User.Home=gallery\n") == 0, "the user file holds exactly their keys");
+
+    // Somebody else signs in. They must not inherit the last person's choice.
+    reg_scope_clear();
+    reg_scope_set("grace");
+    ck(strcmp(reg_get("User.Home", "?"), "folders") == 0,
+       "the next user is back to the device default");
+    reg_scope_load(ubuf, sn);
+    reg_scope_set("ada");
+    ck(strcmp(reg_get("User.Home", "?"), "gallery") == 0, "and ada's file restores hers");
+
+    // A device key that somehow appears in a user's file must not shadow the
+    // real one — a read prefers the user table, and there would be no way to
+    // see which value was in force.
+    reg_scope_clear();
+    reg_scope_set("mallory");
+    const char *mixed = "System.TZ=+9\nUser.Home=menu\n";
+    reg_scope_load(mixed, (uint32_t)strlen(mixed));
+    ck(reg_scope_count() == 1, "a device key in a user's file is dropped on load");
+    ck(reg_get_int("System.TZ", 0) == -4, "so it cannot shadow the device's own");
+    ck(strcmp(reg_get("User.Home", "?"), "menu") == 0, "and the legitimate key still loads");
+
+    // Signed out, the device value is what everyone sees again.
+    reg_scope_clear();
+    ck(strcmp(reg_get("User.Home", "?"), "folders") == 0, "signed out, the default is back");
+    ck(reg_scope_count() == 0, "and no user table is left behind");
+
+    // Bounded, like the device table.
+    reg_scope_set("ada");
+    char uk[24];
+    for (int i = 0; i < REG_USER_MAX + 6; i++) {
+        snprintf(uk, sizeof(uk), "User.k%d", i);
+        reg_set(uk, "v");
+    }
+    ck(reg_scope_count() == REG_USER_MAX, "the user table is capped too");
+    reg_scope_clear();
+    reg_clear();
+
     // --- users ---
     users_clear();
     ck(users_add("root", "hunter2", true, false), "add an admin");
