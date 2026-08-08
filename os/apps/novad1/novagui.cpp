@@ -512,6 +512,31 @@ static void open_category(void) {
 // The pacing, carried over from the MicroPython suite. These are not arbitrary:
 // they are what a device feels like when it is moving, when it has just been
 // touched, and when it has been put down.
+// AN ANIMATION STARTS WHEN THE GESTURE IS HANDLED, not however long the screen
+// sat still before the knob moved.
+//
+// dt is the gap since the last frame, and the frame before a gesture is the
+// IDLE one — so the first tick of a new slide was handed the whole idle nap.
+// NAP_IDLE is 140 ms and SLIDE_MS is 140 ms, which makes the step exactly 256:
+// the entire animation consumed in a single frame, every time, arriving as a
+// jump. Dimmed it is 200 ms and worse.
+//
+// A fast scroll escaped it because the queue was never empty, so the loop was
+// already turning at 16 ms by the time the second detent landed and every dt
+// after the first was small. That is the reported symptom exactly — one click
+// jumps, several animate — and it survived two passes of fixing the frame
+// pacing, which was a real bug and a different one.
+//
+// Zeroing the gap costs one frame of stillness at the very start of a movement,
+// which is not visible.
+uint32_t frame_dt(uint32_t now, uint32_t *last, bool had_input) {
+    if (!last) return 0;
+    if (had_input) *last = now;
+    uint32_t dt = now - *last;
+    *last = now;
+    return dt;
+}
+
 #define NAP_ANIMATING 16      // 60 a second while something is moving
 #define NAP_ACTIVE    33      // 30 a second just after a gesture
 #define NAP_IDLE     140      // still on, nothing happening
@@ -648,26 +673,7 @@ void run(void) {
         }
 
         uint32_t now = fw_millis();
-        // AN ANIMATION STARTS NOW, not however long the screen sat still before
-        // the knob moved.
-        //
-        // This is why one detent never animated while a fast scroll did, and it
-        // survived two attempts at fixing the wrong thing. dt is the gap since
-        // the last frame, and the frame before a gesture is the IDLE one — so
-        // the first tick of a new slide was handed the whole idle nap. NAP_IDLE
-        // is 140 ms and SLIDE_MS is 140 ms, which makes the step exactly 256:
-        // the entire animation consumed in a single frame, every time, arriving
-        // as a jump. Dimmed it is 200 ms and worse.
-        //
-        // A fast scroll escaped it because the queue was never empty, so the
-        // loop was already turning at 16 ms by the time the second detent
-        // landed and every dt after the first was small.
-        //
-        // Zeroing the gap costs one frame of stillness at the very start of a
-        // movement, which is not visible, and gives the slide its full 140 ms.
-        if (had_input) last = now;
-        uint32_t dt  = now - last;
-        last = now;
+        uint32_t dt  = frame_dt(now, &last, had_input);
 
         Screen *s = top();
         if (s && s->tick(dt)) g_dirty = true;

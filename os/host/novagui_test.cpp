@@ -208,6 +208,62 @@ static void frame(uint32_t dt = 33) {
     }
 }
 
+// --- one detent must animate ---------------------------------------------------------
+//
+// The bug this covers reached a desk twice and survived two attempts at fixing
+// it, because the harness above takes dt as a parameter and the runner does not
+// — it computes it, and the computation was the bug. So this drives
+// gui::frame_dt, the runner's own rule, rather than a copy of it.
+//
+// The shape on the device: the screen sits idle napping NAP_IDLE, somebody
+// turns the knob one detent, and the first tick of the new slide is handed the
+// whole idle gap. NAP_IDLE is 140 ms, SLIDE_MS is 140 ms, so the step is
+// exactly 256 and the animation is over before a single frame is drawn.
+
+static void test_one_detent_animates(void) {
+    using namespace nova;
+
+    // The runner's rule, driven the way the runner drives it.
+    uint32_t last = 1000;
+    ok(gui::frame_dt(1140, &last, false) == 140, "an idle frame sees the whole nap");
+    ok(gui::frame_dt(1156, &last, false) == 16,  "and a moving one sees a frame");
+
+    // The frame a gesture lands on starts the clock again, so the idle gap
+    // before it is not spent out of the animation.
+    last = 1000;
+    ok(gui::frame_dt(1300, &last, true) == 0, "a gesture frame hands tick nothing");
+    ok(gui::frame_dt(1316, &last, false) == 16, "and the one after it a frame");
+
+    // End to end: from idle, ONE detent has to take more than one frame to
+    // arrive. Any number above one proves it animates; the real slide is about
+    // eight frames at 140 ms and 16 ms a frame.
+    gui::go_home();
+    input().flush();
+    input().inject(EV_ROT_CW);
+
+    uint32_t clock = 5000, mark = 5000 - 300;   // 300 ms of stillness behind it
+    int frames = 0;
+    bool had = false;
+    for (int i = 0; i < 40; i++) {
+        Event e;
+        had = false;
+        while ((e = input().next()) != EV_NONE) {
+            had = true;
+            ui::Screen *t = gui::top();
+            if (t) t->on_event(e);
+        }
+        uint32_t dt = gui::frame_dt(clock, &mark, had);
+        ui::Screen *t = gui::top();
+        if (!t) break;
+        t->tick(dt);
+        if (!t->animating()) break;
+        frames++;
+        clock += 16;                             // NAP_ANIMATING
+    }
+    ok(frames > 1, "one detent from idle animates over more than a single frame");
+    ok(frames >= 4, "and takes enough frames to read as movement");
+}
+
 // --- the bug that reached a desk ----------------------------------------------------
 
 static void test_single_instance(void) {
@@ -321,6 +377,7 @@ static void test_catalogue(void) {
 
 int main(void) {
     STAGE(test_single_instance);
+    STAGE(test_one_detent_animates);
     STAGE(test_navigation);
     STAGE(test_stack_bounds);
     STAGE(test_one_step_per_frame);

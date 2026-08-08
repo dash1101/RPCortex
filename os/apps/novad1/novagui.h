@@ -115,6 +115,18 @@ const Perf &perf(void);
 
 Canvas &canvas(void);
 
+// How long to hand tick(), given the wall clock, where the last frame was, and
+// whether a gesture was just handled. Advances *last.
+//
+// A FUNCTION rather than three lines inside run(), because the harness drives
+// the runner with its own copy of the loop — and a rule that exists in two
+// places is a rule the test cannot check. This one went wrong in a way that
+// survived two attempts at fixing it: dt is the gap since the last frame, the
+// frame before a gesture is the idle one, and NAP_IDLE happens to equal
+// SLIDE_MS, so the first tick of a slide consumed the whole animation and one
+// detent always arrived as a jump.
+uint32_t frame_dt(uint32_t now, uint32_t *last, bool had_input);
+
 }  // namespace gui
 }  // namespace nova
 
