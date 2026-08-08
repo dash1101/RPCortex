@@ -76,6 +76,14 @@ struct LoadedApp {
     uint32_t text_size;        // the read-only half, from `image`
     void    *data;             // the writable half; null if the app has none
     uint32_t data_size;
+    // Position-independent packages only. The loader synthesises a GOT at the
+    // BASE of the writable block, so `data` doubles as the GOT origin — which is
+    // the value r9 must hold whenever package code runs. `got_size` is zero for
+    // a non-PIC package, and that zero is the single flag the entry points read
+    // to decide whether to touch r9 at all: the default (non-PIC) path leaves it
+    // exactly as it was. See app_pic_base and the r9 notes in loader.cpp.
+    uint32_t got_size;         // bytes of GOT at the start of the data block
+    uint32_t got_count;        // slots used, for diagnostics
     void    *veneers;          // trampoline pool (see loader.cpp)
     uint32_t veneer_size;
     uint32_t veneers_used;
@@ -144,6 +152,13 @@ void loader_set_allocator(LoaderAlloc a, LoaderFree f);
 LoadResult app_peek(const AppSource &src, RpcAppHeader *out);
 
 LoadResult app_load(const AppSource &src, LoadedApp *out);
+
+// The value r9 must hold on every entry into this package's code — the GOT
+// origin, which is the base of the writable block. Zero for a non-PIC package,
+// which the entry points take as "leave r9 alone". This is the ONE place the
+// r9-setting convention is named; sandbox_enter, the direct-call trampoline and
+// the task shim all ask here rather than reaching into the struct.
+uint32_t app_pic_base(const LoadedApp *app);
 
 // Free everything app_load allocated.
 void app_unload(LoadedApp *app);

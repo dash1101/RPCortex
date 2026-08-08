@@ -160,6 +160,124 @@ static bool in_text(const char *path, uint32_t off) {
     return (section_flags_at(path, off, nullptr) & SHF_EXECINSTR) != 0;
 }
 
+// --- the GOT, for a position-independent package -----------------------------
+//
+// The decisive stage-2 check. A PIC package reaches every global THROUGH a GOT
+// indexed off r9, so if the loader built that GOT wrong the package cannot see
+// its own data — and it must fail HERE, visibly, rather than on a board. The host
+// cannot execute the code, so this does by hand exactly what the CPU would: for
+// each GOT_BREL it reads the offset the loader patched into .text, follows it to
+// the GOT slot, and checks the slot holds the address the symbol actually landed
+// at. A wrong offset, an empty slot or a slot pointing at the wrong place is the
+// whole failure mode, and every one of them shows up as a line here.
+//
+// Runs only for a PIC package (got_size != 0); a non-PIC one skips it entirely,
+// so the default path is neither changed nor judged by a rule that is not its.
+static int check_got(const char *path, const LoadedApp &app) {
+    int bad = 0;
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET);
+    uint8_t *b = (uint8_t *)malloc(sz);
+    if (fread(b, 1, sz, f) != (size_t)sz) { fclose(f); free(b); return 0; }
+    fclose(f);
+    Elf32_Ehdr *eh = (Elf32_Ehdr *)b;
+    Elf32_Shdr *sh = (Elf32_Shdr *)(b + eh->e_shoff);
+
+    // Redo the loader's placement to get each section's RUNTIME base, so a symbol
+    // address can be computed independently and the GOT slot checked against it.
+    // Two passes, non-writable first, with the GOT reserved at the base of the
+    // writable half exactly as app_load does — this MIRRORS the loader on purpose
+    // rather than sharing its code, so the two can disagree.
+    static uint32_t base[LOADER_MAX_SECTIONS];
+    static bool     placed[LOADER_MAX_SECTIONS];
+    for (int i = 0; i < eh->e_shnum; i++) { base[i] = 0; placed[i] = false; }
+    uint32_t total = 0, text_end = 0;
+    for (int pass = 0; pass < 2; pass++) {
+        for (int i = 0; i < eh->e_shnum; i++) {
+            if (!(sh[i].sh_flags & SHF_ALLOC) || sh[i].sh_size == 0) continue;
+            if (((sh[i].sh_flags & SHF_WRITE) != 0) != (pass == 1)) continue;
+            uint32_t al = sh[i].sh_addralign ? sh[i].sh_addralign : 4; if (al < 4) al = 4;
+            total = (total + al - 1) & ~(al - 1);
+            base[i] = total; placed[i] = true;
+            total += sh[i].sh_size;
+        }
+        if (pass == 0) {
+            total = (total + (APP_BLOCK_ALIGN - 1)) & ~(APP_BLOCK_ALIGN - 1);
+            text_end = total;
+            total += app.got_size;                 // the GOT the loader reserved
+        }
+    }
+    for (int i = 0; i < eh->e_shnum; i++) {
+        if (!placed[i]) continue;
+        bool w = (sh[i].sh_flags & SHF_WRITE) != 0;
+        base[i] = w ? (uint32_t)(uintptr_t)app.data + (base[i] - text_end)
+                    : (uint32_t)(uintptr_t)app.image + base[i];
+    }
+
+    if (text_end != app.text_size) {
+        printf("       FAIL GOT: layout disagrees on where the halves divide (%u vs %u)\n",
+               app.text_size, text_end); bad = 1;
+    }
+    if (app.got_size % 4) { printf("       FAIL GOT: size %u is not a whole number of slots\n", app.got_size); bad = 1; }
+    if (app_pic_base(&app) != (uint32_t)(uintptr_t)app.data) {
+        printf("       FAIL GOT: r9 base is not the writable block base\n"); bad = 1;
+    }
+    if ((uint32_t)(uintptr_t)app.data % APP_BLOCK_ALIGN) { printf("       FAIL GOT: base is off the block boundary\n"); bad = 1; }
+    if (app.got_count * 4 > app.got_size) { printf("       FAIL GOT: %u slots overrun a %u-byte GOT\n", app.got_count, app.got_size); bad = 1; }
+
+    int symtab_i = -1;
+    for (int i = 0; i < eh->e_shnum; i++) if (sh[i].sh_type == SHT_SYMTAB) symtab_i = i;
+    if (symtab_i < 0) { free(b); return bad; }
+    Elf32_Sym *syms = (Elf32_Sym *)(b + sh[symtab_i].sh_offset);
+    const char *str = (const char *)(b + sh[sh[symtab_i].sh_link].sh_offset);
+    const uint32_t *got = (const uint32_t *)app.data;
+
+    int sites = 0;
+    for (int s = 0; s < eh->e_shnum; s++) {
+        if (sh[s].sh_type != SHT_REL) continue;
+        uint32_t tgt = sh[s].sh_info;
+        if (tgt >= (uint32_t)eh->e_shnum || !placed[tgt]) continue;
+        Elf32_Rel *rel = (Elf32_Rel *)(b + sh[s].sh_offset);
+        uint32_t n = sh[s].sh_size / sizeof(Elf32_Rel);
+        for (uint32_t r = 0; r < n; r++) {
+            if (ELF32_R_TYPE(rel[r].r_info) != R_ARM_GOT_BREL) continue;
+            uint32_t sidx = ELF32_R_SYM(rel[r].r_info);
+            sites++;
+            uint32_t off = *(const uint32_t *)(uintptr_t)(base[tgt] + rel[r].r_offset);
+            if (off % 4 || off >= app.got_size) {
+                printf("       FAIL GOT: site +0x%x holds offset %u, outside a %u-byte GOT\n",
+                       rel[r].r_offset, off, app.got_size);
+                bad = 1; continue;
+            }
+            uint32_t slot = got[off / 4];
+            const Elf32_Sym &sy = syms[sidx];
+            uint32_t expect;
+            if (sy.st_shndx == SHN_UNDEF)      expect = api_lookup(str + sy.st_name);
+            else if (sy.st_shndx == SHN_ABS)   expect = sy.st_value;
+            else if (sy.st_shndx < eh->e_shnum && placed[sy.st_shndx])
+                                               expect = base[sy.st_shndx] + sy.st_value;
+            else continue;                     // a section the loader did not place
+            if (slot != expect) {
+                printf("       FAIL GOT: slot for %s holds %08x, the symbol is at %08x\n",
+                       str + sy.st_name, slot, expect);
+                bad = 1;
+            }
+        }
+    }
+    // No used slot may be zero. Every symbol resolves above the GOT (.data/.bss),
+    // into the read-only half (.rodata / a local function) or to a firmware
+    // address — never to 0, so a 0 is a slot the loader forgot to fill.
+    for (uint32_t k = 0; k < app.got_count; k++)
+        if (got[k] == 0) { printf("       FAIL GOT: slot %u was never filled\n", k); bad = 1; }
+
+    if (sites && !bad)
+        printf("       GOT ok: %d GOT_BREL site(s) through %u slot(s), every one resolves right\n",
+               sites, app.got_count);
+    free(b);
+    return bad;
+}
+
 static int load_one(const char *path) {
     g_f = fopen(path, "rb");
     if (!g_f) { printf("  SKIP %s (not built)\n", path); return 0; }
@@ -385,6 +503,10 @@ static int load_one(const char *path) {
     if (vtargets) printf("       %d veneer target(s), %d missing the Thumb bit\n",
                          vtargets, veven);
     if (veven) bad = 1;
+
+    // A position-independent package: verify the whole r9/GOT indirection.
+    if (app.got_size) bad += check_got(path, app);
+
     fclose(g_f);
     return bad;
 }
