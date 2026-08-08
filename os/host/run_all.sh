@@ -33,6 +33,12 @@ declare -A SRC=(
     [fatview_test]="$CORE/fatview.cpp"
     [fatimage_test]="$CORE/fatview.cpp"
     [fat12_test]="$CORE/fat12.cpp $CORE/fatview.cpp"
+    # The memory card, in its two host-testable halves: the filesystem on it,
+    # against volumes fsck.fat is asked to approve of, and the command sequence
+    # that brings a card up, against a fake card written from the specification.
+    # What is left needs a card and is marked DEVICE-UNCONFIRMED in sdcard_rp2.cpp.
+    [fatro_test]="$CORE/fatro.cpp"
+    [sdproto_test]="$CORE/sdproto.cpp"
     [blockcache_test]="$CORE/blockcache.cpp"
     [ptrcheck_test]="$CORE/ptrcheck.cpp $CORE/task.cpp $CORE/blackbox.cpp host_task_stub.cpp"
     [excframe_test]="$CORE/excframe.cpp"

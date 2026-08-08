@@ -1,9 +1,18 @@
 # Vendored upstream, cloned by setup rather than committed. See the README.
+#
+# The bare names as well as the trailing-slash ones. A SYMLINK named littlefs is
+# not matched by "littlefs/", and one committed from a worktree replaced the
+# vendored checkout on merge once already.
+#
+# The comment is on its OWN LINES deliberately. A .gitignore has no inline
+# comments — everything after the pattern is part of the pattern — so
+# "littlefs  # the bare name too" was a rule matching a file called
+# "littlefs␠␠#␠the␠bare␠name␠too", which is to say no file at all. The guard
+# against the accident it describes had been switched off since it was written.
 sdk/
+sdk
 littlefs/
-littlefs        # the bare name too: a SYMLINK named littlefs is not matched
-                # by "littlefs/", and one committed from a worktree replaced
-                # the vendored checkout on merge
+littlefs
 
 # Build directories
 build/

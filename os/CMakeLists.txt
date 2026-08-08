@@ -165,6 +165,53 @@ target_include_directories(rpcortex_v2 PRIVATE
     ${LFS_DIR}
 )
 
+# --- microSD: on the boards that have room for it ------------------------------
+#
+# The SD driver is an SPI block layer, a FAT16/32 reader and a `sd` command, and
+# together they are a few kilobytes of flash. A few kilobytes is nothing on an
+# RP2350 and it is a meaningful slice of what a Pico W has left:
+#
+#   pico2_w    85 KB headroom      pico2   170 KB headroom
+#   pico_w     66 KB headroom      pico    119 KB headroom
+#
+# The reason it is off on the RP2040 boards is not only the budget, though. Nova
+# D1 — the thing with a card slot wired to it — targets the RP2350 boards, and
+# novaboard's own detect() refuses to claim an RP2040 board for exactly the same
+# reason: the header matches and the part cannot carry the software. A Pico W
+# with this compiled in would carry a driver for a slot it does not have.
+#
+# THE DEFINE HAS TO BE A DEFINE. PICO_CYW43_SUPPORTED is a CMake variable and
+# testing it with #if was silently always false for a whole release — the note
+# further down this file is about that exact bug. So RPC_HAS_SD is passed as a
+# compile definition below, and `nm` on the two images is what proves it landed:
+# a pico2_w image has sd_mount in it and a pico_w image does not.
+if(PICO_BOARD STREQUAL "pico2_w" OR PICO_BOARD STREQUAL "pico2")
+    set(RPC_HAS_SD ON)
+else()
+    set(RPC_HAS_SD OFF)
+endif()
+message(STATUS "microSD support: ${RPC_HAS_SD}")
+
+if(RPC_HAS_SD)
+    set(RPC_SD_SOURCES
+        ${OS_ROOT}/core/sdproto.cpp
+        ${OS_ROOT}/core/fatro.cpp
+        ${OS_ROOT}/sdcard_rp2.cpp
+        ${OS_ROOT}/shell/sd.cpp)
+    target_sources(rpcortex_v2 PRIVATE ${RPC_SD_SOURCES})
+    target_compile_definitions(rpcortex_v2 PRIVATE RPC_HAS_SD=1)
+
+    # -Os for these four, against the -O3 the rest of an RP2350 image gets.
+    #
+    # The argument at the top of this file is that RP2350 has flash to spare and
+    # the supervisor call is worth 37% of its speed. Neither half applies here.
+    # Every one of these functions is waiting on a 12 MHz SPI bus — a block read
+    # is 400 microseconds of clocking whatever the code around it was compiled
+    # at — and the flash is not free after all: pico2_w has 85 KB of slot
+    # headroom, and at -O3 this cost 16 KB of it.
+    set_source_files_properties(${RPC_SD_SOURCES} PROPERTIES COMPILE_OPTIONS -Os)
+endif()
+
 # WHICH BUILD THIS IS, baked in.
 #
 # `ver` used to print a registry key that defaults to "1" and that nothing ever
