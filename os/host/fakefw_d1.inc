@@ -103,6 +103,35 @@ static const char *fake_shell(const char *line) {
                "  D9:33:36:32:1B:59  LE    -78 dBm  Govee_H6199_1B59\n"
                "  37:96:7B:89:C2:EB  LE    -80 dBm  \n"
                "  53:0A:FB:D0:FF:87  LE    -92 dBm  Quest 3S\n";
+
+    // The two SPI radios. Copied byte for byte from the out_ok/out_info/out_multi
+    // format strings in os/shell/cc1101.cpp and os/shell/sx1276.cpp — the tags
+    // ([@]/[:]) are what fw_shell_run captures, the indented lines are the data
+    // channel. radio_test asserts the screen parser against these exact strings,
+    // so a prettier fake would pass while the real format failed.
+    if (!strncmp(line, "subghz status", 13))
+        return "[:] Sub-GHz  CC1101\n"
+               "  Chip    present  (part 0x00 ver 0x14)\n"
+               "  Freq    433.92 MHz\n"
+               "  Mode    OOK/ASK fixed-code\n";
+    if (!strncmp(line, "subghz rx", 9))
+        return "[@] Captured 6 pulses at 433.92 MHz\n"
+               "350,700,350,700,350,700\n";
+    if (!strncmp(line, "subghz tx", 9))
+        return "[@] Sent 6 pulses at 433.92 MHz\n";
+    if (!strncmp(line, "subghz freq", 11))
+        return "[@] Frequency set to 433.92 MHz\n";
+    if (!strncmp(line, "lora status", 11))
+        return "[:] LoRa  SX1276\n"
+               "  Chip   present  (ver 0x12)\n"
+               "  Freq   915.00 MHz\n"
+               "  Modem  SF7 BW125 CR4/5\n";
+    if (!strncmp(line, "lora config", 11))
+        return "[@] LoRa 915.00 MHz SF7 BW125 CR4/5\n";
+    if (!strncmp(line, "lora send", 9))
+        return "[@] Sent 5 bytes\n";
+    if (!strncmp(line, "lora recv", 9) || !strncmp(line, "lora rx", 7))
+        return "[@] RX 48656c6c6f rssi -42 snr 9\n";
     return "";
 }
 

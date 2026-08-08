@@ -48,6 +48,8 @@ void net_register(void);
 void power_register(void);
 void bt_register(void);
 void btaudio_register(void);
+void subghz_register(void);
+void lora_register(void);
 void http_register(void);
 void net_autoconnect_report(void);
 void diag_register(void);
@@ -468,6 +470,8 @@ void shell_register_builtins(void) {
     power_register();       // sleep
     bt_register();          // bluetooth
     btaudio_register();     // a2dp sink
+    subghz_register();      // CC1101 sub-GHz radio
+    lora_register();        // SX1276 LoRa radio
     netapps_register();     // ping / nslookup / ntp
     http_register();        // wget
     fetch_register();       // fetch / neofetch

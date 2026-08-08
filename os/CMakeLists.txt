@@ -101,6 +101,8 @@ add_executable(rpcortex_v2
     ${OS_ROOT}/shell/power.cpp
     ${OS_ROOT}/shell/bt.cpp
     ${OS_ROOT}/shell/btaudio.cpp
+    ${OS_ROOT}/shell/cc1101.cpp
+    ${OS_ROOT}/shell/sx1276.cpp
     ${OS_ROOT}/core/pcmring.cpp
     ${OS_ROOT}/core/wav.cpp
     ${OS_ROOT}/core/btname.cpp

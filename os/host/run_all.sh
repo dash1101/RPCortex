@@ -53,6 +53,12 @@ declare -A SRC=(
     [wav_test]="$CORE/wav.cpp"
     [pcmring_test]="$CORE/pcmring.cpp"
     [btname_test]="$CORE/btname.cpp"
+    # The two SPI radios: frequency->register maths, band limits, LoRa modem-config
+    # packing and its LDRO threshold, hex/timing parsing, and the exact shell text
+    # the mesh agent and the Nova D1 screens parse. Pure sections of shell/cc1101,
+    # shell/sx1276 and apps/novad1/novagui_radios are INCLUDED via RADIO_HOST_TEST /
+    # RADIO_PARSE_ONLY, the same as btadv_test does with bt.cpp.
+    [radio_test]=""
     [power_test]="$CORE/powerpolicy.cpp"
     [framebuf_test]="$CORE/framebuf.cpp"
     # The Nova D1 canvas is INCLUDED by its test, the same as the packages above:
