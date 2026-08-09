@@ -159,6 +159,7 @@ add_executable(rpcortex_v2
     ${OS_ROOT}/shell/fsinit.cpp
     ${OS_ROOT}/shell/shell.cpp
     ${SPIKE}/firmware/loader.cpp
+    ${SPIKE}/firmware/pkgslot.cpp
     ${SPIKE}/firmware/storage.cpp
     ${SPIKE}/firmware/fault.cpp
     ${LFS_DIR}/lfs.c

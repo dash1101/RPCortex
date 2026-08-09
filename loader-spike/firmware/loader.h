@@ -239,6 +239,12 @@ struct PicManifest {
     PicGotEntry *got;                // [got_count]
     PicAbs32    *abs;                // [abs_count]
     uint8_t     *data_init;          // [data_size]
+    // Set when the three arrays point INTO a flash slot rather than into memory
+    // this manifest allocated. A slot-backed manifest is read in place — that is
+    // the point of it — and calling free() on a memory-mapped flash address is
+    // not a leak, it is heap corruption with a plausible-looking pointer.
+    // app_pic_manifest_free does nothing when this is set.
+    bool         borrowed;
 };
 
 // The sink the blob is handed to. Each write names an offset, so a device install

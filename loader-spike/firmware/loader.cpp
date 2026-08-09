@@ -1562,6 +1562,11 @@ LoadResult app_pic_load(const void *slot, const PicManifest *m, LoadedApp *out) 
 
 void app_pic_manifest_free(PicManifest *m) {
     if (!m) return;
+    // A slot-backed manifest owns nothing: its arrays are memory-mapped flash.
+    // Freeing one would hand the allocator an address it never issued, which
+    // corrupts the heap somewhere else entirely and much later.
+    if (m->borrowed) { m->got = nullptr; m->abs = nullptr; m->data_init = nullptr;
+                       m->got_count = m->abs_count = 0; return; }
     pic_free(m->got);       m->got = nullptr;
     pic_free(m->abs);       m->abs = nullptr;
     pic_free(m->data_init); m->data_init = nullptr;
