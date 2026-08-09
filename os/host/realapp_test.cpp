@@ -20,6 +20,7 @@
 #include "loader.h"
 #include "elf.h"
 #include "mpu.h"
+#include "pkgslot.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -67,9 +68,17 @@ static void free32(void *) { }      // one-shot; the arena goes away with us
 
 static FILE *g_f;
 static int g_loaded;   // how many apps actually got checked
+// What the loader READ, as well as what it allocated. The page-at-a-time
+// installer buys its small footprint by re-reading the relocation table once per
+// page, and "that is cheap" is a claim rather than a fact until the number is on
+// the screen next to the file size.
+static uint64_t g_read_bytes;
+static uint32_t g_read_calls;
 static int file_read(void *, uint32_t off, void *dst, uint32_t len) {
     if (fseek(g_f, off, SEEK_SET) != 0) return -1;
-    return (int)fread(dst, 1, len, g_f);
+    size_t n = fread(dst, 1, len, g_f);
+    g_read_bytes += n; g_read_calls++;
+    return (int)n;
 }
 // A fake firmware symbol table: every fw_* resolves to a plausible address.
 //
@@ -158,6 +167,124 @@ static uint32_t section_flags_at(const char *path, uint32_t want_off,
 
 static bool in_text(const char *path, uint32_t off) {
     return (section_flags_at(path, off, nullptr) & SHF_EXECINSTR) != 0;
+}
+
+// --- the GOT, for a position-independent package -----------------------------
+//
+// The decisive stage-2 check. A PIC package reaches every global THROUGH a GOT
+// indexed off r9, so if the loader built that GOT wrong the package cannot see
+// its own data — and it must fail HERE, visibly, rather than on a board. The host
+// cannot execute the code, so this does by hand exactly what the CPU would: for
+// each GOT_BREL it reads the offset the loader patched into .text, follows it to
+// the GOT slot, and checks the slot holds the address the symbol actually landed
+// at. A wrong offset, an empty slot or a slot pointing at the wrong place is the
+// whole failure mode, and every one of them shows up as a line here.
+//
+// Runs only for a PIC package (got_size != 0); a non-PIC one skips it entirely,
+// so the default path is neither changed nor judged by a rule that is not its.
+static int check_got(const char *path, const LoadedApp &app) {
+    int bad = 0;
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET);
+    uint8_t *b = (uint8_t *)malloc(sz);
+    if (fread(b, 1, sz, f) != (size_t)sz) { fclose(f); free(b); return 0; }
+    fclose(f);
+    Elf32_Ehdr *eh = (Elf32_Ehdr *)b;
+    Elf32_Shdr *sh = (Elf32_Shdr *)(b + eh->e_shoff);
+
+    // Redo the loader's placement to get each section's RUNTIME base, so a symbol
+    // address can be computed independently and the GOT slot checked against it.
+    // Two passes, non-writable first, with the GOT reserved at the base of the
+    // writable half exactly as app_load does — this MIRRORS the loader on purpose
+    // rather than sharing its code, so the two can disagree.
+    static uint32_t base[LOADER_MAX_SECTIONS];
+    static bool     placed[LOADER_MAX_SECTIONS];
+    for (int i = 0; i < eh->e_shnum; i++) { base[i] = 0; placed[i] = false; }
+    uint32_t total = 0, text_end = 0;
+    for (int pass = 0; pass < 2; pass++) {
+        for (int i = 0; i < eh->e_shnum; i++) {
+            if (!(sh[i].sh_flags & SHF_ALLOC) || sh[i].sh_size == 0) continue;
+            if (((sh[i].sh_flags & SHF_WRITE) != 0) != (pass == 1)) continue;
+            uint32_t al = sh[i].sh_addralign ? sh[i].sh_addralign : 4; if (al < 4) al = 4;
+            total = (total + al - 1) & ~(al - 1);
+            base[i] = total; placed[i] = true;
+            total += sh[i].sh_size;
+        }
+        if (pass == 0) {
+            total = (total + (APP_BLOCK_ALIGN - 1)) & ~(APP_BLOCK_ALIGN - 1);
+            text_end = total;
+            total += app.got_size;                 // the GOT the loader reserved
+        }
+    }
+    for (int i = 0; i < eh->e_shnum; i++) {
+        if (!placed[i]) continue;
+        bool w = (sh[i].sh_flags & SHF_WRITE) != 0;
+        base[i] = w ? (uint32_t)(uintptr_t)app.data + (base[i] - text_end)
+                    : (uint32_t)(uintptr_t)app.image + base[i];
+    }
+
+    if (text_end != app.text_size) {
+        printf("       FAIL GOT: layout disagrees on where the halves divide (%u vs %u)\n",
+               app.text_size, text_end); bad = 1;
+    }
+    if (app.got_size % 4) { printf("       FAIL GOT: size %u is not a whole number of slots\n", app.got_size); bad = 1; }
+    if (app_pic_base(&app) != (uint32_t)(uintptr_t)app.data) {
+        printf("       FAIL GOT: r9 base is not the writable block base\n"); bad = 1;
+    }
+    if ((uint32_t)(uintptr_t)app.data % APP_BLOCK_ALIGN) { printf("       FAIL GOT: base is off the block boundary\n"); bad = 1; }
+    if (app.got_count * 4 > app.got_size) { printf("       FAIL GOT: %u slots overrun a %u-byte GOT\n", app.got_count, app.got_size); bad = 1; }
+
+    int symtab_i = -1;
+    for (int i = 0; i < eh->e_shnum; i++) if (sh[i].sh_type == SHT_SYMTAB) symtab_i = i;
+    if (symtab_i < 0) { free(b); return bad; }
+    Elf32_Sym *syms = (Elf32_Sym *)(b + sh[symtab_i].sh_offset);
+    const char *str = (const char *)(b + sh[sh[symtab_i].sh_link].sh_offset);
+    const uint32_t *got = (const uint32_t *)app.data;
+
+    int sites = 0;
+    for (int s = 0; s < eh->e_shnum; s++) {
+        if (sh[s].sh_type != SHT_REL) continue;
+        uint32_t tgt = sh[s].sh_info;
+        if (tgt >= (uint32_t)eh->e_shnum || !placed[tgt]) continue;
+        Elf32_Rel *rel = (Elf32_Rel *)(b + sh[s].sh_offset);
+        uint32_t n = sh[s].sh_size / sizeof(Elf32_Rel);
+        for (uint32_t r = 0; r < n; r++) {
+            if (ELF32_R_TYPE(rel[r].r_info) != R_ARM_GOT_BREL) continue;
+            uint32_t sidx = ELF32_R_SYM(rel[r].r_info);
+            sites++;
+            uint32_t off = *(const uint32_t *)(uintptr_t)(base[tgt] + rel[r].r_offset);
+            if (off % 4 || off >= app.got_size) {
+                printf("       FAIL GOT: site +0x%x holds offset %u, outside a %u-byte GOT\n",
+                       rel[r].r_offset, off, app.got_size);
+                bad = 1; continue;
+            }
+            uint32_t slot = got[off / 4];
+            const Elf32_Sym &sy = syms[sidx];
+            uint32_t expect;
+            if (sy.st_shndx == SHN_UNDEF)      expect = api_lookup(str + sy.st_name);
+            else if (sy.st_shndx == SHN_ABS)   expect = sy.st_value;
+            else if (sy.st_shndx < eh->e_shnum && placed[sy.st_shndx])
+                                               expect = base[sy.st_shndx] + sy.st_value;
+            else continue;                     // a section the loader did not place
+            if (slot != expect) {
+                printf("       FAIL GOT: slot for %s holds %08x, the symbol is at %08x\n",
+                       str + sy.st_name, slot, expect);
+                bad = 1;
+            }
+        }
+    }
+    // No used slot may be zero. Every symbol resolves above the GOT (.data/.bss),
+    // into the read-only half (.rodata / a local function) or to a firmware
+    // address — never to 0, so a 0 is a slot the loader forgot to fill.
+    for (uint32_t k = 0; k < app.got_count; k++)
+        if (got[k] == 0) { printf("       FAIL GOT: slot %u was never filled\n", k); bad = 1; }
+
+    if (sites && !bad)
+        printf("       GOT ok: %d GOT_BREL site(s) through %u slot(s), every one resolves right\n",
+               sites, app.got_count);
+    free(b);
+    return bad;
 }
 
 static int load_one(const char *path) {
@@ -385,6 +512,10 @@ static int load_one(const char *path) {
     if (vtargets) printf("       %d veneer target(s), %d missing the Thumb bit\n",
                          vtargets, veven);
     if (veven) bad = 1;
+
+    // A position-independent package: verify the whole r9/GOT indirection.
+    if (app.got_size) bad += check_got(path, app);
+
     fclose(g_f);
     return bad;
 }
@@ -510,6 +641,569 @@ static int load_svc(const char *path) {
     }
     printf("  ok   %-12s sandboxed: %d gate(s) + %d supervisor call(s)\n",
            name, 3, calls);
+    return bad;
+}
+
+// --- the flash-slot form: install then load (task #93 stage 3) ---------------
+//
+// The decisive stage-3 check, and the reason the whole thing is safe. A PIC
+// package's read-only half is meant to be assemble-once, place-anywhere so it can
+// live in a flash slot and run in place. app_pic_install produces that blob and a
+// manifest; app_pic_load instantiates only the writable half. This does three
+// things the copy-to-RAM check cannot:
+//
+//   1. POSITION-INDEPENDENCE. Install the same package into two buffers at two
+//      addresses and compare the blobs byte for byte. Identical or it is not
+//      placeable — and this is the check that catches an absolute address that
+//      checkapp's .text-only scan would miss in .rodata.
+//   2. RESOLUTION, against an INDEPENDENT layout. For every GOT_BREL site the
+//      offset the loader baked is followed to its slot and checked to hold the
+//      symbol's real runtime address, computed here from the ELF and the slot/RAM
+//      bases rather than from the loader's own answer. Same for every ABS32 in
+//      .data.
+//   3. LOAD TWICE. Two independent RAM blocks from one blob, both resolving —
+//      which proves the slot is read-only at load and catches an ABS32 applied
+//      twice (init + 2S instead of init + S), the bug that reads as heap rot.
+//
+// And the footprint the task turns on, asserted rather than printed: the RAM the
+// load costs must clear the 89 KB largest-free-block a booted board reports.
+
+struct SlotBuf { uint8_t *buf; uint32_t cap; uint32_t max_off; };
+static bool slot_sink(void *ctx, uint32_t off, const void *data, uint32_t len) {
+    SlotBuf *s = (SlotBuf *)ctx;
+    if ((uint64_t)off + len > s->cap) return false;
+    memcpy(s->buf + off, data, len);
+    if (off + len > s->max_off) s->max_off = off + len;
+    return true;
+}
+
+// A flash chip, for the end-to-end run through the real slot format. It has to
+// be inside the low arena rather than in bss, because the loader keeps addresses
+// in uint32_t and a package loaded from a slot resolves against the slot's own
+// address — the same reason the images are mmapped low.
+//
+// pkgslot_test proves the format against a fake in far more detail; this one
+// exists so the pipeline can be run end to end with a REAL package. It still
+// refuses to program a bit back on, because that is the rule whose breaking
+// would make everything else here meaningless.
+static uint8_t *g_fake_flash;
+static uint32_t g_fake_bytes;
+static bool     g_fake_violation;
+
+static bool fake_slot_erase(void *, uint32_t off, uint32_t len) {
+    if (off % PKGSLOT_ERASE || len % PKGSLOT_ERASE) { g_fake_violation = true; return false; }
+    if ((uint64_t)off + len > g_fake_bytes) { g_fake_violation = true; return false; }
+    memset(g_fake_flash + off, 0xFF, len);
+    return true;
+}
+static bool fake_slot_program(void *, uint32_t off, const void *data, uint32_t len) {
+    if (off % PKGSLOT_PROG || len % PKGSLOT_PROG) { g_fake_violation = true; return false; }
+    if ((uint64_t)off + len > g_fake_bytes) { g_fake_violation = true; return false; }
+    const uint8_t *s = (const uint8_t *)data;
+    for (uint32_t i = 0; i < len; i++) {
+        if ((g_fake_flash[off + i] & s[i]) != s[i]) g_fake_violation = true;
+        g_fake_flash[off + i] &= s[i];
+    }
+    return true;
+}
+
+// The offset a Thumb-2 BL / B.W actually encodes, decoded from the ARMv7-M
+// definition rather than by calling the loader's own helper. A checker that used
+// the code under test would agree with it whatever either of them did, and the
+// encode/decode pair being self-consistently wrong is exactly the bug that
+// produces a package which links, loads, and branches into the wrong place.
+//
+// The CPU computes the target as (address of the instruction) + 4 + this.
+static int32_t thumb_branch_off(const uint8_t *p) {
+    uint32_t hw1 = (uint32_t)p[0] | ((uint32_t)p[1] << 8);
+    uint32_t hw2 = (uint32_t)p[2] | ((uint32_t)p[3] << 8);
+    uint32_t sgn = (hw1 >> 10) & 1u;
+    uint32_t j1  = (hw2 >> 13) & 1u, j2 = (hw2 >> 11) & 1u;
+    uint32_t i1  = 1u - (j1 ^ sgn), i2 = 1u - (j2 ^ sgn);
+    int32_t v = (int32_t)((i1 << 23) | (i2 << 22) |
+                          ((hw1 & 0x3ffu) << 12) | ((hw2 & 0x7ffu) << 1));
+    return sgn ? v - (1 << 24) : v;          // two's complement across 25 bits
+}
+
+// A package is position-independent iff it reaches its data through a GOT — i.e.
+// it carries at least one R_ARM_GOT_BREL. That is exactly what makes the slot
+// path apply to it, so it is how the test decides whether to run at all.
+static bool is_pic(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return false;
+    fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET);
+    uint8_t *b = (uint8_t *)malloc(sz);
+    bool got = false;
+    if (b && fread(b, 1, sz, f) == (size_t)sz) {
+        Elf32_Ehdr *eh = (Elf32_Ehdr *)b;
+        Elf32_Shdr *sh = (Elf32_Shdr *)(b + eh->e_shoff);
+        for (int i = 0; i < eh->e_shnum && !got; i++) {
+            if (sh[i].sh_type != SHT_REL) continue;
+            Elf32_Rel *rel = (Elf32_Rel *)(b + sh[i].sh_offset);
+            uint32_t n = sh[i].sh_size / sizeof(Elf32_Rel);
+            for (uint32_t r = 0; r < n; r++)
+                if (ELF32_R_TYPE(rel[r].r_info) == R_ARM_GOT_BREL) { got = true; break; }
+        }
+    }
+    free(b); fclose(f);
+    return got;
+}
+
+static int check_pic(const char *path) {
+    const char *name = strrchr(path, '/'); name = name ? name + 1 : path;
+
+    // Fresh arena: the slots and the two RAM blocks all come from it, so it must
+    // start empty rather than with whatever the copy-path checks left behind.
+    g_arena = nullptr; g_used_bytes = 0; g_arena_cap = 0;
+    loader_set_allocator(alloc32, free32);
+
+    // The ELF in RAM, for the INDEPENDENT layout below — mirrored, never shared
+    // with the loader, so the two can disagree.
+    FILE *f = fopen(path, "rb");
+    if (!f) { printf("  SKIP %s (not built)\n", name); return 0; }
+    fseek(f, 0, SEEK_END); uint32_t fsz = ftell(f); fseek(f, 0, SEEK_SET);
+    uint8_t *b = (uint8_t *)malloc(fsz);
+    if (!b || fread(b, 1, fsz, f) != fsz) { fclose(f); free(b); return 0; }
+    fclose(f);
+    Elf32_Ehdr *eh = (Elf32_Ehdr *)b;
+    Elf32_Shdr *sh = (Elf32_Shdr *)(b + eh->e_shoff);
+    int symtab_i = -1;
+    for (int i = 0; i < eh->e_shnum; i++) if (sh[i].sh_type == SHT_SYMTAB) symtab_i = i;
+    if (symtab_i < 0) { free(b); return 0; }
+    Elf32_Sym *syms = (Elf32_Sym *)(b + sh[symtab_i].sh_offset);
+    const char *str = (const char *)(b + sh[sh[symtab_i].sh_link].sh_offset);
+
+    // Mirror app_pic_install's layout: GOT bytes (distinct GOT_BREL symbol index),
+    // RO sections contiguous from 0 (blob), writable from the GOT base (RAM).
+    static uint32_t blob_off[LOADER_MAX_SECTIONS], ram_off[LOADER_MAX_SECTIONS];
+    static bool placed[LOADER_MAX_SECTIONS], writ[LOADER_MAX_SECTIONS];
+    for (int i = 0; i < eh->e_shnum; i++) { blob_off[i] = ram_off[i] = 0; placed[i] = writ[i] = false; }
+    uint32_t nsyms = sh[symtab_i].sh_size / sizeof(Elf32_Sym);
+    uint8_t *seen = (uint8_t *)calloc((nsyms + 7) / 8, 1);
+    uint32_t slots = 0;
+    for (int i = 0; i < eh->e_shnum; i++) {
+        if (sh[i].sh_type != SHT_REL) continue;
+        Elf32_Rel *rel = (Elf32_Rel *)(b + sh[i].sh_offset);
+        uint32_t n = sh[i].sh_size / sizeof(Elf32_Rel);
+        for (uint32_t r = 0; r < n; r++) {
+            if (ELF32_R_TYPE(rel[r].r_info) != R_ARM_GOT_BREL) continue;
+            uint32_t s = ELF32_R_SYM(rel[r].r_info);
+            if (s < nsyms && !(seen[s >> 3] & (1u << (s & 7)))) { seen[s >> 3] |= (1u << (s & 7)); slots++; }
+        }
+    }
+    free(seen);
+    uint32_t got_bytes = (slots * 4u + 3u) & ~3u;
+    uint32_t bpos = 0, rpos = got_bytes;
+    for (int i = 0; i < eh->e_shnum; i++) {
+        if (!(sh[i].sh_flags & SHF_ALLOC) || sh[i].sh_size == 0 || (sh[i].sh_flags & SHF_WRITE)) continue;
+        uint32_t al = sh[i].sh_addralign ? sh[i].sh_addralign : 4; if (al < 4) al = 4;
+        bpos = (bpos + al - 1) & ~(al - 1); blob_off[i] = bpos; placed[i] = true; bpos += sh[i].sh_size;
+    }
+    for (int i = 0; i < eh->e_shnum; i++) {
+        if (!(sh[i].sh_flags & SHF_ALLOC) || sh[i].sh_size == 0 || !(sh[i].sh_flags & SHF_WRITE)) continue;
+        uint32_t al = sh[i].sh_addralign ? sh[i].sh_addralign : 4; if (al < 4) al = 4;
+        rpos = (rpos + al - 1) & ~(al - 1); ram_off[i] = rpos; placed[i] = writ[i] = true; rpos += sh[i].sh_size;
+    }
+
+    int bad = 0;
+    const uint32_t SLOTCAP = 256u * 1024u;
+
+    // 1) install twice, at two different arena addresses.
+    uint8_t *slotA = (uint8_t *)alloc32(SLOTCAP);
+    uint8_t *slotB = (uint8_t *)alloc32(SLOTCAP);
+    if (!slotA || !slotB) { printf("  SKIP %-12s (arena too small)\n", name); free(b); return 0; }
+    SlotBuf sbA{slotA, SLOTCAP, 0}, sbB{slotB, SLOTCAP, 0};
+    PicManifest mA{}, mB{};
+    AppSource src{}; src.read = file_read; src.ctx = nullptr; src.size = fsz;
+
+    // 0) THE PRE-FLIGHT, first, because that is the order the device uses it in.
+    //
+    // app_pic_measure decides whether this package goes to a slot at all, and it
+    // has to decide BEFORE pkgslot_begin erases the slot's header — after that
+    // point a refusal costs the package that was already there. It works from the
+    // section headers and one relocation scan, which means it is a second
+    // implementation of the layout the producer computes, and two implementations
+    // drift. What is asserted below is exactly what the routing relies on:
+    // the RAM figure is EXACT, the blob and body figures are upper bounds, and
+    // the slack in those bounds is small enough to be honest.
+    PicMeasure pm{};
+    g_f = fopen(path, "rb");
+    g_read_bytes = 0; g_read_calls = 0;
+    LoadResult rcM = app_pic_measure(src, &pm);
+    uint64_t measure_read = g_read_bytes;
+    uint32_t measure_calls = g_read_calls;
+    fclose(g_f);
+    if (rcM != LOAD_OK) {
+        printf("  FAIL %-12s pic-measure: %s\n", name, load_result_str(rcM));
+        free(b); return 1;
+    }
+
+    g_f = fopen(path, "rb");
+    g_read_bytes = 0; g_read_calls = 0;
+    LoadResult rcA = app_pic_install(src, slot_sink, &sbA, &mA);
+    uint64_t install_read = g_read_bytes;
+    uint32_t install_calls = g_read_calls;
+    fclose(g_f);
+    if (rcA != LOAD_OK) {
+        printf("  FAIL %-12s pic-install: %s\n", name, load_result_str(rcA));
+        free(b); return 1;
+    }
+    g_f = fopen(path, "rb");
+    LoadResult rcB = app_pic_install(src, slot_sink, &sbB, &mB);
+    fclose(g_f);
+    if (rcB != LOAD_OK) { printf("  FAIL %-12s pic-install(B): %s\n", name, load_result_str(rcB)); free(b); app_pic_manifest_free(&mA); return 1; }
+
+    g_loaded++;
+    printf("  ok   %-12s slot %u B (text %u + rodata %u + veneers %u), RAM %u B\n",
+           name, mA.ro_size, mA.text_size, mA.rodata_size, mA.veneer_size, mA.ram_size);
+
+    // What the install COST, from the loader's own accounting rather than from
+    // section sums — the number that decides whether a board can install this at
+    // all. `biggest` is the one that fails first: a booted device has around
+    // 89 KB in its largest free block and far more free in total, so a single
+    // request over that is refused while the total looks fine.
+    //
+    // THE ASSERTION THAT KEEPS THIS WORKING. Every install failure on a board so
+    // far has been one allocation nobody counted — the read-only half, the string
+    // table, the symbol table, the over-sized ABS32 recipe — and each looked fine
+    // in a section sum. A device does not fail on the total; it fails when one
+    // request is bigger than the largest free block, which is around 89 KB on a
+    // booted board while the free total is nearer 280.
+    uint32_t peak = 0, biggest = 0, cuts = 0;
+    app_pic_install_cost(&peak, &biggest, &cuts);
+    printf("       install: peak %u B held, biggest single %u B, read %llu B in %u calls "
+           "(file %u B), %u page cut(s)\n",
+           peak, biggest, (unsigned long long)install_read, install_calls, fsz, cuts);
+    if (biggest >= 89u * 1024u) {
+        printf("       FAIL install asks for %u B in one block — over the 89 KB "
+               "largest free block a booted device has\n", biggest);
+        bad = 1;
+    }
+    // And the total, because three allocations of 80 KB would each pass the test
+    // above and still not fit.
+    if (peak >= 89u * 1024u) {
+        printf("       FAIL install holds %u B at once — over the 89 KB block\n", peak);
+        bad = 1;
+    }
+
+    // What the body will really be, in pkgslot_commit's order. The producer does
+    // not report it, so it is reconstructed here from the manifest and checked
+    // against the writer's own count in (5).
+    auto up4 = [](uint32_t v) { return (v + 3u) & ~3u; };
+    uint32_t real_body = up4(mA.ro_size) + mA.got_count * (uint32_t)sizeof(PicGotEntry);
+    real_body = up4(real_body) + mA.abs_count * (uint32_t)sizeof(PicAbs32);
+    real_body = up4(real_body) + mA.data_size;
+    const uint32_t need = (pm.body_bound + PKGSLOT_PROG - 1u) & ~(PKGSLOT_PROG - 1u);
+
+    printf("       measure: %s, RAM %u B, blob <= %u B, body <= %u B (real %u B, "
+           "slack %d B), read %llu B in %u calls\n",
+           pm.pic ? "PIC" : "not PIC", pm.ram_size, pm.ro_bound, pm.body_bound,
+           real_body, (int)need - (int)real_body,
+           (unsigned long long)measure_read, measure_calls);
+
+    // Exact, both of them: they come from the same section walk the producer
+    // does, and the RAM figure is what a caller would quote as the resident cost.
+    if (pm.ram_size != mA.ram_size) {
+        printf("       FAIL measure says RAM %u B, install produced %u B\n",
+               pm.ram_size, mA.ram_size); bad = 1;
+    }
+    if (pm.got_bytes != mA.got_bytes) {
+        printf("       FAIL measure says GOT %u B, install produced %u B\n",
+               pm.got_bytes, mA.got_bytes); bad = 1;
+    }
+    // Every package here is PIC — check_pic is only called for those — so a
+    // measure that says otherwise would route it to the copy path and this whole
+    // feature would quietly never happen.
+    if (!pm.pic) { printf("       FAIL measure does not see this as PIC\n"); bad = 1; }
+    // Bounds, and in the safe direction. A bound BELOW the real figure is the
+    // dangerous one: it accepts a package that then runs off the end of a slot.
+    if (pm.ro_bound < mA.ro_size) {
+        printf("       FAIL blob bound %u B is under the real %u B\n",
+               pm.ro_bound, mA.ro_size); bad = 1;
+    }
+    if (need < real_body) {
+        printf("       FAIL body bound %u B (rounded %u) is under the real %u B\n",
+               pm.body_bound, need, real_body); bad = 1;
+    }
+    // And the slack, because a bound that is merely SAFE can also be useless.
+    // Nearly all of it is the veneer pool's ceiling — one per firmware function
+    // the ABI exports — and if that clamp ever stops applying the bound jumps to
+    // one veneer per relocation, which for a Nova D1 is 100 KB of a 256 KB slot
+    // and would start refusing packages that fit perfectly well.
+    if (need - real_body > 32u * 1024u) {
+        printf("       FAIL body bound %u B overshoots the real %u B by %u\n",
+               need, real_body, need - real_body); bad = 1;
+    }
+
+    // The property that makes a flash slot possible at all.
+    if (slotA == slotB || mA.ro_size != mB.ro_size || memcmp(slotA, slotB, mA.ro_size) != 0) {
+        printf("       FAIL not position-independent: the two blobs differ\n"); bad = 1;
+    } else {
+        printf("       position-independent: identical blob at two addresses\n");
+    }
+    app_pic_manifest_free(&mB);
+
+    // 2) the footprint the task turns on — the ONE resident allocation, asserted.
+    if (mA.ram_size >= 89u * 1024u) {
+        printf("       FAIL RAM block %u B does not clear the 89 KB largest free block\n", mA.ram_size);
+        bad = 1;
+    } else {
+        printf("       RAM block %u B clears 89 KB (was the ~114 KB read-only half)\n", mA.ram_size);
+    }
+    // The entry point must land in the executable half of the blob.
+    if (!(mA.entry_off < mA.text_size))
+        { printf("       FAIL entry +0x%x is not in .text (0..%u)\n", mA.entry_off, mA.text_size); bad = 1; }
+
+    // 3) load TWICE from the one blob, and verify each against the independent
+    // layout. Two RAM blocks, so an ABS32 to RAM resolves to a different value in
+    // each and an ABS32 applied twice cannot hide behind a shared address.
+    LoadedApp appA{}, appB{};
+    if (app_pic_load(slotA, &mA, &appA) != LOAD_OK) { printf("       FAIL pic-load A\n"); free(b); app_pic_manifest_free(&mA); return bad + 1; }
+    if (app_pic_load(slotA, &mA, &appB) != LOAD_OK) { printf("       FAIL pic-load B\n"); app_unload(&appA); free(b); app_pic_manifest_free(&mA); return bad + 1; }
+
+    // Resolve a symbol to its runtime address the way the CPU would see it, from
+    // the ELF alone: firmware -> the blob veneer holding its ABI index; a defined
+    // symbol -> the slot (RO) or the RAM block (writable) at its section offset.
+    auto resolve = [&](const LoadedApp &app, const uint8_t *blob, uint32_t sidx, bool *ok) -> uint32_t {
+        *ok = true;
+        const Elf32_Sym &s = syms[sidx];
+        bool func = (ELF32_ST_TYPE(s.st_info) == STT_FUNC);
+        uint32_t slotbase = (uint32_t)(uintptr_t)blob;
+        if (s.st_shndx == SHN_UNDEF) {
+            int ix = api_index_of(str + s.st_name);
+            for (uint32_t off = mA.veneer_off; off + 16 <= mA.veneer_off + mA.veneer_size; off += 16)
+                if (*(uint32_t *)(blob + off + 12) == (uint32_t)ix) return (slotbase + off) | 1u;
+            *ok = false; return 0;
+        }
+        if (s.st_shndx == SHN_ABS) return s.st_value;
+        if (s.st_shndx >= (uint32_t)eh->e_shnum || !placed[s.st_shndx]) { *ok = false; return 0; }
+        uint32_t a = writ[s.st_shndx] ? (uint32_t)(uintptr_t)app.data + ram_off[s.st_shndx] + s.st_value
+                                      : slotbase + blob_off[s.st_shndx] + s.st_value;
+        return a | (func ? 1u : 0u);
+    };
+
+    auto verify = [&](const LoadedApp &app, const uint8_t *blob, const char *tag) {
+        const uint32_t *got = (const uint32_t *)app.data;
+        int got_sites = 0, abs_sites = 0, br_sites = 0;
+        for (int si = 0; si < eh->e_shnum; si++) {
+            if (sh[si].sh_type != SHT_REL) continue;
+            uint32_t tgt = sh[si].sh_info;
+            if (tgt >= (uint32_t)eh->e_shnum || !placed[tgt]) continue;
+            Elf32_Rel *rel = (Elf32_Rel *)(b + sh[si].sh_offset);
+            uint32_t n = sh[si].sh_size / sizeof(Elf32_Rel);
+            for (uint32_t r = 0; r < n; r++) {
+                uint32_t type = ELF32_R_TYPE(rel[r].r_info);
+                uint32_t sidx = ELF32_R_SYM(rel[r].r_info);
+                if (type == R_ARM_GOT_BREL) {
+                    got_sites++;
+                    // the offset the loader baked into .text, followed to its slot
+                    uint32_t off = *(uint32_t *)(blob + blob_off[tgt] + rel[r].r_offset);
+                    if (off % 4 || off >= mA.got_bytes) { printf("       FAIL %s GOT offset %u out of range\n", tag, off); bad = 1; continue; }
+                    bool ok; uint32_t want = resolve(app, blob, sidx, &ok);
+                    if (!ok) { printf("       FAIL %s cannot resolve %s\n", tag, str + syms[sidx].st_name); bad = 1; continue; }
+                    if (got[off / 4] != want) {
+                        printf("       FAIL %s GOT[%u] = %08x, %s is at %08x\n",
+                               tag, off / 4, got[off / 4], str + syms[sidx].st_name, want); bad = 1;
+                    }
+                } else if (type == R_ARM_THM_CALL || type == R_ARM_THM_JUMP24) {
+                    // THE MAJORITY OF THE RELOCATIONS IN A PACKAGE, and until
+                    // this case existed nothing checked one. novad1 has 2856 of
+                    // them against 2159 GOT slots, and a branch that came out
+                    // wrong would pass every other check here: the blob-to-blob
+                    // comparison cannot see it, because both blobs are produced
+                    // by the same page loop and a dropped patch is identical in
+                    // each.
+                    if (writ[tgt]) continue;          // branches live in the RO half
+                    br_sites++;
+                    bool ok; uint32_t S = resolve(app, blob, sidx, &ok);
+                    if (!ok) { printf("       FAIL %s cannot resolve branch %s\n",
+                                      tag, str + syms[sidx].st_name); bad = 1; continue; }
+                    uint32_t site = blob_off[tgt] + rel[r].r_offset;
+                    // What the instruction MEANT before relocation, and what it
+                    // reaches now. The +4 pipeline offset is on both sides and
+                    // cancels, so this holds wherever the blob happens to be.
+                    int32_t a_orig = thumb_branch_off(b + sh[tgt].sh_offset + rel[r].r_offset);
+                    int32_t a_new  = thumb_branch_off(blob + site);
+                    uint32_t have = (uint32_t)(uintptr_t)blob + site + (uint32_t)a_new;
+                    uint32_t want = (S & ~1u) + (uint32_t)a_orig;
+                    if (have != want) {
+                        printf("       FAIL %s branch at +%u reaches %08x, %s is at %08x\n",
+                               tag, site, have + 4, str + syms[sidx].st_name, want + 4);
+                        bad = 1;
+                    }
+                } else if (type == R_ARM_ABS32 || type == R_ARM_TARGET1) {
+                    abs_sites++;
+                    if (!writ[tgt]) continue;      // handled as a branch/GOT in RO
+                    bool ok; uint32_t S = resolve(app, blob, sidx, &ok);
+                    if (!ok) { printf("       FAIL %s cannot resolve ABS %s\n", tag, str + syms[sidx].st_name); bad = 1; continue; }
+                    // expected = the ORIGINAL addend (from the ELF's .data) + S,
+                    // applied exactly once.
+                    uint32_t addend = *(uint32_t *)(b + sh[tgt].sh_offset + rel[r].r_offset);
+                    uint32_t site = ram_off[tgt] + rel[r].r_offset;      // within the RAM block
+                    uint32_t have = *(uint32_t *)((uint8_t *)app.data + site);
+                    if (have != addend + S) {
+                        printf("       FAIL %s ABS32 at +%u = %08x, expected %08x (addend %08x + S %08x)\n",
+                               tag, site, have, addend + S, addend, S); bad = 1;
+                    }
+                }
+            }
+        }
+        // No used GOT slot may be zero — every symbol resolves somewhere real.
+        for (uint32_t k = 0; k < app.got_count; k++)
+            if (got[k] == 0) { printf("       FAIL %s GOT[%u] never filled\n", tag, k); bad = 1; }
+        if (!bad) printf("       %s: %d GOT + %d branch + %d ABS32 site(s) resolve against the slot at %p\n",
+                         tag, got_sites, br_sites, abs_sites, (void *)app.data);
+    };
+    verify(appA, slotA, "load A");
+    verify(appB, slotA, "load B");
+
+    // 4) a slot built for another ABI is refused, not run — the one failure that
+    // would otherwise not fault, because a stale index calls the wrong function.
+    PicManifest badver = mA; badver.api_major = (uint16_t)(mA.api_major + 1);
+    LoadedApp appX{};
+    if (app_pic_load(slotA, &badver, &appX) != LOAD_ERR_API_MISMATCH) {
+        printf("       FAIL a slot from a newer ABI was not refused\n"); bad = 1;
+        app_unload(&appX);
+    }
+
+    // 5) THE WHOLE PIPELINE, through the real slot format.
+    //
+    // Everything above proves the producer and the loader agree with each other.
+    // This proves they still agree with a package that went to FLASH in between:
+    // the same ELF, streamed page by page into a real PkgSlotWriter over a fake
+    // chip that erases to 0xFF and refuses to turn a bit back on, committed,
+    // reopened from the mapping, and loaded from there.
+    //
+    // slotB is reused as the chip. It has already done its job — proving the blob
+    // is position-independent — and 256 KB more of the arena would be spent on
+    // nothing.
+    {
+        g_fake_flash = slotB;
+        g_fake_bytes = SLOTCAP;
+        g_fake_violation = false;
+        SlotFlash fl{ nullptr, fake_slot_erase, fake_slot_program };
+        static PkgSlotWriter w;
+        PicManifest mS{};
+        bool okw = pkgslot_begin(&w, &fl, 0, SLOTCAP);
+        g_f = fopen(path, "rb");
+        LoadResult rcS = okw ? app_pic_install(src, pkgslot_sink, &w, &mS) : LOAD_ERR_OOM;
+        fclose(g_f);
+        if (rcS != LOAD_OK) {
+            printf("       FAIL install into a slot: %s\n", load_result_str(rcS)); bad = 1;
+        } else if (!pkgslot_commit(&w, &mS)) {
+            printf("       FAIL committing the slot\n"); bad = 1;
+            app_pic_manifest_free(&mS);
+        } else {
+            app_pic_manifest_free(&mS);      // the slot is the copy that matters now
+            PicManifest ms{};
+            PkgSlotStatus st = pkgslot_open(slotB, SLOTCAP, &ms);
+            if (st != PKGSLOT_OK) {
+                printf("       FAIL reopening the slot: %s\n", pkgslot_status_str(st)); bad = 1;
+            } else {
+                const uint8_t *blob = (const uint8_t *)pkgslot_blob(slotB);
+                // Page-at-a-time through a flash format must reproduce the blob
+                // the one-shot path produced, byte for byte. If the page cut, the
+                // 0xFF padding or the CRC range were wrong, this is where it shows.
+                if (ms.ro_size != mA.ro_size || memcmp(blob, slotA, mA.ro_size) != 0) {
+                    printf("       FAIL the slot blob differs from the assembled one\n"); bad = 1;
+                }
+                LoadedApp appS{};
+                if (app_pic_load(blob, &ms, &appS) != LOAD_OK) {
+                    printf("       FAIL loading from the slot\n"); bad = 1;
+                } else {
+                    verify(appS, blob, "from slot");
+                    printf("       ran the whole way: ELF -> %u B slot -> %u B resident\n",
+                           ms.ro_size, appS.bytes_allocated);
+                    app_unload(&appS);
+                }
+                app_pic_manifest_free(&ms);   // borrowed: must release nothing
+
+                // What the writer actually programmed, against what the
+                // pre-flight promised before anything was erased.
+                if (w.page_base > need) {
+                    printf("       FAIL the slot body is %u B; measure allowed %u\n",
+                           w.page_base, need); bad = 1;
+                }
+            }
+        }
+
+        // 6) THE BOOT FALLBACK, and it has to LOAD, not merely be declined.
+        //
+        // A firmware update whose ABI moved leaves every slot on the device
+        // holding baked indices that now name different functions. That is the
+        // one failure a package would not crash on — it would call the wrong
+        // thing, happily — so pkgslot_open refuses the slot, and the package has
+        // to come up some other way or the device loses it.
+        //
+        // The other way is the .app file, which is still on the filesystem: the
+        // slot path never removes it, precisely so this exists. Boot is also when
+        // it can be afforded, because the heap has one large contiguous block at
+        // that point and the copy needs the image in one piece.
+        //
+        // The slot is aged here by editing the mapping directly, not by writing
+        // through the fake chip. Flash cannot turn a bit back on, and the state
+        // being reproduced is a slot some OLDER firmware wrote correctly — its
+        // CRCs agree with its contents. Nothing is corrupt; it is simply not ours.
+        {
+            PkgSlotMeta meta;
+            memcpy(&meta, slotB + PKGSLOT_META_OFF, sizeof(meta));
+            meta.api_minor = (uint16_t)(RPC_API_MINOR + 1);
+            uint8_t metabuf[PKGSLOT_META_BYTES];
+            memcpy(metabuf, slotB + PKGSLOT_META_OFF, PKGSLOT_META_BYTES);
+            memcpy(metabuf, &meta, sizeof(meta));
+            memcpy(slotB + PKGSLOT_META_OFF, metabuf, PKGSLOT_META_BYTES);
+            PkgSlotCommit c;
+            memcpy(&c, slotB, sizeof(c));
+            c.meta_crc = pkgslot_crc32(0, metabuf, PKGSLOT_META_BYTES);
+            memcpy(slotB, &c, sizeof(c));
+
+            PicManifest aged{};
+            PkgSlotStatus as = pkgslot_open(slotB, SLOTCAP, &aged);
+            if (as != PKGSLOT_BAD_ABI) {
+                printf("       FAIL an aged slot opened as %s, not bad ABI\n",
+                       pkgslot_status_str(as)); bad = 1;
+            }
+
+            // The fallback itself: the same AppSource the install read, through
+            // the ordinary copy-to-RAM loader. A full relocation pass — this is a
+            // load, not a status code.
+            g_f = fopen(path, "rb");
+            LoadedApp fb{};
+            LoadResult fbrc = app_load(src, &fb);
+            fclose(g_f);
+            if (fbrc != LOAD_OK) {
+                printf("       FAIL the boot fallback did not load: %s%s%s\n",
+                       load_result_str(fbrc), fb.detail[0] ? " - " : "", fb.detail);
+                bad = 1;
+            } else {
+                uint32_t e = (uint32_t)(uintptr_t)fb.entry & ~1u;
+                uint32_t base = (uint32_t)(uintptr_t)fb.image;
+                bool sane = fb.entry && (e >= base) && (e < base + fb.text_size) &&
+                            strcmp(fb.header.name, mA.header.name) == 0;
+                if (!sane) {
+                    printf("       FAIL the fallback loaded something wrong: '%s' "
+                           "entry %08x image %08x+%u\n",
+                           fb.header.name, e, base, fb.text_size);
+                    bad = 1;
+                } else {
+                    printf("       slot refused (%s) -> loaded '%s' from the file "
+                           "instead, %u B resident\n",
+                           pkgslot_status_str(as), fb.header.name, fb.bytes_allocated);
+                }
+                app_unload(&fb);
+            }
+        }
+        if (g_fake_violation) {
+            printf("       FAIL the install programmed flash it had not erased\n"); bad = 1;
+        }
+        g_fake_flash = nullptr;
+    }
+
+    app_unload(&appA);
+    app_unload(&appB);
+    app_pic_manifest_free(&mA);
+    free(b);
+    g_arena = nullptr; g_used_bytes = 0;
     return bad;
 }
 
@@ -652,11 +1346,15 @@ int main(int argc, char **argv) {
 
     if (argc > 1) {
         for (int i = 1; i < argc; i++) fails += load_one(argv[i]);
+        for (int i = 1; i < argc; i++) if (is_pic(argv[i])) fails += check_pic(argv[i]);
     } else {
         for (int i = 0; i < napps; i++) fails += load_one(kApps[i]);
         // And every one of them again as a sandboxed package, which produces a
         // completely different veneer pool from the same file.
         for (int i = 0; i < napps; i++) fails += load_svc(kApps[i]);
+        // And every PIC package a third way: installed to a flash slot and loaded
+        // from it, which is the whole of task #93 stage 3.
+        for (int i = 0; i < napps; i++) if (is_pic(kApps[i])) fails += check_pic(kApps[i]);
     }
     // Loading nothing is a failure, not a pass. These paths are relative to this
     // directory, so running from anywhere else — or a change to where the build

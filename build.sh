@@ -161,7 +161,14 @@ for board in "${BOARDS[@]}"; do
         # failure this check exists to catch.
         reserve=$(cat "$dir/fw_reserve.txt")
         slot=$((reserve / 2))
-        fs=$(( (board_flash_kb * 1024) - reserve ))
+        # The region packages RUN from sits between the reserve and the
+        # filesystem, so it comes out of the filesystem and the filesystem figure
+        # has to know. Read from the build for the same reason the reserve is: a
+        # second copy of the number here could disagree with the firmware and
+        # nothing would notice.
+        pkgregion=0
+        [ -f "$dir/pkg_region.txt" ] && pkgregion=$(cat "$dir/pkg_region.txt")
+        fs=$(( (board_flash_kb * 1024) - reserve - pkgregion ))
         left=$((slot - bsize))
         if [ "$left" -lt 0 ]; then
             printf '    [!] %s KB OVER the %s KB slot — this image cannot be flashed by an update\n' \
@@ -174,8 +181,15 @@ for board in "${BOARDS[@]}"; do
             printf '    %s KB left in the %s KB slot, %s KB filesystem\n' \
                 "$((left / 1024))" "$((slot / 1024))" "$((fs / 1024))"
         fi
+        # Named separately rather than folded into the filesystem line, because a
+        # quarter of a megabyte that used to be storage should be visible on
+        # every build and not only to whoever reads the table in CMakeLists.
+        if [ "$pkgregion" -gt 0 ]; then
+            printf '    %s KB of package slots (out of the filesystem)\n' \
+                "$((pkgregion / 1024))"
+        fi
         if [ "$fs" -le 0 ]; then
-            printf '    [!] no filesystem: the reserve is the whole of this flash\n'
+            printf '    [!] no filesystem: the reserve and the slots are the whole of this flash\n'
             exit 1
         fi
     fi

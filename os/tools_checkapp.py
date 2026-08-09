@@ -72,6 +72,66 @@ if sections.returncode == 0:
               'the initialisers were setting anyway.\n', file=sys.stderr)
         sys.exit(1)
 
+# --- position-independent invariant -----------------------------------------
+#
+# A package built -fPIC -msingle-pic-base reaches its data through a GOT off r9,
+# so the half that goes to a flash slot — every allocatable section that is NOT
+# writable: .text and .rodata — must carry NO absolute address. Only GOT_BREL
+# (data via the GOT) and THM_CALL / THM_JUMP24 (firmware, handled by veneers) may
+# appear, and those bake to a GOT offset or a blob-relative branch, both of which
+# are the same wherever the slot lands. An ABS32 that slips in — a function
+# pointer the compiler failed to route through the GOT, a const table of pointers
+# left in .rodata — links and loads and then holds a stale address the moment the
+# blob runs from flash. The loader would refuse it (LOAD_ERR_RELOC_UNSUPPORTED),
+# but by then it is a device that will not take an update; refused here instead,
+# at build time, where it names the section and the type.
+#
+# The whole read-only half is checked, not only .text: the "assemble once, place
+# anywhere" property is what stage 3 rests on, and .rodata being clean is now
+# load-bearing rather than incidental. Only a PIC package (one with any GOT_BREL)
+# is held to this; a plain package relocates into RAM and is unaffected.
+rel = subprocess.run([readelf, '-r', app], capture_output=True, text=True)
+if rel.returncode == 0 and 'R_ARM_GOT_BREL' in rel.stdout:
+    ALLOWED = {'R_ARM_GOT_BREL', 'R_ARM_THM_CALL', 'R_ARM_THM_JUMP24', 'R_ARM_NONE'}
+
+    # Section flags, to tell a slot-resident section (Alloc, not Write) from a
+    # writable one whose ABS32 fixups are applied in RAM at load and are fine.
+    secflags = {}
+    shdr = subprocess.run([readelf, '-SW', app], capture_output=True, text=True)
+    for line in shdr.stdout.splitlines():
+        m = re.match(r'\s*\[\s*\d+\]\s+(\.\S+)\s+\S+\s+[0-9a-f]+\s+[0-9a-f]+'
+                     r'\s+[0-9a-f]+\s+[0-9a-f]+\s+(\S*)', line)
+        if m:
+            secflags[m.group(1)] = m.group(2)
+
+    ro_now = False          # are we inside a relocation section targeting the slot?
+    ro_name = ''
+    offenders = {}          # (section, type) -> count
+    for line in rel.stdout.splitlines():
+        m = re.match(r"Relocation section '(\S+)'", line)
+        if m:
+            tgt = re.sub(r'^\.rela?', '', m.group(1))   # .rel.text -> .text
+            fl = secflags.get(tgt, '')
+            ro_now = ('A' in fl and 'W' not in fl)      # allocatable, read-only
+            ro_name = tgt
+            continue
+        if ro_now:
+            mm = re.search(r'\b(R_ARM_\w+)\b', line)
+            if mm and mm.group(1) not in ALLOWED:
+                offenders[(ro_name, mm.group(1))] = offenders.get((ro_name, mm.group(1)), 0) + 1
+    if offenders:
+        print('\n%s is position-independent but its read-only half carries %d '
+              'absolute relocation(s):' % (name, sum(offenders.values())), file=sys.stderr)
+        for (sec, t), c in sorted(offenders.items()):
+            print('    %s in %s x%d' % (t, sec, c), file=sys.stderr)
+        print('\nA PIC package must reach every global through the GOT. An absolute\n'
+              'relocation in a slot-resident section is an address that would be wrong\n'
+              'the moment the blob runs from flash — a function pointer the compiler\n'
+              'could not route through r9, or a const pointer table the linker left in\n'
+              '.rodata. Check it is built with\n'
+              '    -fPIC -msingle-pic-base -mno-pic-data-is-text-relative\n', file=sys.stderr)
+        sys.exit(1)
+
 # --- symbols ----------------------------------------------------------------
 
 out = subprocess.run([nm, '-u', app], capture_output=True, text=True)

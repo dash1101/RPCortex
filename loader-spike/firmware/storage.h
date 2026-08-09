@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include "loader.h"
+#include "pkgslot.h"
 
 // littlefs v2 on the tail of the on-board flash. v2.11 — the same version and
 // on-disk format MicroPython's rp2 port uses, so a v1.0 device's data is at
@@ -122,6 +123,28 @@ uint32_t storage_stage_offset(void);       // flash offset of the staging slot
 // the device has stopped and reboots mid-copy.
 typedef void (*StorageProgressFn)(void *ctx, uint32_t done, uint32_t total);
 uint32_t storage_stage_file(const char *path, StorageProgressFn cb, void *ctx);
+
+// --- the slots packages RUN from ---------------------------------------------
+//
+// Fixed-size, erase-aligned, between the firmware reserve and the filesystem.
+// A position-independent package's read-only half goes in one and is executed
+// in place, so only its writable half is resident.
+//
+// Zero of them on RP2040: a slot holds `svc` veneers naming firmware by ABI
+// index, which is only usable by a package running unprivileged, and ARMv6-M has
+// no sandbox here. Those boards keep the copy-to-RAM path, so count() == 0 is a
+// supported answer and every caller has to handle it.
+uint32_t storage_pkg_slot_count(void);
+uint32_t storage_pkg_slot_bytes(void);
+uint32_t storage_pkg_region_bytes(void);      // count * bytes, for the sums
+uint32_t storage_pkg_slot_offset(uint32_t i); // region-relative
+// Where slot i is memory-mapped for reading — null if there is no slot i. This
+// pointer is what pkgslot_open reads and what the package's code is fetched
+// from; nothing is copied.
+const void *storage_pkg_slot_map(uint32_t i);
+// The erase and program operations pkgslot needs, bound to this region. Offsets
+// passed to them are region-relative, so a wrong one cannot reach the filesystem.
+void storage_pkg_slot_flash(SlotFlash *out);
 
 // Last modification time as a Unix epoch, or 0 when it was never recorded (the
 // clock had not been set when the file was written). Held as a littlefs custom

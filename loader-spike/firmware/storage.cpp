@@ -147,7 +147,38 @@ RpcLock g_fs_lock;
 #define RPC_FW_SLOT    (RPC_FW_RESERVE / 2)
 #define RPC_STAGE_OFF  (RPC_FW_SLOT)
 
-#define FS_OFFSET      RPC_FW_RESERVE
+// --- the region packages RUN from --------------------------------------------
+//
+// A position-independent package's read-only half is executed in place out of
+// flash, so only its writable half is resident. The blob has to be somewhere,
+// and this is it: fixed-size slots between the firmware reserve and the
+// filesystem. os/CMakeLists.txt owns the numbers and this is the fallback for a
+// build that does not set them — the loader spike, and anyone compiling this
+// file alone.
+//
+// Zero slots on RP2040. A slot holds `svc` veneers naming firmware by ABI index,
+// which only work for a package running unprivileged, and sandbox_rp2.cpp
+// compiles that support out on ARMv6-M. See the note in os/CMakeLists.txt.
+//
+// THIS MOVES THE FILESYSTEM. It starts after the region rather than after the
+// reserve, so a board updated from a firmware built without slots finds a
+// littlefs whose geometry no longer matches, fails to mount and is reformatted.
+// That is a one-time cost and it is not silent — build.sh prints the region on
+// every build — but it is a real one.
+#ifndef RPC_PKG_SLOT_BYTES
+  #define RPC_PKG_SLOT_BYTES (256 * 1024)
+#endif
+#ifndef RPC_PKG_SLOT_COUNT
+  #if defined(__ARM_ARCH_6M__) || PICO_RP2040
+    #define RPC_PKG_SLOT_COUNT 0
+  #else
+    #define RPC_PKG_SLOT_COUNT 1
+  #endif
+#endif
+#define RPC_PKG_OFF    RPC_FW_RESERVE
+#define RPC_PKG_REGION ((uint32_t)RPC_PKG_SLOT_COUNT * (uint32_t)RPC_PKG_SLOT_BYTES)
+
+#define FS_OFFSET      (RPC_FW_RESERVE + RPC_PKG_REGION)
 #define FS_SIZE        (PICO_FLASH_SIZE_BYTES - FS_OFFSET)
 #define FS_BLOCK_SIZE  FLASH_SECTOR_SIZE          // 4096 — the erase unit
 #define FS_PROG_SIZE   FLASH_PAGE_SIZE            // 256  — the program unit
@@ -808,6 +839,54 @@ bool storage_usb_write_block(uint32_t off, const uint8_t *block4k) {
     if (guarded(do_erase, &ea) != 0) return false;
     ProgArgs pa{RPC_STAGE_OFF + off, block4k, STORAGE_USB_BLOCK};
     return guarded(do_prog, &pa) == 0;
+}
+
+// --- the slots packages RUN from ---------------------------------------------
+//
+// Three functions and a bounds check. Everything that could be got wrong about
+// the format and the commit order is in loader-spike/firmware/pkgslot.cpp, which
+// is pure logic over a byte array and is tested on the host against a fake chip.
+// What is here is what needs the actual flash, and it is DEVICE-UNCONFIRMED:
+// nothing on a host can erase a sector.
+uint32_t storage_pkg_slot_count(void)  { return RPC_PKG_SLOT_COUNT; }
+uint32_t storage_pkg_slot_bytes(void)  { return RPC_PKG_SLOT_BYTES; }
+uint32_t storage_pkg_region_bytes(void) { return RPC_PKG_REGION; }
+uint32_t storage_pkg_slot_offset(uint32_t i) { return i * (uint32_t)RPC_PKG_SLOT_BYTES; }
+
+const void *storage_pkg_slot_map(uint32_t i) {
+    if (i >= RPC_PKG_SLOT_COUNT) return nullptr;
+    // Reading a slot costs nothing: it is memory-mapped, which is the whole
+    // premise — the package's code is fetched from here by the CPU itself.
+    return (const void *)(XIP_BASE + RPC_PKG_OFF + storage_pkg_slot_offset(i));
+}
+
+// Offsets arriving here are relative to the REGION, so a caller cannot address
+// the filesystem or the firmware by getting one wrong.
+static bool pkg_erase(void *, uint32_t off, uint32_t len) {
+    if (!RPC_PKG_SLOT_COUNT) return false;
+    if (off % FLASH_SECTOR_SIZE || len % FLASH_SECTOR_SIZE) return false;
+    if ((uint64_t)off + len > RPC_PKG_REGION) return false;
+    EraseArgs a{RPC_PKG_OFF + off, len};
+    return guarded(do_erase, &a) == 0;
+}
+
+static bool pkg_program(void *, uint32_t off, const void *data, uint32_t len) {
+    if (!RPC_PKG_SLOT_COUNT) return false;
+    if (off % FLASH_PAGE_SIZE || len % FLASH_PAGE_SIZE) return false;
+    if ((uint64_t)off + len > RPC_PKG_REGION) return false;
+    // The source must be in RAM. flash_range_program runs with XIP disabled, so
+    // a buffer that is itself in flash would be read while the chip cannot be
+    // read — the writer's page buffer lives in its struct for exactly this
+    // reason, and this is where that requirement is written down.
+    ProgArgs a{RPC_PKG_OFF + off, (const uint8_t *)data, len};
+    return guarded(do_prog, &a) == 0;
+}
+
+void storage_pkg_slot_flash(SlotFlash *out) {
+    if (!out) return;
+    out->ctx     = nullptr;
+    out->erase   = pkg_erase;
+    out->program = pkg_program;
 }
 
 uint32_t storage_free_bytes(void) {

@@ -160,6 +160,7 @@ add_executable(rpcortex_v2
     ${OS_ROOT}/shell/fsinit.cpp
     ${OS_ROOT}/shell/shell.cpp
     ${SPIKE}/firmware/loader.cpp
+    ${SPIKE}/firmware/pkgslot.cpp
     ${SPIKE}/firmware/storage.cpp
     ${SPIKE}/firmware/fault.cpp
     ${LFS_DIR}/lfs.c
@@ -423,6 +424,42 @@ endif()
 target_compile_definitions(rpcortex_v2 PRIVATE RPC_FW_RESERVE=${RPC_FW_RESERVE})
 file(WRITE ${CMAKE_BINARY_DIR}/fw_reserve.txt "${RPC_FW_RESERVE}")
 
+# --- flash slots that packages RUN from --------------------------------------
+#
+# A position-independent package's read-only half is executed in place, so only
+# its writable half is ever resident: Nova D1 costs 60 KB of RAM instead of 180.
+# That half has to live somewhere, and this is the region it lives in — between
+# the firmware reserve and the filesystem, taken OUT of the filesystem.
+#
+# Sized against how the package has actually grown rather than against what it
+# is today. Nova D1's read-only half went 84 KB, then 116 KB, then 124 KB over
+# three releases; with the recipe and the header a slot holds about 157 KB now.
+# 256 KB leaves real room; 192 would already be tight enough to need revisiting.
+#
+# ONE slot, not two. Erasing a slot means erasing the code a running copy is
+# fetching instructions from, so an install has to unload the package first
+# either way, and a second slot would be a quarter of a megabyte spent to avoid
+# a reinstall that costs seconds.
+#
+# ZERO on the RP2040 boards, and not arbitrarily: a slot holds `svc` veneers that
+# name firmware by ABI index, because a baked ADDRESS would be wrong after any
+# firmware update. Those only work where packages run unprivileged, and
+# sandbox_rp2.cpp compiles SANDBOX_SUPPORTED to 0 on ARMv6-M — so an RP2040 runs
+# DIRECT veneers and could not use a slot if it had one. It also has the least
+# room: pico_w's filesystem is 384 KB and cannot spare a quarter of a megabyte.
+# Both boards keep the copy-to-RAM path, which is unchanged.
+set(RPC_PKG_SLOT_BYTES 262144)
+if(PICO_BOARD STREQUAL "pico_w" OR PICO_BOARD STREQUAL "pico")
+    set(RPC_PKG_SLOT_COUNT 0)
+else()
+    set(RPC_PKG_SLOT_COUNT 1)
+endif()
+math(EXPR RPC_PKG_REGION "${RPC_PKG_SLOT_COUNT} * ${RPC_PKG_SLOT_BYTES}")
+target_compile_definitions(rpcortex_v2 PRIVATE
+    RPC_PKG_SLOT_BYTES=${RPC_PKG_SLOT_BYTES}
+    RPC_PKG_SLOT_COUNT=${RPC_PKG_SLOT_COUNT})
+file(WRITE ${CMAKE_BINARY_DIR}/pkg_region.txt "${RPC_PKG_REGION}")
+
 target_compile_definitions(rpcortex_v2 PRIVATE PICO_STDIO_USB_USE_DEFAULT_DESCRIPTORS=0)
 
 # Where tud_task() runs. The whole reasoning is in os/usbdev.cpp; the short
@@ -531,15 +568,28 @@ set(APP_FLAGS -mthumb -mcpu=cortex-m0plus -Os -std=c++17
 # This exists because Nova D1 is not going to be one file, and the alternative —
 # a unity build stitched together with #include of .cpp files — hides the
 # dependency graph the layer rule depends on being visible.
+# rpc_add_app(name [PIC])
+#
+# PIC opts one package into position-independent code: .text and .rodata carry no
+# absolute address, so they can eventually run from flash and only .data/.bss plus
+# a GOT stay resident. It is OPT-IN per package on purpose while it is proven —
+# the default path stays byte-for-byte what it was, so a PIC package and a plain
+# one can be compared side by side. See notes/xip-packages.md and the GOT handling
+# in loader-spike/firmware/loader.cpp.
 function(rpc_add_app name)
     file(GLOB app_srcs CONFIGURE_DEPENDS ${OS_ROOT}/apps/${name}/*.cpp)
     if(NOT app_srcs)
         message(FATAL_ERROR "rpc_add_app(${name}): no .cpp files in apps/${name}/")
     endif()
 
+    set(this_flags ${APP_FLAGS})
+    if("${ARGN}" MATCHES "(^|;)PIC($|;)")
+        list(APPEND this_flags -fPIC -msingle-pic-base -mno-pic-data-is-text-relative)
+    endif()
+
     list(LENGTH app_srcs app_nsrc)
     if(app_nsrc EQUAL 1)
-        set(app_build COMMAND ${CMAKE_CXX_COMPILER} ${APP_FLAGS}
+        set(app_build COMMAND ${CMAKE_CXX_COMPILER} ${this_flags}
                               -c ${app_srcs} -o ${CMAKE_BINARY_DIR}/apps/${name}.app)
     else()
         # Compile each into apps/<name>.d/, then fold them into one object. The
@@ -552,7 +602,7 @@ function(rpc_add_app name)
         foreach(src ${app_srcs})
             get_filename_component(stem ${src} NAME_WE)
             set(obj ${CMAKE_BINARY_DIR}/apps/${name}.d/${stem}.o)
-            list(APPEND app_build COMMAND ${CMAKE_CXX_COMPILER} ${APP_FLAGS}
+            list(APPEND app_build COMMAND ${CMAKE_CXX_COMPILER} ${this_flags}
                                           -c ${src} -o ${obj})
             list(APPEND app_objs ${obj})
         endforeach()
@@ -600,7 +650,10 @@ rpc_add_app(dht)
 rpc_add_app(probe)
 rpc_add_app(gpio)
 rpc_add_app(i2cscan)
-rpc_add_app(greet)
+# greet is the position-independent exemplar while task #93 is proven: the
+# smallest real package, opted in so realapp_test exercises the r9/GOT path on
+# every host run. Every other package stays on the default (copy-to-RAM) path.
+rpc_add_app(greet PIC)
 rpc_add_app(tuidemo)
 rpc_add_app(stress)
 rpc_add_app(bench)
@@ -608,7 +661,14 @@ rpc_add_app(websearch)
 rpc_add_app(speedtest)
 rpc_add_app(havoc)
 rpc_add_app(httpd)
-rpc_add_app(novad1)
+# novad1 is the package task #93 exists for: 114 KB of read-only half, more than
+# the 89 KB largest free block a booted board has, so it cannot be loaded onto a
+# running device. Built PIC, that half is a position-independent blob for a flash
+# slot and only the ~60 KB writable half stays resident. realapp_test proves the
+# blob places anywhere and the writable half clears 89 KB. The device slot-install
+# and load-from-slot wiring is the remaining stage-3 work; until it lands novad1
+# still loads by copy-to-RAM, which is why this is a branch and not shipped.
+rpc_add_app(novad1 PIC)
 
 # --- packages that ship installed -------------------------------------------
 #

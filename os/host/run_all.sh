@@ -109,7 +109,11 @@ declare -A SRC=(
     [history_test]="$CORE/history.cpp"
     [core_test]="$CORE/sha256.cpp $CORE/registry.cpp $CORE/users.cpp $CORE/lock.cpp $CORE/task.cpp $CORE/blackbox.cpp host_task_stub.cpp"
     [out_test]="$CORE/out.cpp $CORE/lock.cpp $CORE/task.cpp $CORE/blackbox.cpp $CORE/logring.cpp host_task_stub.cpp"
-    [realapp_test]="$SPIKE/loader.cpp $CORE/mpu.cpp"
+    [realapp_test]="$SPIKE/loader.cpp $CORE/mpu.cpp $SPIKE/pkgslot.cpp"
+    # The flash slot a package runs from: the format, and the write order that
+    # makes an interrupted install safe. Proved against a fake chip, because the
+    # interesting cases all involve losing power at a chosen moment.
+    [pkgslot_test]="$SPIKE/pkgslot.cpp $SPIKE/loader.cpp"
     [os_test]="$SHELL_DIR/command.cpp $CORE/lock.cpp $CORE/task.cpp $CORE/blackbox.cpp host_task_stub.cpp $SPIKE/loader.cpp"
     [apps_test]="$CORE/mpu.cpp $CORE/arena.cpp host_sandbox_stub.cpp $SHELL_DIR/command.cpp $SHELL_DIR/apps.cpp $CORE/out.cpp $CORE/lock.cpp $CORE/task.cpp $CORE/blackbox.cpp $CORE/logring.cpp host_task_stub.cpp $SPIKE/loader.cpp"
 )

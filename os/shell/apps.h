@@ -75,6 +75,15 @@ int apps_busy_pid(const char *name);
 // the per-run chatter (used for boot loading).
 int apps_launch(const char *file, int arg, bool quiet);
 
+// The same, for a package whose read-only half is already in a flash slot.
+//
+// `blob` is where that half is mapped and `m` the manifest read out of the slot
+// beside it — pkg.cpp does the opening, because it is the half that knows about
+// slots and filesystems. Nothing is copied: this allocates the writable half and
+// nothing else, which for a Nova D1 is 62 KB against 184. Returns app_main's
+// value, or -1.
+int apps_launch_pic(const void *blob, const PicManifest *m, int arg, bool quiet);
+
 // Register the `apps` (list) and `unload` commands.
 void apps_register(void);
 
