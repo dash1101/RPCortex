@@ -668,7 +668,22 @@ rpc_add_app(httpd)
 # blob places anywhere and the writable half clears 89 KB. The device slot-install
 # and load-from-slot wiring is the remaining stage-3 work; until it lands novad1
 # still loads by copy-to-RAM, which is why this is a branch and not shipped.
-rpc_add_app(novad1 PIC)
+# NOT PIC yet. Building it position-independent is the point of the flash slot,
+# and the slot machinery below is finished and host-proven — but a PIC novad1
+# FAULTS ON REAL HARDWARE, and it does so on the copy-to-RAM path, before a slot
+# is ever involved:
+#
+#     HARD FAULT in novad1  pc=0x2003eef8  IACCVIOL not executable
+#
+# That pc is in SRAM, so this is the ordinary copy path executing an address the
+# MPU says is not code. The likely cause is that -fPIC moves novad1's const
+# pointer tables out of .rodata into .data, and .data is the WRITABLE half —
+# which package W^X maps non-executable. Anything reached through those tables
+# that is expected to be executable is then unreachable by construction.
+#
+# Host tests do not catch it because they neither apply W^X nor execute the
+# image. Opting back in belongs with a device check, not with a green suite.
+rpc_add_app(novad1)
 
 # --- packages that ship installed -------------------------------------------
 #
