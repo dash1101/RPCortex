@@ -6,6 +6,7 @@
 // is looked up in the registry, and the command runs. That is the whole engine.
 
 #include "shell.h"
+#include "sha256.h"
 #include "command.h"
 #include "kernel.h"
 #include "loader.h"
@@ -244,8 +245,29 @@ static bool read_line(const char *prompt, char *buf, size_t max) {
 #define PUT_CHUNK 256
 
 static int cmd_put(int argc, char **argv) {
-    if (argc < 3) { out_multi("Usage: put <name> <len>"); return 1; }
+    if (argc < 3) { out_multi("Usage: put <name> <len> [sha256]"); return 1; }
     uint32_t len = (uint32_t)strtoul(argv[2], nullptr, 10);
+
+    // WHAT ARRIVED IS NOT NECESSARILY WHAT WAS SENT, and the length does not
+    // say so. This loop reads a byte at a time and stops to write a chunk to
+    // flash, which is slow and parks the other core; bytes still arriving over
+    // USB during that window overflow the CDC buffer and are dropped. The count
+    // then reaches `len` anyway, using bytes that came later — so a corrupt
+    // transfer looks exactly like a good one.
+    //
+    // Two 300 KB uploads landed that way. The damage surfaced far from here: a
+    // package that would not load, reported as "out of memory", and then a
+    // firmware fault inside strcmp on a section-header table made of garbage.
+    //
+    // So the bytes are hashed as they land. Given an expected digest this
+    // refuses the file outright; given none it still prints what was stored, so
+    // whoever sent it can compare. It does not stop the dropping — that needs
+    // the sender to wait for each chunk — but it stops silence.
+    const char *want = (argc >= 4) ? argv[3] : nullptr;
+    if (want && strlen(want) != 64) {
+        out_err("A sha256 is 64 hex characters.");
+        return 1;
+    }
 
     // Bounded by what the filesystem could hold rather than by a constant. The
     // point is to catch a mistyped length before the console goes quiet waiting
@@ -268,6 +290,7 @@ static int cmd_put(int argc, char **argv) {
     uint8_t buf[PUT_CHUNK];
     uint32_t got = 0, held = 0;
     bool ok = true;
+    Sha256Ctx sha; sha256_init(&sha);
 
     while (got < len && ok) {
         int c;
@@ -287,11 +310,15 @@ static int cmd_put(int argc, char **argv) {
         buf[held++] = (uint8_t)c;
         got++;
         if (held == sizeof(buf)) {
+            sha256_update(&sha, buf, held);
             ok = storage_sink_write(sink, buf, held);
             held = 0;
         }
     }
-    if (ok && held) ok = storage_sink_write(sink, buf, held);
+    if (ok && held) {
+        sha256_update(&sha, buf, held);
+        ok = storage_sink_write(sink, buf, held);
+    }
 
     // Close either way: the handle has to be given back, and a failed close is
     // also a failure to report.
@@ -301,7 +328,25 @@ static int cmd_put(int argc, char **argv) {
         if (got >= len) out_err("Could not write %s.", argv[1]);
         return 1;
     }
+    uint8_t digest[32];
+    sha256_final(&sha, digest);
+    char hex[65];
+    for (int i = 0; i < 32; i++) snprintf(hex + i * 2, 3, "%02x", digest[i]);
+
+    if (want && strcmp(hex, want) != 0) {
+        // The file goes. A corrupt upload kept on disk is one somebody installs
+        // later, and the fault it causes will not mention this transfer.
+        storage_remove(argv[1]);
+        out_err("What arrived is not what was sent — %s was not kept.", argv[1]);
+        out_multi("  expected  %s", want);
+        out_multi("  received  %s", hex);
+        out_multi("  Bytes are dropped when the sender does not wait for each");
+        out_multi("  chunk to reach flash. Send it again, more slowly.");
+        return 1;
+    }
+
     out_ok("Wrote %s (%u bytes).", argv[1], (unsigned)len);
+    out_multi("  sha256 %s%s", hex, want ? "  (matches)" : "");
     return 0;
 }
 
