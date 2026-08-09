@@ -281,6 +281,42 @@ static bool install_finish(const char *file, const char *name, const char *versi
             return false;
         }
     }
+
+    // A COPY-PATH INSTALL MUST NOT LEAVE A SLOT THAT DISAGREES WITH THE FILE.
+    //
+    // A package can arrive here on the copy path with a slot still holding an
+    // OLDER build of itself: it grew past the slot, or a new source file brought
+    // in a relocation the slot producer cannot emit, and either way the routing
+    // sent it to RAM. The file and the index now say the new version. The slot
+    // says the old one — and it is the slot the next boot prefers, so the device
+    // would come up running the build that was just replaced, with everything
+    // that reports a version insisting otherwise.
+    //
+    // That is the same silent-revert shape as the two bugs the comments in this
+    // file already exist for. AFTER the move, not before: until the file is in
+    // place the slot is still the best copy on the device, and a copy that failed
+    // for want of room must not also have cost the package that was working.
+    //
+    // Guarded by apps_busy_pid, because the copy path DROPS apps_unload's answer.
+    // Nothing should be inside the old image by now; "should" is not the standard
+    // for erasing flash a task might return into.
+    if (slot < 0) {
+        int stale = slot_holding(name);
+        if (stale >= 0) {
+            if (apps_busy_pid(name) >= 0) {
+                out_warnp("pkg", "'%s' is installed, but the flash slot still holds "
+                                 "the old build.", name);
+                out_multi("  It is running, so the slot cannot be cleared now. Until");
+                out_multi("  it is, a reboot brings the OLD one back — 'pkg install");
+                out_multi("  %s' again once nothing is using it.", name);
+            } else if (!slot_release((uint32_t)stale)) {
+                out_warnp("pkg", "'%s' is installed, but the flash slot holding the "
+                                 "old build could not be cleared.", name);
+                out_multi("  A reboot would load the old one out of it instead.");
+            }
+        }
+    }
+
     index_add(name, version);
     if (!quiet) out_okp("pkg", "Installed %s %s", name, version);
     // Load it now so its commands are available without a reboot — and NOT

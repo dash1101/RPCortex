@@ -278,10 +278,16 @@ LoadResult app_pic_install(const AppSource &src, SlotWrite sink, void *sink_ctx,
 // the slack, which is also what stops this drifting away from the producer.
 struct PicMeasure {
     // Whether the slot path can take this package at all: it reaches its globals
-    // through a GOT (built -fPIC), AND every relocation it carries is one
-    // app_pic_install can actually emit. The second half matters as much as the
-    // first — an unsupported relocation discovered by the producer is a failure
-    // AFTER the erase, and the same scan that counts GOT slots can see it coming.
+    // through a GOT (built -fPIC), AND every relocation TYPE it carries is one
+    // app_pic_install can emit. The second half matters as much as the first —
+    // an unsupported relocation found by the producer is a failure AFTER the
+    // erase, and the same scan that counts GOT slots can see it coming.
+    //
+    // TYPE, and not more than that. One producer refusal is still out of reach
+    // here: a GOT_BREL whose site already holds a non-zero addend, which the
+    // recipe cannot express. Seeing that needs the section CONTENT, which is the
+    // page pass — the whole thing this function exists to avoid. It survives as a
+    // post-erase failure, reported as one.
     bool     pic;
     uint32_t ro_bound;    // .text + .rodata + the veneer pool's ceiling
     uint32_t body_bound;  // that, plus the two recipe arrays and the .data image
