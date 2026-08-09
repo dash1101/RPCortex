@@ -255,6 +255,18 @@ typedef bool (*SlotWrite)(void *ctx, uint32_t off, const void *data, uint32_t le
 LoadResult app_pic_install(const AppSource &src, SlotWrite sink, void *sink_ctx,
                            PicManifest *m);
 
+// What the LAST app_pic_install actually cost, measured inside it:
+//   peak     — the most held at once
+//   biggest  — the largest single request
+//
+// Both, because they fail differently. A device does not run out of memory when
+// the total is exceeded; it runs out when one request is larger than the biggest
+// free block, which on a booted board is around 89 KB while the free total is
+// nearer 280. Every install failure so far has been the second number, and every
+// time it was an allocation nobody had counted. realapp_test asserts them, which
+// is the only thing that stops one creeping back.
+void app_pic_install_cost(uint32_t *peak, uint32_t *biggest);
+
 // Instantiate a package whose blob is already at `slot` (a flash slot on the
 // device, the assembled buffer on the host), using the manifest. Allocates the
 // RAM block and the gate pool; sets image=slot, data=RAM, entry, r9 base.

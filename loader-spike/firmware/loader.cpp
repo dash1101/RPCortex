@@ -1046,6 +1046,46 @@ uint32_t app_pic_base(const LoadedApp *app) {
 // wrong function after any update. A package that would run privileged takes the
 // ordinary copy-to-RAM app_load path; it never reaches here.
 
+// What an install COSTS, measured by the loader rather than reasoned about from
+// section sizes.
+//
+// An install is the memory-hungriest thing the OS does, and every previous
+// failure of it was an allocation nobody had counted: the read-only half, then
+// the string table, then the symbol table. Section sums do not find those,
+// because the thing that runs out is the largest free BLOCK, and what matters is
+// how much is held at once and how big the biggest single request was. Both are
+// recorded here so realapp_test can assert them and a device can print them.
+//
+// The size rides in an eight-byte header ahead of the block, which is also what
+// keeps the returned pointer eight-aligned on both a device and a 64-bit host.
+static uint32_t g_pic_live, g_pic_peak, g_pic_biggest;
+
+static void *pic_alloc(uint32_t n) {
+    uint64_t *p = (uint64_t *)malloc((size_t)n + 8);
+    if (!p) return nullptr;
+    p[0] = n;
+    g_pic_live += n;
+    if (g_pic_live > g_pic_peak)    g_pic_peak = g_pic_live;
+    if (n > g_pic_biggest)          g_pic_biggest = n;
+    return p + 1;
+}
+static void *pic_calloc(uint32_t n) {
+    void *p = pic_alloc(n);
+    if (p) memset(p, 0, n);
+    return p;
+}
+static void pic_free(void *v) {
+    if (!v) return;
+    uint64_t *p = (uint64_t *)v - 1;
+    g_pic_live -= (uint32_t)p[0];
+    free(p);
+}
+
+void app_pic_install_cost(uint32_t *peak, uint32_t *biggest) {
+    if (peak)    *peak    = g_pic_peak;
+    if (biggest) *biggest = g_pic_biggest;
+}
+
 // The SVC firmware veneer, written into the blob's veneer region. Deduped by ABI
 // index, the same trampoline serving every call to one function. Returns the byte
 // offset within `vbuf`, or -1 if the region is full — a clean refusal, never a
@@ -1071,6 +1111,7 @@ static int32_t pic_veneer(uint8_t *vbuf, uint32_t cap, uint32_t *used, uint32_t 
 LoadResult app_pic_install(const AppSource &src, SlotWrite sink, void *sink_ctx,
                            PicManifest *m) {
     memset(m, 0, sizeof(*m));
+    g_pic_peak = g_pic_biggest = 0;    // this install's cost, not the last one's
 
     Elf32_Ehdr eh;
     if (!read_exact(src, 0, &eh, sizeof(eh))) return LOAD_ERR_READ;
@@ -1084,10 +1125,10 @@ LoadResult app_pic_install(const AppSource &src, SlotWrite sink, void *sink_ctx,
     if (!read_exact(src, eh.e_shoff, sh, eh.e_shnum * sizeof(Elf32_Shdr)))
         return LOAD_ERR_READ;
     const Elf32_Shdr &shstr = sh[eh.e_shstrndx];
-    char *names = (char *)malloc(shstr.sh_size);
+    char *names = (char *)pic_alloc(shstr.sh_size);
     if (!names) return LOAD_ERR_OOM;
     if (!read_exact(src, shstr.sh_offset, names, shstr.sh_size)) {
-        free(names); return LOAD_ERR_READ;
+        pic_free(names); return LOAD_ERR_READ;
     }
 
     // Header: the ABI it was built against goes into the manifest so a slot built
@@ -1095,14 +1136,14 @@ LoadResult app_pic_install(const AppSource &src, SlotWrite sink, void *sink_ctx,
     int hdr_idx = -1;
     for (int i = 0; i < eh.e_shnum; i++)
         if (strcmp(names + sh[i].sh_name, ".rpc_app_header") == 0) { hdr_idx = i; break; }
-    if (hdr_idx < 0) { free(names); return LOAD_ERR_NO_HEADER; }
+    if (hdr_idx < 0) { pic_free(names); return LOAD_ERR_NO_HEADER; }
     RpcAppHeader hdr;
     if (!read_exact(src, sh[hdr_idx].sh_offset, &hdr, sizeof(hdr))) {
-        free(names); return LOAD_ERR_READ;
+        pic_free(names); return LOAD_ERR_READ;
     }
-    if (hdr.magic != RPC_APP_MAGIC) { free(names); return LOAD_ERR_BAD_MAGIC; }
+    if (hdr.magic != RPC_APP_MAGIC) { pic_free(names); return LOAD_ERR_BAD_MAGIC; }
     if (hdr.api_major != RPC_API_MAJOR || hdr.api_minor > RPC_API_MINOR) {
-        free(names); return LOAD_ERR_API_MISMATCH;
+        pic_free(names); return LOAD_ERR_API_MISMATCH;
     }
     m->header    = hdr;              // carried whole: name and version, not just the ABI
     m->api_major = hdr.api_major;
@@ -1119,8 +1160,8 @@ LoadResult app_pic_install(const AppSource &src, SlotWrite sink, void *sink_ctx,
             if (sh[i].sh_type == SHT_SYMTAB) { symtab_i = i; break; }
         uint32_t nsyms = symtab_i < 0 ? 0 : sh[symtab_i].sh_size / sizeof(Elf32_Sym);
         if (nsyms) {
-            uint8_t *seen = (uint8_t *)calloc((nsyms + 7) / 8, 1);
-            if (!seen) { free(names); return LOAD_ERR_OOM; }
+            uint8_t *seen = (uint8_t *)pic_calloc((nsyms + 7) / 8);
+            if (!seen) { pic_free(names); return LOAD_ERR_OOM; }
             uint32_t slots = 0;
             for (int i = 0; i < eh.e_shnum; i++) {
                 if (sh[i].sh_type != SHT_REL) continue;
@@ -1130,7 +1171,7 @@ LoadResult app_pic_install(const AppSource &src, SlotWrite sink, void *sink_ctx,
                         first = r; have = n - r < REL_CHUNK ? n - r : REL_CHUNK;
                         if (!read_exact(src, sh[i].sh_offset + first * sizeof(Elf32_Rel),
                                         relbuf, have * sizeof(Elf32_Rel))) {
-                            free(seen); free(names); return LOAD_ERR_READ;
+                            pic_free(seen); pic_free(names); return LOAD_ERR_READ;
                         }
                     }
                     const Elf32_Rel *rels = relbuf - first;
@@ -1141,7 +1182,7 @@ LoadResult app_pic_install(const AppSource &src, SlotWrite sink, void *sink_ctx,
                     }
                 }
             }
-            free(seen);
+            pic_free(seen);
             got_bytes = (slots * 4u + 3u) & ~3u;
         }
     }
@@ -1188,6 +1229,26 @@ LoadResult app_pic_install(const AppSource &src, SlotWrite sink, void *sink_ctx,
     uint32_t reloc_count = 0;
     for (int i = 0; i < eh.e_shnum; i++)
         if (sh[i].sh_type == SHT_REL) reloc_count += sh[i].sh_size / sizeof(Elf32_Rel);
+
+    // How many ABS32 fixups the recipe can possibly need: the relocations whose
+    // TARGET is a writable section, and nothing else. Every relocation against
+    // .text becomes a GOT slot or a baked branch, and none of those reach the
+    // abs array.
+    //
+    // Sizing that array by the TOTAL relocation count instead — which is what it
+    // did — asked for 6227 entries where 1212 are used: 74 KB of recipe for 14 KB
+    // of content, the largest single allocation in the whole install and one
+    // nobody had counted. The bound comes from the section headers alone, so this
+    // costs no read.
+    uint32_t abs_cap = 0;
+    for (int i = 0; i < eh.e_shnum; i++) {
+        if (sh[i].sh_type != SHT_REL) continue;
+        uint32_t tgt = sh[i].sh_info;
+        if (tgt >= (uint32_t)eh.e_shnum || !placed[tgt] || !(sh[tgt].sh_flags & SHF_WRITE))
+            continue;
+        abs_cap += sh[i].sh_size / sizeof(Elf32_Rel);
+    }
+
     // The veneer region is bounded by the ABI — one trampoline per distinct
     // firmware target, never more than the firmware exports. The ABS32 recipe is
     // NOT: it is one entry per pointer in .data, which the ABI does not bound.
@@ -1202,12 +1263,12 @@ LoadResult app_pic_install(const AppSource &src, SlotWrite sink, void *sink_ctx,
     int symtab_idx = -1;
     for (int i = 0; i < eh.e_shnum; i++)
         if (sh[i].sh_type == SHT_SYMTAB) { symtab_idx = i; break; }
-    if (symtab_idx < 0) { free(names); return LOAD_ERR_NO_ENTRY; }
+    if (symtab_idx < 0) { pic_free(names); return LOAD_ERR_NO_ENTRY; }
     uint32_t nsyms = sh[symtab_idx].sh_size / sizeof(Elf32_Sym);
-    Elf32_Sym *syms = (Elf32_Sym *)malloc(sh[symtab_idx].sh_size);
-    if (!syms) { free(names); return LOAD_ERR_OOM; }
+    Elf32_Sym *syms = (Elf32_Sym *)pic_alloc(sh[symtab_idx].sh_size);
+    if (!syms) { pic_free(names); return LOAD_ERR_OOM; }
     if (!read_exact(src, sh[symtab_idx].sh_offset, syms, sh[symtab_idx].sh_size)) {
-        free(syms); free(names); return LOAD_ERR_READ;
+        pic_free(syms); pic_free(names); return LOAD_ERR_READ;
     }
     uint32_t strtab_off = sh[sh[symtab_idx].sh_link].sh_offset;
     uint32_t strtab_size = sh[sh[symtab_idx].sh_link].sh_size;
@@ -1227,16 +1288,16 @@ LoadResult app_pic_install(const AppSource &src, SlotWrite sink, void *sink_ctx,
     // whole point — so an ordinary malloc serves even where g_alloc places the
     // real slot low for the host test.
     uint32_t asm_cap = veneer_off + veneer_cap;
-    uint8_t *blob = (uint8_t *)calloc(asm_cap, 1);
-    if (!blob) { free(syms); free(names); return LOAD_ERR_OOM; }
+    uint8_t *blob = (uint8_t *)pic_calloc(asm_cap);
+    if (!blob) { pic_free(syms); pic_free(names); return LOAD_ERR_OOM; }
 
     // The recipe arrays. Held in RAM here (the reference producer); the device
     // install streams them into the slot instead so nothing large is resident —
     // see the header. Sized to their upper bounds.
     uint32_t got_cap = got_bytes / 4;
-    m->got = (PicGotEntry *)calloc(got_cap ? got_cap : 1, sizeof(PicGotEntry));
-    m->abs = (PicAbs32 *)calloc(reloc_count ? reloc_count : 1, sizeof(PicAbs32));
-    if (!m->got || !m->abs) { free(blob); free(syms); free(names);
+    m->got = (PicGotEntry *)pic_calloc((got_cap ? got_cap : 1) * sizeof(PicGotEntry));
+    m->abs = (PicAbs32 *)pic_calloc((abs_cap ? abs_cap : 1) * sizeof(PicAbs32));
+    if (!m->got || !m->abs) { pic_free(blob); pic_free(syms); pic_free(names);
                               app_pic_manifest_free(m); return LOAD_ERR_OOM; }
 
     LoadResult rc = LOAD_OK;
@@ -1362,7 +1423,7 @@ LoadResult app_pic_install(const AppSource &src, SlotWrite sink, void *sink_ctx,
     if (data_lo == 0xffffffffu) { data_lo = got_bytes; data_hi = got_bytes; }
     m->data_off  = data_lo;
     m->data_size = data_hi - data_lo;
-    m->data_init = (uint8_t *)calloc(m->data_size ? m->data_size : 1, 1);
+    m->data_init = (uint8_t *)pic_calloc(m->data_size ? m->data_size : 1);
     if (!m->data_init) { rc = LOAD_ERR_OOM; }
     for (int i = 0; i < eh.e_shnum && rc == LOAD_OK; i++) {
         if (!placed[i] || !(sh[i].sh_flags & SHF_WRITE) || sh[i].sh_type == SHT_NOBITS) continue;
@@ -1430,9 +1491,9 @@ LoadResult app_pic_install(const AppSource &src, SlotWrite sink, void *sink_ctx,
         if (!sink(sink_ctx, 0, blob, m->ro_size)) rc = LOAD_ERR_READ;
     }
 
-    free(blob);
-    free(syms);
-    free(names);
+    pic_free(blob);
+    pic_free(syms);
+    pic_free(names);
     if (rc != LOAD_OK) app_pic_manifest_free(m);
     return rc;
 }
@@ -1501,9 +1562,9 @@ LoadResult app_pic_load(const void *slot, const PicManifest *m, LoadedApp *out) 
 
 void app_pic_manifest_free(PicManifest *m) {
     if (!m) return;
-    free(m->got);       m->got = nullptr;
-    free(m->abs);       m->abs = nullptr;
-    free(m->data_init); m->data_init = nullptr;
+    pic_free(m->got);       m->got = nullptr;
+    pic_free(m->abs);       m->abs = nullptr;
+    pic_free(m->data_init); m->data_init = nullptr;
     m->got_count = m->abs_count = 0;
 }
 

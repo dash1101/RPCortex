@@ -775,6 +775,23 @@ static int check_pic(const char *path) {
     printf("  ok   %-12s slot %u B (text %u + rodata %u + veneers %u), RAM %u B\n",
            name, mA.ro_size, mA.text_size, mA.rodata_size, mA.veneer_size, mA.ram_size);
 
+    // What the install COST, from the loader's own accounting rather than from
+    // section sums — the number that decides whether a board can install this at
+    // all. `biggest` is the one that fails first: a booted device has around
+    // 89 KB in its largest free block and far more free in total, so a single
+    // request over that is refused while the total looks fine.
+    //
+    // NOT YET AN ASSERTION, and the number says why: this producer assembles the
+    // whole blob in RAM before handing it to the sink, so novad1 asks for 126 KB
+    // in one piece and no booted board could run it. Printed every run so the
+    // gap is visible rather than described; the assertion lands with the
+    // page-at-a-time producer that closes it.
+    uint32_t peak = 0, biggest = 0;
+    app_pic_install_cost(&peak, &biggest);
+    printf("       install cost: peak %u B held, biggest single %u B%s\n",
+           peak, biggest,
+           biggest >= 89u * 1024u ? "  (over the 89 KB block — host-only for now)" : "");
+
     // The property that makes a flash slot possible at all.
     if (slotA == slotB || mA.ro_size != mB.ro_size || memcmp(slotA, slotB, mA.ro_size) != 0) {
         printf("       FAIL not position-independent: the two blobs differ\n"); bad = 1;
