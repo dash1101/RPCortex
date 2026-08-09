@@ -1,7 +1,8 @@
 # Running a package unprivileged — the design
 
-Working notes for task #75. Not shipped documentation; delete or fold into
-ARCHITECTURE.md once the thing exists.
+The reasoning behind `sandbox_rp2.cpp`, written before it and kept because the
+code is short and the argument for its shape is not. ARMv8-M only; on ARMv6-M
+the whole file compiles to nothing and packages run privileged.
 
 ## What is already true
 

@@ -1,6 +1,7 @@
 # Drag-and-drop file transfer — what the reading turned up
 
-Working notes for task #69. Delete or fold into ARCHITECTURE.md once it exists.
+The reasoning behind `usbmsc.cpp` and the `download` command, written before
+them and kept because most of it is about traps that do not announce themselves.
 
 ## The goal
 

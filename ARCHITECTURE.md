@@ -1,9 +1,15 @@
 # Where this design stands, and where it should go
 
-Written after a run of reliability bugs that all traced to one change. It is a
-plan, not a rewrite: the scheduler works, seventeen host suites are green, and
-the failure mode of "step back and rethink" at this point is churning the parts
-that are already right.
+Written after a run of reliability bugs that all traced to one change. It was a
+plan rather than a rewrite: the scheduler worked, the host suites were green,
+and the failure mode of "step back and rethink" at that point would have been
+churning the parts that were already right.
+
+Most of the plan has since been built. The sections below are kept in the order
+they were written, with what landed marked as it landed, because the reasoning
+is what explains the shape of the code — and because the post-mortems at the end
+are the only record of bugs that cost days each. **The Order** near the bottom is
+the quickest way to see what is left.
 
 ## What the last five bugs actually were
 
@@ -28,9 +34,14 @@ foundations, and both should land *before* anything that builds on them.
 
 ### 1. Preemption
 
-Today a task that never yields cannot be stopped. The graded watchdog *asks* it
-to stop and reboots when it will not, which is honest but is not the same as
-control. A `while (1)` in a package is currently a reboot.
+**Landed** — `core/preempt.{h,cpp}`, with the policy separated from the ARM
+mechanism so the arithmetic is host-tested. The slice is 250 ms. What follows is
+the reasoning it was built from; the one case still outside it is a task holding
+a lock or writing flash, where the decision is `PREEMPT_DEFER`.
+
+Before it, a task that never yielded could not be stopped. The graded watchdog
+*asked* it to stop and rebooted when it would not, which is honest but is not
+the same as control. A `while (1)` in a package was a reboot.
 
 What it takes is well-trodden and every RTOS does it identically:
 
@@ -53,7 +64,13 @@ any instruction — which is why the locks came first and why they were worth it
 
 ### 2. Fault isolation for packages
 
-A package currently runs with the same privileges as the kernel. A bad pointer
+**Landed on ARMv8-M** — `sandbox_rp2.cpp`, five MPU regions, every ABI call a
+supervisor call, every pointer range-checked. Not on ARMv6-M, and not for want
+of writing it: those regions are power-of-two sized and aligned to their own
+size, so five of them cost more RAM than an RP2040 has. Packages there still run
+with the OS's own privileges, which is what the paragraph below describes.
+
+A package on RP2040 runs with the same privileges as the kernel. A bad pointer
 takes down the OS, and the fault handler can name the package but not contain it.
 
 Both chips have an MPU. Even a coarse rule — a package may write to its own
@@ -117,11 +134,16 @@ Not everything worth copying is worth copying at this size.
 
 ## The package fetcher
 
-The largest remaining gap, and the one that decides whether v2 has a package
-*system* or merely runs packages. `pkg install` currently takes a local file
-only; there is no repo fetch, and the network layer is UDP alone — `ping`,
+**Landed, all four stages.** TCP and TLS are in, `pkg install <name>` fetches
+from the index and verifies the SHA-256 before installing, and the same client
+carries `wget`, `curl`, `runurl` and OTA `update`. The plan is kept below
+because the staging is why it went in without a multi-pass hunt.
+
+It was the largest remaining gap, and the one that decided whether v2 had a
+package *system* or merely ran packages. `pkg install` took a local file only;
+there was no repo fetch, and the network layer was UDP alone — `ping`,
 `nslookup` and `ntp`, with no TCP anywhere. v1 could install from the repo, so
-this is not parity work with room to spare, it is the missing half.
+this was not parity work with room to spare, it was the missing half.
 
 It also unblocks more than itself: `wget`, `curl`, `runurl` and OTA `update` all
 want the same HTTP client, so one piece of infrastructure closes five rows of the
@@ -166,12 +188,16 @@ On the boards with no wireless (`pico`, `pico2`), `pkg install <name>` follows
 the `#else` stub pattern `net.cpp` already uses: a clear "no wireless on this
 board — use `pkg install <file>`", never a link error or a hang.
 
-The socket layer stays behind the seam `core/` already uses. The ESP32-S3 port
-does not have to happen now; it does have to not get harder.
+The socket layer stays behind the seam `core/` already uses, so a later port
+does not have to unpick it.
 
 ## The TUI layer, and making it better than v1's
 
-Not started, recorded so the shape is not re-derived later. v1 had five
+**Landed** — `core/tui.cpp`, `core/tuikey.cpp`, `core/tuilist.cpp` and
+`shell/tuiterm.cpp`, with `edit` and `settings` as its first two clients and
+Nova D1's whole screen system as the third. Mouse tracking is in `tuikey`.
+
+Recorded below so the shape is not re-derived later. v1 had five
 independent TUIs (`settings`, `sysmon`, `fileexp`, `editor`, `desktop`), each
 drawing its own boxes and reading its own keys. The improvement is not a nicer
 editor, it is that the fifth app costs almost nothing to write.
@@ -244,12 +270,15 @@ specified by working code, so porting is transcription rather than design.
 Worth doing in rough order of use: `calc`, `i2cscan`, `gpio`, `dht`, `httpd`,
 `fileexp`, `sysmon`, `speedtest`, `backup`, `ask`. Several become smaller as
 `.app` files than they were as Python, because the shell already provides the
-formatting and argument handling each one hand-rolled.
+formatting and argument handling each one hand-rolled. Most of that list is
+done; `fileexp`, `sysmon`, `backup` and `ask` are not. Three others never needed
+porting — the editor, `ntp` and `picofetch` are firmware commands here.
 
-Nova D1 is explicitly out of scope until the OS is otherwise shipping. It is a
-suite rather than a package, it targets one board, and it is the piece most
-likely to want ABI additions — all of which argue for doing it last, on a stable
-base, rather than discovering the requirements through it.
+Nova D1 was explicitly out of scope until the OS was otherwise shipping: a suite
+rather than a package, targeting one board, and the piece most likely to want
+ABI additions. It went ahead anyway, and the second half of that prediction was
+right — the ABI grew the registry calls, `fw_storage_roots`, `fw_shell_run` and
+the power reading to carry it. It is `novad1` in the v2 index.
 
 ## Networking, and the one-owner rule
 
@@ -342,27 +371,27 @@ in the layer being fixed.
 
 1. ~~Finish the current reliability pass~~ — the loader fix landed; `bench` runs
 2. ~~The package fetcher~~ — done, verified by SHA-256 against the index
-3. **Preemption** *(in progress; the MPU work waits on it)*
-4. MPU isolation for packages
-5. The six commands that need nothing but writing — `diag`, `compat`,
-   `inputstat`, `regreset`, `pkgdisable`, `pkgenable`
-6. The TUI layer, then `edit` and `settings` on top of it
-7. `.rps` scripting, matching v1's semantics
-8. Service supervision — restart a failed service instead of leaving it dead
-9. Automatic crash-log-to-flash *(small, independent, do it any time)*
-10. The ESP32-S3 port — `core/` moves unchanged; the context switch, storage and
-    network layers do not
+3. ~~Preemption~~ — `core/preempt.cpp`, a 250 ms slice, cooperative by default
+4. ~~MPU isolation for packages~~ — on ARMv8-M. ARMv6-M cannot have it
+5. ~~The six commands that need nothing but writing~~ — `diag`, `compat`,
+   `inputstat`, `regreset`, `pkgdisable`, `pkgenable`, all in `shell/diag.cpp`
+6. ~~The TUI layer, then `edit` and `settings` on top of it~~
+7. ~~`.rps` scripting, matching v1's semantics~~
+8. **Service supervision** — restart a failed service instead of leaving it
+   dead. `service` starts them and lists them; nothing brings one back
+9. **Automatic crash-log-to-flash** *(small, independent, do it any time)* —
+   `logdump save` still has to be remembered
+10. **The ESP32-S3 port** — `core/` moves unchanged; the context switch, storage
+    and network layers do not
 
-Preemption sits directly behind the fetcher rather than after it in spirit only:
-a runaway package is a reboot today, and that stops being a rare annoyance the
-moment installing someone else's package is one command. Ship the fetcher, then
-preemption, before third-party package authoring is encouraged.
+Preemption sat directly behind the fetcher rather than after it in spirit only:
+a runaway package was a reboot, and that stops being a rare annoyance the moment
+installing someone else's package is one command. Both are in, in that order,
+which is why third-party package authoring can now be encouraged at all.
 
-The rest of the feature work — the editor and `settings` (one TUI layer, two
-features), `.rps`, the six commands that need nothing but writing — sits
-alongside these rather than behind them. Nothing that increases the amount of
-code running *concurrently* should land before preemption. That is the mistake
-this document exists to avoid repeating.
+The rule that produced this order is the one still worth keeping: nothing that
+increases the amount of code running *concurrently* lands before the thing that
+contains it. That is the mistake this document exists to avoid repeating.
 
 ---
 
@@ -447,10 +476,9 @@ close to certain.
 ### Why the test suite is green
 
 `host/task_test.cpp` hardcodes `task_core_count()` to 1, with the note *"single-
-threaded host: the cross-core guard has nothing to guard."* Every host suite is
-single-core by construction, so the entire class is invisible to all of them.
-Twenty-eight passing suites and this bug are not in contradiction; the suites
-never looked.
+threaded host: the cross-core guard has nothing to guard."* Every host suite was
+single-core by construction, so the entire class was invisible to all of them. A
+green run and this bug are not in contradiction; the suites never looked.
 
 ### The fix
 
