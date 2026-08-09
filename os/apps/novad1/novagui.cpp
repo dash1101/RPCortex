@@ -331,6 +331,15 @@ static void draw_status(Canvas &c, Screen *s) {
         }
     }
 
+    // A little watch face when the stopwatch is running in the background, so it
+    // is visible from any screen — the one cue that timing is still happening
+    // while you are somewhere else.
+    if (screens::stopwatch_running()) {
+        right -= 8;
+        c.circle(right + 3, 4, 2, 1);
+        c.pixel(right + 3, 4, 1);
+    }
+
     c.text_fit(0, 1, title, 1, right - 2, false);
     c.hline(0, ui::BARH - 1, c.width(), 1);
 }

@@ -112,25 +112,51 @@ void open_resources(void) { gui::push<ResourcesScreen>(); }
 //
 // The big-value archetype: one thing, large, and nothing competing with it.
 
+// THE STOPWATCH RUNS IN THE BACKGROUND. Its state lives here, not in the screen,
+// so starting it and walking away leaves it counting — it is still going when
+// you come back, and the status bar shows a dot while it runs.
+//
+// The elapsed time is COMPUTED from a start timestamp, never accumulated per
+// frame. That is what makes "the background" free: nothing has to tick while the
+// screen is closed, and no hundredths are lost — fw_millis has been running the
+// whole time, so elapsed is just now minus when it started, plus whatever was
+// banked before the current run.
+static bool     g_sw_running;
+static uint32_t g_sw_start;     // fw_millis() at the last start
+static uint32_t g_sw_accum;     // milliseconds banked before the current run
+
+static uint32_t sw_elapsed(void) {
+    return g_sw_accum + (g_sw_running ? fw_millis() - g_sw_start : 0);
+}
+
+// For the status bar, which draws a dot while this is true — see novagui.cpp.
+bool stopwatch_running(void) { return g_sw_running; }
+
 class ClockScreen : public Screen {
 public:
     const char *title(void) const override { return "Clock"; }
 
     int help(const char **out, int max) const override {
-        if (max < 2) return 0;
+        if (max < 3) return 0;
         out[0] = "Turn for the stopwatch.";
-        out[1] = "SELECT starts and stops it.";
-        return 2;
+        out[1] = "SELECT starts and stops it;";
+        out[2] = "it keeps running if you leave.";
+        return 3;
     }
 
-    void enter(void) override { mode_ = 0; running_ = false; elapsed_ = 0; last_ = 99; }
+    void enter(void) override {
+        // Open on whichever face is worth seeing: the stopwatch if it is running
+        // or holds a time, the clock otherwise. The stopwatch itself is NOT reset
+        // — it is running in the background and this is only a window onto it.
+        mode_ = (g_sw_running || g_sw_accum) ? 1 : 0;
+        acc_ = 0; last_ = 99;
+    }
 
     bool tick(uint32_t dt) override {
         if (mode_ == 1) {
-            if (!running_) return false;
-            elapsed_ += dt;
+            if (!g_sw_running) return false;
             // Ten times a second: the hundredths are what a stopwatch is FOR,
-            // and a stopwatch that ticks once a second is a clock.
+            // and one that ticks once a second is a clock.
             acc_ += dt;
             if (acc_ < 100) return false;
             acc_ = 0;
@@ -156,15 +182,16 @@ public:
             if (!fw_time_get(nullptr))
                 c.text_centred(c.height() - ui::FH, "clock not set", 1);
         } else {
-            uint32_t cs = (elapsed_ / 10) % 100;
-            uint32_t s  = (elapsed_ / 1000) % 60;
-            uint32_t m  = elapsed_ / 60000;
+            const uint32_t e = sw_elapsed();
+            uint32_t cs = (e / 10) % 100;
+            uint32_t s  = (e / 1000) % 60;
+            uint32_t m  = e / 60000;
             snprintf(big, sizeof(big), "%02u:%02u", (unsigned)m, (unsigned)s);
             c.text_centred(ui::TOP + 8, big, 1, 2, false);
             char sub[16];
             snprintf(sub, sizeof(sub), ".%02u", (unsigned)cs);
             c.text_centred(ui::TOP + 30, sub, 1);
-            c.text_centred(c.height() - ui::FH, running_ ? "running" : "stopped", 1);
+            c.text_centred(c.height() - ui::FH, g_sw_running ? "running" : "stopped", 1);
         }
     }
 
@@ -174,20 +201,26 @@ public:
             last_ = 99;
             return ui::ACT_STAY;
         }
-        if (e == EV_SELECT && mode_ == 1) { running_ = !running_; return ui::ACT_STAY; }
+        if (e == EV_SELECT && mode_ == 1) {
+            // Start banks nothing new; stop banks the run just finished. Elapsed
+            // stays correct across the toggle because it is always accum plus the
+            // live run.
+            if (g_sw_running) { g_sw_accum += fw_millis() - g_sw_start; g_sw_running = false; }
+            else              { g_sw_start = fw_millis(); g_sw_running = true; }
+            return ui::ACT_STAY;
+        }
         // Held SELECT clears a stopped watch. Clearing a RUNNING one is not
         // offered: it is the gesture people reach for by accident, and losing a
         // timing you were part-way through is not recoverable.
-        if (e == EV_SELECT_HOLD && mode_ == 1 && !running_) { elapsed_ = 0; return ui::ACT_STAY; }
+        if (e == EV_SELECT_HOLD && mode_ == 1 && !g_sw_running) { g_sw_accum = 0; return ui::ACT_STAY; }
         return Screen::on_event(e);
     }
 
-    bool animating(void) const override { return mode_ == 1 && running_; }
+    bool animating(void) const override { return mode_ == 1 && g_sw_running; }
 
 private:
     int      mode_;
-    bool     running_;
-    uint32_t elapsed_, acc_, last_;
+    uint32_t acc_, last_;
 };
 
 void open_clock(void) { gui::push<ClockScreen>(); }

@@ -16,6 +16,10 @@ namespace screens {
 void open_resources(void);
 void open_clock(void);
 
+// True while the stopwatch is counting in the background. The status bar draws a
+// dot when it is, so a running stopwatch is visible from any screen.
+bool stopwatch_running(void);
+
 }  // namespace screens
 }  // namespace nova
 
