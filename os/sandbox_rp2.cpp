@@ -365,6 +365,107 @@ void sandbox_forget(int slot) {
 
 #else   // !SANDBOX_SUPPORTED
 
+// =============================================================================
+// A BOARD THAT CANNOT SANDBOX: what it can still do, and what it cannot
+// =============================================================================
+//
+// That is the RP2040 parts — Pico and Pico W. The reason is at the top of this
+// file and it is not a gap waiting to be filled: unprivileged execution needs
+// the package's ABI calls to arrive as supervisor calls, and ARMv6-M cannot
+// build that gateway at a price the part can pay. It is a property of the
+// silicon, so the honest thing is to say precisely what follows from it rather
+// than to leave people guessing which half of the feature list still applies.
+//
+// --- what still works, in full ----------------------------------------------
+//
+// PACKAGES RUN. main.cpp asks the loader for LOADER_VENEER_DIRECT instead of
+//   LOADER_VENEER_SVC, so a veneer branches straight to the firmware's address
+//   rather than raising an exception that names a function by index. Everything
+//   above that is identical: the same .app files, the same loader, the same 156
+//   ABI symbols, the same commands registered at load. pkgrepo refuses an
+//   armv8m-only package up front — that is an instruction-set question, not
+//   this one.
+//
+// MULTITASKING RUNS. The scheduler, both cores, affinity, sleeping, the job
+//   list and the graded watchdog are all architecture-independent and none of
+//   them consults this file.
+//
+// STACK GUARDS RUN. There is no MSPLIM, so mpu_rp2.cpp spends protection
+//   region 0 on a 32-byte no-access block at the bottom of every stack. It
+//   catches the write rather than the stack pointer crossing a line, which is a
+//   shade weaker and enough for the overflow it exists to catch.
+//
+// FLASH SLOTS AND UPDATES RUN. A/B staging, rollback and the filesystem all
+//   live behind RPC_FW_RESERVE, which is 768 KB here against 1024 KB on RP2350.
+//   Smaller, not absent.
+//
+// --- what does not, and what each one costs ---------------------------------
+//
+// A PACKAGE RUNS WITH THE OS'S OWN PRIVILEGES. It can reach the task table, the
+//   command table, the peripherals and its own machine code. Nothing stops a
+//   bad pointer, so a package is as trusted as the firmware is.
+//
+// PACKAGE W^X IS NOT ENFORCED. task_app_mem_apply is a no-op on ARMv6-M: its
+//   regions are power-of-two sized and self-aligned, so describing a 5 KB
+//   package would cost up to 16 KB of a 264 KB part. See mpu_rp2.cpp.
+//
+// ABI POINTER ARGUMENTS ARE NOT RANGE-CHECKED. task_app_mem_current() returns
+//   null for a privileged package on purpose — there is no region description
+//   to test a pointer against, and the package could reach the memory itself
+//   regardless, so a check would be theatre rather than protection.
+//
+// A FAULT IN A PACKAGE IS FATAL. fault_try_contain asks sandbox_in_package
+//   first, and it is false below. Containment needs the parked firmware stack
+//   pointer app_call_unpriv leaves behind and a separate sandbox stack to test
+//   the faulting SP against; neither exists here, so the device reports and
+//   reboots.
+//
+// A WEDGED PACKAGE COMMAND COSTS A REBOOT. This is the one that hurts, and it
+//   is worth being exact about why there is no fix rather than no fix yet:
+//
+//     * A package command runs ON THE SHELL TASK, so the preemption alarm's
+//       other answer — end the task — would end the session.
+//     * Nothing respawns the shell. main.cpp spawns it once and shell_run never
+//       returns, so a device that ended it would come back with no console at
+//       all. That is worse than the reboot, not better.
+//     * There is no call to take back. sandbox_abandon_call works by pointing
+//       an exception return at the shim that stood the firmware's stack back
+//       up; with a direct veneer the package was never on a different stack and
+//       no shim ran, so there is nothing to return into.
+//     * Unwinding the shell's own C stack instead — a setjmp around the
+//       dispatch — was considered and rejected. The kill threshold is 6 s and
+//       the watchdog is 16 s deliberately, because a TLS handshake can hold the
+//       scheduler for seconds legitimately; a 6-second unwind would abort
+//       working HTTPS fetches. And a package wedged inside a flash write has
+//       core 1 parked by flash_safe_execute, which unwinding would leave parked
+//       for good — trading a reboot for a hang.
+//
+//   So the watchdog is the answer, and the improvement is that it now says so:
+//   preempt_tick records BB_STUCK_PACKAGE in the black box, which survives the
+//   reset, and the next boot prints why nothing could be done instead of
+//   leaving a bare "the device restarted".
+//
+// --- one intended thing that reads like a bug --------------------------------
+//
+// apps_spawn_in_sandbox passes require_sandbox=true so that a task a package
+// asks for cannot quietly run unprotected. Here it has no effect: app_run_stack
+// gates the refusal on sandbox_supported(), so the task simply runs privileged
+// like every other package thread on this part. That is right — refusing would
+// mean fw_task_spawn never worked on an RP2040 — and it is stated because the
+// flag's name promises otherwise. apps.cpp also gives such a task the full
+// stack the package asked for rather than TASK_STACK_MIN, precisely because the
+// package's code runs on it rather than on a sandbox stack.
+//
+// --- reading it on the device ------------------------------------------------
+//
+// `mpu` prints all of the above for the board in front of you, and prints no
+// sandbox counters here rather than printing the two hard zeroes below as if
+// they were measurements. `help packages` says the privilege part in one line.
+// =============================================================================
+
+// Zero and zero, and they mean "not counted" rather than "none happened".
+// Nothing in the shell prints these on a part with no sandbox, and nothing
+// should start: two zeroes in a column of real numbers read as good news.
 void sandbox_counts(uint32_t *calls, uint32_t *refused) {
     if (calls) *calls = 0;
     if (refused) *refused = 0;

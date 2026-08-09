@@ -113,6 +113,79 @@ int main(void) {
         ok(PREEMPT_SLICE_MS * 4 < 8000, "the slice fires well before the watchdog");
     }
 
+    // --- what can be done about a task that has stopped yielding ------------
+    //
+    // The RP2040 row of this table is the whole reason it exists: there, a
+    // package command wedged on the shell task has no answer at all, and the
+    // fall-through it used to take through preempt_tick made that outcome look
+    // like an oversight rather than a decision.
+    {
+        StallFacts f{};
+        ok(stall_decide(f) == STALL_LEAVE,
+           "nothing is done before the stall passes the threshold");
+        f.in_package = f.call_reclaimable = f.may_end_task = true;
+        ok(stall_decide(f) == STALL_LEAVE,
+           "and that holds however recoverable the task is");
+    }
+    {
+        // The sandboxed part. Losing the call is the good outcome and it is
+        // taken even when the task could have been ended instead.
+        StallFacts f{};
+        f.past_kill = f.in_package = f.call_reclaimable = true;
+        ok(stall_decide(f) == STALL_ABANDON_CALL,
+           "a reclaimable package call is taken back");
+        f.may_end_task = true;
+        ok(stall_decide(f) == STALL_ABANDON_CALL,
+           "and taking the call back beats ending the task that holds it");
+    }
+    {
+        // A wedged task that is not a package, or is one that cannot be
+        // unwound: the existing forced exit.
+        StallFacts f{};
+        f.past_kill = f.may_end_task = true;
+        ok(stall_decide(f) == STALL_END_TASK, "an ordinary wedged task is ended");
+        f.in_package = true;
+        ok(stall_decide(f) == STALL_END_TASK,
+           "so is a package's own task, when the call cannot be reclaimed");
+    }
+    {
+        // ARMv6-M: a package command on the shell task. in_package is true —
+        // the OS knows perfectly well whose code it is — but there is no call
+        // to reclaim and the shell may not be ended, because nothing would
+        // respawn it. The answer is that there is no answer, and it is named.
+        StallFacts f{};
+        f.past_kill = true;
+        f.in_package = true;
+        f.call_reclaimable = false;
+        f.may_end_task = false;
+        ok(stall_decide(f) == STALL_NO_RECOURSE,
+           "a wedged package on a part with no sandbox has no recovery");
+    }
+    {
+        // The same for a wedged built-in on the shell. Also no recourse, and
+        // the caller tells the two apart by in_package rather than by this.
+        StallFacts f{};
+        f.past_kill = true;
+        ok(stall_decide(f) == STALL_NO_RECOURSE,
+           "so does a wedged shell command that is not a package");
+    }
+    {
+        // NO_RECOURSE MUST NOT BE REACHABLE WHILE SOMETHING IS STILL POSSIBLE.
+        // Exhaustive over the three booleans that follow past_kill, because the
+        // failure this guards against is a future edit reordering the rules so
+        // that a recoverable case falls through to "reboot the device".
+        for (int i = 0; i < 8; i++) {
+            StallFacts f{};
+            f.past_kill        = true;
+            f.in_package       = (i & 1) != 0;
+            f.call_reclaimable = (i & 2) != 0;
+            f.may_end_task     = (i & 4) != 0;
+            bool recoverable = (f.in_package && f.call_reclaimable) || f.may_end_task;
+            ok((stall_decide(f) == STALL_NO_RECOURSE) == !recoverable,
+               "no recourse is reported only when there genuinely is none");
+        }
+    }
+
     printf("  %d checks, %d failed\n", checks, fails);
     return fails ? 1 : 0;
 }

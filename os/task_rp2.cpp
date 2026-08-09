@@ -347,6 +347,31 @@ extern "C" void preempt_tick(uint32_t *frame) {
     if (stall < STALL_KILL_MS) { g_acted = false; return; }
     if (g_acted) return;
 
+    // WHICH OF THE THREE ANSWERS THIS IS, decided in core/preempt.cpp so the
+    // combinations can be built directly in a host test. What is left here is
+    // reading the facts and carrying the answer out.
+    //
+    // ALL FOUR ARE READ EAGERLY, INCLUDING should_force, which the old chain
+    // only reached when the abandon had already failed. That is safe and it is
+    // worth saying why, because it is the first thing to check here: everything
+    // it consults is lock-free. task_crit_active reads one field of the current
+    // task, task_count scans the table, task_current reads a memo, and
+    // preempt_decide is arithmetic. None of them touches the hardware spinlock
+    // — which from an interrupt, on a core that already holds it, is the
+    // permanent stop lock_hw_enter warns about rather than a wait.
+    StallFacts f{};
+    f.past_kill        = true;
+    f.in_package       = task_in_package();
+    // Not the same question. `in_package` is whose code is running, which is
+    // answerable on every part. This is whether there is a supervisor call to
+    // return from differently — false for the whole of ARMv6-M, where a package
+    // branches straight into the firmware and there is no call to take back.
+    f.call_reclaimable = sandbox_in_package();
+    f.may_end_task     = should_force();
+
+    StallAction act = stall_decide(f);
+    if (act == STALL_LEAVE) return;
+
     // A TASK WEDGED INSIDE A PACKAGE LOSES THE CALL, NOT THE TASK.
     //
     // This is the case that matters, because a package command runs on the
@@ -355,21 +380,42 @@ extern "C" void preempt_tick(uint32_t *frame) {
     // `svc #1` performs when a package returns normally: the exception return
     // goes into the shim's tail, app_call_unpriv returns, and its caller
     // carries on into sandbox_return and app_leave exactly as it would have.
-    if (sandbox_in_package() && sandbox_abandon_call(frame)) {
-        g_acted = true;
-        // THE STALL IS OVER, so say so. Without this the watchdog reports it
-        // again a moment later — "stalled 6097 ms at 'havoc returned'" — which
-        // describes a problem that has just been dealt with and reads as a
-        // second failure.
-        bb_note_yield(task_now_ms());
-        return;                 // apps.cpp says so, back in task context
+    if (act == STALL_ABANDON_CALL) {
+        if (sandbox_abandon_call(frame)) {
+            g_acted = true;
+            // THE STALL IS OVER, so say so. Without this the watchdog reports
+            // it again a moment later — "stalled 6097 ms at 'havoc returned'" —
+            // which describes a problem that has just been dealt with and reads
+            // as a second failure.
+            bb_note_yield(task_now_ms());
+            return;             // apps.cpp says so, back in task context
+        }
+        // It refused: there is no parked firmware stack pointer to return onto,
+        // so the exception return would land on a stack pointer nobody chose.
+        // Ask the task-level question instead, which is what this path did
+        // before the decision was written down.
+        act = f.may_end_task ? STALL_END_TASK : STALL_NO_RECOURSE;
     }
 
-    // Not in a package: end the task, if it is one that may be ended.
-    if (!should_force()) return;
-    g_acted = true;
-    bb_note_yield(task_now_ms());       // dealt with; see above
-    exc_frame_redirect(frame, (uint32_t)(uintptr_t)&task_forced_exit);
+    if (act == STALL_END_TASK) {
+        g_acted = true;
+        bb_note_yield(task_now_ms());   // dealt with; see above
+        exc_frame_redirect(frame, (uint32_t)(uintptr_t)&task_forced_exit);
+        return;
+    }
+
+    // STALL_NO_RECOURSE — the watchdog is going to reboot this device in a few
+    // seconds and there is nothing here that can stop it. THE FRAME IS NOT
+    // TOUCHED: every mechanism above has been tried and declined, and inventing
+    // an unwind at this point would be aiming an exception return at a stack
+    // that nothing has prepared.
+    //
+    // What is left is to make the reboot an explained one. A single byte into
+    // the black box, which survives the reset, so the next boot can say the OS
+    // saw this and had nothing left — rather than leaving a bare watchdog
+    // reset that reads as if nobody noticed. g_acted is deliberately not set:
+    // the tick keeps asking, because should_force can start saying yes.
+    bb_note_stuck(f.in_package ? BB_STUCK_PACKAGE : BB_STUCK_TASK);
 }
 
 void task_preempt_start(void) {

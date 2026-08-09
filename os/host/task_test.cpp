@@ -466,6 +466,49 @@ int main(void) {
         task_app_mem_clear();
     }
 
+    // --- "is a package's code running" is not "is there a sandbox" ----------
+    //
+    // The two questions were one function until a part that cannot sandbox
+    // needed the first of them. task_app_mem_current deliberately answers null
+    // for a package running with the OS's own privileges — there is no region
+    // description for the pointer checks to test against — and on ARMv6-M that
+    // is EVERY package. Reusing it to ask whose code is running would therefore
+    // answer "nobody's" on the one part where the answer decides what a crash
+    // report says.
+    ck(!task_in_package(), "an ordinary task is not inside a package");
+    {
+        // A privileged package: text and data, no stack or arena of its own.
+        // This is exactly the shape apps.cpp builds on a part with no sandbox.
+        TaskAppMem priv = { &g_fake_text, 32, &g_fake_data, 32, nullptr, 0 };
+        task_app_mem_set(&priv);
+        ck(task_in_package(),
+           "a package running privileged still counts as a package");
+        ck(task_app_mem_current() == nullptr,
+           "while having nothing for the pointer checks to test against");
+        task_app_mem_clear();
+        ck(!task_in_package(), "and stops counting once it has been given back");
+    }
+    {
+        // A sandboxed one: both answers are yes, and they agree.
+        static char stack[64], arena[64];
+        TaskAppMem boxed = { &g_fake_text, 32, &g_fake_data, 32, &g_fake_veneer, 32 };
+        boxed.stack = stack; boxed.stack_size = sizeof(stack);
+        boxed.arena = arena; boxed.arena_size = sizeof(arena);
+        task_app_mem_set(&boxed);
+        ck(task_in_package() && task_app_mem_current() != nullptr,
+           "a sandboxed package answers yes to both");
+        task_app_mem_clear();
+    }
+    {
+        // No code, no package. task_app_mem_set is reachable with a description
+        // that has been zeroed, and answering yes to that would report a
+        // package in a crash that had nothing to do with one.
+        TaskAppMem empty{};
+        task_app_mem_set(&empty);
+        ck(!task_in_package(), "a description with no code is not a package");
+        task_app_mem_clear();
+    }
+
     g_parked_release = true;
     for (int i = 0; i < 4; i++) task_yield();
     ck(task_find(p) && task_find(p)->state == TASK_DONE, "the parked task finishes");

@@ -12,6 +12,7 @@
 
 #include "command.h"
 #include "out.h"
+#include "sandbox.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -278,6 +279,21 @@ static int cmd_help(int argc, char **argv) {
         if (strcmp(argv[1], c->name) != 0) continue;
         out_info("=== %s ===", c->title);
         for (unsigned j = 0; j < c->n_lines; j++) out_multi("%s", c->lines[j]);
+        // WHAT A PACKAGE IS ALLOWED TO DO, on the part where the answer is
+        // "everything". It is not in kPackages because that array is compiled
+        // into every image and this is true of only two of the four boards —
+        // and a warning printed on a board it does not apply to is how people
+        // learn to skip warnings.
+        //
+        // Here rather than at install time because it belongs where somebody is
+        // reading about packages, and saying it on every `pkg install` would be
+        // nagging. `mpu` has the long version.
+        if (!strcmp(c->name, "packages") && !sandbox_supported()) {
+            out_blank();
+            out_multi("  On this board a package runs with the OS's own privileges:");
+            out_multi("  this part cannot fence one off, and there is no way to make");
+            out_multi("  it. Install packages you trust. 'mpu' has the detail.");
+        }
         return 0;
     }
 

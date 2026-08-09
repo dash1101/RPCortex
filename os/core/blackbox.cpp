@@ -2,7 +2,13 @@
 
 #include <string.h>
 
-#define BB_MAGIC 0x42425831u   // 'BBX1'
+// BUMPED WHEN THE LAYOUT CHANGES, and the layout is why it is checked at all.
+// This struct is read out of memory the reset does not clear, so the first boot
+// after a firmware update is reading bytes the PREVIOUS firmware wrote. Leaving
+// the magic alone across a layout change means those bytes are reinterpreted
+// under the new field offsets and reported as a crash that never happened.
+// A mismatch costs one boot's worth of history, which is the right price.
+#define BB_MAGIC 0x42425832u   // 'BBX2'
 
 #if defined(PICO_ON_DEVICE) && PICO_ON_DEVICE
   #define BB_NOINIT __attribute__((section(".uninitialized_data.rpcbb")))
@@ -37,6 +43,7 @@ void bb_note_clean_exit(void) {
     g_bb.task[0] = 0;
     g_bb.cmd[0]  = 0;
     g_bb.phase[0] = 0;
+    g_bb.stuck   = BB_STUCK_NO;
 }
 
 void bb_init(void) {
@@ -98,6 +105,18 @@ void bb_note_stall(uint32_t ms, bool crit, uint32_t pc) {
 void bb_note_yield(uint32_t now_ms) {
     g_bb.last_yield_ms = now_ms;
     g_bb.yields++;
+    // See the header: a device that stalled and then came back must not carry
+    // the flag into the next thing that goes wrong.
+    g_bb.stuck = BB_STUCK_NO;
+}
+
+void bb_note_stuck(uint8_t why) {
+    // No magic check, deliberately. Everything else here calls bb_init when the
+    // struct looks unfamiliar, and bb_init memsets — which is a great deal to
+    // do from an interrupt that fired inside a wedged task. A single store into
+    // a struct that has not been initialised is harmless; the run it would be
+    // reported against does not exist.
+    g_bb.stuck = why;
 }
 
 uint32_t bb_stall_ms(uint32_t now_ms) {

@@ -202,6 +202,29 @@ int main(void) {
             out_multi("   Stack     : %u of %u bytes used%s",
                       (unsigned)bb->stack_used, (unsigned)bb->stack_size,
                       bb->stack_used * 100 / bb->stack_size >= 80 ? "  (NEARLY FULL)" : "");
+        // WHETHER ANYTHING COULD HAVE BEEN DONE. Without this a reboot the OS
+        // watched happen, tried three things about and lost, is indistinguishable
+        // from one nobody noticed — and the two lead somewhere completely
+        // different. The preemption alarm records it across the reset.
+        if (bb->stuck == BB_STUCK_PACKAGE && !sandbox_supported()) {
+            out_multi("   Recovery  : none. It was inside a package command, and this part");
+            out_multi("               cannot take a package call back — packages here run");
+            out_multi("               with the OS's own privileges, so there is no call to");
+            out_multi("               return from. The watchdog was the only way out.");
+        } else if (bb->stuck == BB_STUCK_PACKAGE) {
+            out_multi("   Recovery  : none. The package call could not be unwound, so the");
+            out_multi("               watchdog was the only way out.");
+        } else if (bb->stuck == BB_STUCK_TASK) {
+            out_multi("   Recovery  : none. The task could not be ended while it held the");
+            out_multi("               core, so the watchdog was the only way out.");
+        }
+        // And into the log, for the same reason the two lines above it are:
+        // this banner prints in the first second of boot, into a USB port the
+        // host may still be re-enumerating.
+        if (bb->stuck)
+            log_addf(LOG_K_ERR, "[Crash] nothing could recover it (%s)",
+                     bb->stuck == BB_STUCK_PACKAGE ? "inside a package call"
+                                                   : "the task could not be ended");
         out_blank();
     }
 
