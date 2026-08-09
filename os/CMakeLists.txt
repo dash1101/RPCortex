@@ -685,13 +685,21 @@ rpc_add_app(httpd)
 # bytes, which the protection unit cannot describe, so the region was silently
 # left off. app_pic_load rounds it now; see the note there.
 #
-# With that fixed, a PIC greet was proved on a Pico 2 W by both routes. A PIC
-# novad1 has NOT been: getting 300 KB onto a board over the serial console
-# produced a corrupt file twice, and a package that has never been loaded on
-# hardware is not one to turn on by default. The host numbers say what it is
-# worth — 62144 B resident from a slot against 194240 B copied into RAM, and
-# the 129 KB read-only half no longer needing a contiguous block a booted
-# device does not have. Turning this on belongs with a device check.
+# With that fixed, both were proved on a Pico 2 W. A PIC novad1 installs into
+# the slot, loads from it, answers `novad1 status` and `novad1 scan`, and
+# composes a frame onto a real SSD1309 — at 62272 B resident against 174400 B
+# copied into RAM, which is 112 KB of a 291 KB heap given back.
+#
+# It is still OFF by default, and the reason is what happens when the slot is
+# NOT available. There is one slot per board. A PIC novad1 that cannot have it
+# falls back to copy-to-RAM, where it needs MORE than the plain build does —
+# 126 KB of code and 62 KB of data rather than 174 KB all told — and 126 KB in
+# one piece is more than the largest free block a booted device has. So on a
+# board whose slot already holds another package, turning this on turns a
+# package that loads into one that does not.
+#
+# One word either way. What settles it is whether a package may claim the slot
+# from an occupant, and that is a decision about `pkg`, not about this line.
 rpc_add_app(novad1)
 
 # --- packages that ship installed -------------------------------------------
