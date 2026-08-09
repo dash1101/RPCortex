@@ -44,6 +44,17 @@ void loader_set_allocator(LoaderAlloc a, LoaderFree f) {
     g_free  = f ? f : free;
 }
 
+// Windows into the ELF, shared by the two functions that parse one.
+//
+// app_load and app_pic_install are never in flight at the same time — a package
+// is being installed or it is being loaded — and a private copy of each in both
+// would be six kilobytes of bss for nothing. Named here rather than declared
+// static inside each function so the sharing is a decision instead of an
+// accident, and so the consequence is written down once: NOTHING may call one of
+// those two from inside the other.
+static Elf32_Rel g_relbuf[REL_CHUNK];
+static Elf32_Sym g_symwin[REL_CHUNK];
+
 // Round an address up to a block boundary.
 //
 // In uintptr_t rather than through the 32-bit region helpers, because this file
@@ -429,7 +440,6 @@ LoadResult app_load(const AppSource &src, LoadedApp *out) {
     // so it is declared once here. Static rather than on the stack for the reason
     // the whole file is: this runs on the shell's 8 KB stack, and two kilobytes
     // of it is a third of what a command has to play with.
-    static Elf32_Rel relbuf[REL_CHUNK];
 
     // --- size the GOT (position-independent packages only) -------------------
     //
@@ -464,11 +474,11 @@ LoadResult app_load(const AppSource &src, LoadedApp *out) {
                         first = r;
                         have  = n - r < REL_CHUNK ? n - r : REL_CHUNK;
                         if (!read_exact(src, sh[i].sh_offset + first * sizeof(Elf32_Rel),
-                                        relbuf, have * sizeof(Elf32_Rel))) {
+                                        g_relbuf, have * sizeof(Elf32_Rel))) {
                             free(seen); free(names); return LOAD_ERR_READ;
                         }
                     }
-                    const Elf32_Rel *rels = relbuf - first;
+                    const Elf32_Rel *rels = g_relbuf - first;
                     if (ELF32_R_TYPE(rels[r].r_info) != R_ARM_GOT_BREL) continue;
                     uint32_t sidx = ELF32_R_SYM(rels[r].r_info);
                     if (sidx >= nsyms) continue;
@@ -688,7 +698,6 @@ LoadResult app_load(const AppSource &src, LoadedApp *out) {
     // scan walks them in order, so a 256-entry window turns what would be a
     // read per lookup into a handful of refills, and the 48 KB stays on flash.
     const uint32_t symtab_off = sh[symtab_idx].sh_offset;
-    static Elf32_Sym symwin[REL_CHUNK];
     static const Elf32_Sym sym_zero = {};
     uint32_t symwin_first = 0, symwin_have = 0;
     bool sym_io = true;
@@ -698,13 +707,13 @@ LoadResult app_load(const AppSource &src, LoadedApp *out) {
             uint32_t base = idx - (idx % REL_CHUNK);
             uint32_t cnt  = nsyms - base < REL_CHUNK ? nsyms - base : REL_CHUNK;
             if (!read_exact(src, symtab_off + base * sizeof(Elf32_Sym),
-                            symwin, cnt * sizeof(Elf32_Sym))) {
+                            g_symwin, cnt * sizeof(Elf32_Sym))) {
                 sym_io = false;
                 return sym_zero;
             }
             symwin_first = base; symwin_have = cnt;
         }
-        return symwin[idx - symwin_first];
+        return g_symwin[idx - symwin_first];
     };
 
     uint32_t strtab_idx = sh[symtab_idx].sh_link;
@@ -818,8 +827,8 @@ LoadResult app_load(const AppSource &src, LoadedApp *out) {
 
         uint32_t n = sh[i].sh_size / sizeof(Elf32_Rel);
 
-        // STREAMED, not read whole, into the shared `relbuf` declared at the top
-        // of the function. .rel.text alone is 29 KB on a Nova D1, and a
+        // STREAMED, not read whole, through the shared window at the top of the
+        // file. .rel.text alone is 29 KB on a Nova D1, and a
         // relocation is looked at exactly once in order — there is no reason for
         // the whole section to be resident, and holding it was 29 KB of the peak
         // that stopped a device upgrading its own package.
@@ -830,12 +839,12 @@ LoadResult app_load(const AppSource &src, LoadedApp *out) {
                 first = r;
                 have  = n - r < REL_CHUNK ? n - r : REL_CHUNK;
                 if (!read_exact(src, sh[i].sh_offset + first * sizeof(Elf32_Rel),
-                                relbuf, have * sizeof(Elf32_Rel))) {
+                                g_relbuf, have * sizeof(Elf32_Rel))) {
                     rc = LOAD_ERR_READ;
                     break;
                 }
             }
-            const Elf32_Rel *rels = relbuf - first;   // so rels[r] still reads
+            const Elf32_Rel *rels = g_relbuf - first;   // so rels[r] still reads
             uint32_t type = ELF32_R_TYPE(rels[r].r_info);
             uint32_t sidx = ELF32_R_SYM(rels[r].r_info);
             uint32_t P = map[target_sec].addr + rels[r].r_offset;   // patch site
@@ -1108,6 +1117,21 @@ static int32_t pic_veneer(uint8_t *vbuf, uint32_t cap, uint32_t *used, uint32_t 
     return off;
 }
 
+// The blob is emitted a PAGE at a time, never assembled.
+//
+// The first version of this built all 123 KB of novad1's read-only half in RAM
+// and handed it to the sink in one call. No board can do that: a booted device
+// has around 89 KB in its largest free block, whatever the free total says. A
+// page buffer and a forward walk cost four kilobytes instead.
+//
+// The price is that the relocation table is re-read once per page rather than
+// once, because a patch site is only known to belong to a page when its offset
+// is compared against that page. For novad1 that is about a megabyte of streamed
+// reads against an install whose flash erase alone takes seconds — and it is
+// measured in realapp_test rather than assumed, so if it ever stops being true
+// the number says so.
+#define PIC_PAGE 4096u
+
 LoadResult app_pic_install(const AppSource &src, SlotWrite sink, void *sink_ctx,
                            PicManifest *m) {
     memset(m, 0, sizeof(*m));
@@ -1149,42 +1173,81 @@ LoadResult app_pic_install(const AppSource &src, SlotWrite sink, void *sink_ctx,
     m->api_major = hdr.api_major;
     m->api_minor = hdr.api_minor;
 
+    // --- the symbol table, through a window rather than in RAM.
+    //
+    // 71 KB for a Nova D1-sized package, and it was the largest thing this
+    // function held after the blob. Read a window at a time exactly as app_load
+    // does — a section's own symbols are contiguous and the relocation loop
+    // touches them in bursts, so a 256-entry window turns a read per lookup into
+    // a handful of refills.
+    int symtab_idx = -1;
+    for (int i = 0; i < eh.e_shnum; i++)
+        if (sh[i].sh_type == SHT_SYMTAB) { symtab_idx = i; break; }
+    if (symtab_idx < 0) { pic_free(names); return LOAD_ERR_NO_ENTRY; }
+    const uint32_t nsyms      = sh[symtab_idx].sh_size / sizeof(Elf32_Sym);
+    const uint32_t symtab_off = sh[symtab_idx].sh_offset;
+    static const Elf32_Sym sym_zero = {};
+    uint32_t symwin_first = 0, symwin_have = 0;
+    bool sym_io = true;
+    auto sym_at = [&](uint32_t idx) -> const Elf32_Sym & {
+        if (idx >= nsyms) { sym_io = false; return sym_zero; }
+        if (idx < symwin_first || idx >= symwin_first + symwin_have) {
+            uint32_t base = idx - (idx % REL_CHUNK);
+            uint32_t cnt  = nsyms - base < REL_CHUNK ? nsyms - base : REL_CHUNK;
+            if (!read_exact(src, symtab_off + base * sizeof(Elf32_Sym),
+                            g_symwin, cnt * sizeof(Elf32_Sym))) {
+                sym_io = false;
+                return sym_zero;
+            }
+            symwin_first = base; symwin_have = cnt;
+        }
+        return g_symwin[idx - symwin_first];
+    };
+    // The string table is streamed a name at a time, as app_load does: 32 KB for
+    // a Nova D1 and it is only ever wanted one name at a time.
+    if (sh[symtab_idx].sh_link >= (uint32_t)eh.e_shnum) { pic_free(names); return LOAD_ERR_READ; }
+    const uint32_t strtab_off  = sh[sh[symtab_idx].sh_link].sh_offset;
+    const uint32_t strtab_size = sh[sh[symtab_idx].sh_link].sh_size;
+    static char namebuf[96];
+    auto sym_name = [&](uint32_t st_name) -> const char * {
+        namebuf[0] = 0;
+        if (st_name >= strtab_size) return namebuf;
+        uint32_t want = strtab_size - st_name;
+        if (want > sizeof(namebuf) - 1) want = sizeof(namebuf) - 1;
+        if (!read_exact(src, strtab_off + st_name, namebuf, want)) namebuf[0] = 0;
+        namebuf[sizeof(namebuf) - 1] = 0;
+        return namebuf;
+    };
+
     // --- GOT size, exactly as app_load counts it: distinct symbol index carrying
     // a GOT_BREL, an upper bound on distinct-by-address. Reserved at the base of
     // the RAM block so .data lands above it and r9 is the block base.
-    static Elf32_Rel relbuf[REL_CHUNK];
     uint32_t got_bytes = 0;
-    {
-        int symtab_i = -1;
-        for (int i = 0; i < eh.e_shnum; i++)
-            if (sh[i].sh_type == SHT_SYMTAB) { symtab_i = i; break; }
-        uint32_t nsyms = symtab_i < 0 ? 0 : sh[symtab_i].sh_size / sizeof(Elf32_Sym);
-        if (nsyms) {
-            uint8_t *seen = (uint8_t *)pic_calloc((nsyms + 7) / 8);
-            if (!seen) { pic_free(names); return LOAD_ERR_OOM; }
-            uint32_t slots = 0;
-            for (int i = 0; i < eh.e_shnum; i++) {
-                if (sh[i].sh_type != SHT_REL) continue;
-                uint32_t n = sh[i].sh_size / sizeof(Elf32_Rel), have = 0, first = 0;
-                for (uint32_t r = 0; r < n; r++) {
-                    if (r >= first + have) {
-                        first = r; have = n - r < REL_CHUNK ? n - r : REL_CHUNK;
-                        if (!read_exact(src, sh[i].sh_offset + first * sizeof(Elf32_Rel),
-                                        relbuf, have * sizeof(Elf32_Rel))) {
-                            pic_free(seen); pic_free(names); return LOAD_ERR_READ;
-                        }
-                    }
-                    const Elf32_Rel *rels = relbuf - first;
-                    if (ELF32_R_TYPE(rels[r].r_info) != R_ARM_GOT_BREL) continue;
-                    uint32_t s = ELF32_R_SYM(rels[r].r_info);
-                    if (s < nsyms && !(seen[s >> 3] & (1u << (s & 7)))) {
-                        seen[s >> 3] |= (1u << (s & 7)); slots++;
+    if (nsyms) {
+        uint8_t *seen = (uint8_t *)pic_calloc((nsyms + 7) / 8);
+        if (!seen) { pic_free(names); return LOAD_ERR_OOM; }
+        uint32_t slots = 0;
+        for (int i = 0; i < eh.e_shnum; i++) {
+            if (sh[i].sh_type != SHT_REL) continue;
+            uint32_t n = sh[i].sh_size / sizeof(Elf32_Rel), have = 0, first = 0;
+            for (uint32_t r = 0; r < n; r++) {
+                if (r >= first + have) {
+                    first = r; have = n - r < REL_CHUNK ? n - r : REL_CHUNK;
+                    if (!read_exact(src, sh[i].sh_offset + first * sizeof(Elf32_Rel),
+                                    g_relbuf, have * sizeof(Elf32_Rel))) {
+                        pic_free(seen); pic_free(names); return LOAD_ERR_READ;
                     }
                 }
+                const Elf32_Rel *rels = g_relbuf - first;
+                if (ELF32_R_TYPE(rels[r].r_info) != R_ARM_GOT_BREL) continue;
+                uint32_t s = ELF32_R_SYM(rels[r].r_info);
+                if (s < nsyms && !(seen[s >> 3] & (1u << (s & 7)))) {
+                    seen[s >> 3] |= (1u << (s & 7)); slots++;
+                }
             }
-            pic_free(seen);
-            got_bytes = (slots * 4u + 3u) & ~3u;
         }
+        pic_free(seen);
+        got_bytes = (slots * 4u + 3u) & ~3u;
     }
 
     // --- lay out the blob (RO half) and the RAM block (RW half).
@@ -1224,8 +1287,7 @@ LoadResult app_pic_install(const AppSource &src, SlotWrite sink, void *sink_ctx,
     }
 
     // The veneer region's ceiling: one per distinct firmware target, bounded by
-    // the ABI just as app_load bounds its pool. Reserved in the assembly buffer;
-    // the blob written out uses only what the relocations actually needed.
+    // the ABI just as app_load bounds its pool.
     uint32_t reloc_count = 0;
     for (int i = 0; i < eh.e_shnum; i++)
         if (sh[i].sh_type == SHT_REL) reloc_count += sh[i].sh_size / sizeof(Elf32_Rel);
@@ -1249,55 +1311,22 @@ LoadResult app_pic_install(const AppSource &src, SlotWrite sink, void *sink_ctx,
         abs_cap += sh[i].sh_size / sizeof(Elf32_Rel);
     }
 
-    // The veneer region is bounded by the ABI — one trampoline per distinct
-    // firmware target, never more than the firmware exports. The ABS32 recipe is
-    // NOT: it is one entry per pointer in .data, which the ABI does not bound.
     uint32_t veneer_bound = reloc_count;
     uint32_t max_targets = api_symbol_count();
     if (max_targets && veneer_bound > max_targets) veneer_bound = max_targets;
     uint32_t veneer_cap = (veneer_bound + 1) * VENEER_BYTES;
 
-    // The symbol table, resident for resolution. The one heavy allocation; the
-    // string table is streamed a name at a time, as app_load does, so the 32 KB
-    // of it never lands.
-    int symtab_idx = -1;
-    for (int i = 0; i < eh.e_shnum; i++)
-        if (sh[i].sh_type == SHT_SYMTAB) { symtab_idx = i; break; }
-    if (symtab_idx < 0) { pic_free(names); return LOAD_ERR_NO_ENTRY; }
-    uint32_t nsyms = sh[symtab_idx].sh_size / sizeof(Elf32_Sym);
-    Elf32_Sym *syms = (Elf32_Sym *)pic_alloc(sh[symtab_idx].sh_size);
-    if (!syms) { pic_free(names); return LOAD_ERR_OOM; }
-    if (!read_exact(src, sh[symtab_idx].sh_offset, syms, sh[symtab_idx].sh_size)) {
-        pic_free(syms); pic_free(names); return LOAD_ERR_READ;
-    }
-    uint32_t strtab_off = sh[sh[symtab_idx].sh_link].sh_offset;
-    uint32_t strtab_size = sh[sh[symtab_idx].sh_link].sh_size;
-    static char namebuf[96];
-    auto sym_name = [&](uint32_t st_name) -> const char * {
-        namebuf[0] = 0;
-        if (st_name >= strtab_size) return namebuf;
-        uint32_t want = strtab_size - st_name;
-        if (want > sizeof(namebuf) - 1) want = sizeof(namebuf) - 1;
-        if (!read_exact(src, strtab_off + st_name, namebuf, want)) namebuf[0] = 0;
-        namebuf[sizeof(namebuf) - 1] = 0;
-        return namebuf;
-    };
-
-    // The assembly buffer: the blob, plus room for the veneer ceiling. Its own
-    // address is irrelevant — every patch below is blob-relative, which is the
-    // whole point — so an ordinary malloc serves even where g_alloc places the
-    // real slot low for the host test.
-    uint32_t asm_cap = veneer_off + veneer_cap;
-    uint8_t *blob = (uint8_t *)pic_calloc(asm_cap);
-    if (!blob) { pic_free(syms); pic_free(names); return LOAD_ERR_OOM; }
-
-    // The recipe arrays. Held in RAM here (the reference producer); the device
-    // install streams them into the slot instead so nothing large is resident —
-    // see the header. Sized to their upper bounds.
+    // The veneer pool, and the two recipe arrays. All three are small and all
+    // three are needed for the whole pass: a veneer is deduped by ABI index and a
+    // GOT slot by its resolved target, so both have to remember what they have
+    // already handed out. The pool is written into the blob after the last page
+    // of .text and .rodata, which is why it can be built in RAM while they cannot.
+    uint8_t *veneers = (uint8_t *)pic_calloc(veneer_cap);
+    if (!veneers) { pic_free(names); return LOAD_ERR_OOM; }
     uint32_t got_cap = got_bytes / 4;
     m->got = (PicGotEntry *)pic_calloc((got_cap ? got_cap : 1) * sizeof(PicGotEntry));
     m->abs = (PicAbs32 *)pic_calloc((abs_cap ? abs_cap : 1) * sizeof(PicAbs32));
-    if (!m->got || !m->abs) { pic_free(blob); pic_free(syms); pic_free(names);
+    if (!m->got || !m->abs) { pic_free(veneers); pic_free(names);
                               app_pic_manifest_free(m); return LOAD_ERR_OOM; }
 
     LoadResult rc = LOAD_OK;
@@ -1308,14 +1337,37 @@ LoadResult app_pic_install(const AppSource &src, SlotWrite sink, void *sink_ctx,
     // (undefined) symbols become an SVC veneer in the blob, so a firmware pointer
     // and a firmware call both go through the one gateway — exactly app_load's SVC
     // rule, in the blob rather than a live pool.
+    //
+    // Resolution is MEMOISED, and the reason is the page pass rather than the
+    // arithmetic. Walking the blob a page at a time means the relocation table is
+    // re-read once per page, and the symbol each entry names is fetched through a
+    // 256-entry window that the scattered indices keep evicting: novad1's install
+    // read fourteen megabytes for a three-hundred-kilobyte file, nearly all of it
+    // window refills. Three kilobytes of direct-mapped memo takes that to under
+    // two. Safe to cache because resolving twice was always meant to give the
+    // same answer — pic_veneer dedups by ABI index and got_slot by resolved
+    // target, so neither allocates twice for one symbol.
+    struct PicMemo { uint32_t idx, value; uint8_t cls, func, valid; };
+    static PicMemo memo[256];
+    memset(memo, 0, sizeof(memo));
     auto resolve = [&](uint32_t idx, uint8_t *cls, uint32_t *value, bool *is_func) -> LoadResult {
-        const Elf32_Sym &s = syms[idx];
+        PicMemo &mm = memo[idx & 255u];
+        if (mm.valid && mm.idx == idx) {
+            *cls = mm.cls; *value = mm.value; *is_func = mm.func != 0;
+            return LOAD_OK;
+        }
+        auto keep = [&](void) {
+            mm.idx = idx; mm.value = *value; mm.cls = *cls;
+            mm.func = *is_func ? 1 : 0; mm.valid = 1;
+        };
+        const Elf32_Sym &s = sym_at(idx);
+        if (!sym_io) return LOAD_ERR_READ;
         *is_func = (ELF32_ST_TYPE(s.st_info) == STT_FUNC);
         if (s.st_shndx == SHN_UNDEF) {
             const char *nm = sym_name(s.st_name);
             int ix = api_index_of(nm);
             if (ix < 0) return LOAD_ERR_UNDEF_SYMBOL;
-            int32_t v = pic_veneer(blob + veneer_off, veneer_cap, &veneer_used, (uint32_t)ix);
+            int32_t v = pic_veneer(veneers, veneer_cap, &veneer_used, (uint32_t)ix);
             if (v < 0) return LOAD_ERR_RELOC_RANGE;
             // The veneer is code: its blob offset is 16-aligned (even), so the
             // Thumb bit is set here. A DEFINED symbol carries its Thumb bit in
@@ -1323,12 +1375,14 @@ LoadResult app_pic_install(const AppSource &src, SlotWrite sink, void *sink_ctx,
             // and load adds nothing — adding a Thumb bit twice clears it and was
             // the bug app_load's ABS32 comment warns about.
             *cls = PIC_CLASS_SLOT; *value = (veneer_off + (uint32_t)v) | 1u; *is_func = true;
+            keep();
             return LOAD_OK;
         }
-        if (s.st_shndx == SHN_ABS) { *cls = PIC_CLASS_ABS; *value = s.st_value; return LOAD_OK; }
+        if (s.st_shndx == SHN_ABS) { *cls = PIC_CLASS_ABS; *value = s.st_value; keep(); return LOAD_OK; }
         if (s.st_shndx >= eh.e_shnum || !placed[s.st_shndx]) return LOAD_ERR_UNDEF_SYMBOL;
         if (sh[s.st_shndx].sh_flags & SHF_WRITE) { *cls = PIC_CLASS_RAM;  *value = ram_off[s.st_shndx]  + s.st_value; }
         else                                     { *cls = PIC_CLASS_SLOT; *value = blob_off[s.st_shndx] + s.st_value; }
+        keep();
         return LOAD_OK;
     };
     // Find-or-add a GOT slot for a resolved target, deduped by the resolved tuple
@@ -1345,68 +1399,118 @@ LoadResult app_pic_install(const AppSource &src, SlotWrite sink, void *sink_ctx,
         return (int32_t)(got_used++ * 4u);
     };
 
-    // --- read the RO sections into the blob, then patch .text in place.
-    // .rodata carries no relocation (checkapp enforces it), so it is copied and
-    // never touched; .text is the only RO section patched.
-    for (int i = 0; i < eh.e_shnum && rc == LOAD_OK; i++) {
-        if (!placed[i] || (sh[i].sh_flags & SHF_WRITE)) continue;
-        if (sh[i].sh_type == SHT_NOBITS) continue;   // no RO NOBITS in practice
-        if (!read_exact(src, sh[i].sh_offset, blob + blob_off[i], sh[i].sh_size))
-            rc = LOAD_ERR_READ;
-    }
+    // --- the page pass: read, patch, emit, forget.
+    //
+    // Each turn fills the buffer from whichever read-only sections overlap it,
+    // applies every relocation whose four-byte site lies wholly inside, and hands
+    // the result to the sink. A site that straddles the far edge is not patched;
+    // instead the emit stops short AT that site and the next turn starts there,
+    // so half a patched word is never written to a page that is then programmed
+    // and never revisited. That is the only thing here that is not obvious, and
+    // it is the only thing that would corrupt a package rather than refuse it.
+    //
+    // It works because relocation sites do not overlap: if a site S straddles the
+    // page end, no other site can extend past S, so cutting the emit at S cannot
+    // orphan the tail of a patch already applied. That is a property of the
+    // compiler's output rather than of the format, so it is CHECKED — the highest
+    // patched byte is compared against the cut before anything is written.
+    static uint8_t page[PIC_PAGE];
+    uint32_t pos = 0;
+    while (pos < veneer_off && rc == LOAD_OK) {
+        uint32_t end = pos + PIC_PAGE;
+        if (end > veneer_off) end = veneer_off;
+        memset(page, 0, end - pos);        // gaps between sections read as zero
+        uint32_t patched_to = pos;         // highest byte any patch has touched
 
-    // Relocations against RO sections. Streamed, like app_load. Only .text may
-    // carry any, and only the position-independent kinds; anything else in an RO
-    // section could not be baked and is refused.
-    for (int i = 0; i < eh.e_shnum && rc == LOAD_OK; i++) {
-        if (sh[i].sh_type != SHT_REL) continue;
-        uint32_t tgt = sh[i].sh_info;
-        if (tgt >= (uint32_t)eh.e_shnum || !placed[tgt] || (sh[tgt].sh_flags & SHF_WRITE))
-            continue;
-        uint32_t n = sh[i].sh_size / sizeof(Elf32_Rel), have = 0, first = 0;
-        for (uint32_t r = 0; r < n && rc == LOAD_OK; r++) {
-            if (r >= first + have) {
-                first = r; have = n - r < REL_CHUNK ? n - r : REL_CHUNK;
-                if (!read_exact(src, sh[i].sh_offset + first * sizeof(Elf32_Rel),
-                                relbuf, have * sizeof(Elf32_Rel))) { rc = LOAD_ERR_READ; break; }
-            }
-            const Elf32_Rel *rels = relbuf - first;
-            uint32_t type = ELF32_R_TYPE(rels[r].r_info);
-            uint32_t sidx = ELF32_R_SYM(rels[r].r_info);
-            uint32_t site = blob_off[tgt] + rels[r].r_offset;   // blob-relative
-            if (type == R_ARM_NONE) continue;
+        for (int i = 0; i < eh.e_shnum && rc == LOAD_OK; i++) {
+            if (!placed[i] || (sh[i].sh_flags & SHF_WRITE)) continue;
+            if (sh[i].sh_type == SHT_NOBITS) continue;   // no RO NOBITS in practice
+            uint32_t s0 = blob_off[i], s1 = blob_off[i] + sh[i].sh_size;
+            uint32_t lo = s0 > pos ? s0 : pos, hi = s1 < end ? s1 : end;
+            if (lo >= hi) continue;
+            if (!read_exact(src, sh[i].sh_offset + (lo - s0), page + (lo - pos), hi - lo))
+                rc = LOAD_ERR_READ;
+        }
 
-            uint8_t cls; uint32_t value; bool is_func;
-            rc = resolve(sidx, &cls, &value, &is_func);
-            if (rc != LOAD_OK) break;
+        uint32_t emit_end = end;
+        for (int i = 0; i < eh.e_shnum && rc == LOAD_OK; i++) {
+            if (sh[i].sh_type != SHT_REL) continue;
+            uint32_t tgt = sh[i].sh_info;
+            if (tgt >= (uint32_t)eh.e_shnum || !placed[tgt] || (sh[tgt].sh_flags & SHF_WRITE))
+                continue;
+            // Skip a relocation section whose whole target lies outside this page.
+            // For a package built from many small sections that is most of them;
+            // for one folded together with `ld -r` it is none, which is the case
+            // the read volume was measured against.
+            if (blob_off[tgt] >= end || blob_off[tgt] + sh[tgt].sh_size <= pos) continue;
 
-            switch (type) {
-            case R_ARM_GOT_BREL: {
-                uint32_t *p = (uint32_t *)(blob + site);
-                if (*p != 0) { rc = LOAD_ERR_RELOC_UNSUPPORTED; break; }   // addend, cannot express
-                int32_t off = got_slot(cls, value, is_func);
-                if (off < 0) { rc = LOAD_ERR_RELOC_RANGE; break; }
-                *p = (uint32_t)off;
-                break;
-            }
-            case R_ARM_THM_CALL:
-            case R_ARM_THM_JUMP24: {
-                // Branch target must be inside the blob — a local function or a
-                // veneer. Both are PIC_CLASS_SLOT and the displacement is between
-                // two blob offsets, so it is the same wherever the blob lands.
-                if (cls != PIC_CLASS_SLOT) { rc = LOAD_ERR_RELOC_RANGE; break; }
-                uint16_t *p = (uint16_t *)(blob + site);
-                int32_t addend = thumb_decode_branch(p);
-                int32_t disp = (int32_t)((value & ~1u) + (uint32_t)addend + 4u) - (int32_t)(site + 4u);
-                if (!thumb_bl_in_range(disp)) { rc = LOAD_ERR_RELOC_RANGE; break; }
-                thumb_encode_branch(p, disp);
-                break;
-            }
-            default:
-                rc = LOAD_ERR_RELOC_UNSUPPORTED;
-                break;
+            uint32_t n = sh[i].sh_size / sizeof(Elf32_Rel), have = 0, first = 0;
+            for (uint32_t r = 0; r < n && rc == LOAD_OK; r++) {
+                if (r >= first + have) {
+                    first = r; have = n - r < REL_CHUNK ? n - r : REL_CHUNK;
+                    if (!read_exact(src, sh[i].sh_offset + first * sizeof(Elf32_Rel),
+                                    g_relbuf, have * sizeof(Elf32_Rel))) { rc = LOAD_ERR_READ; break; }
+                }
+                const Elf32_Rel *rels = g_relbuf - first;
+                uint32_t type = ELF32_R_TYPE(rels[r].r_info);
+                if (type == R_ARM_NONE) continue;
+                uint32_t site = blob_off[tgt] + rels[r].r_offset;   // blob-relative
+                if (site < pos || site >= end) continue;            // another page's
+                if (site + 4 > end) {                               // straddles the edge
+                    if (site < emit_end) emit_end = site;
+                    continue;
+                }
+
+                uint8_t cls; uint32_t value; bool is_func;
+                rc = resolve(ELF32_R_SYM(rels[r].r_info), &cls, &value, &is_func);
+                if (rc != LOAD_OK) break;
+                if (site + 4 > patched_to) patched_to = site + 4;
+
+                switch (type) {
+                case R_ARM_GOT_BREL: {
+                    uint32_t *p = (uint32_t *)(page + (site - pos));
+                    if (*p != 0) { rc = LOAD_ERR_RELOC_UNSUPPORTED; break; }   // addend, cannot express
+                    int32_t off = got_slot(cls, value, is_func);
+                    if (off < 0) { rc = LOAD_ERR_RELOC_RANGE; break; }
+                    *p = (uint32_t)off;
+                    break;
+                }
+                case R_ARM_THM_CALL:
+                case R_ARM_THM_JUMP24: {
+                    // Branch target must be inside the blob — a local function or
+                    // a veneer. Both are PIC_CLASS_SLOT and the displacement is
+                    // between two blob offsets, so it is the same wherever the
+                    // blob lands. THIS LINE is also what keeps slot-resident code
+                    // from ever branching to a RAM address: a BL reaches 16 MB and
+                    // flash is 256 MB from SRAM, so a veneer in RAM could not be
+                    // reached from here at any address.
+                    if (cls != PIC_CLASS_SLOT) { rc = LOAD_ERR_RELOC_RANGE; break; }
+                    uint16_t *p = (uint16_t *)(page + (site - pos));
+                    int32_t addend = thumb_decode_branch(p);
+                    int32_t disp = (int32_t)((value & ~1u) + (uint32_t)addend + 4u) - (int32_t)(site + 4u);
+                    if (!thumb_bl_in_range(disp)) { rc = LOAD_ERR_RELOC_RANGE; break; }
+                    thumb_encode_branch(p, disp);
+                    break;
+                }
+                default:
+                    rc = LOAD_ERR_RELOC_UNSUPPORTED;
+                    break;
+                }
             }
         }
+
+        if (rc != LOAD_OK) break;
+        // A page whose very first site straddles its end would make no progress.
+        // It cannot happen — a site is four bytes and a page is four kilobytes —
+        // but a loop that could spin forever on a malformed input is refused
+        // rather than trusted.
+        if (emit_end <= pos) { rc = LOAD_ERR_RELOC_UNSUPPORTED; break; }
+        // The overlap assumption, checked rather than believed: nothing patched
+        // in this turn may reach past the point the emit stops at, or its tail
+        // would be dropped and re-read unpatched.
+        if (patched_to > emit_end) { rc = LOAD_ERR_RELOC_UNSUPPORTED; break; }
+        if (!sink(sink_ctx, pos, page, emit_end - pos)) { rc = LOAD_ERR_READ; break; }
+        pos = emit_end;
     }
 
     // --- ABS32 fixups against the writable sections, and the .data initialisers.
@@ -1423,8 +1527,10 @@ LoadResult app_pic_install(const AppSource &src, SlotWrite sink, void *sink_ctx,
     if (data_lo == 0xffffffffu) { data_lo = got_bytes; data_hi = got_bytes; }
     m->data_off  = data_lo;
     m->data_size = data_hi - data_lo;
-    m->data_init = (uint8_t *)pic_calloc(m->data_size ? m->data_size : 1);
-    if (!m->data_init) { rc = LOAD_ERR_OOM; }
+    if (rc == LOAD_OK) {
+        m->data_init = (uint8_t *)pic_calloc(m->data_size ? m->data_size : 1);
+        if (!m->data_init) rc = LOAD_ERR_OOM;
+    }
     for (int i = 0; i < eh.e_shnum && rc == LOAD_OK; i++) {
         if (!placed[i] || !(sh[i].sh_flags & SHF_WRITE) || sh[i].sh_type == SHT_NOBITS) continue;
         if (!read_exact(src, sh[i].sh_offset, m->data_init + (ram_off[i] - data_lo), sh[i].sh_size))
@@ -1440,12 +1546,13 @@ LoadResult app_pic_install(const AppSource &src, SlotWrite sink, void *sink_ctx,
             if (r >= first + have) {
                 first = r; have = n - r < REL_CHUNK ? n - r : REL_CHUNK;
                 if (!read_exact(src, sh[i].sh_offset + first * sizeof(Elf32_Rel),
-                                relbuf, have * sizeof(Elf32_Rel))) { rc = LOAD_ERR_READ; break; }
+                                g_relbuf, have * sizeof(Elf32_Rel))) { rc = LOAD_ERR_READ; break; }
             }
-            const Elf32_Rel *rels = relbuf - first;
+            const Elf32_Rel *rels = g_relbuf - first;
             uint32_t type = ELF32_R_TYPE(rels[r].r_info);
             if (type == R_ARM_NONE) continue;
             if (type != R_ARM_ABS32 && type != R_ARM_TARGET1) { rc = LOAD_ERR_RELOC_UNSUPPORTED; break; }
+            if (abs_used >= abs_cap) { rc = LOAD_ERR_RELOC_RANGE; break; }
             uint8_t cls; uint32_t value; bool is_func;
             rc = resolve(ELF32_R_SYM(rels[r].r_info), &cls, &value, &is_func);
             if (rc != LOAD_OK) break;
@@ -1460,25 +1567,34 @@ LoadResult app_pic_install(const AppSource &src, SlotWrite sink, void *sink_ctx,
         }
     }
 
+    // THE VENEERS GO LAST, after the ABS32 pass and not before it.
+    //
+    // A pointer to a firmware function stored in .data resolves to a veneer just
+    // as a call does, and that pointer is only seen in the pass above — so a
+    // package whose only reference to some firmware function is a stored pointer
+    // allocates its veneer there. Writing the pool straight after the page loop
+    // would leave that veneer in RAM and not in the blob, and the package would
+    // branch into erased flash the first time it used the pointer. Nothing else
+    // below allocates one, so this is the point at which the pool is final.
+    if (rc == LOAD_OK && veneer_used &&
+        !sink(sink_ctx, veneer_off, veneers, veneer_used))
+        rc = LOAD_ERR_READ;
+
     // --- entry point.
     if (rc == LOAD_OK) {
         rc = LOAD_ERR_NO_ENTRY;
         for (uint32_t i = 0; i < nsyms; i++) {
-            if (syms[i].st_shndx == SHN_UNDEF || syms[i].st_shndx >= eh.e_shnum) continue;
-            if (!placed[syms[i].st_shndx] || (sh[syms[i].st_shndx].sh_flags & SHF_WRITE)) continue;
-            if (strcmp(sym_name(syms[i].st_name), "app_main") != 0) continue;
-            m->entry_off = blob_off[syms[i].st_shndx] + syms[i].st_value;
+            const Elf32_Sym &s = sym_at(i);
+            if (!sym_io) { rc = LOAD_ERR_READ; break; }
+            if (s.st_shndx == SHN_UNDEF || s.st_shndx >= eh.e_shnum) continue;
+            if (!placed[s.st_shndx] || (sh[s.st_shndx].sh_flags & SHF_WRITE)) continue;
+            if (strcmp(sym_name(s.st_name), "app_main") != 0) continue;
+            m->entry_off = blob_off[s.st_shndx] + s.st_value;
             rc = LOAD_OK;
             break;
         }
     }
 
-    // Finalise the manifest and hand the blob to the sink. This reference producer
-    // assembles the whole blob and writes it in ONE call; the sink interface takes
-    // an offset so a device install can instead patch and program .text a 4 KB
-    // page at a time and never hold the 122 KB read-only half — see the header and
-    // the 3b note. ro_size is the blob actually used: RO sections plus the veneers
-    // emitted, not the reserved ceiling.
     if (rc == LOAD_OK) {
         m->veneer_off  = veneer_off;
         m->veneer_size = veneer_used;
@@ -1488,11 +1604,9 @@ LoadResult app_pic_install(const AppSource &src, SlotWrite sink, void *sink_ctx,
         m->abs_count   = abs_used;
         uint32_t ram = (rpos + (APP_BLOCK_ALIGN - 1)) & ~(APP_BLOCK_ALIGN - 1);
         m->ram_size    = ram;
-        if (!sink(sink_ctx, 0, blob, m->ro_size)) rc = LOAD_ERR_READ;
     }
 
-    pic_free(blob);
-    pic_free(syms);
+    pic_free(veneers);
     pic_free(names);
     if (rc != LOAD_OK) app_pic_manifest_free(m);
     return rc;

@@ -67,9 +67,17 @@ static void free32(void *) { }      // one-shot; the arena goes away with us
 
 static FILE *g_f;
 static int g_loaded;   // how many apps actually got checked
+// What the loader READ, as well as what it allocated. The page-at-a-time
+// installer buys its small footprint by re-reading the relocation table once per
+// page, and "that is cheap" is a claim rather than a fact until the number is on
+// the screen next to the file size.
+static uint64_t g_read_bytes;
+static uint32_t g_read_calls;
 static int file_read(void *, uint32_t off, void *dst, uint32_t len) {
     if (fseek(g_f, off, SEEK_SET) != 0) return -1;
-    return (int)fread(dst, 1, len, g_f);
+    size_t n = fread(dst, 1, len, g_f);
+    g_read_bytes += n; g_read_calls++;
+    return (int)n;
 }
 // A fake firmware symbol table: every fw_* resolves to a plausible address.
 //
@@ -760,7 +768,10 @@ static int check_pic(const char *path) {
     AppSource src{}; src.read = file_read; src.ctx = nullptr; src.size = fsz;
 
     g_f = fopen(path, "rb");
+    g_read_bytes = 0; g_read_calls = 0;
     LoadResult rcA = app_pic_install(src, slot_sink, &sbA, &mA);
+    uint64_t install_read = g_read_bytes;
+    uint32_t install_calls = g_read_calls;
     fclose(g_f);
     if (rcA != LOAD_OK) {
         printf("  FAIL %-12s pic-install: %s\n", name, load_result_str(rcA));
@@ -781,16 +792,27 @@ static int check_pic(const char *path) {
     // 89 KB in its largest free block and far more free in total, so a single
     // request over that is refused while the total looks fine.
     //
-    // NOT YET AN ASSERTION, and the number says why: this producer assembles the
-    // whole blob in RAM before handing it to the sink, so novad1 asks for 126 KB
-    // in one piece and no booted board could run it. Printed every run so the
-    // gap is visible rather than described; the assertion lands with the
-    // page-at-a-time producer that closes it.
+    // THE ASSERTION THAT KEEPS THIS WORKING. Every install failure on a board so
+    // far has been one allocation nobody counted — the read-only half, the string
+    // table, the symbol table, the over-sized ABS32 recipe — and each looked fine
+    // in a section sum. A device does not fail on the total; it fails when one
+    // request is bigger than the largest free block, which is around 89 KB on a
+    // booted board while the free total is nearer 280.
     uint32_t peak = 0, biggest = 0;
     app_pic_install_cost(&peak, &biggest);
-    printf("       install cost: peak %u B held, biggest single %u B%s\n",
-           peak, biggest,
-           biggest >= 89u * 1024u ? "  (over the 89 KB block — host-only for now)" : "");
+    printf("       install: peak %u B held, biggest single %u B, read %llu B in %u calls (file %u B)\n",
+           peak, biggest, (unsigned long long)install_read, install_calls, fsz);
+    if (biggest >= 89u * 1024u) {
+        printf("       FAIL install asks for %u B in one block — over the 89 KB "
+               "largest free block a booted device has\n", biggest);
+        bad = 1;
+    }
+    // And the total, because three allocations of 80 KB would each pass the test
+    // above and still not fit.
+    if (peak >= 89u * 1024u) {
+        printf("       FAIL install holds %u B at once — over the 89 KB block\n", peak);
+        bad = 1;
+    }
 
     // The property that makes a flash slot possible at all.
     if (slotA == slotB || mA.ro_size != mB.ro_size || memcmp(slotA, slotB, mA.ro_size) != 0) {
