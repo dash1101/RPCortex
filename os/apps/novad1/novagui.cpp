@@ -2,6 +2,7 @@
 // File: novagui.cpp
 #include "novagui.h"
 #include "novakeys.h"
+#include "novanotify.h"
 #include "novaicons.h"
 #include "novacore.h"
 #include "novaboard.h"
@@ -342,6 +343,25 @@ static void draw_status(Canvas &c, Screen *s) {
 
     c.text_fit(0, 1, title, 1, right - 2, false);
     c.hline(0, ui::BARH - 1, c.width(), 1);
+}
+
+// --- the toast ------------------------------------------------------------------
+//
+// A notification, bannered over whatever screen is up for a few seconds, so it
+// is seen from ANYWHERE without the app underneath being touched. The screen
+// stack does not change — this is drawn last, on top, and cleared by a timer or
+// the next press. The Alerts app and the status count remain the record; this is
+// only the glance as it happens.
+static char     g_toast_msg[64];
+static uint32_t g_toast_until;      // fw_millis deadline, 0 when nothing is up
+
+static void draw_toast(Canvas &c, const char *msg) {
+    const int h = ui::ROWH + 3;
+    const int y = ui::TOP + 3;
+    const int x = 3, w = c.width() - 6;
+    c.fill_rect(x, y, w, h, 0);                 // wipe the app out from under it
+    c.rounded_rect(x, y, w, h, 1, false);
+    c.text_fit(x + 4, y + 2, msg, 1, w - 8, false);
 }
 
 // --- the gallery ------------------------------------------------------------------
@@ -810,11 +830,25 @@ void run(void) {
         if      (off_s > 0 && idle >= (uint32_t)off_s) set_level(LVL_OFF);
         else if (dim_s > 0 && idle >= (uint32_t)dim_s) set_level(LVL_DIM);
 
+        // Notification toast. Clear an expired or dismissed one FIRST (so a press
+        // that lands on the same frame a new one arrives does not eat it), then
+        // pick up a new arrival. It is worth waking for — a banner behind a
+        // dimmed panel is not seen — so come to full contrast and reset the idle
+        // clock, which also holds the active frame rate for its first second.
+        if (g_toast_until && (now >= g_toast_until || had_input)) { g_toast_until = 0; g_dirty = true; }
+        if (notify::take_toast(g_toast_msg, sizeof(g_toast_msg))) {
+            g_toast_until = now + 3000;
+            set_level(LVL_ACTIVE);
+            g_last_input = now;
+            g_dirty = true;
+        }
+
         if (g_dirty && s) {
             uint32_t t0 = fw_micros();
             g_canvas.clear(0);
             if (!s->fullscreen()) draw_status(g_canvas, s);
             s->draw(g_canvas);
+            if (g_toast_until) draw_toast(g_canvas, g_toast_msg);   // last, so it is on top
             uint32_t t1 = fw_micros();
             display().show(g_canvas);
             uint32_t t2 = fw_micros();

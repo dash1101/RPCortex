@@ -20,9 +20,24 @@ static unsigned g_head;         // where the next one goes
 static int      g_count;
 static int      g_unread;
 
+// The newest message, waiting to be shown as a toast — the runner takes it once
+// and banners it over whatever screen is up, so a notification is seen from
+// anywhere without the app underneath being disturbed.
+static char     g_toast[TEXT_MAX];
+static bool     g_toast_pending;
+
 int count(void)  { return g_count; }
 int unread(void) { return g_unread; }
 void mark_read(void) { g_unread = 0; }
+
+// The newest message not yet shown as a toast, once. The runner calls this each
+// frame; a true return starts a banner.
+bool take_toast(char *out, unsigned cap) {
+    if (!g_toast_pending || !out || !cap) return false;
+    nova::copy(out, cap, g_toast);
+    g_toast_pending = false;
+    return true;
+}
 
 void clear(void) {
     g_head = 0;
@@ -93,6 +108,15 @@ void post(const char *text) {
     g_head = (g_head + 1) % MAX;
     if (g_count < MAX) g_count++;
     if (g_unread < MAX) g_unread++;
+
+    // Queue it for a toast, unless notifications are switched off — the same
+    // master setting that silences the buzz and the LED. The queue above still
+    // records it for the Alerts app; this is only the banner. The newest wins if
+    // two arrive before the runner looks: a banner is a glance, not a transcript.
+    if (nova::reg_bool(NOVA_KEY_PREFIX "Notify", true)) {
+        nova::copy(g_toast, TEXT_MAX, text);
+        g_toast_pending = true;
+    }
 
     // Everything notified is also logged. The queue is what is happening; the
     // log is what happened, and the second one is what somebody reads when they

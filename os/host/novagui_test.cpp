@@ -765,6 +765,27 @@ static void test_slider(void) {
     gui::go_home();
 }
 
+// --- the notification toast picks up a post ------------------------------------
+//
+// The banner itself is drawn in run(), which the frame harness does not enter,
+// so this covers the data path the runner reads: a post becomes one toast, taken
+// once, and only while notifications are on.
+static void test_toast(void) {
+    using namespace nova;
+    char buf[64];
+    while (notify::take_toast(buf, sizeof(buf))) {}     // drain
+    fw_reg_set("Apps.NovaD1_Notify", "on");
+    notify::post("Wardrive: 42 APs");
+    ok(notify::take_toast(buf, sizeof(buf)) && !strcmp(buf, "Wardrive: 42 APs"),
+       "a posted notification is taken as a toast");
+    ok(!notify::take_toast(buf, sizeof(buf)), "and only once");
+
+    fw_reg_set("Apps.NovaD1_Notify", "off");
+    notify::post("silent one");
+    ok(!notify::take_toast(buf, sizeof(buf)), "no toast while notifications are off");
+    fw_reg_set("Apps.NovaD1_Notify", "on");
+}
+
 int main(void) {
     STAGE(test_single_instance);
     STAGE(test_one_detent_animates);
@@ -778,6 +799,7 @@ int main(void) {
     STAGE(test_media_screens);
     STAGE(test_contact_readers);
     STAGE(test_slider);
+    STAGE(test_toast);
     STAGE(test_no_panel);
 
     printf("  %d checks", checks);

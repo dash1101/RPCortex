@@ -28,6 +28,11 @@ int  unread(void);
 
 // Everything has been seen. Called when the Alerts app opens.
 void mark_read(void);
+
+// The newest message not yet shown as a toast, once — true when it filled `out`.
+// The runner banners it over the current screen; the status count and Alerts app
+// remain the record.
+bool take_toast(char *out, unsigned cap);
 void clear(void);
 
 // The alert on its own, for a screen that wants a confirmation buzz without a
