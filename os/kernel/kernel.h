@@ -26,6 +26,10 @@ void klog(LogLevel level, const char *fmt, ...);
 // recovery prompt rather than looping.
 bool kboot(void);
 
+// Save the current wall-clock time so a cold boot restores near it. Call after
+// the clock is set or synced, and before a clean reboot.
+void clock_persist(void);
+
 // Mark this boot as having reached a usable shell. Until it is called a boot
 // counts as failed — three in a row and kboot rebuilds the filesystem rather
 // than leaving a device that needs another machine to recover.

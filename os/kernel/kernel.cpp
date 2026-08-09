@@ -112,6 +112,23 @@ static bool asked_for_it(void) {
     return yes;
 }
 
+// Remember the wall-clock time, so a cold boot can come up near it rather than
+// at the default. EVENT-DRIVEN — called when the clock is set, synced, or the
+// device is cleanly rebooted — so there is no periodic flash write and no wear
+// worth the name. Only saves a time it trusts (Clock_Set), so an approximate
+// restored time is never re-saved as the truth.
+void clock_persist(void) {
+    if (!aon_timer_is_running()) return;
+    if (strcmp(reg_get("System.Clock_Set", "false"), "true") != 0) return;
+    struct tm t;
+    if (!aon_timer_get_time_calendar(&t)) return;
+    char s[24];
+    snprintf(s, sizeof(s), "%04d-%02d-%02d %02d:%02d:%02d",
+             t.tm_year + 1900, t.tm_mon + 1, t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec);
+    reg_set("System.Clock_Last", s);
+    persist_save_registry();    // flush now — a reboot will not get another chance
+}
+
 bool kboot(void) {
     // stdio + USB are already up (main brought them up so boot messages are
     // visible). Here: mount storage, and report the machine.
@@ -271,12 +288,26 @@ bool kboot(void) {
     if (strcmp(reg_get("System.Codename", ""), RPC_OS_CODENAME) != 0)
         reg_set("System.Codename", RPC_OS_CODENAME);
 
-    // Start the always-on clock so `date` works from boot. A default epoch, not
-    // a real time — the user sets it, or NTP will once networking lands. Started
-    // only if it is not already running across a warm reset.
+    // Start the always-on clock so `date` works from boot. Started only if it is
+    // not already running — a WARM reset keeps it, and its time, untouched.
+    //
+    // A COLD boot lost it. Rather than a hardcoded default, come up at the last
+    // time the device knew — saved on the way out and whenever the clock was set
+    // (see clock_persist). It is APPROXIMATE: time passed while the power was
+    // off, so the clock is marked NOT set — `date` shows it, but file timestamps
+    // stay withheld until a real `date set` or `ntp sync`, so nothing records a
+    // stale time as though it were true.
     if (!aon_timer_is_running()) {
         struct tm t; memset(&t, 0, sizeof(t));
-        t.tm_year = 2026 - 1900; t.tm_mon = 0; t.tm_mday = 1;
+        int Y, Mo, D, H, Mi, S;
+        const char *last = reg_get("System.Clock_Last", "");
+        if (last[0] && sscanf(last, "%d-%d-%d %d:%d:%d", &Y, &Mo, &D, &H, &Mi, &S) == 6) {
+            t.tm_year = Y - 1900; t.tm_mon = Mo - 1; t.tm_mday = D;
+            t.tm_hour = H; t.tm_min = Mi; t.tm_sec = S;
+            reg_set("System.Clock_Set", "false");   // approximate — re-sync to trust it
+        } else {
+            t.tm_year = 2026 - 1900; t.tm_mon = 0; t.tm_mday = 1;
+        }
         aon_timer_start_calendar(&t);
     }
     if (strcmp(reg_get("System.Clock_Set", "false"), "true") != 0)

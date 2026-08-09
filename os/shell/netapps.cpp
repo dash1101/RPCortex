@@ -10,6 +10,7 @@
 // not fail loudly — it corrupts the stack's internal lists under load, which is
 // the worst kind of bug to find later. Every raw lwIP call below is wrapped.
 
+#include "kernel.h"
 #include "command.h"
 #include "out.h"
 #include "registry.h"
@@ -365,6 +366,7 @@ static int ntp_sync(const char *server, bool set_clock) {
     // The clock is now trustworthy, which is what lets file timestamps be
     // recorded — the same flag `date set` writes.
     reg_set("System.Clock_Set", "true");
+    clock_persist();        // remember it, so a cold boot comes up near here
 
     int off = (int)reg_get_int("System.TZ_Offset", 0);
     out_ok("Clock synced.");

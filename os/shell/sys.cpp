@@ -106,6 +106,7 @@ static int cmd_date(int argc, char **argv) {
         // them trustworthy, and therefore what turns them on.
         bool first = strcmp(reg_get("System.Clock_Set", "false"), "true") != 0;
         reg_set("System.Clock_Set", "true");
+        clock_persist();        // remember it, so a cold boot comes up near here
         out_ok("Clock set.");
         if (first) out_multi("  File timestamps are recorded from now on.");
         return 0;
@@ -388,6 +389,7 @@ void sys_reboot(void) {
 
 static int cmd_reboot(int, char **) {
     out_info("Rebooting system...");
+    clock_persist();            // a clean reboot loses the timer; save it first
     sys_reboot();
     while (1) {}
 }
