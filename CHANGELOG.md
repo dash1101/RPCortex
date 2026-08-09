@@ -6,10 +6,16 @@ The rewrite. RPCortex was MicroPython for four versions; this one is C++, and
 almost everything underneath is different even though the shell is deliberately
 familiar.
 
-It is **early alpha**. It boots, joins a network, installs and runs packages,
-serves web pages, and updates itself over the air — all confirmed on real
-hardware. It is also changing week to week, and the list of what is missing is
-at the bottom rather than buried.
+It is **in beta**. It boots, joins a network, installs and runs packages, serves
+web pages, and updates itself over the air — all confirmed on real hardware. It
+is also changing week to week, and the list of what is missing is at the bottom
+rather than buried.
+
+The version stays at v2.0.0 until it ships, so this one entry grows rather than
+splitting into a ladder of releases. What moves between builds is a build
+number, taken from the commit count so it cannot be forgotten and cannot
+disagree with the image; `ver` prints it and the updater compares it as a fourth
+component.
 
 ---
 
@@ -26,7 +32,7 @@ protection unit describing exactly five regions it may touch, and every pointer
 it hands the firmware range-checked against those regions. All three ways a
 package can misbehave are contained and confirmed on hardware:
 
-| The package… | Costs you |
+| The package… | The cost |
 |---|---|
 | Uses a bad pointer | The command. A report names it; the shell carries on. |
 | Stops responding entirely | The command. A timer takes the call back. |
@@ -58,9 +64,29 @@ updates itself.
   and drop in both directions instead of over the serial line.
 - **Bluetooth.** The same chip does both radios. v1 could not reach Classic at
   all — MicroPython's module is BLE only — so anything that plays audio was out
-  of reach.
-- **Real background work.** v1's `task run` entered a foreground scheduler: you
-  got scheduled tasks or an interactive shell, not both. Here the timer is just
+  of reach. `bt` scans, advertises and names what answers, on LE and Classic;
+  `btaudio` is an A2DP source, reading a WAV off flash and playing it to a
+  speaker. A2DP is four layers deep — L2CAP, AVDTP, A2DP, then SBC — which is
+  why it sits in the firmware rather than in a package.
+- **A runaway task is a killed task.** A task that holds a core past its 250 ms
+  slice is taken off it by a timer. Scheduling stays cooperative by default, so
+  the reasoning about shared state is unchanged; preemption is the safety net,
+  not the normal path. On v1 a `while True:` was a reboot.
+- **A memory card.** `sd` mounts one at `/sd`, and it is a second volume rather
+  than a second set of commands — `ls`, `cp`, `tree` and a script all reach it
+  through the same paths. Read-only FAT12/16/32, RP2350 boards only, and it has
+  not yet been run against a real card.
+- **The parts a handheld is made of.** `nfc` and `ibutton` for the two contact
+  readers, `subghz` for a CC1101 and `lora` for an SX1276. They are firmware
+  rather than packages because those buses are shared, and arbitration is not
+  something one package can do on behalf of the rest of the system.
+- **Settings that belong to a person.** `User.`-prefixed registry keys are
+  per-account, so two people on one device do not overwrite each other.
+- **A package can run a shell command** and read back what it printed
+  (`fw_shell_run`) — but not from inside another package command, which used to
+  overwrite the outer call's way home and is now refused.
+- **Real background work.** v1's `task run` entered a foreground scheduler: it
+  was scheduled tasks or an interactive shell, not both. Here the timer is just
   another task.
 - **Interruptible everything.** Ctrl+C stops any command instantly, because the
   interrupt check and the scheduler yield are the same call.
@@ -78,7 +104,7 @@ updates itself.
   and it tries the cheapest fix first: load nothing — no packages, services or
   startup items, which is what breaks a working device most often. Still
   failing, it restores the saved firmware. Only when there is nothing left to
-  restore does it rebuild the filesystem, which is the step that costs you
+  restore does it rebuild the filesystem, which is the step that actually costs
   something. v1 had none of this: a device that would not boot needed another
   computer.
 
@@ -86,7 +112,7 @@ updates itself.
 
 The filesystem commands down to `ls`'s exact columns. Text processing. Accounts
 with salted SHA-256, roles and the guided first run. The shell: pipes, `&&`,
-`||`, `;`, redirection, quoting, history, thirty aliases. `wifi` with all its
+`||`, `;`, redirection, quoting, history, the aliases. `wifi` with all its
 subcommands, `ping`, `nslookup`, `ntp`. `startup`, `task`, `service`, `watch`.
 The `.rps` scripting language, unchanged — scripts carry over as they are.
 
@@ -97,12 +123,17 @@ byte for byte against the original escape sequences.
 
 ### Boards
 
-| Board | Firmware | Filesystem | Sandbox |
-|---|---|---|---|
-| Pico 2 W | 916 KB | 2 MB | yes |
-| Pico 2 | 320 KB | 3 MB | yes |
-| Pico W | 748 KB | 384 KB | no |
-| Pico | 247 KB | 1.25 MB | no |
+| Board | Image | Filesystem | Sandbox | Card |
+|---|---|---|---|---|
+| Pico 2 W | 916 KB | 2 MB | yes | yes |
+| Pico 2 | 320 KB | 3 MB | yes | yes |
+| Pico W | 748 KB | 384 KB | no | no |
+| Pico | 247 KB | 1.25 MB | no | no |
+
+The image figures are the development build, which is the largest one gets and
+is therefore what every flash slot is sized against; the table they come from is
+in `os/CMakeLists.txt`, next to the slot sizes it justifies. "Card" is a microSD
+slot, which is built for the RP2350 boards only.
 
 **The RP2040 images have not been booted.** They build, both image checks pass
 on them, and the flash layout was verified by reading the constant back out of
@@ -119,26 +150,33 @@ have — and packages there run with the OS's own privileges.
 
 ### Known limitations
 
-- **No Python.** Packages are compiled C or C++. That is the whole point of the
-  rewrite and it is still a real loss of convenience.
-- **Fourteen packages**, against v1's twenty. Porting the rest is the main
-  distance left to parity.
-- **No SD card support.** It needs a driver.
+- **No package sandbox on RP2040.** Not an omission — ARMv6-M protection regions
+  are power-of-two sized and aligned to their own size, so the five a package
+  needs cost more RAM than those boards have. Packages there run with the OS's
+  own privileges. `mpu` says which a board is doing.
+- **The RP2040 images have never been booted.** As above: they build and they
+  fit, and that is all anyone can say for them.
+- **The card driver has never seen a card.** The command sequence that brings
+  one up is host-tested against a fake card written from the specification, and
+  the filesystem against volumes `fsck.fat` approves of. The electrical and
+  timing layer is unproven and the source says so.
+- **A task inside a lock or a flash write cannot be taken off its core.**
+  Everything else can, at 250 ms. The exception is the case where interrupting
+  costs more than waiting.
+- **Not every v1 package has been ported.** The ones that have are in
+  `repo-v2/index.json`; the rest are transcription rather than design, but they
+  are still the distance left to parity.
 - **No ESP32-S3.** v1 runs there; this does not yet. The portable core moves
   unchanged, but the context switch, storage and network layers do not.
-- **Cooperative scheduling.** A task that never yields cannot be killed from the
-  shell. There is a timer backstop for packages, not for firmware.
-- **Bluetooth is new.** Scanning works, both LE and Classic. Little else has
-  been exercised.
-- **Early alpha.** If something does not match the device, the device is right.
+- **Beta.** If something does not match the device, the device is right.
 
 ---
 
 ### Upgrading from v1
 
 v2 replaces the firmware entirely, so installing it removes MicroPython and
-everything stored under it. Save anything worth keeping first — `download` on
-v1, or copy it off however you normally would.
+everything stored under it. Anything worth keeping has to come off first —
+`download` on v1, or whatever route is already in use.
 
 Scripts carry over. Packages do not: a v1 `.pkg` is Python source and there is
 no Python here.

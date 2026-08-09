@@ -83,6 +83,25 @@ const char *bb_phase(void) {
     return g_bb.phase;
 }
 
+void bb_note_hw_twice(uint8_t core, uint32_t pc) {
+    if (g_bb.magic != BB_MAGIC) bb_init();
+    // The FIRST one is the one worth keeping: everything after it is a
+    // consequence of a core that has already stopped.
+    if (!g_bb.hw_twice) {
+        g_bb.hw_twice_core = core;
+        g_bb.hw_twice_pc   = pc;
+    }
+    g_bb.hw_twice++;
+}
+
+void bb_note_stall(uint32_t ms, bool crit, uint32_t pc) {
+    if (g_bb.magic != BB_MAGIC) return;    // too early to matter, and not worth a reset
+    if (ms <= g_bb.max_stall_ms) return;
+    g_bb.max_stall_ms = ms;
+    g_bb.stall_crit   = crit ? 1 : 0;
+    g_bb.max_stall_pc = pc;
+}
+
 void bb_note_yield(uint32_t now_ms) {
     g_bb.last_yield_ms = now_ms;
     g_bb.yields++;
