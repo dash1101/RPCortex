@@ -338,6 +338,20 @@ static int cmd_rm(int argc, char **argv) {
         bool has_star = false;
         for (char *p = last; *p; p++) if (*p == '*') { has_star = true; break; }
 
+        // A FILE THAT REALLY IS CALLED THAT BEATS THE PATTERN.
+        //
+        // There is no quoting here, so a file literally named `*` could only be
+        // referred to by the one word that also means "everything in this
+        // directory" — and the safe reading is not the destructive one. A
+        // cleanup script asking for a stray `*` emptied the whole filesystem;
+        // it was recoverable with `fscheck --fix`, and only because the
+        // registry happened to still be in RAM.
+        //
+        // Checking first costs one stat and changes nothing for the ordinary
+        // case: `*.txt` and `log*` are not filenames, so they never match here
+        // and still glob. No prompt, so nothing that scripts this breaks.
+        if (has_star && storage_stat(path, nullptr, nullptr)) has_star = false;
+
         if (has_star) {
             char pat[64];
             snprintf(pat, sizeof(pat), "%s", last);
