@@ -89,7 +89,51 @@ int  rpc_register_command(const char *, const char *, int (*)(int, char **)) { r
 //
 // The text below is copied from a real Pico 2 W, spacing included, because the
 // screens parse it. A prettier fake would pass while the real format failed.
+// One scripted answer, overriding the table below for lines starting with
+// g_shell_match. Here rather than in whichever test wanted it first, because
+// the table IS one real device's output and a test that needed a different
+// answer used to have to edit it — which changes what every other test sees.
+//
+// g_shell_rc is what fw_shell_run returns, scripted the same way: a command
+// that printed something and still failed is a case worth being able to build.
+static const char *g_shell_match;
+static const char *g_shell_reply;
+static int         g_shell_rc;
+
+static void shell_says(const char *prefix, const char *reply, int rc = 0) {
+    g_shell_match = prefix;
+    g_shell_reply = reply;
+    g_shell_rc    = rc;
+}
+
+// The last line asked for, so a test can check WHICH command a screen ran and
+// not only what it did with the answer.
+static char g_last_shell[128];
+
 static const char *fake_shell(const char *line) {
+    snprintf(g_last_shell, sizeof(g_last_shell), "%s", line ? line : "");
+    if (g_shell_match && !strncmp(line, g_shell_match, strlen(g_shell_match)))
+        return g_shell_reply ? g_shell_reply : "";
+    // Copied from os/shell/pkgrepo.cpp do_update, os/shell/session.cpp
+    // cmd_autonomy, os/shell/update.cpp do_check and os/shell/diag.cpp
+    // cmd_safeboot. The Updates screen parses all four.
+    if (!strncmp(line, "pkg update", 10))
+        return "[:] Fetching package lists...\n"
+               "[:] https://raw.githubusercontent.com/dash1101/RPCortex-repo/main/repo-v2/index.json\n"
+               "[@]   15 packages\n"
+               "[@] 15 packages from 1 repo.\n";
+    if (!strncmp(line, "autonomy status", 15))
+        return "[@] [autonomy] On, as 'root'.\n";
+    // "<name>" or "<name>  (admin)", from cmd_whoami's one out_multi.
+    if (!strncmp(line, "whoami", 6))
+        return "root  (admin)\n";
+    if (!strncmp(line, "update check", 12))
+        return "  Installed  v2.0.0 (build 315)\n"
+               "  Available  2.0.0.315\n"
+               "  Size       955 KB\n"
+               "[@] Already up to date.\n";
+    if (!strncmp(line, "safeboot", 8))
+        return "[:] Safe boot: restarting to run 'script /nova/update.rps' on its own.\n";
     if (!strncmp(line, "ps", 2))
         return "  PID  NAME         STATE  CORE STACK       CPU      \n"
                "  1    init         ready  0    0B/4.0K     1.6s     \n"
@@ -220,7 +264,7 @@ static const char *fake_shell(const char *line) {
 int fw_shell_run(const char *line, char *out, uint32_t cap) {
     if (!out || !cap) return 0;
     snprintf(out, cap, "%s", line ? fake_shell(line) : "");
-    return 0;
+    return g_shell_rc;
 }
 
 void *fw_malloc(size_t n) { return malloc(n); }
@@ -254,9 +298,30 @@ void fw_reg_save(void) {}
 
 int      fw_file_exists(const char *) { return 1; }
 int      fw_mkdir(const char *) { return 1; }
-int      fw_file_write(const char *, const void *, uint32_t) { return 1; }
+
+// Writes are KEPT rather than discarded. The Updates screen's whole product is
+// a file the next boot reads, so a test that could not see what was written
+// could only check that something was.
+static char g_write_path[64];
+static char g_write_body[512];
+static int  g_writes;
+static int  g_write_fails;          // when set, the next write is refused
+static char g_removed[64];
+
+int fw_file_write(const char *path, const void *data, uint32_t len) {
+    if (g_write_fails) { g_write_fails--; return 0; }
+    g_writes++;
+    snprintf(g_write_path, sizeof(g_write_path), "%s", path ? path : "");
+    uint32_t n = len < sizeof(g_write_body) - 1 ? len : (uint32_t)sizeof(g_write_body) - 1;
+    if (data) memcpy(g_write_body, data, n);
+    g_write_body[n] = 0;
+    return 1;
+}
 uint32_t fw_file_read(const char *, void *, uint32_t) { return 0; }
-int      fw_file_remove(const char *) { return 1; }
+int      fw_file_remove(const char *p) {
+    snprintf(g_removed, sizeof(g_removed), "%s", p ? p : "");
+    return 1;
+}
 
 int fw_board(char *out, unsigned cap) { snprintf(out, cap, "pico2_w"); return 1; }
 unsigned fw_gpio_count(void) { return 30; }

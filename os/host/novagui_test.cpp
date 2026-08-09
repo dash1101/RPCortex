@@ -786,6 +786,305 @@ static void test_toast(void) {
     fw_reg_set("Apps.NovaD1_Notify", "on");
 }
 
+// --- Updates: the version arithmetic ---------------------------------------------
+//
+// The same cases repoindex_test.cpp asserts against the firmware's
+// repo_version_cmp, because upd_ver_cmp is a copy of it: repo_version_cmp is not
+// on the package ABI, and two comparators that disagree would eventually offer
+// an update that is older than what is installed.
+static void test_update_versions(void) {
+    using namespace nova::screens;
+    ok(upd_ver_cmp("1.0.0", "1.0.0") == 0,  "version: equal");
+    ok(upd_ver_cmp("1.2.0", "1.10.0") < 0,  "version: 1.10 is newer than 1.2");
+    ok(upd_ver_cmp("2.0.0", "1.99.9") > 0,  "version: major wins");
+    ok(upd_ver_cmp("2.1",   "2.1.0") == 0,  "version: missing component is zero");
+    ok(upd_ver_cmp("3.0.0", "2.1.1") > 0,   "version: 3.0.0 beats 2.1.1");
+    ok(upd_ver_cmp("0.9.1", "1.0.0") < 0,   "version: 0.9.1 is older than 1.0.0");
+    // The pair a plain string comparison gets backwards, which is why the App
+    // Store's " ^" mark deliberately does not claim to mean "newer".
+    ok(upd_ver_cmp("1.10.0", "1.9.0") > 0,  "version: 1.10.0 beats 1.9.0");
+    ok(strcmp("1.10.0", "1.9.0") < 0,       "...which strcmp gets backwards");
+    ok(upd_ver_cmp("2.0.0.316", "2.0.0.315") > 0, "version: a build is a fourth component");
+
+    eq(upd_state("1.3.3", "1.4.0"),  UPD_NEWER,   "a newer repo version is an update");
+    eq(upd_state("1.3.3", "1.3.3"),  UPD_CURRENT, "the same version is not");
+    eq(upd_state("1.9.0", "1.10.0"), UPD_NEWER,   "and 1.10 over 1.9 is one");
+    eq(upd_state("1.4.0", "1.3.3"),  UPD_AHEAD,   "a hand-built newer one is not replaced");
+    eq(upd_state("",      "1.4.0"),  UPD_UNKNOWN, "nothing installed is not an update");
+    eq(upd_state("1.3.3", ""),       UPD_UNKNOWN, "and neither is an index that said nothing");
+}
+
+// --- Updates: reading `update check` ----------------------------------------------
+//
+// The OS version is frozen at v2.0.0 for the whole beta and what moves is the
+// build number, so the command's VERDICT is read rather than recomputed.
+static void test_update_os_reading(void) {
+    using namespace nova::screens;
+    static const char *kCurrent =
+        "  Installed  v2.0.0 (build 315)\n"
+        "  Available  2.0.0.315\n"
+        "  Size       955 KB\n"
+        "[@] Already up to date.\n";
+    static const char *kNewer =
+        "  Installed  v2.0.0 (build 315)\n"
+        "  Available  2.0.0.316\n"
+        "  Size       955 KB\n"
+        "[:] An update is available. 'update install' to fetch and apply it.\n";
+    static const char *kRefused =
+        "  Installed  v2.0.0 (build 315)\n"
+        "  Available  2.0.0.316\n"
+        "[?] This device already rolled back from 2.0.0.316.\n"
+        "  It was installed and would not start, so the previous version\n"
+        "  was put back. 'update install --force' installs it anyway.\n";
+    static const char *kNoNet = "[!] No network. Connect first.\n";
+
+    eq(upd_os_state(kCurrent), UPD_CURRENT, "the OS reports itself up to date");
+    eq(upd_os_state(kNewer),   UPD_NEWER,   "and reports an OS update when there is one");
+    eq(upd_os_state(kRefused), UPD_REFUSED, "a build this device rolled back from is not offered");
+    eq(upd_os_state(kNoNet),   UPD_UNKNOWN, "no network is not 'up to date'");
+    eq(upd_os_state(""),       UPD_UNKNOWN, "and neither is an uncaptured command");
+
+    char row[48], v[20];
+    ok(upd_os_row(kNewer, "Installed", row, sizeof(row)), "the Installed row is found");
+    upd_os_compact(row, v, sizeof(v));
+    ok(!strcmp(v, "2.0.0.315"), "and reads as the build the firmware actually compares");
+    ok(upd_os_row(kNewer, "Available", row, sizeof(row)), "the Available row is found");
+    upd_os_compact(row, v, sizeof(v));
+    ok(!strcmp(v, "2.0.0.316"), "and needs no rewriting");
+    ok(!upd_os_row(kNoNet, "Installed", row, sizeof(row)),
+       "a check that failed printed no rows to read");
+
+    // The trap the compacting exists for: the two rows AS PRINTED disagree,
+    // because the leading 'v' reads as a zeroth component and loses every time.
+    eq(upd_state("v2.0.0 (build 315)", "2.0.0.315"), UPD_NEWER,
+       "comparing the printed rows would claim an update forever");
+    eq(upd_state("2.0.0.315", "2.0.0.315"), UPD_CURRENT,
+       "and the compacted ones agree with the OS");
+}
+
+// --- Updates: what stops the flow ----------------------------------------------------
+//
+// A maintenance boot runs its staged command AFTER session_boot(), so a device
+// that asks for a login stops at the prompt with the install never run — and
+// with the panel frozen on whatever was last drawn. This is the gate.
+static void test_update_refusals(void) {
+    using namespace nova::screens;
+    static const char *kRoot  = "root  (admin)\n";
+    static const char *kGuest = "guest\n";
+    static const char *kOn    = "[@] [autonomy] On, as 'root'.\n";
+
+    ok(update_autonomy_ok(kOn, kRoot),
+       "a device that boots without a prompt, as this admin, can stage an update");
+    ok(!update_autonomy_ok("[:] [autonomy] Off - this device asks for a login.\n", kRoot),
+       "one that asks for a login cannot");
+    ok(!update_autonomy_ok("[?] [autonomy] Set to 'dash', which no longer exists. "
+                           "It will ask instead.\n", kRoot),
+       "nor one whose autonomous account has been removed");
+    ok(!update_autonomy_ok("", kRoot), "and an uncaptured answer is not a yes");
+
+    // The half that is easy to miss: autonomy is on, staging would work, and
+    // the maintenance boot comes up as somebody who can run neither line of the
+    // script — not even the reboot that gets the device back out.
+    ok(!update_autonomy_ok("[@] [autonomy] On, as 'guest'.\n", kRoot),
+       "an admin staging for a different autonomous user is refused");
+    ok(!update_autonomy_ok("[@] [autonomy] On, as 'guest'.\n", kGuest),
+       "and a non-admin autonomous user is refused even when it is the same person");
+    ok(!update_autonomy_ok(kOn, ""), "an uncaptured whoami is not a yes either");
+}
+
+// --- Updates: the script the maintenance boot runs -----------------------------------
+static void test_update_script(void) {
+    using namespace nova::screens;
+    g_write_path[0] = g_write_body[0] = 0;
+    ok(update_write_script(), "the script is written");
+    ok(!strcmp(g_write_path, "/nova/update.rps"),
+       "under /nova, which boot does not sweep the way it sweeps /tmp");
+    ok(strstr(g_write_body, "\npkg install novad1\n") != nullptr,
+       "the install is a line of its own");
+    ok(strstr(g_write_body, "\nreboot\n") != nullptr,
+       "and so is the reboot");
+    // safeboot's staged command goes through shell_run_line_now, which is
+    // run_segment: pipes and redirection, but no connectors. `pkg install
+    // novad1 && reboot` would ask pkg for three packages, two of them named
+    // "&&" and "reboot".
+    ok(strstr(g_write_body, "&&") == nullptr,
+       "never as a chain, which the staged command cannot split");
+    // rps discards a command's status unless it is a condition, so the reboot
+    // happens either way and a failed install cannot strand the device.
+    //
+    // The LINES, not the words. An earlier version of this matched "reboot"
+    // anywhere and passed until the script's own comment said the word.
+    ok(strstr(g_write_body, "\npkg install novad1\n") <
+       strstr(g_write_body, "\nreboot\n"),
+       "install first, reboot after, unconditionally");
+    ok(!strcmp(update_stage_line(), "safeboot script /nova/update.rps"),
+       "and safeboot is what stages it");
+
+    g_write_fails = 1;
+    ok(!update_write_script(), "a filesystem that will not take it says so");
+}
+
+// Dispatch one gesture and honour what came back, the way the runner does.
+static void upd_send(nova::ui::Screen *s, nova::Event e) {
+    if (!s) return;
+    nova::ui::Action a = s->on_event(e);
+    if (a == nova::ui::ACT_STAY && e == nova::EV_HOME && !s->modal())
+        a = nova::ui::ACT_HOME;
+    if      (a == nova::ui::ACT_BACK) nova::gui::pop();
+    else if (a == nova::ui::ACT_HOME) nova::gui::go_home();
+}
+
+// --- Updates: the screen, as far as the host can follow it ---------------------------
+//
+// The fake runs a spawned job inline, so two ticks carry one step of the check
+// chain and a couple of dozen carry the whole of it.
+//
+// DEVICE-UNCONFIRMED past the staging. On real hardware safeboot never returns —
+// it restarts from inside the call — so everything after "the restart was asked
+// for" happens on the next boot and cannot be reached from here.
+static void test_update_screen(void) {
+    using namespace nova;
+    g_run_spawned = 1;
+    fw_reg_set("Apps.NovaD1_UpdTo", "");
+    fw_reg_set("Apps.NovaD1_UpdFrom", "");
+
+    // --- nothing to do. The fake's `pkg list` and `pkg search` both say 1.1.0.
+    gui::go_home();
+    screens::open_updates();
+    ui::Screen *s = gui::top();
+    if (!s) { ok(false, "Updates opens"); g_run_spawned = 0; return; }
+    ok(!strcmp(s->title(), "Updates"), "Updates titles itself the way its row is labelled");
+
+    for (int i = 0; i < 24; i++) s->tick(33);
+    ok(!s->animating(), "the check finishes rather than spinning forever");
+
+    Canvas &c = gui::canvas();
+    c.clear(0); s->draw(c);
+    int lit = 0;
+    for (int y = 0; y < c.height(); y++)
+        for (int x = 0; x < c.width(); x++) if (c.get(x, y)) lit++;
+    ok(lit > 12, "and draws a verdict rather than an empty panel");
+
+    upd_send(s, EV_SELECT);
+    ok(gui::top() == s, "an up-to-date device is offered nothing to press");
+
+    // --- the repo moves ahead.
+    shell_says("pkg search",
+               "  bench      1.0   RPCMark, the same workload as the MicroPython build\n"
+               "  novad1     1.4.0 Nova D1 - the handheld multi-tool\n");
+    upd_send(s, EV_SELECT_HOLD);                    // look again
+    for (int i = 0; i < 24; i++) s->tick(33);
+
+    upd_send(s, EV_SELECT);
+    ui::Screen *q = gui::top();
+    ok(q && q != s && !strcmp(q->title(), "Confirm"),
+       "a newer version in the repo asks before it takes it");
+    if (!q || q == s) { shell_says(nullptr, nullptr); g_run_spawned = 0; return; }
+
+    // --- No, and nothing is staged.
+    const int writes = g_writes;
+    upd_send(q, EV_BACK);
+    ok(gui::top() == s, "declining comes back to the screen");
+    eq(g_writes, writes, "and writes no script");
+
+    // --- Yes.
+    upd_send(s, EV_SELECT);
+    q = gui::top();
+    upd_send(q, EV_ROT_CW);                         // No -> Update
+    upd_send(q, EV_SELECT);
+    ok(gui::top() == s, "agreeing comes back to the screen");
+
+    for (int i = 0; i < 6; i++) s->tick(33);        // autonomy status, then the goodbye
+    ok(g_writes > writes, "agreeing writes the script");
+    ok(s->modal(), "and the goodbye holds the panel rather than letting HOME out");
+    char to[24] = "";
+    fw_reg_get("Apps.NovaD1_UpdTo", to, sizeof(to));
+    ok(!strcmp(to, "1.4.0"), "remembering the version it is going to");
+
+    c.clear(0); s->draw(c);
+    lit = 0;
+    for (int y = 0; y < c.height(); y++)
+        for (int x = 0; x < c.width(); x++) if (c.get(x, y)) lit++;
+    ok(lit > 12, "the goodbye says what is about to happen before the restart");
+
+    // --- the restart is asked for only after the goodbye has been readable.
+    for (int i = 0; i < 40; i++) s->tick(33);
+    ok(!strcmp(g_last_shell, "safeboot script /nova/update.rps"),
+       "then safeboot stages it");
+
+    // Being here means safeboot did not restart, which on a device is a refusal
+    // — nearly always an account that is not an admin. The device has to be left
+    // usable and honest, not sitting on a goodbye for a reboot that never comes.
+    ok(!s->modal(), "a refused restart releases the panel");
+    fw_reg_get("Apps.NovaD1_UpdTo", to, sizeof(to));
+    ok(to[0] == 0, "and forgets a version it never went to");
+
+    // --- a device that asks for a login is told why, and nothing is staged.
+    //
+    // There is one override slot, so the repo goes ahead first and the check
+    // runs, and only then is the autonomy answer swapped in — which is also the
+    // order it happens in, since autonomy is asked at the moment somebody says
+    // yes rather than up front.
+    shell_says("pkg search", "  novad1     1.4.0 Nova D1 - the handheld multi-tool\n");
+    upd_send(s, EV_SELECT_HOLD);
+    for (int i = 0; i < 24; i++) s->tick(33);
+    shell_says("autonomy status", "[:] [autonomy] Off - this device asks for a login.\n");
+
+    upd_send(s, EV_SELECT);
+    q = gui::top();
+    ok(q && q != s, "the update is still offered");
+    if (q && q != s) { upd_send(q, EV_ROT_CW); upd_send(q, EV_SELECT); }
+    const int writes2 = g_writes;
+    for (int i = 0; i < 8; i++) s->tick(33);
+    eq(g_writes, writes2, "a device that asks for a login stages nothing");
+    ok(!s->modal(), "and is not left waiting for a restart that cannot work");
+    char to2[24] = "x";
+    fw_reg_get("Apps.NovaD1_UpdTo", to2, sizeof(to2));
+    ok(to2[0] == 0, "nor remembering a version it is not going to");
+
+    shell_says(nullptr, nullptr);
+    g_run_spawned = 0;
+    gui::go_home();
+}
+
+// --- Updates: what the next start says -----------------------------------------------
+//
+// update_report_boot() in the firmware does this for a FIRMWARE update, keyed on
+// System.Update_To. There is no equivalent for a package, so this is the
+// package's own — and the direction that matters is the quiet one: an update
+// that did not take must not pass without a word, or the reboot reads as
+// something that happened for no reason.
+static void test_update_report(void) {
+    using namespace nova;
+    char buf[64];
+    while (notify::take_toast(buf, sizeof(buf))) {}
+    fw_reg_set("Apps.NovaD1_Notify", "on");
+
+    fw_reg_set("Apps.NovaD1_UpdTo", "");
+    const int before = notify::count();
+    screens::update_report_start();
+    eq(notify::count(), before, "an ordinary start says nothing and asks nothing");
+
+    // It landed: the fake's `pkg list` reports novad1 at 1.1.0.
+    fw_reg_set("Apps.NovaD1_UpdFrom", "1.0.0");
+    fw_reg_set("Apps.NovaD1_UpdTo",   "1.1.0");
+    screens::update_report_start();
+    ok(notify::take_toast(buf, sizeof(buf)) && strstr(buf, "1.1.0"),
+       "an update that landed is reported");
+    char to[24] = "x";
+    fw_reg_get("Apps.NovaD1_UpdTo", to, sizeof(to));
+    ok(to[0] == 0, "and is cleared, so it is reported once");
+    ok(!strcmp(g_removed, "/nova/update.rps"), "the spent script is taken away with it");
+
+    // It did not: the install was refused, the script rebooted anyway, and the
+    // device is back on the version it started on.
+    fw_reg_set("Apps.NovaD1_UpdFrom", "1.1.0");
+    fw_reg_set("Apps.NovaD1_UpdTo",   "1.4.0");
+    screens::update_report_start();
+    ok(notify::take_toast(buf, sizeof(buf)) && strstr(buf, "did not take"),
+       "and one that did not is said out loud rather than passed over");
+}
+
 int main(void) {
     STAGE(test_single_instance);
     STAGE(test_one_detent_animates);
@@ -800,6 +1099,12 @@ int main(void) {
     STAGE(test_contact_readers);
     STAGE(test_slider);
     STAGE(test_toast);
+    STAGE(test_update_versions);
+    STAGE(test_update_os_reading);
+    STAGE(test_update_refusals);
+    STAGE(test_update_script);
+    STAGE(test_update_screen);
+    STAGE(test_update_report);
     STAGE(test_no_panel);
 
     printf("  %d checks", checks);
