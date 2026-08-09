@@ -222,6 +222,9 @@ struct PicAbs32 {
 // device this is serialised into the slot header; on the host it is held in RAM.
 // The arrays are owned by the manifest — app_pic_manifest_free releases them.
 struct PicManifest {
+    RpcAppHeader header;             // name, version, ABI — what the app IS; a
+                                     // slot-loaded package registers by this, so
+                                     // it is carried, not re-derived, at load
     uint16_t api_major, api_minor;   // refuse a slot the running ABI cannot honour
     uint32_t ro_size;                // blob bytes: .text + .rodata + veneers
     uint32_t text_size;              // .text length within the blob
@@ -238,11 +241,14 @@ struct PicManifest {
     uint8_t     *data_init;          // [data_size]
 };
 
-// The sink the blob is streamed to as it is assembled: on the host it appends to
-// a buffer, on the device it programs a flash slot a chunk at a time — so the
-// 122 KB read-only half is never resident in one piece, which is what lets an
-// install run on a board whose largest free block is 89 KB. Writes arrive in
-// ascending, non-overlapping offset order. Returns false to abort the install.
+// The sink the blob is handed to. Each write names an offset, so a device install
+// can program a flash slot a page at a time and never hold the 122 KB read-only
+// half — which is what an install on a board whose largest free block is 89 KB
+// needs. NOTE the current app_pic_install is a reference producer: it assembles
+// the blob and calls this ONCE with the whole thing, so it does not itself fit
+// that budget. Making install page-at-a-time (and streaming the manifest into the
+// slot) is the remaining device work. Writes arrive in ascending, non-overlapping
+// offset order. Returns false to abort the install.
 typedef bool (*SlotWrite)(void *ctx, uint32_t off, const void *data, uint32_t len);
 
 // Assemble the read-only blob into `sink` and fill `m`. SVC veneer mode only.

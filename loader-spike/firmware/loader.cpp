@@ -1073,6 +1073,7 @@ LoadResult app_pic_install(const AppSource &src, SlotWrite sink, void *sink_ctx,
     if (hdr.api_major != RPC_API_MAJOR || hdr.api_minor > RPC_API_MINOR) {
         free(names); return LOAD_ERR_API_MISMATCH;
     }
+    m->header    = hdr;              // carried whole: name and version, not just the ABI
     m->api_major = hdr.api_major;
     m->api_minor = hdr.api_minor;
 
@@ -1380,8 +1381,12 @@ LoadResult app_pic_install(const AppSource &src, SlotWrite sink, void *sink_ctx,
         }
     }
 
-    // Finalise the manifest and stream the blob out. ro_size is the blob actually
-    // used: RO sections plus the veneers that were emitted, not the reserved ceiling.
+    // Finalise the manifest and hand the blob to the sink. This reference producer
+    // assembles the whole blob and writes it in ONE call; the sink interface takes
+    // an offset so a device install can instead patch and program .text a 4 KB
+    // page at a time and never hold the 122 KB read-only half — see the header and
+    // the 3b note. ro_size is the blob actually used: RO sections plus the veneers
+    // emitted, not the reserved ceiling.
     if (rc == LOAD_OK) {
         m->veneer_off  = veneer_off;
         m->veneer_size = veneer_used;
@@ -1456,7 +1461,8 @@ LoadResult app_pic_load(const void *slot, const PicManifest *m, LoadedApp *out) 
     out->got_count  = m->got_count;
     out->image_size = m->ro_size + m->ram_size;
     out->entry      = (int (*)(int))(uintptr_t)(((uint32_t)(uintptr_t)slot + m->entry_off) | 1u);
-    out->header.magic = RPC_APP_MAGIC;   // enough for the consumers that read it
+    out->header     = m->header;         // name and version: a registered command
+                                         // is tagged by this, so it must be real
     // Resident RAM only: the block and the gate pool. The slot is flash, not heap.
     out->bytes_allocated = m->ram_size + VENEER_GATE_BYTES + 2 * APP_BLOCK_ALIGN;
     return LOAD_OK;
