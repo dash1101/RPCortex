@@ -271,7 +271,10 @@ LoadResult app_pic_install(const AppSource &src, SlotWrite sink, void *sink_ctx,
 // nearer 280. Every install failure so far has been the second number, and every
 // time it was an allocation nobody had counted. realapp_test asserts them, which
 // is the only thing that stops one creeping back.
-void app_pic_install_cost(uint32_t *peak, uint32_t *biggest);
+// `page_cuts` counts the pages that had to stop short of their boundary because
+// a patch site straddled it. Zero means that path did not run, which a test
+// should say out loud rather than treat as a pass.
+void app_pic_install_cost(uint32_t *peak, uint32_t *biggest, uint32_t *page_cuts);
 
 // Instantiate a package whose blob is already at `slot` (a flash slot on the
 // device, the assembled buffer on the host), using the manifest. Allocates the

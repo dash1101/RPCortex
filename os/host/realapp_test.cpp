@@ -707,6 +707,24 @@ static bool fake_slot_program(void *, uint32_t off, const void *data, uint32_t l
     return true;
 }
 
+// The offset a Thumb-2 BL / B.W actually encodes, decoded from the ARMv7-M
+// definition rather than by calling the loader's own helper. A checker that used
+// the code under test would agree with it whatever either of them did, and the
+// encode/decode pair being self-consistently wrong is exactly the bug that
+// produces a package which links, loads, and branches into the wrong place.
+//
+// The CPU computes the target as (address of the instruction) + 4 + this.
+static int32_t thumb_branch_off(const uint8_t *p) {
+    uint32_t hw1 = (uint32_t)p[0] | ((uint32_t)p[1] << 8);
+    uint32_t hw2 = (uint32_t)p[2] | ((uint32_t)p[3] << 8);
+    uint32_t sgn = (hw1 >> 10) & 1u;
+    uint32_t j1  = (hw2 >> 13) & 1u, j2 = (hw2 >> 11) & 1u;
+    uint32_t i1  = 1u - (j1 ^ sgn), i2 = 1u - (j2 ^ sgn);
+    int32_t v = (int32_t)((i1 << 23) | (i2 << 22) |
+                          ((hw1 & 0x3ffu) << 12) | ((hw2 & 0x7ffu) << 1));
+    return sgn ? v - (1 << 24) : v;          // two's complement across 25 bits
+}
+
 // A package is position-independent iff it reaches its data through a GOT — i.e.
 // it carries at least one R_ARM_GOT_BREL. That is exactly what makes the slot
 // path apply to it, so it is how the test decides whether to run at all.
@@ -829,10 +847,11 @@ static int check_pic(const char *path) {
     // in a section sum. A device does not fail on the total; it fails when one
     // request is bigger than the largest free block, which is around 89 KB on a
     // booted board while the free total is nearer 280.
-    uint32_t peak = 0, biggest = 0;
-    app_pic_install_cost(&peak, &biggest);
-    printf("       install: peak %u B held, biggest single %u B, read %llu B in %u calls (file %u B)\n",
-           peak, biggest, (unsigned long long)install_read, install_calls, fsz);
+    uint32_t peak = 0, biggest = 0, cuts = 0;
+    app_pic_install_cost(&peak, &biggest, &cuts);
+    printf("       install: peak %u B held, biggest single %u B, read %llu B in %u calls "
+           "(file %u B), %u page cut(s)\n",
+           peak, biggest, (unsigned long long)install_read, install_calls, fsz, cuts);
     if (biggest >= 89u * 1024u) {
         printf("       FAIL install asks for %u B in one block — over the 89 KB "
                "largest free block a booted device has\n", biggest);
@@ -894,7 +913,7 @@ static int check_pic(const char *path) {
 
     auto verify = [&](const LoadedApp &app, const uint8_t *blob, const char *tag) {
         const uint32_t *got = (const uint32_t *)app.data;
-        int got_sites = 0, abs_sites = 0;
+        int got_sites = 0, abs_sites = 0, br_sites = 0;
         for (int si = 0; si < eh->e_shnum; si++) {
             if (sh[si].sh_type != SHT_REL) continue;
             uint32_t tgt = sh[si].sh_info;
@@ -914,6 +933,32 @@ static int check_pic(const char *path) {
                     if (got[off / 4] != want) {
                         printf("       FAIL %s GOT[%u] = %08x, %s is at %08x\n",
                                tag, off / 4, got[off / 4], str + syms[sidx].st_name, want); bad = 1;
+                    }
+                } else if (type == R_ARM_THM_CALL || type == R_ARM_THM_JUMP24) {
+                    // THE MAJORITY OF THE RELOCATIONS IN A PACKAGE, and until
+                    // this case existed nothing checked one. novad1 has 2856 of
+                    // them against 2159 GOT slots, and a branch that came out
+                    // wrong would pass every other check here: the blob-to-blob
+                    // comparison cannot see it, because both blobs are produced
+                    // by the same page loop and a dropped patch is identical in
+                    // each.
+                    if (writ[tgt]) continue;          // branches live in the RO half
+                    br_sites++;
+                    bool ok; uint32_t S = resolve(app, blob, sidx, &ok);
+                    if (!ok) { printf("       FAIL %s cannot resolve branch %s\n",
+                                      tag, str + syms[sidx].st_name); bad = 1; continue; }
+                    uint32_t site = blob_off[tgt] + rel[r].r_offset;
+                    // What the instruction MEANT before relocation, and what it
+                    // reaches now. The +4 pipeline offset is on both sides and
+                    // cancels, so this holds wherever the blob happens to be.
+                    int32_t a_orig = thumb_branch_off(b + sh[tgt].sh_offset + rel[r].r_offset);
+                    int32_t a_new  = thumb_branch_off(blob + site);
+                    uint32_t have = (uint32_t)(uintptr_t)blob + site + (uint32_t)a_new;
+                    uint32_t want = (S & ~1u) + (uint32_t)a_orig;
+                    if (have != want) {
+                        printf("       FAIL %s branch at +%u reaches %08x, %s is at %08x\n",
+                               tag, site, have + 4, str + syms[sidx].st_name, want + 4);
+                        bad = 1;
                     }
                 } else if (type == R_ARM_ABS32 || type == R_ARM_TARGET1) {
                     abs_sites++;
@@ -935,8 +980,8 @@ static int check_pic(const char *path) {
         // No used GOT slot may be zero — every symbol resolves somewhere real.
         for (uint32_t k = 0; k < app.got_count; k++)
             if (got[k] == 0) { printf("       FAIL %s GOT[%u] never filled\n", tag, k); bad = 1; }
-        if (!bad) printf("       %s: %d GOT + %d ABS32 site(s) resolve against the slot at %p\n",
-                         tag, got_sites, abs_sites, (void *)app.data);
+        if (!bad) printf("       %s: %d GOT + %d branch + %d ABS32 site(s) resolve against the slot at %p\n",
+                         tag, got_sites, br_sites, abs_sites, (void *)app.data);
     };
     verify(appA, slotA, "load A");
     verify(appB, slotA, "load B");

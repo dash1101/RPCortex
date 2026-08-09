@@ -1068,6 +1068,11 @@ uint32_t app_pic_base(const LoadedApp *app) {
 // The size rides in an eight-byte header ahead of the block, which is also what
 // keeps the returned pointer eight-aligned on both a device and a 64-bit host.
 static uint32_t g_pic_live, g_pic_peak, g_pic_biggest;
+// How many times the page loop had to stop short of a page boundary because a
+// patch site straddled it. Reported so that "the straddle path is handled" can
+// be told apart from "the straddle path never ran" — an untaken branch that
+// corrupts a package when it is finally taken is the worst of both.
+static uint32_t g_pic_cuts;
 
 static void *pic_alloc(uint32_t n) {
     uint64_t *p = (uint64_t *)malloc((size_t)n + 8);
@@ -1090,9 +1095,10 @@ static void pic_free(void *v) {
     free(p);
 }
 
-void app_pic_install_cost(uint32_t *peak, uint32_t *biggest) {
-    if (peak)    *peak    = g_pic_peak;
-    if (biggest) *biggest = g_pic_biggest;
+void app_pic_install_cost(uint32_t *peak, uint32_t *biggest, uint32_t *page_cuts) {
+    if (peak)      *peak      = g_pic_peak;
+    if (biggest)   *biggest   = g_pic_biggest;
+    if (page_cuts) *page_cuts = g_pic_cuts;
 }
 
 // The SVC firmware veneer, written into the blob's veneer region. Deduped by ABI
@@ -1135,7 +1141,7 @@ static int32_t pic_veneer(uint8_t *vbuf, uint32_t cap, uint32_t *used, uint32_t 
 LoadResult app_pic_install(const AppSource &src, SlotWrite sink, void *sink_ctx,
                            PicManifest *m) {
     memset(m, 0, sizeof(*m));
-    g_pic_peak = g_pic_biggest = 0;    // this install's cost, not the last one's
+    g_pic_peak = g_pic_biggest = g_pic_cuts = 0;   // this install's cost, not the last one's
 
     Elf32_Ehdr eh;
     if (!read_exact(src, 0, &eh, sizeof(eh))) return LOAD_ERR_READ;
@@ -1509,6 +1515,7 @@ LoadResult app_pic_install(const AppSource &src, SlotWrite sink, void *sink_ctx,
         // in this turn may reach past the point the emit stops at, or its tail
         // would be dropped and re-read unpatched.
         if (patched_to > emit_end) { rc = LOAD_ERR_RELOC_UNSUPPORTED; break; }
+        if (emit_end != end) g_pic_cuts++;
         if (!sink(sink_ctx, pos, page, emit_end - pos)) { rc = LOAD_ERR_READ; break; }
         pos = emit_end;
     }
