@@ -610,7 +610,14 @@ rpc_add_app(websearch)
 rpc_add_app(speedtest)
 rpc_add_app(havoc)
 rpc_add_app(httpd)
-rpc_add_app(novad1)
+# novad1 is the package task #93 exists for: 114 KB of read-only half, more than
+# the 89 KB largest free block a booted board has, so it cannot be loaded onto a
+# running device. Built PIC, that half is a position-independent blob for a flash
+# slot and only the ~60 KB writable half stays resident. realapp_test proves the
+# blob places anywhere and the writable half clears 89 KB. The device slot-install
+# and load-from-slot wiring is the remaining stage-3 work; until it lands novad1
+# still loads by copy-to-RAM, which is why this is a branch and not shipped.
+rpc_add_app(novad1 PIC)
 
 # --- packages that ship installed -------------------------------------------
 #
