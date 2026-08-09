@@ -6,8 +6,11 @@ One command runs everything that can be run without hardware:
 cd os/host && ./run_all.sh
 ```
 
-32 suites, a few seconds, and the last line is the answer. Anything else in this
-file is detail for when that line is not `0 failed`.
+Close to sixty suites, about half a minute, and the last line is the answer.
+Anything else in this file is detail for when that line is not `0 failed`.
+
+`realapp_test` needs the packages built, so it fails in a tree that has not run
+`build.sh` yet. Everything else stands alone.
 
 ---
 
@@ -30,6 +33,10 @@ package ABI, so packages — which only ever call `fw_*` — are testable too.
 | `httpparse_test`, `httpfetch_test`, `repoindex_test`, `pkgindex_test` | HTTP, the package index, the installed list. |
 | `tui_test`, `tuikey_test`, `tuilist_test`, `lineedit_test` | The screen layer and the line editor. |
 | `rps_test` | The script interpreter. |
+| `sdproto_test`, `fatro_test` | Bringing a card up, against a fake card written from the specification, and reading the filesystem on it, against volumes `fsck.fat` has approved of. |
+| `radio_test`, `nfcframe_test`, `onewire_test` | Frequency and register arithmetic for the two SPI radios, and the frames and checksums the two contact readers carry. The bus transactions themselves need the chip. |
+| `btadv_test`, `btname_test` | The advertising payload builders, byte for byte. |
+| `novagui_test`, `novashots` | The Nova D1 runner with the hardware faked, and a pass that opens every screen and looks at the panel it produced. |
 | `cacerts` | That the shipped roots parse under the device's mbedtls config. |
 
 The rest cover the filesystem paths, formatting, the log ring and the black box.
@@ -73,6 +80,8 @@ This is the honest list, and it is what `probe` exists for.
 | Flash writes, OTA | Needs the real flash controller | `update check` / `update install` |
 | USB CDC console | The whole console; a host test writes to a buffer | any interactive use |
 | Memory protection actually protecting | The host has no MPU. The encoding and the placement are tested; whether the silicon refuses the access is not | `mpu`, then `stress` — an overflow should now name the task instead of corrupting something |
+| A microSD card | The protocol and the filesystem are covered; the electrical and timing layer is not, and nothing has been run with a card attached | `sd status` with no card, then `sd mount` — `sdcard_rp2.cpp` lists the order and what each failure means |
+| Bluetooth beyond the payload builders | btstack needs the CYW43 | `bt scan`, `bt advertise`, `btaudio play` |
 
 The last one deserves a sentence of its own, because it is the only part of this
 OS where a total failure looks identical to success. A region that was never
@@ -81,9 +90,12 @@ working one until the moment it was supposed to catch something. `mpu` prints
 what each core actually has configured, which is the only way to tell from
 outside.
 
-No emulator is used. Renode is installed here but ships no RP2040 model, and
-writing one would mean modelling XIP flash, USB CDC, the cyw43 link and PIO —
-a large piece of work producing a model that would itself need trusting.
+Some of it can now be run with no board at all. `emu/` boots an image under
+Renode on a community RP2040 model, which covers the scheduler on both cores,
+littlefs on emulated flash, the loader, the package system and the shell. It
+does not cover the sandbox, which is ARMv8-M only and compiles out on an RP2040,
+and it has no radio and no USB. Output arrives; input does not. `emu/README.md`
+has the limits and what it would take to lift them.
 
 ---
 

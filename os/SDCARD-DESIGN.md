@@ -1,7 +1,8 @@
 # SD cards: what it would take
 
-A sketch, not an implementation. Written before the code so the shape can be
-argued with cheaply.
+A sketch written before the code, so the shape could be argued with cheaply. The
+code exists now and went in differently; the section immediately below says
+where the sketch was wrong, and the rest is left as it was written.
 
 ## What was actually built, and where this note was wrong
 
@@ -92,7 +93,7 @@ Initialisation is the part that goes wrong, and it goes wrong quietly — a card
 that half-initialises returns plausible rubbish rather than an error.
 
 1. 74+ clock cycles with CS high, at 100–400 kHz. Cards need this and skipping
-   it works on the card you have and not on somebody else's.
+   it works on one card and not on the next.
 2. CMD0 → idle state.
 3. CMD8 → decides v1 from v2. A card that rejects CMD8 is v1 and takes a
    different initialisation path.

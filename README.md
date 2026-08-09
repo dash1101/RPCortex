@@ -22,7 +22,7 @@ RPCortex is a CLI operating system for the **Raspberry Pi Pico series**
 (RP2040 / RP2350), written in **C++** and running natively on the metal. It turns
 a microcontroller into something that behaves like a computer — a real
 interactive shell with pipes and chaining, user accounts with hashed passwords, a
-package system, WiFi, and a structured boot with hardware checks.
+package system, WiFi and Bluetooth, and a structured boot with hardware checks.
 
 This is the successor to [RPCortex-OS](https://github.com/dash1101/RPCortex-OS),
 which shipped through v1.0 "Vela" on MicroPython. Same shell, same commands, same
@@ -31,10 +31,14 @@ package system — without an interpreter underneath.
 
 It runs on hardware with 264 KB of RAM. That constraint is still the point.
 
-> **Early alpha.** It boots, sets itself up, logs in, joins a network, installs
-> and runs packages, and updates itself over the air — all confirmed on a Pico
-> 2 W. It is still changing week to week. What is NOT done is listed at the
-> bottom of this file rather than buried.
+> **Beta.** It boots, sets itself up, logs in, joins a network, installs and
+> runs packages, and updates itself over the air — all confirmed on a Pico 2 W.
+> It is still changing week to week. What is NOT done is listed at the bottom of
+> this file rather than buried.
+>
+> The version stays at **v2.0.0** until it ships. What moves between builds is a
+> build number, taken from the commit count so nobody has to remember it; `ver`
+> prints it alongside the commit the image was built from.
 
 ---
 
@@ -90,10 +94,41 @@ quoting. Plus `ping`, `nslookup` and `ntp`.
 largest allocatable block and a fragmentation percentage, not just free memory —
 free bytes are not the number that predicts whether the next allocation works.
 
+**Bluetooth.** The same chip carries both radios, so `bt` scans, advertises and
+names what it finds on LE and on Classic. `btaudio` is an A2DP source: the
+device reads a WAV off flash and plays it to a speaker. Wireless boards only.
+
+**Tasks.** `ps` gives pid, state, core, stack used against allocated, CPU time
+and where each task was started from; `kill` stops one. `task` `service`
+`startup` `watch` `bg` schedule work, and the shell stays interactive while it
+runs.
+
+**Storage past the flash chip.** `sd` mounts a card at `/sd` on the RP2350
+boards, and the reading commands reach it unchanged — `ls`, `cat`, `tree`, a
+script — because a card is a second volume rather than a second set of commands.
+The mount is read-only: copying off the card into flash is allowed and every
+other direction is refused rather than half-done. `download` presents a real FAT
+volume over USB, so files move by drag and drop in both directions.
+
+**Editing and scripting.** `edit` (also `nano`, `vi`, `vim`) and `settings` sit
+on one full-screen layer. `script` runs `.rps` files — v1's scripting language,
+unchanged, so scripts carry over as they are.
+
+**Staying up.** `update` installs firmware over the air and `update rollback`
+puts the previous image back. Settings and accounts are written twice and
+restored from the copy beside them; `fscheck` reads the rest. Three boots that
+never reach a shell and the device tries the cheapest repair first, unaided.
+`diag`, `logdump` and `mpu` say what happened.
+
 **Packages.** A package is a compiled relocatable object the OS loads at runtime,
 relocates, resolves against a firmware symbol table, and runs. It registers shell
 commands, which go live immediately and are swept when it unloads. `pkg install`
-`pkg remove` `pkg list` `apps` `unload` `run`.
+`pkg remove` `pkg list` `apps` `unload` `run`. The published set is listed in
+[`repo-v2/index.json`](https://github.com/dash1101/RPCortex-repo/blob/main/repo-v2/index.json).
+
+**Parts on the buses.** `nfc`, `ibutton`, `subghz` (CC1101) and `lora` (SX1276)
+are in the firmware rather than in packages, because those buses are shared and
+arbitration is not something a package can do for the rest of the system.
 
 ---
 
@@ -105,9 +140,9 @@ git clone --depth 1 --branch v2.11.1 https://github.com/littlefs-project/littlef
 ./build.sh
 ```
 
-`build.sh` builds both boards into `out/`, fetches the SDK submodules wireless
-needs, and runs the host tests. `./build.sh pico2_w` builds one; `--clean` wipes
-first.
+`build.sh` builds all four boards into `out/`, fetches the SDK submodules
+wireless needs, and runs the host tests. `./build.sh pico2_w` builds one;
+`--clean` wipes first.
 
 pico-sdk **2.x** is required — 1.5.x has no RP2350 support. littlefs is pinned to
 v2.11 because that is what MicroPython's rp2 port builds, which keeps the on-disk
@@ -115,8 +150,10 @@ format readable by a v1.0 device.
 
 | Board | Chip | Notes |
 |---|---|---|
-| Pico 2 W | RP2350 | Primary target |
-| Pico W | RP2040 | Builds and fits — the board v1.0 had to drop |
+| Pico 2 W | RP2350 | Primary target. Every hardware result quoted here comes from one |
+| Pico 2 | RP2350 | No radio, so no WiFi and no Bluetooth |
+| Pico W | RP2040 | Builds and fits — the board v1.0 had to drop — but has never been booted |
+| Pico | RP2040 | The same, without a radio |
 
 ---
 
@@ -128,8 +165,9 @@ os/               the operating system
   kernel/         boot, logging, heap accounting
   shell/          the command set, grouped by area
   host/           host test suite; run os/host/run_all.sh
-  apps/           example packages
+  apps/           the packages built from this tree, worked examples included
 loader-spike/     the runtime package loader, and the experiment that proved it
+emu/             boots an image under Renode, with no board attached
 tools/            host-side helpers (rpc-push.sh copies a package to a device)
 ```
 
@@ -172,18 +210,31 @@ example; `os/include/rpc_app.h` is the only header a package includes.
 
 Kept here rather than in a status file nobody outside this repository reads.
 
-- **No Python.** Packages are compiled. That is the point of the rewrite and it
-  is still a real loss of convenience against v1.
-- **Fourteen packages**, against v1's twenty. The rest need rewriting in C, and
-  that is the main distance left to parity.
-- **No SD card support**, and no ESP32-S3 port. The portable core moves
+- **No package sandbox on RP2040.** A property of the chip rather than a job
+  left half done: ARMv6-M protection regions are power-of-two sized and aligned
+  to their own size, so the five a package needs cost more RAM than those boards
+  have. Packages there run with the OS's own privileges, which means a bad
+  pointer costs the device and not just the command. `mpu` says which a board is
+  doing.
+- **The RP2040 images have never been booted.** They build, both image checks
+  pass on them, and the flash layout was verified by reading the constant back
+  out of the compiled firmware — but no Pico or Pico W has run one.
+- **The microSD driver has never seen a card.** The command sequence that brings
+  a card up is host-tested against a fake card written from the specification,
+  and the filesystem above it against volumes `fsck.fat` approves of. What is
+  unproven is the electrical and timing layer, and the source says so. Built for
+  the RP2350 boards only.
+- **A task holding a lock or writing flash still cannot be taken off its core.**
+  Everything else can: a task that overruns its 250 ms slice is preempted, so a
+  runaway package is a killed task rather than a reboot. The exception is the
+  case where interrupting would cost more than waiting.
+- **Not every v1 package has been ported.** The ones that have are in
+  [`repo-v2/index.json`](https://github.com/dash1101/RPCortex-repo/blob/main/repo-v2/index.json);
+  the rest need rewriting in C, and that is the distance left to parity.
+- **No ESP32-S3 port.** v1 runs there and this does not. `os/core/` moves
   unchanged; the context switch, storage and network layers do not.
-- **No package sandbox on RP2040.** ARMv6-M protection regions are power-of-two
-  sized and aligned to their own size, so the five a package needs cost more RAM
-  than those boards have. Packages run privileged there, and `mpu` says which a
-  board is doing.
-- **Bluetooth is new** — scanning works, both LE and Classic, and little else
-  has been exercised.
+- **It is a beta.** If something here does not match the device, the device is
+  right.
 
 [`CHANGELOG.md`](CHANGELOG.md) has what v2 gained, what it matches and what it
 does differently on purpose.

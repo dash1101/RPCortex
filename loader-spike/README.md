@@ -9,6 +9,11 @@ a different product.
 the entire spike firmware — loader, littlefs, USB serial, fault handling — uses
 **4.4 KB of static RAM on an RP2040**, which is the board v1.0 had to drop.
 
+`loader-spike/firmware/loader.cpp` stopped being an experiment once the answer
+came back: it is the loader the OS ships, built into the firmware and covered by
+`realapp_test`. The rest of this file is the measurement that decided it, kept
+because the numbers are what the decision rested on.
+
 ---
 
 ## Results

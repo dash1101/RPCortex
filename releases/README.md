@@ -6,6 +6,13 @@ entry per board, with the size and SHA-256 of the raw image.
 The entries share their shape with a package index entry on purpose, so the same
 scanner reads both. A second format would be a second parser to get wrong.
 
+`ver` is the frozen version with the build number as a fourth component —
+`2.0.0.<build>`, the same string `RPC_OS_BUILDVER` compiles into the image.
+`repo_version_cmp` counts a missing component as zero, so a later build beats an
+earlier one and a frozen version needs no special case. Given no argument,
+`make-release.py` derives that string from the commit count rather than asking
+for it; an explicit version on the command line overrides it.
+
 BOTH FORMATS, for two different jobs.
 
 The `.bin` is the raw image and is what an over-the-air update writes: `latest.json`

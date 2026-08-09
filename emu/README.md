@@ -19,9 +19,10 @@ boot, against Nova D1's ~61 KB image: tight, and it may not load. There is no
 USB either.
 
 What it does cover is the scheduler on both cores, littlefs on real emulated
-flash, the loader, the package system, the shell and the sandbox — which is
-where three of the last four bugs that reached a bench actually lived. None of
-them needed a radio.
+flash, the loader, the package system and the shell — which is where three of
+the last four bugs that reached a bench actually lived. None of them needed a
+radio. The sandbox is not covered either: it is ARMv8-M only, so on an RP2040
+model it compiles to nothing and packages run privileged.
 
 ## Two things that are not obvious
 
