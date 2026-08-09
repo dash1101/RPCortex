@@ -216,8 +216,12 @@ static bool slot_sink(void *ctx, uint32_t off, const void *data, uint32_t len) {
 // purpose, so an interrupted install can never leave a half-written package that
 // still looks loadable. Everything that could have refused this has already
 // refused it — see pkg_install_file, which does its checking before calling.
+// `*erased` says which side of that line a failure happened on, because the two
+// leave the device in different states and telling somebody the wrong one is
+// worse than telling them nothing.
 static LoadResult slot_write(const AppSource &src, uint32_t i,
-                             const PicMeasure &pm, bool quiet) {
+                             const PicMeasure &pm, bool quiet, bool *erased) {
+    *erased = false;
     SlotFlash fl; storage_pkg_slot_flash(&fl);
     // Static, not on the stack: the writer carries a 256-byte page buffer and
     // this runs on the shell's 8 KB stack. loader.cpp makes the same choice for
@@ -229,6 +233,7 @@ static LoadResult slot_write(const AppSource &src, uint32_t i,
     slot_forget(i);
     if (!pkgslot_begin(&w, &fl, storage_pkg_slot_offset(i), storage_pkg_slot_bytes()))
         return LOAD_ERR_READ;
+    *erased = true;
 
     SlotSink sink{&w, pm.body_bound, quiet};
     LoadResult rc = app_pic_install(src, slot_sink, &sink, &m);
@@ -410,19 +415,27 @@ bool pkg_install_file(const char *file, bool quiet, bool consume) {
         // the largest thing this device does, even at a tenth of the old cost.
         apps_pool_reclaim();
 
-        LoadResult src_rc = slot_write(src, (uint32_t)slot, pm, quiet);
+        bool erased = false;
+        LoadResult src_rc = slot_write(src, (uint32_t)slot, pm, quiet, &erased);
         storage_close_source(h);
         if (src_rc != LOAD_OK) {
             out_errp("pkg", "'%s' could not be written to the flash slot: %s",
                      name, load_result_str(src_rc));
-            // NO SILENT STATE. The slot is empty and that is by design, not by
-            // accident, so say which of the two things on the device is now the
-            // real one and what puts it back.
-            out_multi("  The slot is erased before the new package is written, so");
-            out_multi("  a half-written one can never be run — it is empty now.");
-            out_multi("  Nothing on the filesystem changed: whatever was installed");
-            out_multi("  before is still there, and a reboot loads it into RAM.");
-            out_multi("  'pkg install %s' tries the slot again.", name);
+            // NO SILENT STATE, AND NO WRONG ONE EITHER. Failing before the erase
+            // and failing after it leave the device in different places, and the
+            // difference is the whole of what somebody needs to know.
+            if (!erased) {
+                out_multi("  Nothing was erased — the slot still holds whatever it");
+                out_multi("  held, and the package is unchanged. A flash write that");
+                out_multi("  is refused outright is usually the other core: see");
+                out_multi("  flash_safe_execute in the log.");
+            } else {
+                out_multi("  The slot is erased before the new package is written, so");
+                out_multi("  a half-written one can never be run — it is empty now.");
+                out_multi("  Nothing on the filesystem changed: whatever was installed");
+                out_multi("  before is still there, and a reboot loads it into RAM.");
+                out_multi("  'pkg install %s' tries the slot again.", name);
+            }
             return false;
         }
         return install_finish(file, name, version, quiet, consume, slot);
@@ -619,8 +632,8 @@ static void load_cb(void *, const char *name, const char *) {
     // is the difference between a 184 KB image fitting and not. Mid-session the
     // same load would fail.
     int slot = slot_holding(name);
-    if (slot >= 0) {
-        SlotView *v = slot_view((uint32_t)slot);
+    SlotView *v = slot >= 0 ? slot_view((uint32_t)slot) : nullptr;
+    if (v && v->status == PKGSLOT_OK) {
         if (apps_launch_pic(pkgslot_blob(v->base), &v->m, 0, /*quiet*/true) >= 0)
             return;
         // It was there and it would not load. Not silent: the package is about to
