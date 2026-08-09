@@ -657,7 +657,11 @@ rpc_add_app(i2cscan)
 # Proven on a Pico 2 W, both routes, 2026-08-09: loaded by copy-to-RAM at 576 B
 # resident and from a flash slot at 160 B, registering its command and running
 # it correctly either way.
-rpc_add_app(greet PIC)
+# NOT PIC, on purpose. There is one package slot per board and the first
+# claimant keeps it, so a worked example that saves 416 bytes by taking it
+# would cost novad1 the 112 KB the slot is there for. greet proves the loader
+# on the ordinary path, which is the path nearly every package uses.
+rpc_add_app(greet)
 rpc_add_app(tuidemo)
 rpc_add_app(stress)
 rpc_add_app(bench)
@@ -690,17 +694,29 @@ rpc_add_app(httpd)
 # composes a frame onto a real SSD1309 — at 62272 B resident against 174400 B
 # copied into RAM, which is 112 KB of a 291 KB heap given back.
 #
-# It is still OFF by default, and the reason is what happens when the slot is
-# NOT available. There is one slot per board. A PIC novad1 that cannot have it
-# falls back to copy-to-RAM, where it needs MORE than the plain build does —
-# 126 KB of code and 62 KB of data rather than 174 KB all told — and 126 KB in
-# one piece is more than the largest free block a booted device has. So on a
-# board whose slot already holds another package, turning this on turns a
-# package that loads into one that does not.
+# ON, and what settled it was measuring the alternative rather than assuming it.
 #
-# One word either way. What settles it is whether a package may claim the slot
-# from an occupant, and that is a decision about `pkg`, not about this line.
-rpc_add_app(novad1)
+# This was held off on the grounds that a PIC novad1 which could not get the
+# slot would need 126 KB in one piece, more than a booted device has — turning
+# a package that loads into one that does not. The second half of that is
+# false. The PLAIN build needs 121,728 B in one piece, and the largest free
+# block is 84 KB booted, 108 KB after stopping the service and unloading. So
+# non-PIC does not install on a running device either; it only ever managed it
+# at boot, when the heap is still whole.
+#
+# Against that, through the slot an install peaks at 70 KB with a largest
+# single allocation of 14.5 KB. PIC is not a trade here — it is better when the
+# slot is free and no worse when it is not, because neither build fits then.
+#
+# The one real hazard is contention: one slot per board, first claimant keeps
+# it. So greet is deliberately NOT PIC (see above) — an example package must
+# not be able to take the slot from the package that needs it. Should a second
+# package ever want one, that is when `pkg` needs an eviction rule, and the
+# question can be answered with a case in front of it.
+#
+# This also widens the test net: check_pic had only greet, 304 bytes, to prove
+# the whole slot path with. Now it has this.
+rpc_add_app(novad1 PIC)
 
 # --- packages that ship installed -------------------------------------------
 #
