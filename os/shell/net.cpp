@@ -354,6 +354,18 @@ static bool radio_up(void) {
 
     g_radio_core = task_this_core();
     g_radio_up = true;
+
+    // One reading now, while this core is by definition the radio's core.
+    //
+    // Without it the cache has never held anything and a status bar shows an
+    // unknown power source and no signal bars until the first network command
+    // happens to run. On a device with the automatic join on, the watcher would
+    // fill it in within five seconds; on one with the join turned off there is
+    // no watcher at all, and "a few seconds stale" would quietly have meant
+    // "never answered". A battery icon that is permanently blank is its own bug,
+    // and trading this one for it would be no trade.
+    chip_reads_refresh();
+
     join_phase("radio up");
     return true;
 }
@@ -686,7 +698,11 @@ static NET_NOINIT struct {
     uint8_t  joining;
 } g_joinbb;
 
-// Nesting only, and only within this run — autoconnect calls connect.
+// Nesting only, and only within this run — autoconnect calls connect, so two
+// of these are live at once on the way through. A plain static rather than
+// per-task: the mark is raised before g_net_op is taken and lowered after it is
+// given back, so a second task queued behind the lock is also, correctly, "in a
+// join". The count reaching zero means nobody is any more.
 static uint32_t g_join_depth;
 
 static void joinbb_valid(void) {
