@@ -261,6 +261,35 @@ typedef bool (*SlotWrite)(void *ctx, uint32_t off, const void *data, uint32_t le
 LoadResult app_pic_install(const AppSource &src, SlotWrite sink, void *sink_ctx,
                            PicManifest *m);
 
+// What a package WOULD cost in a slot, without assembling anything.
+//
+// This exists because of the one thing the slot path cannot do: take it back.
+// pkgslot_begin erases the header sector first, deliberately, so the resident
+// package is destroyed before the new one has been proved. Every refusal that
+// can be made cheaply therefore has to be made BEFORE that erase — and this is
+// what makes them cheap. Section headers and a single relocation scan; no blob,
+// no page, no allocation larger than a bitmap of the symbol table.
+//
+// `ram_size` is EXACT: it comes from the same section walk app_pic_install does.
+// `ro_bound` and `body_bound` are UPPER BOUNDS, because the veneer pool and the
+// two recipe arrays are only sized exactly by the real pass. They are bounded on
+// the safe side — a package this accepts always fits, a package it rejects might
+// have fitted by a kilobyte or two. realapp_test asserts both the direction and
+// the slack, which is also what stops this drifting away from the producer.
+struct PicMeasure {
+    // Whether the slot path can take this package at all: it reaches its globals
+    // through a GOT (built -fPIC), AND every relocation it carries is one
+    // app_pic_install can actually emit. The second half matters as much as the
+    // first — an unsupported relocation discovered by the producer is a failure
+    // AFTER the erase, and the same scan that counts GOT slots can see it coming.
+    bool     pic;
+    uint32_t ro_bound;    // .text + .rodata + the veneer pool's ceiling
+    uint32_t body_bound;  // that, plus the two recipe arrays and the .data image
+    uint32_t ram_size;    // GOT + .data + .bss, block-aligned — the resident cost
+    uint32_t got_bytes;   // for the accounting; part of ram_size
+};
+LoadResult app_pic_measure(const AppSource &src, PicMeasure *out);
+
 // What the LAST app_pic_install actually cost, measured inside it:
 //   peak     — the most held at once
 //   biggest  — the largest single request

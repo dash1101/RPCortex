@@ -54,6 +54,11 @@ void loader_set_allocator(LoaderAlloc a, LoaderFree f) {
 // those two from inside the other.
 static Elf32_Rel g_relbuf[REL_CHUNK];
 static Elf32_Sym g_symwin[REL_CHUNK];
+// The section table, likewise shared. Five kilobytes each, and app_peek,
+// app_load, app_pic_measure and app_pic_install all want one — four private
+// copies would be twenty kilobytes of bss to hold the same table one function at
+// a time. Same rule as above, and it is the same rule for the same reason.
+static Elf32_Shdr g_shdr[LOADER_MAX_SECTIONS];
 
 // Round an address up to a block boundary.
 //
@@ -356,7 +361,7 @@ LoadResult app_peek(const AppSource &src, RpcAppHeader *out) {
     if (eh.e_machine != EM_ARM)   return LOAD_ERR_NOT_ARM;
     if (eh.e_shnum > LOADER_MAX_SECTIONS) return LOAD_ERR_TOO_MANY_SECTIONS;
 
-    static Elf32_Shdr sh[LOADER_MAX_SECTIONS];
+    Elf32_Shdr *const sh = g_shdr;                 // shared; see the note above
     if (!read_exact(src, eh.e_shoff, sh, eh.e_shnum * sizeof(Elf32_Shdr)))
         return LOAD_ERR_READ;
 
@@ -403,7 +408,7 @@ LoadResult app_load(const AppSource &src, LoadedApp *out) {
     // Safe because loading is one at a time by construction: packages load
     // sequentially at boot, and installing is a shell command. Nothing in the
     // ABI lets a package load another one.
-    static Elf32_Shdr sh[LOADER_MAX_SECTIONS];
+    Elf32_Shdr *const sh = g_shdr;                 // shared; see the note above
     if (!read_exact(src, eh.e_shoff, sh, eh.e_shnum * sizeof(Elf32_Shdr)))
         return LOAD_ERR_READ;
 
@@ -1138,6 +1143,148 @@ static int32_t pic_veneer(uint8_t *vbuf, uint32_t cap, uint32_t *used, uint32_t 
 // the number says so.
 #define PIC_PAGE 4096u
 
+// --- the pre-flight ----------------------------------------------------------
+//
+// Everything app_pic_install works out from the SECTION HEADERS, worked out
+// again without writing a byte. See the header for why it is worth having a
+// second function that agrees with the first: the erase comes before the proof,
+// so the refusals have to come before the erase.
+//
+// The relocation scan is one pass and it answers three questions at once — how
+// many GOT slots, how many ABS32 fixups the recipe could need, and whether every
+// relocation is one the producer can actually emit. That last one is the reason
+// this is a scan rather than arithmetic over section sizes: an unsupported
+// relocation found by the producer is a package destroyed and not replaced,
+// and it costs nothing to see it coming.
+LoadResult app_pic_measure(const AppSource &src, PicMeasure *out) {
+    memset(out, 0, sizeof(*out));
+
+    Elf32_Ehdr eh;
+    if (!read_exact(src, 0, &eh, sizeof(eh))) return LOAD_ERR_READ;
+    if (memcmp(eh.e_ident, "\x7f" "ELF", 4) != 0 || eh.e_ident[4] != 1)
+        return LOAD_ERR_NOT_ELF;
+    if (eh.e_type != ET_REL)      return LOAD_ERR_NOT_REL;
+    if (eh.e_machine != EM_ARM)   return LOAD_ERR_NOT_ARM;
+    if (eh.e_shnum > LOADER_MAX_SECTIONS) return LOAD_ERR_TOO_MANY_SECTIONS;
+
+    Elf32_Shdr *const sh = g_shdr;                 // shared; see the note above
+    if (!read_exact(src, eh.e_shoff, sh, eh.e_shnum * sizeof(Elf32_Shdr)))
+        return LOAD_ERR_READ;
+
+    // `placed` is not an array here. app_pic_install keeps one because it needs
+    // the offsets too; the predicate itself is just these two tests, and writing
+    // it once keeps the two functions from disagreeing about what a section is.
+    auto placed = [&](uint32_t i) -> bool {
+        return i < (uint32_t)eh.e_shnum &&
+               (sh[i].sh_flags & SHF_ALLOC) && sh[i].sh_size != 0;
+    };
+
+    int symtab_idx = -1;
+    for (int i = 0; i < eh.e_shnum; i++)
+        if (sh[i].sh_type == SHT_SYMTAB) { symtab_idx = i; break; }
+    const uint32_t nsyms = symtab_idx < 0 ? 0 : sh[symtab_idx].sh_size / sizeof(Elf32_Sym);
+
+    // --- the one relocation pass.
+    uint32_t got_slots = 0, abs_cap = 0;
+    bool     supported = true;
+    if (nsyms) {
+        uint8_t *seen = (uint8_t *)pic_calloc((nsyms + 7) / 8);
+        if (!seen) return LOAD_ERR_OOM;
+        for (int i = 0; i < eh.e_shnum && supported; i++) {
+            if (sh[i].sh_type != SHT_REL) continue;
+            const uint32_t tgt = sh[i].sh_info;
+            // A relocation section whose target is not loaded relocates nothing
+            // that ends up in the blob or the RAM block — .rel.debug_* and the
+            // like. app_pic_install skips them in both of its passes.
+            if (!placed(tgt)) continue;
+            const bool writable = (sh[tgt].sh_flags & SHF_WRITE) != 0;
+            if (writable) abs_cap += sh[i].sh_size / sizeof(Elf32_Rel);
+
+            uint32_t n = sh[i].sh_size / sizeof(Elf32_Rel), have = 0, first = 0;
+            for (uint32_t r = 0; r < n; r++) {
+                if (r >= first + have) {
+                    first = r; have = n - r < REL_CHUNK ? n - r : REL_CHUNK;
+                    if (!read_exact(src, sh[i].sh_offset + first * sizeof(Elf32_Rel),
+                                    g_relbuf, have * sizeof(Elf32_Rel))) {
+                        pic_free(seen); return LOAD_ERR_READ;
+                    }
+                }
+                const Elf32_Rel *rels = g_relbuf - first;
+                const uint32_t type = ELF32_R_TYPE(rels[r].r_info);
+                if (type == R_ARM_NONE) continue;
+                // EXACTLY the two switches in app_pic_install: the blob accepts a
+                // GOT load or a branch, the RAM block accepts a pointer. Anything
+                // else is a package the producer would refuse halfway through.
+                if (writable) {
+                    if (type != R_ARM_ABS32 && type != R_ARM_TARGET1) supported = false;
+                } else if (type != R_ARM_GOT_BREL && type != R_ARM_THM_CALL &&
+                           type != R_ARM_THM_JUMP24) {
+                    supported = false;
+                }
+                if (!supported) break;
+                if (type != R_ARM_GOT_BREL) continue;
+                uint32_t s = ELF32_R_SYM(rels[r].r_info);
+                if (s < nsyms && !(seen[s >> 3] & (1u << (s & 7)))) {
+                    seen[s >> 3] |= (1u << (s & 7)); got_slots++;
+                }
+            }
+        }
+        pic_free(seen);
+    }
+    out->got_bytes = (got_slots * 4u + 3u) & ~3u;
+    // No GOT means it was not built -fPIC — a plain package, which app_load
+    // handles exactly as it always did. An unsupported relocation means the same
+    // answer for a different reason, and both are "take the copy path", not
+    // "refuse to install".
+    out->pic = supported && got_slots != 0;
+
+    // --- the same two-half layout, so the two agree on where things land.
+    uint32_t bpos = 0, rpos = out->got_bytes;
+    uint32_t data_lo = 0xffffffffu, data_hi = 0;
+    for (int i = 0; i < eh.e_shnum; i++) {
+        if (!placed(i) || (sh[i].sh_flags & SHF_WRITE)) continue;
+        uint32_t al = sh[i].sh_addralign ? sh[i].sh_addralign : 4; if (al < 4) al = 4;
+        bpos = (bpos + al - 1) & ~(al - 1);
+        bpos += sh[i].sh_size;
+    }
+    for (int i = 0; i < eh.e_shnum; i++) {
+        if (!placed(i) || !(sh[i].sh_flags & SHF_WRITE)) continue;
+        uint32_t al = sh[i].sh_addralign ? sh[i].sh_addralign : 4; if (al < 4) al = 4;
+        rpos = (rpos + al - 1) & ~(al - 1);
+        if (sh[i].sh_type != SHT_NOBITS) {
+            if (rpos < data_lo) data_lo = rpos;
+            if (rpos + sh[i].sh_size > data_hi) data_hi = rpos + sh[i].sh_size;
+        }
+        rpos += sh[i].sh_size;
+    }
+    if (data_lo == 0xffffffffu) { data_lo = out->got_bytes; data_hi = out->got_bytes; }
+    const uint32_t data_size = data_hi - data_lo;
+    out->ram_size = (rpos + (APP_BLOCK_ALIGN - 1)) & ~(APP_BLOCK_ALIGN - 1);
+
+    // The veneer pool's CEILING, which is where nearly all the slack in the bound
+    // comes from: one veneer per distinct firmware function, bounded by the ABI's
+    // own size. For a Nova D1 that is 2.5 KB reserved against 1.2 KB used.
+    uint32_t reloc_count = 0;
+    for (int i = 0; i < eh.e_shnum; i++)
+        if (sh[i].sh_type == SHT_REL) reloc_count += sh[i].sh_size / sizeof(Elf32_Rel);
+    uint32_t veneer_bound = reloc_count;
+    uint32_t max_targets  = api_symbol_count();
+    if (max_targets && veneer_bound > max_targets) veneer_bound = max_targets;
+
+    const uint32_t veneer_off = (bpos + 3u) & ~3u;
+    out->ro_bound = veneer_off + (veneer_bound + 1) * VENEER_BYTES;
+
+    // And the body, in pkgslot_commit's order: blob, GOT recipe, ABS32 recipe,
+    // .data initialisers, each on a four-byte boundary. The final round up to a
+    // program page is pkgslot's, so it is added there and not here.
+    uint32_t b = out->ro_bound;
+    b = ((b + 3u) & ~3u) + got_slots * (uint32_t)sizeof(PicGotEntry);
+    b = ((b + 3u) & ~3u) + abs_cap   * (uint32_t)sizeof(PicAbs32);
+    b = ((b + 3u) & ~3u) + data_size;
+    out->body_bound = b;
+    return LOAD_OK;
+}
+
 LoadResult app_pic_install(const AppSource &src, SlotWrite sink, void *sink_ctx,
                            PicManifest *m) {
     memset(m, 0, sizeof(*m));
@@ -1151,7 +1298,7 @@ LoadResult app_pic_install(const AppSource &src, SlotWrite sink, void *sink_ctx,
     if (eh.e_machine != EM_ARM)   return LOAD_ERR_NOT_ARM;
     if (eh.e_shnum > LOADER_MAX_SECTIONS) return LOAD_ERR_TOO_MANY_SECTIONS;
 
-    static Elf32_Shdr sh[LOADER_MAX_SECTIONS];
+    Elf32_Shdr *const sh = g_shdr;                 // shared; see the note above
     if (!read_exact(src, eh.e_shoff, sh, eh.e_shnum * sizeof(Elf32_Shdr)))
         return LOAD_ERR_READ;
     const Elf32_Shdr &shstr = sh[eh.e_shstrndx];

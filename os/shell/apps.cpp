@@ -917,22 +917,18 @@ int apps_busy_pid(const char *name) {
     return a ? task_app_mem_holder(a->image) : -1;
 }
 
-int apps_launch(const char *file, int arg, bool quiet) {
-    AppSource src;
-    void *handle = nullptr;
-    if (!storage_open_source(file, &src, &handle)) {
-        if (!quiet) out_err("No such app: %s", file);
-        return -1;
-    }
-    uint32_t before = heap_free();
-    LoadedApp app;
-    LoadResult rc = app_load(src, &app);
-    storage_close_source(handle);
-    if (rc != LOAD_OK) {
-        if (!quiet) out_err("Load failed: %s%s%s", load_result_str(rc),
-                            app.detail[0] ? " - " : "", app.detail);
-        return -1;
-    }
+// Everything after the load, which is the same whichever way the package got
+// here: run app_main, keep it resident if it registered a command, and say
+// something useful if it did not.
+//
+// SPLIT OUT because there are now two ways in. app_load copies the whole image
+// into RAM; app_pic_load leaves the read-only half in a flash slot and allocates
+// only what the package writes to. Past this point nothing can tell the
+// difference — a LoadedApp is a LoadedApp, and `image` being flash rather than
+// heap is already app_unload's business (it frees the RAW pointers, and a
+// slot-loaded app has none for its image).
+static int launch_loaded(LoadedApp *appp, int arg, bool quiet, uint32_t before) {
+    LoadedApp &app = *appp;
 
     // A package that registers nothing usually just finished its work. One that
     // TRIED and was refused is a different thing entirely, and used to be
@@ -999,6 +995,40 @@ int apps_launch(const char *file, int arg, bool quiet) {
         }
     }
     return ret;
+}
+
+int apps_launch(const char *file, int arg, bool quiet) {
+    AppSource src;
+    void *handle = nullptr;
+    if (!storage_open_source(file, &src, &handle)) {
+        if (!quiet) out_err("No such app: %s", file);
+        return -1;
+    }
+    uint32_t before = heap_free();
+    LoadedApp app;
+    LoadResult rc = app_load(src, &app);
+    storage_close_source(handle);
+    if (rc != LOAD_OK) {
+        if (!quiet) out_err("Load failed: %s%s%s", load_result_str(rc),
+                            app.detail[0] ? " - " : "", app.detail);
+        return -1;
+    }
+    return launch_loaded(&app, arg, quiet, before);
+}
+
+int apps_launch_pic(const void *blob, const PicManifest *m, int arg, bool quiet) {
+    uint32_t before = heap_free();
+    LoadedApp app;
+    LoadResult rc = app_pic_load(blob, m, &app);
+    if (rc != LOAD_OK) {
+        // Named separately from the copy path's message on purpose. The two fail
+        // for different reasons and at wildly different sizes — this one asks for
+        // the writable half only, so an out-of-memory HERE is a device with
+        // almost nothing left rather than a package that is merely large.
+        if (!quiet) out_err("Load from the flash slot failed: %s", load_result_str(rc));
+        return -1;
+    }
+    return launch_loaded(&app, arg, quiet, before);
 }
 
 // Find the package a raw address belongs to. A fault report giving only an

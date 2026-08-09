@@ -40,6 +40,47 @@ static inline uint32_t round_up(uint32_t v, uint32_t a) {
     return (v + a - 1u) & ~(a - 1u);
 }
 
+// --- routing ------------------------------------------------------------------
+
+uint32_t pkgslot_body_capacity(uint32_t slot_bytes) {
+    if (slot_bytes <= PKGSLOT_HEADER) return 0;
+    // Rounded DOWN to a program page: the writer's last flush pads the tail out
+    // to one, so a body that ends inside the final page still needs the whole
+    // page. Reporting the unrounded figure would accept a package by a few bytes
+    // and then fail programming the last page, which is the one failure this
+    // whole function exists to move to before the erase.
+    return (slot_bytes - PKGSLOT_HEADER) & ~(PKGSLOT_PROG - 1u);
+}
+
+PkgRoute pkg_route(const PkgRouteIn &in) {
+    // Order matters only for what gets REPORTED. "too big for the slot" is worth
+    // saying and the others are not: a board with no slots, or a package that
+    // was never built for one, is not a problem anybody can act on — it is just
+    // how that package installs. So the quiet reasons are answered first, and
+    // only a package that genuinely wanted the slot and could not have it comes
+    // back as TOO_BIG.
+    if (!in.pic || !in.svc) return PKG_ROUTE_COPY;
+    if (!in.slot_bytes || !in.slot_free) return PKG_ROUTE_COPY;
+    // Rounded UP to a program page before it is compared, because that is what
+    // the body will actually occupy: the writer's last flush pads its final page
+    // out with 0xFF and programs the whole thing. The caller's figure is a bound
+    // on the CONTENT, and a bound that ignores the padding accepts a package by
+    // a hundred bytes and then fails programming the last page — after the erase,
+    // which is the one place a failure costs something.
+    if (round_up(in.need_bytes, PKGSLOT_PROG) > pkgslot_body_capacity(in.slot_bytes))
+        return PKG_ROUTE_TOO_BIG;
+    return PKG_ROUTE_SLOT;
+}
+
+const char *pkg_route_str(PkgRoute r) {
+    switch (r) {
+    case PKG_ROUTE_COPY:    return "copy to RAM";
+    case PKG_ROUTE_SLOT:    return "flash slot";
+    case PKG_ROUTE_TOO_BIG: return "too big for the slot";
+    }
+    return "?";
+}
+
 // --- writing ----------------------------------------------------------------
 
 bool pkgslot_begin(PkgSlotWriter *w, const SlotFlash *fl,

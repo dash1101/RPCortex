@@ -173,6 +173,44 @@ bool pkgslot_erase(const SlotFlash *fl, uint32_t slot_off);
 
 const char *pkgslot_status_str(PkgSlotStatus s);
 
+// --- which way an install goes ------------------------------------------------
+//
+// Decided BEFORE anything is erased, and kept here — pure, with no filesystem
+// and no chip behind it — because it is the part worth testing. Everything the
+// decision needs is a handful of numbers the caller has already got: whether the
+// package is position-independent, whether this board reaches firmware by index
+// or by address, and whether there is a slot it may have.
+//
+// The default is COPY. A board with no slots, a package that was not built
+// -fPIC, a firmware running DIRECT veneers and a slot already spoken for all
+// arrive at the same place: the copy-to-RAM path, behaving exactly as it did
+// before slots existed. Only the case that is provably better takes the new one.
+enum PkgRoute {
+    PKG_ROUTE_COPY = 0,     // app_load into RAM, as always
+    PKG_ROUTE_SLOT,         // write the flash slot and run from it
+    PKG_ROUTE_TOO_BIG,      // it would take the slot, but it will not fit one
+};
+
+struct PkgRouteIn {
+    bool     pic;           // reaches its globals through a GOT, and every
+                            // relocation is one the slot producer can emit
+    bool     svc;           // firmware is called by ABI index, not by address.
+                            // A DIRECT veneer holds an address that changes with
+                            // every firmware build, and baking one into flash
+                            // would call the wrong function after an update.
+    bool     slot_free;     // the chosen slot is empty, unreadable, or already
+                            // holds THIS package (an upgrade in place)
+    uint32_t slot_bytes;    // 0 when the board has no slots at all
+    uint32_t need_bytes;    // app_pic_measure's body_bound
+};
+
+// The most body a slot of this size can hold, after the header sector and the
+// round up to a whole program page that the writer's last flush performs.
+uint32_t pkgslot_body_capacity(uint32_t slot_bytes);
+
+PkgRoute pkg_route(const PkgRouteIn &in);
+const char *pkg_route_str(PkgRoute r);
+
 // CRC-32 (the reflected 0xEDB88320 polynomial, as zip and PNG use). Exposed
 // because the test computes expected values with it.
 uint32_t pkgslot_crc32(uint32_t crc, const void *data, uint32_t len);

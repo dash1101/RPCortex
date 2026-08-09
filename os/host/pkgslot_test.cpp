@@ -296,6 +296,70 @@ int main(void) {
         ok(g_f.erases <= 2, "a 1.4 KB package erases the header sector and one more");
     }
 
+    // --- 8. which path a package takes ---------------------------------------
+    //
+    // The decision itself, as a table, because it is the part with the most ways
+    // to be quietly wrong and the least chance of anyone noticing. Every row that
+    // says COPY is a device behaving exactly as it did before slots existed; the
+    // ONE row that says SLOT is the case that has to be provably narrow.
+    //
+    // The RP2040 rows matter most. Those boards have zero slots by design —
+    // SANDBOX_SUPPORTED is 0 on ARMv6-M, so a package there runs privileged and
+    // its veneers hold firmware ADDRESSES, which cannot be baked into flash. Both
+    // `svc = false` and `slot_bytes = 0` describe them, and either one on its own
+    // has to be enough.
+    {
+        const uint32_t SLOTB = 256u * 1024u;
+        const uint32_t CAP   = pkgslot_body_capacity(SLOTB);
+        ok(CAP == SLOTB - PKGSLOT_HEADER, "a slot's body is everything but the header sector");
+        ok((CAP % PKGSLOT_PROG) == 0, "and it is a whole number of program pages");
+        ok(pkgslot_body_capacity(PKGSLOT_HEADER) == 0, "a slot with no body holds nothing");
+
+        // The one that goes to flash.
+        PkgRouteIn in{ /*pic*/true, /*svc*/true, /*free*/true, SLOTB, 123456u };
+        ok(pkg_route(in) == PKG_ROUTE_SLOT,
+           "a PIC package, in SVC mode, with a free slot it fits: the slot");
+
+        // Each condition removed on its own, so no single one is load-bearing by
+        // accident.
+        PkgRouteIn nonpic = in; nonpic.pic = false;
+        ok(pkg_route(nonpic) == PKG_ROUTE_COPY, "a package that is not PIC: copy to RAM");
+
+        PkgRouteIn direct = in; direct.svc = false;
+        ok(pkg_route(direct) == PKG_ROUTE_COPY, "DIRECT veneers (RP2040): copy to RAM");
+
+        PkgRouteIn noslot = in; noslot.slot_bytes = 0;
+        ok(pkg_route(noslot) == PKG_ROUTE_COPY, "a board with no slots: copy to RAM");
+
+        PkgRouteIn taken = in; taken.slot_free = false;
+        ok(pkg_route(taken) == PKG_ROUTE_COPY,
+           "the slot already holds another package: copy to RAM");
+
+        // An RP2040 as it really arrives: no sandbox AND no slots.
+        PkgRouteIn rp2040 = in; rp2040.svc = false; rp2040.slot_bytes = 0;
+        ok(pkg_route(rp2040) == PKG_ROUTE_COPY, "an RP2040 board: copy to RAM");
+        // ...and it stays COPY even for a package that would otherwise fit, which
+        // is the case a test that only ever passes zero would miss.
+        rp2040.need_bytes = 8u * 1024u;
+        ok(pkg_route(rp2040) == PKG_ROUTE_COPY,
+           "an RP2040 board, with a package that would have fitted: still copy");
+
+        // Too big is its OWN answer and not "out of memory" and not "copy" —
+        // the caller has something specific to say about it.
+        PkgRouteIn big = in; big.need_bytes = CAP + 1;
+        ok(pkg_route(big) == PKG_ROUTE_TOO_BIG, "one byte past the slot: too big for the slot");
+        PkgRouteIn exact = in; exact.need_bytes = CAP;
+        ok(pkg_route(exact) == PKG_ROUTE_SLOT, "exactly filling the slot still fits");
+        ok(strcmp(pkg_route_str(PKG_ROUTE_TOO_BIG), "too big for the slot") == 0,
+           "and it says so in those words");
+
+        // Too big only outranks the quiet reasons when the package could have had
+        // the slot. A non-PIC package on a board with no slots is not "too big".
+        PkgRouteIn bignonpic = big; bignonpic.pic = false;
+        ok(pkg_route(bignonpic) == PKG_ROUTE_COPY,
+           "a non-PIC package larger than a slot is copy, not too big");
+    }
+
     ok(!g_f.violated, "no fake-flash rule was broken across the whole run");
     printf(fails ? "pkgslot: %d checks, %d FAILED\n" : "pkgslot: %d checks\n", checks, fails);
     return fails ? 1 : 0;

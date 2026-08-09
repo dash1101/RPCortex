@@ -816,6 +816,28 @@ static int check_pic(const char *path) {
     PicManifest mA{}, mB{};
     AppSource src{}; src.read = file_read; src.ctx = nullptr; src.size = fsz;
 
+    // 0) THE PRE-FLIGHT, first, because that is the order the device uses it in.
+    //
+    // app_pic_measure decides whether this package goes to a slot at all, and it
+    // has to decide BEFORE pkgslot_begin erases the slot's header — after that
+    // point a refusal costs the package that was already there. It works from the
+    // section headers and one relocation scan, which means it is a second
+    // implementation of the layout the producer computes, and two implementations
+    // drift. What is asserted below is exactly what the routing relies on:
+    // the RAM figure is EXACT, the blob and body figures are upper bounds, and
+    // the slack in those bounds is small enough to be honest.
+    PicMeasure pm{};
+    g_f = fopen(path, "rb");
+    g_read_bytes = 0; g_read_calls = 0;
+    LoadResult rcM = app_pic_measure(src, &pm);
+    uint64_t measure_read = g_read_bytes;
+    uint32_t measure_calls = g_read_calls;
+    fclose(g_f);
+    if (rcM != LOAD_OK) {
+        printf("  FAIL %-12s pic-measure: %s\n", name, load_result_str(rcM));
+        free(b); return 1;
+    }
+
     g_f = fopen(path, "rb");
     g_read_bytes = 0; g_read_calls = 0;
     LoadResult rcA = app_pic_install(src, slot_sink, &sbA, &mA);
@@ -862,6 +884,55 @@ static int check_pic(const char *path) {
     if (peak >= 89u * 1024u) {
         printf("       FAIL install holds %u B at once — over the 89 KB block\n", peak);
         bad = 1;
+    }
+
+    // What the body will really be, in pkgslot_commit's order. The producer does
+    // not report it, so it is reconstructed here from the manifest and checked
+    // against the writer's own count in (5).
+    auto up4 = [](uint32_t v) { return (v + 3u) & ~3u; };
+    uint32_t real_body = up4(mA.ro_size) + mA.got_count * (uint32_t)sizeof(PicGotEntry);
+    real_body = up4(real_body) + mA.abs_count * (uint32_t)sizeof(PicAbs32);
+    real_body = up4(real_body) + mA.data_size;
+    const uint32_t need = (pm.body_bound + PKGSLOT_PROG - 1u) & ~(PKGSLOT_PROG - 1u);
+
+    printf("       measure: %s, RAM %u B, blob <= %u B, body <= %u B (real %u B, "
+           "slack %d B), read %llu B in %u calls\n",
+           pm.pic ? "PIC" : "not PIC", pm.ram_size, pm.ro_bound, pm.body_bound,
+           real_body, (int)need - (int)real_body,
+           (unsigned long long)measure_read, measure_calls);
+
+    // Exact, both of them: they come from the same section walk the producer
+    // does, and the RAM figure is what a caller would quote as the resident cost.
+    if (pm.ram_size != mA.ram_size) {
+        printf("       FAIL measure says RAM %u B, install produced %u B\n",
+               pm.ram_size, mA.ram_size); bad = 1;
+    }
+    if (pm.got_bytes != mA.got_bytes) {
+        printf("       FAIL measure says GOT %u B, install produced %u B\n",
+               pm.got_bytes, mA.got_bytes); bad = 1;
+    }
+    // Every package here is PIC — check_pic is only called for those — so a
+    // measure that says otherwise would route it to the copy path and this whole
+    // feature would quietly never happen.
+    if (!pm.pic) { printf("       FAIL measure does not see this as PIC\n"); bad = 1; }
+    // Bounds, and in the safe direction. A bound BELOW the real figure is the
+    // dangerous one: it accepts a package that then runs off the end of a slot.
+    if (pm.ro_bound < mA.ro_size) {
+        printf("       FAIL blob bound %u B is under the real %u B\n",
+               pm.ro_bound, mA.ro_size); bad = 1;
+    }
+    if (need < real_body) {
+        printf("       FAIL body bound %u B (rounded %u) is under the real %u B\n",
+               pm.body_bound, need, real_body); bad = 1;
+    }
+    // And the slack, because a bound that is merely SAFE can also be useless.
+    // Nearly all of it is the veneer pool's ceiling — one per firmware function
+    // the ABI exports — and if that clamp ever stops applying the bound jumps to
+    // one veneer per relocation, which for a Nova D1 is 100 KB of a 256 KB slot
+    // and would start refusing packages that fit perfectly well.
+    if (need - real_body > 32u * 1024u) {
+        printf("       FAIL body bound %u B overshoots the real %u B by %u\n",
+               need, real_body, need - real_body); bad = 1;
     }
 
     // The property that makes a flash slot possible at all.
@@ -1046,6 +1117,80 @@ static int check_pic(const char *path) {
                     app_unload(&appS);
                 }
                 app_pic_manifest_free(&ms);   // borrowed: must release nothing
+
+                // What the writer actually programmed, against what the
+                // pre-flight promised before anything was erased.
+                if (w.page_base > need) {
+                    printf("       FAIL the slot body is %u B; measure allowed %u\n",
+                           w.page_base, need); bad = 1;
+                }
+            }
+        }
+
+        // 6) THE BOOT FALLBACK, and it has to LOAD, not merely be declined.
+        //
+        // A firmware update whose ABI moved leaves every slot on the device
+        // holding baked indices that now name different functions. That is the
+        // one failure a package would not crash on — it would call the wrong
+        // thing, happily — so pkgslot_open refuses the slot, and the package has
+        // to come up some other way or the device loses it.
+        //
+        // The other way is the .app file, which is still on the filesystem: the
+        // slot path never removes it, precisely so this exists. Boot is also when
+        // it can be afforded, because the heap has one large contiguous block at
+        // that point and the copy needs the image in one piece.
+        //
+        // The slot is aged here by editing the mapping directly, not by writing
+        // through the fake chip. Flash cannot turn a bit back on, and the state
+        // being reproduced is a slot some OLDER firmware wrote correctly — its
+        // CRCs agree with its contents. Nothing is corrupt; it is simply not ours.
+        {
+            PkgSlotMeta meta;
+            memcpy(&meta, slotB + PKGSLOT_META_OFF, sizeof(meta));
+            meta.api_minor = (uint16_t)(RPC_API_MINOR + 1);
+            uint8_t metabuf[PKGSLOT_META_BYTES];
+            memcpy(metabuf, slotB + PKGSLOT_META_OFF, PKGSLOT_META_BYTES);
+            memcpy(metabuf, &meta, sizeof(meta));
+            memcpy(slotB + PKGSLOT_META_OFF, metabuf, PKGSLOT_META_BYTES);
+            PkgSlotCommit c;
+            memcpy(&c, slotB, sizeof(c));
+            c.meta_crc = pkgslot_crc32(0, metabuf, PKGSLOT_META_BYTES);
+            memcpy(slotB, &c, sizeof(c));
+
+            PicManifest aged{};
+            PkgSlotStatus as = pkgslot_open(slotB, SLOTCAP, &aged);
+            if (as != PKGSLOT_BAD_ABI) {
+                printf("       FAIL an aged slot opened as %s, not bad ABI\n",
+                       pkgslot_status_str(as)); bad = 1;
+            }
+
+            // The fallback itself: the same AppSource the install read, through
+            // the ordinary copy-to-RAM loader. A full relocation pass — this is a
+            // load, not a status code.
+            g_f = fopen(path, "rb");
+            LoadedApp fb{};
+            LoadResult fbrc = app_load(src, &fb);
+            fclose(g_f);
+            if (fbrc != LOAD_OK) {
+                printf("       FAIL the boot fallback did not load: %s%s%s\n",
+                       load_result_str(fbrc), fb.detail[0] ? " - " : "", fb.detail);
+                bad = 1;
+            } else {
+                uint32_t e = (uint32_t)(uintptr_t)fb.entry & ~1u;
+                uint32_t base = (uint32_t)(uintptr_t)fb.image;
+                bool sane = fb.entry && (e >= base) && (e < base + fb.text_size) &&
+                            strcmp(fb.header.name, mA.header.name) == 0;
+                if (!sane) {
+                    printf("       FAIL the fallback loaded something wrong: '%s' "
+                           "entry %08x image %08x+%u\n",
+                           fb.header.name, e, base, fb.text_size);
+                    bad = 1;
+                } else {
+                    printf("       slot refused (%s) -> loaded '%s' from the file "
+                           "instead, %u B resident\n",
+                           pkgslot_status_str(as), fb.header.name, fb.bytes_allocated);
+                }
+                app_unload(&fb);
             }
         }
         if (g_fake_violation) {
