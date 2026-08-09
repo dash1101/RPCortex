@@ -267,6 +267,129 @@ static bool mirror_open(const char *path, const LoadedApp &app, ElfMirror *m) {
 }
 static void mirror_close(ElfMirror *m) { free(m->b); m->b = nullptr; }
 
+// --- the permission map the device will actually program ---------------------
+//
+// describe() in os/shell/apps.cpp turns a LoadedApp into a TaskAppMem, and
+// task_app_mem_apply hands each field to set_region. Three of the five spans
+// come out of the load: the read-only half, which is executable; the writable
+// half, which never is; and the veneer pool, which is. (The other two, a
+// sandbox's stack and arena, are allocated per call and are not the loader's
+// to get wrong.)
+//
+// MIRRORED here rather than called, for the reason every mirror in this file
+// exists: a helper that called describe() would agree with it whatever either
+// of them did. The arithmetic is copied deliberately, so a change to one and
+// not the other shows up as a failure here rather than as a fault on a board.
+//
+// THE ONE THING THAT MAKES THIS A MODEL AND NOT A LIST: a span that
+// mpu_v8_encode refuses is marked NOT PROGRAMMED, because that is exactly what
+// the hardware ends up with. set_region clears the limit register, tries to
+// encode, and on failure writes a zero base and returns — leaving the region
+// disabled. Unprivileged code has no default map to fall back on, so a span
+// that was refused is not a span with weaker permissions, it is a span with
+// none: no read, and no instruction fetch. That is the whole of #103, and a
+// map that recorded the INTENDED permission would model the bug away.
+struct ShadowSpan {
+    const char *what;
+    uint32_t    base, size;
+    MpuPerm     perm;
+    bool        exec, write;
+    bool        programmed;      // what the hardware will really be left holding
+};
+struct Shadow { ShadowSpan s[3]; int n; };
+
+static Shadow shadow_of(const LoadedApp &app) {
+    // Only the part of the pool actually written, rounded up to a whole block —
+    // and clamped, because the rounding must not reach past the allocation.
+    // Same two lines as describe().
+    uint32_t vsize = mpu_align_up(app.veneers_used, MPU_V8_GRAIN);
+    if (vsize > app.veneer_size) vsize = app.veneer_size;
+
+    Shadow sm{};
+    struct { const char *what; uint32_t base, size; MpuPerm perm; } want[] = {
+        { "code",    (uint32_t)(uintptr_t)app.image,   app.text_size, MPU_RO_EXEC   },
+        { "data",    (uint32_t)(uintptr_t)app.data,    app.data_size, MPU_RW_NOEXEC },
+        { "veneers", (uint32_t)(uintptr_t)app.veneers, vsize,         MPU_RO_EXEC   },
+    };
+    for (auto &w : want) {
+        ShadowSpan &s = sm.s[sm.n++];
+        s.what  = w.what;
+        s.base  = w.base;
+        s.size  = w.size;
+        s.perm  = w.perm;
+        s.exec  = (w.perm == MPU_RO_EXEC);
+        s.write = (w.perm == MPU_RW_NOEXEC);
+        MpuV8Region r;
+        s.programmed = w.base && w.size && mpu_v8_encode(w.base, w.size, w.perm, &r);
+    }
+    return sm;
+}
+
+// Which span an address really lands in. Only ones the hardware will hold: a
+// refused span describes nothing.
+static const ShadowSpan *shadow_find(const Shadow &sm, uint32_t a) {
+    for (int i = 0; i < sm.n; i++) {
+        const ShadowSpan &s = sm.s[i];
+        if (!s.programmed) continue;
+        if (a >= s.base && a < s.base + s.size) return &s;
+    }
+    return nullptr;
+}
+
+// Firmware is in XIP flash and is covered by NO package region, deliberately:
+// a sandboxed package reaches it through the supervisor rather than by fetching
+// from it. A code pointer landing there is correct, and is judged by the rules
+// that already apply to one — Thumb bit set, and an ABI index that resolves.
+static bool is_firmware_addr(uint32_t a) {
+    return a >= 0x10000000u && a < 0x20000000u;
+}
+
+// --- can what was loaded actually RUN? ---------------------------------------
+//
+// Everything above this point checks the ARITHMETIC of loading: that
+// relocations resolve to the right numbers and that the numbers describe
+// regions the hardware will take. #103 satisfied all of it and could not
+// execute a single instruction, because nothing asked the other question —
+// whether the addresses the loader produced are ones the CPU will be ALLOWED to
+// fetch from once privilege has been dropped.
+//
+// So: for every code pointer this load produced, land it on the shadow map and
+// require an executable span, with the Thumb bit the ABI requires. A pointer
+// that lands in no span at all is the #103 failure exactly, and it is reported
+// as what it is rather than as an address that looks perfectly reasonable.
+static int check_code_addr(const Shadow &sm, const char *how,
+                           const char *what, uint32_t p) {
+    int bad = 0;
+    if (!p) {
+        printf("       FAIL %s: %s is null\n", how, what);
+        return 1;
+    }
+    // ARM ELF carries the Thumb bit in st_value; branching to an even address
+    // faults with INVSTATE rather than doing anything useful.
+    if (!(p & 1u)) {
+        printf("       FAIL %s: %s is %08x — a code address with no Thumb bit\n",
+               how, what, p);
+        bad = 1;
+    }
+    uint32_t a = p & ~1u;
+    const ShadowSpan *sp = shadow_find(sm, a);
+    if (!sp) {
+        if (!is_firmware_addr(a)) {
+            printf("       FAIL %s: %s points at %08x, which is in none of the "
+                   "package's regions and is not firmware — after privilege drops "
+                   "nothing lets the CPU fetch it\n", how, what, a);
+            bad = 1;
+        }
+        return bad;                 // firmware: no region by design
+    }
+    if (!sp->exec) {
+        printf("       FAIL %s: %s points at %08x, inside the %s region, which is "
+               "NOT executable\n", how, what, a, sp->what);
+        bad = 1;
+    }
+    return bad;
+}
+
 // --- the GOT, for a position-independent package -----------------------------
 //
 // The decisive stage-2 check. A PIC package reaches every global THROUGH a GOT
@@ -310,6 +433,7 @@ static int check_got(const char *path, const LoadedApp &app) {
     Elf32_Sym *syms = mm.syms;
     const char *str = mm.str;
     const uint32_t *got = (const uint32_t *)app.data;
+    const Shadow sm = shadow_of(app);
 
     int sites = 0;
     for (int s = 0; s < eh->e_shnum; s++) {
@@ -341,6 +465,15 @@ static int check_got(const char *path, const LoadedApp &app) {
                        str + sy.st_name, slot, expect);
                 bad = 1;
             }
+            // A GOT slot naming a FUNCTION is a code pointer the package will
+            // load and branch to. Right value is not the same claim as
+            // reachable: it has to land somewhere the hardware will let the
+            // CPU fetch from.
+            if (ELF32_ST_TYPE(sy.st_info) == STT_FUNC) {
+                char what[80];
+                snprintf(what, sizeof(what), "the GOT slot for %s", str + sy.st_name);
+                bad |= check_code_addr(sm, "copy-to-RAM", what, slot);
+            }
         }
     }
     // No used slot may be zero. Every symbol resolves above the GOT (.data/.bss),
@@ -371,29 +504,21 @@ static int check_got(const char *path, const LoadedApp &app) {
 // three gates, which are 48 bytes — one and a half blocks, refused every time,
 // and the fault landed on the enter gate's `bx` at veneers+24. So the check
 // runs against BOTH load paths rather than only the one it was written for.
-//
-// Mirrors describe() in os/shell/apps.cpp, which is static and cannot be called
-// from here; the arithmetic is copied deliberately so a change to one and not
-// the other shows up as a failure rather than as a fault on a board.
 static int check_mpu_regions(const LoadedApp &app, const char *how) {
     int bad = 0;
-    MpuV8Region r;
-    uint32_t vsize = mpu_align_up(app.veneers_used, MPU_V8_GRAIN);
-    if (vsize > app.veneer_size) vsize = app.veneer_size;
-    struct { const char *what; uintptr_t base; uint32_t size; MpuPerm perm; } rgn[] = {
-        { "code",    (uintptr_t)app.image,   app.text_size, MPU_RO_EXEC },
-        { "data",    (uintptr_t)app.data,    app.data_size, MPU_RW_NOEXEC },
-        { "veneers", (uintptr_t)app.veneers, vsize,         MPU_RO_EXEC },
-    };
-    for (auto &g : rgn) {
-        if (!g.size) continue;                    // legitimately absent
-        if (!mpu_v8_encode((uint32_t)g.base, g.size, g.perm, &r)) {
+    Shadow sm = shadow_of(app);
+    for (int i = 0; i < sm.n; i++) {
+        const ShadowSpan &s = sm.s[i];
+        if (!s.size) continue;                    // legitimately absent
+        if (!s.programmed) {
             printf("       FAIL %s: the %s region cannot be encoded "
-                   "(base %08lx, %u bytes)\n",
-                   how, g.what, (unsigned long)g.base, g.size);
+                   "(base %08x, %u bytes) — the hardware would be left with no "
+                   "region there at all\n", how, s.what, s.base, s.size);
             bad = 1;
         }
     }
+    uint32_t vsize = mpu_align_up(app.veneers_used, MPU_V8_GRAIN);
+    if (vsize > app.veneer_size) vsize = app.veneer_size;
     if (app.veneers_used && !vsize) {
         printf("       FAIL %s: veneers were written but the region is empty\n", how);
         bad = 1;
@@ -405,6 +530,90 @@ static int check_mpu_regions(const LoadedApp &app, const char *how) {
         printf("       FAIL %s: the region stops at %u B, short of the %u B of gates\n",
                how, vsize, app.veneer_gates);
         bad = 1;
+    }
+    return bad;
+}
+
+// The whole-package half of the same question: the map itself has to be sane,
+// and the handful of code pointers that exist outside any relocation — the
+// entry point and the three gates — have to be fetchable.
+static int check_executable(const LoadedApp &app, const char *how) {
+    int bad = 0;
+    Shadow sm = shadow_of(app);
+
+    // W^X. Nothing the package can write to may also be somewhere it can
+    // execute from; that is the property the two-half split exists to give, and
+    // it is one flipped permission away from being lost silently.
+    for (int i = 0; i < sm.n; i++) {
+        if (sm.s[i].exec && sm.s[i].write) {
+            printf("       FAIL %s: the %s region is both writable and executable\n",
+                   how, sm.s[i].what);
+            bad = 1;
+        }
+    }
+    // And they must not overlap. ARMv8-M calls overlapping regions
+    // UNPREDICTABLE: an access one region allows can be refused by the other,
+    // and the refusal is reported against an address plainly inside a region
+    // that grants it.
+    for (int i = 0; i < sm.n; i++) {
+        for (int j = i + 1; j < sm.n; j++) {
+            const ShadowSpan &a = sm.s[i], &b = sm.s[j];
+            if (!a.programmed || !b.programmed) continue;
+            if (a.base < b.base + b.size && b.base < a.base + a.size) {
+                printf("       FAIL %s: the %s and %s regions overlap "
+                       "(%08x+%u and %08x+%u)\n",
+                       how, a.what, b.what, a.base, a.size, b.base, b.size);
+                bad = 1;
+            }
+        }
+    }
+
+    // The first thing that runs.
+    bad |= check_code_addr(sm, how, "the entry point", (uint32_t)(uintptr_t)app.entry);
+
+    // The gates. These are the ones #103 landed on: the enter gate's `bx r3` is
+    // the FIRST instruction a sandboxed package executes after privilege has
+    // been dropped, and the exit gate is where it returns to. They are kept off
+    // flash precisely so they are not also the first test of unprivileged
+    // fetch-from-flash — which is worth nothing if their region is not
+    // programmed.
+    if (app.veneer_gates) {
+        bad |= check_code_addr(sm, how, "the enter gate",  app_enter_gate(&app));
+        bad |= check_code_addr(sm, how, "the exit gate",   app_exit_gate(&app));
+        bad |= check_code_addr(sm, how, "the return gate", app_return_gate(&app));
+    }
+
+    // r9, for a position-independent package. Every global it has is reached as
+    // an offset from this, so a base that is not the writable block means the
+    // package reads someone else's memory for every variable it owns — which is
+    // not a crash, it is wrong answers. check_got asserts this on the copy path;
+    // asserting it here covers the slot path too, which had nothing.
+    if (app.got_size) {
+        uint32_t r9 = app_pic_base(&app);
+        if (r9 != (uint32_t)(uintptr_t)app.data) {
+            printf("       FAIL %s: r9 would be %08x, but the writable block "
+                   "(and so the GOT) is at %08x\n",
+                   how, r9, (uint32_t)(uintptr_t)app.data);
+            bad = 1;
+        }
+        if (app.got_size > app.data_size) {
+            printf("       FAIL %s: a %u-byte GOT does not fit a %u-byte writable "
+                   "block\n", how, app.got_size, app.data_size);
+            bad = 1;
+        }
+        // The GOT is data. A package that could execute its own GOT could
+        // execute anything it can write.
+        const ShadowSpan *sp = shadow_find(sm, r9);
+        if (!sp) {
+            printf("       FAIL %s: the GOT at %08x is in no region the hardware "
+                   "will hold — the package cannot read its own globals\n", how, r9);
+            bad = 1;
+        } else if (sp->exec || !sp->write) {
+            printf("       FAIL %s: the GOT at %08x is in the %s region, which is "
+                   "%s\n", how, r9, sp->what,
+                   sp->exec ? "executable" : "not writable");
+            bad = 1;
+        }
     }
     return bad;
 }
@@ -506,6 +715,7 @@ static int load_one(const char *path) {
     }
 
     bad |= check_mpu_regions(app, "copy-to-RAM");
+    bad |= check_executable(app, "copy-to-RAM");
     // And the decisive one: walk every byte of the image and check that nothing
     // writable ended up before text_end and nothing read-only after it.
     {
@@ -554,8 +764,9 @@ static int load_one(const char *path) {
     // asked to guess. R_ARM_ABS32 and R_ARM_TARGET1 are the two the loader
     // applies by writing an absolute address into a word — see the switch in
     // loader.cpp — so they are the two walked here.
-    int checked = 0, even_ptrs = 0;
+    int checked = 0, even_ptrs = 0, exec_bad = 0;
     {
+        const Shadow sm = shadow_of(app);
         ElfMirror pm;
         if (!mirror_open(path, app, &pm)) {
             printf("       FAIL could not read %s back to walk its relocations\n", path);
@@ -585,14 +796,22 @@ static int load_one(const char *path) {
                                pm.str + sy.st_name, site, v);
                         even_ptrs++;
                     }
+                    // And the other half of the question: is it fetchable?
+                    // A pointer to a real function that the protection unit
+                    // will not let the CPU fetch from is a package that loads
+                    // perfectly and cannot run.
+                    char what[80];
+                    snprintf(what, sizeof(what), "the stored pointer to %s",
+                             pm.str + sy.st_name);
+                    exec_bad += check_code_addr(sm, "copy-to-RAM", what, v);
                 }
             }
             mirror_close(&pm);
         }
     }
-    if (checked) printf("       %d stored function pointer(s), %d missing the Thumb bit\n",
-                        checked, even_ptrs);
-    if (even_ptrs) bad = 1;
+    if (checked) printf("       %d stored function pointer(s), %d missing the Thumb bit, "
+                        "%d not executable\n", checked, even_ptrs, exec_bad);
+    if (even_ptrs || exec_bad) bad = 1;
 
     // And every veneer's target word, which the scan above structurally cannot
     // see: veneers live outside the image, and they are how EVERY firmware call
@@ -652,7 +871,14 @@ static int load_svc(const char *path) {
     }
     int bad = 0;
     const uint8_t *v = (const uint8_t *)app.veneers;
-    const uint16_t *h = (const uint16_t *)v;
+
+    // THE CONFIGURATION A SANDBOXED PACKAGE ACTUALLY RUNS IN, and until now the
+    // one nothing asked about. In SVC mode the copy path grows the same three
+    // gates the slot path always has, and they are the first and last
+    // instructions executed with privilege dropped. The regions were checked in
+    // DIRECT mode, where there are no gates at all.
+    bad |= check_mpu_regions(app, "sandboxed");
+    bad |= check_executable(app, "sandboxed");
 
     // The two fixed gates come first and at known offsets, because the shim
     // that enters package code has to be able to name them.
@@ -1122,7 +1348,12 @@ static int check_pic(const char *path) {
 
     auto verify = [&](const LoadedApp &app, const uint8_t *blob, const char *tag) {
         const uint32_t *got = (const uint32_t *)app.data;
-        int got_sites = 0, abs_sites = 0, br_sites = 0;
+        // The permission map this instance will run under. Everything resolved
+        // below is checked against it as well as against its expected value:
+        // #103 produced perfectly correct addresses that the CPU was not
+        // allowed to fetch from.
+        const Shadow sm = shadow_of(app);
+        int got_sites = 0, abs_sites = 0, br_sites = 0, unreachable = 0;
         for (int si = 0; si < eh->e_shnum; si++) {
             if (sh[si].sh_type != SHT_REL) continue;
             uint32_t tgt = sh[si].sh_info;
@@ -1142,6 +1373,18 @@ static int check_pic(const char *path) {
                     if (got[off / 4] != want) {
                         printf("       FAIL %s GOT[%u] = %08x, %s is at %08x\n",
                                tag, off / 4, got[off / 4], str + syms[sidx].st_name, want); bad = 1;
+                    }
+                    // Right value, and fetchable. On this path an undefined
+                    // symbol resolves to a call veneer INSIDE the blob, which
+                    // is the code region — so unlike the copy path there is no
+                    // firmware address here to make an exception for, and the
+                    // check applies to every function the package can reach.
+                    if (ELF32_ST_TYPE(syms[sidx].st_info) == STT_FUNC) {
+                        char what[80];
+                        snprintf(what, sizeof(what), "GOT[%u], the slot for %s",
+                                 off / 4, str + syms[sidx].st_name);
+                        int e = check_code_addr(sm, tag, what, got[off / 4]);
+                        unreachable += e; bad |= e;
                     }
                 } else if (type == R_ARM_THM_CALL || type == R_ARM_THM_JUMP24) {
                     // THE MAJORITY OF THE RELOCATIONS IN A PACKAGE, and until
@@ -1183,14 +1426,32 @@ static int check_pic(const char *path) {
                         printf("       FAIL %s ABS32 at +%u = %08x, expected %08x (addend %08x + S %08x)\n",
                                tag, site, have, addend + S, addend, S); bad = 1;
                     }
+                    // An ABS32 naming a function is a function pointer stored
+                    // in the writable half, which is where the misdiagnosed
+                    // novad1 fault was thought to live. Whether or not that was
+                    // the cause, it is a real way for a package to load and not
+                    // run, so it is asked here rather than assumed.
+                    if (ELF32_ST_TYPE(syms[sidx].st_info) == STT_FUNC) {
+                        char what[80];
+                        snprintf(what, sizeof(what), "the stored pointer to %s",
+                                 str + syms[sidx].st_name);
+                        int e = check_code_addr(sm, tag, what, have);
+                        unreachable += e; bad |= e;
+                    }
                 }
             }
         }
         // No used GOT slot may be zero — every symbol resolves somewhere real.
         for (uint32_t k = 0; k < app.got_count; k++)
             if (got[k] == 0) { printf("       FAIL %s GOT[%u] never filled\n", tag, k); bad = 1; }
-        if (!bad) printf("       %s: %d GOT + %d branch + %d ABS32 site(s) resolve against the slot at %p\n",
+        // And the whole-package half: the map's own shape, the entry point, the
+        // three gates, and r9. The gates are what #103 faulted on and this path
+        // is where it hid.
+        bad |= check_executable(app, tag);
+        if (!bad) printf("       %s: %d GOT + %d branch + %d ABS32 site(s) resolve against the slot at %p, "
+                         "every code pointer executable\n",
                          tag, got_sites, br_sites, abs_sites, (void *)app.data);
+        (void)unreachable;
     };
     verify(appA, slotA, "load A");
     verify(appB, slotA, "load B");
