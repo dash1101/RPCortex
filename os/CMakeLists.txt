@@ -423,6 +423,42 @@ endif()
 target_compile_definitions(rpcortex_v2 PRIVATE RPC_FW_RESERVE=${RPC_FW_RESERVE})
 file(WRITE ${CMAKE_BINARY_DIR}/fw_reserve.txt "${RPC_FW_RESERVE}")
 
+# --- flash slots that packages RUN from --------------------------------------
+#
+# A position-independent package's read-only half is executed in place, so only
+# its writable half is ever resident: Nova D1 costs 60 KB of RAM instead of 180.
+# That half has to live somewhere, and this is the region it lives in — between
+# the firmware reserve and the filesystem, taken OUT of the filesystem.
+#
+# Sized against how the package has actually grown rather than against what it
+# is today. Nova D1's read-only half went 84 KB, then 116 KB, then 124 KB over
+# three releases; with the recipe and the header a slot holds about 157 KB now.
+# 256 KB leaves real room; 192 would already be tight enough to need revisiting.
+#
+# ONE slot, not two. Erasing a slot means erasing the code a running copy is
+# fetching instructions from, so an install has to unload the package first
+# either way, and a second slot would be a quarter of a megabyte spent to avoid
+# a reinstall that costs seconds.
+#
+# ZERO on the RP2040 boards, and not arbitrarily: a slot holds `svc` veneers that
+# name firmware by ABI index, because a baked ADDRESS would be wrong after any
+# firmware update. Those only work where packages run unprivileged, and
+# sandbox_rp2.cpp compiles SANDBOX_SUPPORTED to 0 on ARMv6-M — so an RP2040 runs
+# DIRECT veneers and could not use a slot if it had one. It also has the least
+# room: pico_w's filesystem is 384 KB and cannot spare a quarter of a megabyte.
+# Both boards keep the copy-to-RAM path, which is unchanged.
+set(RPC_PKG_SLOT_BYTES 262144)
+if(PICO_BOARD STREQUAL "pico_w" OR PICO_BOARD STREQUAL "pico")
+    set(RPC_PKG_SLOT_COUNT 0)
+else()
+    set(RPC_PKG_SLOT_COUNT 1)
+endif()
+math(EXPR RPC_PKG_REGION "${RPC_PKG_SLOT_COUNT} * ${RPC_PKG_SLOT_BYTES}")
+target_compile_definitions(rpcortex_v2 PRIVATE
+    RPC_PKG_SLOT_BYTES=${RPC_PKG_SLOT_BYTES}
+    RPC_PKG_SLOT_COUNT=${RPC_PKG_SLOT_COUNT})
+file(WRITE ${CMAKE_BINARY_DIR}/pkg_region.txt "${RPC_PKG_REGION}")
+
 target_compile_definitions(rpcortex_v2 PRIVATE PICO_STDIO_USB_USE_DEFAULT_DESCRIPTORS=0)
 
 # Where tud_task() runs. The whole reasoning is in os/usbdev.cpp; the short
