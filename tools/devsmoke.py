@@ -34,13 +34,17 @@ Worth reading before trusting a pass.
   * The network. The radio is left exactly as it was found, so packages are
     installed from files already on the device rather than from the
     repository. HTTPS, the package index and OTA are untested here.
-  * Reinstalling a large package in place. `pkg install /novad1.app` on a
-    booted board fails with "out of memory - 121728 bytes for the code
-    half", and that is correct behaviour rather than a bug: relocation
-    needs the read-only half in ONE piece and a booted heap has no such
-    piece. The documented sequence is `novad1 service clear`, `reboot`,
-    `pkg install`, `novad1 setup`. Pass --install-novad1 to run it; it
-    takes two reboots and several minutes.
+  * Installing Nova D1. It is checked as already installed, loaded,
+    running and rendering, but never installed here, because on a Pico 2 W
+    running v2.0.0 it cannot be: `pkg install /novad1.app` needs 121728
+    bytes for the read-only half in ONE piece, and the largest free block
+    is 84 KB on a booted board and 108 KB after `novad1 service stop` and
+    `unload novad1`. That is correct behaviour rather than a bug —
+    relocation cannot work on a scattered image — but it does mean the
+    install path is proved here by greet, a 1.4 KB package, and not by a
+    260 KB one. (The OS's own advice on that failure names a
+    `novad1 service clear` subcommand, which does not exist: the service
+    verbs are start, stop, restart and status.)
   * Timing. Nothing here measures jitter, flash-write duration or watchdog
     margin. `probe` is the tool for that and it wants reading, not
     asserting.
@@ -344,31 +348,6 @@ def check_mpu(b, r):
                    "fault handler stack used {} bytes".format(used))
 
 
-def install_novad1_the_long_way(b, r, path):
-    """The documented sequence, because the short one cannot work.
-
-    A booted board has no free block big enough for novad1's read-only
-    half, so `pkg install` refuses. Clearing the service and rebooting
-    means the package is never loaded, which leaves the block intact.
-    """
-    r.note("clearing the boot service and rebooting so the heap is whole")
-    b.send("novad1 service clear", wait=30.0)
-    if not b.reboot():
-        r.fail("novad1 install: the board came back", "no prompt after reboot")
-        return False
-    out = b.send("pkg install {}".format(path), wait=180.0)
-    if "Installed" not in out:
-        r.fail("pkg install novad1", out.replace("\n", " | ")[:110])
-        b.send("novad1 setup", wait=60.0)
-        return False
-    r.ok("pkg install novad1", "from {}".format(path))
-    b.send("novad1 setup", wait=60.0)
-    if not b.reboot():
-        r.fail("novad1 install: the board came back", "no prompt after reboot")
-        return False
-    return True
-
-
 def main():
     ap = argparse.ArgumentParser(
         description="Smoke-test an RPCortex v2 board over its serial console.")
@@ -381,13 +360,6 @@ def main():
     ap.add_argument("--greet", default="/greet.app",
                     help="a package file on the DEVICE to install (default: "
                          "/greet.app)")
-    ap.add_argument("--novad1", default="/novad1.app",
-                    help="the Nova D1 package file on the DEVICE, for "
-                         "--install-novad1")
-    ap.add_argument("--install-novad1", action="store_true",
-                    help="also reinstall Nova D1, which needs two reboots and "
-                         "several minutes; off by default because a booted "
-                         "board cannot relocate a package that size in place")
     args = ap.parse_args()
 
     print("RPCortex v2 device smoke test — {} at {} baud".format(args.port, args.baud))
@@ -407,8 +379,6 @@ def main():
 
     check_version(b, r)
     check_install_and_run(b, r, args.greet, "greet", "hello from the greet package")
-    if args.install_novad1:
-        install_novad1_the_long_way(b, r, args.novad1)
     check_novad1_service(b, r)
     check_shot(b, r)
     check_meminfo(b, r)

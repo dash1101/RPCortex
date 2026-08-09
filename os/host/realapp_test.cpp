@@ -784,9 +784,24 @@ static int load_one(const char *path) {
                     uint32_t sidx = ELF32_R_SYM(rel[r].r_info);
                     if (sidx >= pm.nsyms) continue;
                     const Elf32_Sym &sy = pm.syms[sidx];
-                    // Only a function pointer has to be odd. A pointer to data
-                    // is legitimately even, and judging one would be noise.
-                    if (ELF32_ST_TYPE(sy.st_info) != STT_FUNC) continue;
+                    // Only a pointer to CODE has to be odd; one to data is
+                    // legitimately even and judging it would be noise.
+                    //
+                    // Two ways of being code, and the union of them on
+                    // purpose. STT_FUNC is the symbol saying so, which is what
+                    // the loader itself keys on. Landing in a section marked
+                    // executable is what the scan this replaced used, and GCC
+                    // does emit STT_NOTYPE for assembly labels and some
+                    // aliases — so taking only the first would have narrowed
+                    // what is judged. (Measured across all six packages: no
+                    // site is currently in the second set and not the first.
+                    // Asking both means that stays true without being
+                    // re-measured.)
+                    bool is_func = ELF32_ST_TYPE(sy.st_info) == STT_FUNC;
+                    bool into_code = sy.st_shndx < pm.eh->e_shnum &&
+                                     pm.placed[sy.st_shndx] &&
+                                     (pm.sh[sy.st_shndx].sh_flags & SHF_EXECINSTR);
+                    if (!is_func && !into_code) continue;
                     uint32_t site = pm.addr[tgt] + rel[r].r_offset;
                     uint32_t v = *(const uint32_t *)(uintptr_t)site;
                     checked++;
@@ -1346,6 +1361,18 @@ static int check_pic(const char *path) {
         return a | (func ? 1u : 0u);
     };
 
+    // Is this symbol something the CPU will be asked to BRANCH to? The union
+    // of the two ways of saying so — STT_FUNC, which is what the loader keys
+    // on, and landing in a section marked executable, which catches the
+    // STT_NOTYPE assembly labels and aliases GCC also emits.
+    auto points_at_code = [&](uint32_t sidx) -> bool {
+        if (sidx >= nsyms) return false;
+        const Elf32_Sym &s = syms[sidx];
+        if (ELF32_ST_TYPE(s.st_info) == STT_FUNC) return true;
+        return s.st_shndx < (uint32_t)eh->e_shnum && placed[s.st_shndx] &&
+               (sh[s.st_shndx].sh_flags & SHF_EXECINSTR) != 0;
+    };
+
     auto verify = [&](const LoadedApp &app, const uint8_t *blob, const char *tag) {
         const uint32_t *got = (const uint32_t *)app.data;
         // The permission map this instance will run under. Everything resolved
@@ -1353,7 +1380,7 @@ static int check_pic(const char *path) {
         // #103 produced perfectly correct addresses that the CPU was not
         // allowed to fetch from.
         const Shadow sm = shadow_of(app);
-        int got_sites = 0, abs_sites = 0, br_sites = 0, unreachable = 0;
+        int got_sites = 0, abs_sites = 0, br_sites = 0;
         for (int si = 0; si < eh->e_shnum; si++) {
             if (sh[si].sh_type != SHT_REL) continue;
             uint32_t tgt = sh[si].sh_info;
@@ -1379,12 +1406,11 @@ static int check_pic(const char *path) {
                     // is the code region — so unlike the copy path there is no
                     // firmware address here to make an exception for, and the
                     // check applies to every function the package can reach.
-                    if (ELF32_ST_TYPE(syms[sidx].st_info) == STT_FUNC) {
+                    if (points_at_code(sidx)) {
                         char what[80];
                         snprintf(what, sizeof(what), "GOT[%u], the slot for %s",
                                  off / 4, str + syms[sidx].st_name);
-                        int e = check_code_addr(sm, tag, what, got[off / 4]);
-                        unreachable += e; bad |= e;
+                        bad |= check_code_addr(sm, tag, what, got[off / 4]);
                     }
                 } else if (type == R_ARM_THM_CALL || type == R_ARM_THM_JUMP24) {
                     // THE MAJORITY OF THE RELOCATIONS IN A PACKAGE, and until
@@ -1431,12 +1457,11 @@ static int check_pic(const char *path) {
                     // novad1 fault was thought to live. Whether or not that was
                     // the cause, it is a real way for a package to load and not
                     // run, so it is asked here rather than assumed.
-                    if (ELF32_ST_TYPE(syms[sidx].st_info) == STT_FUNC) {
+                    if (points_at_code(sidx)) {
                         char what[80];
                         snprintf(what, sizeof(what), "the stored pointer to %s",
                                  str + syms[sidx].st_name);
-                        int e = check_code_addr(sm, tag, what, have);
-                        unreachable += e; bad |= e;
+                        bad |= check_code_addr(sm, tag, what, have);
                     }
                 }
             }
@@ -1451,7 +1476,6 @@ static int check_pic(const char *path) {
         if (!bad) printf("       %s: %d GOT + %d branch + %d ABS32 site(s) resolve against the slot at %p, "
                          "every code pointer executable\n",
                          tag, got_sites, br_sites, abs_sites, (void *)app.data);
-        (void)unreachable;
     };
     verify(appA, slotA, "load A");
     verify(appB, slotA, "load B");

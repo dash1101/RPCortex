@@ -192,19 +192,41 @@ requires each to carry the Thumb bit and to land inside a span that will be
 executable — but "would be allowed to fetch" is still a model, and a model of
 a device is not the device.
 
+Two code pointers that walk cannot reach, both worth knowing about.
+`R_ARM_THM_MOVW_ABS_NC` / `THM_MOVT_ABS` build an address in a register out of
+two instruction halfwords, and it is the one relocation where the loader adds
+the Thumb bit **itself** rather than taking it from `st_value` — which is
+exactly the arithmetic that once produced `function+2` with the bit clear.
+Nothing here reads it back. And on the copy path, branch targets are unchecked
+by value: the slot path decodes every `THM_CALL`/`THM_JUMP24` and confirms it
+reaches the symbol it names, while the copy path only asks that veneer target
+words carry a Thumb bit.
+
 **Memory protection and W^X.** There is no MPU here. `mpu_test` proves the
 encoding and `realapp_test` proves the loader's spans are encodable and that
-its shadow of them keeps code and data apart. Two things stay out of reach.
-Whether the silicon actually refuses the access is one — an unprogrammed region
-behaves exactly like a working one until the moment it was supposed to catch
-something. The other is subtler and is worth naming: the shadow map is a
-**copy** of `describe()` in `os/shell/apps.cpp`, so it catches the loader
-handing out a span the hardware will not take, and it would not notice
-`describe()` itself being changed to ask for the wrong permission. And none of
-it applies on an RP2040, where `task_app_mem_apply` compiles the regions out
-entirely — ARMv6-M regions are power-of-two sized and aligned to their own
-size, which costs more heap than the protection is worth on a 264 KB part.
-`mpu` on the board prints what each core really has.
+its shadow of them keeps code and data apart. Four things stay out of reach,
+and the last two are the ones that would let another #103 through.
+
+Whether the silicon actually refuses the access is the obvious one — an
+unprogrammed region behaves exactly like a working one until the moment it was
+supposed to catch something. None of it applies on an RP2040 at all, where
+`task_app_mem_apply` compiles the regions out: ARMv6-M regions are power-of-two
+sized and aligned to their own size, which costs more heap than the protection
+is worth on a 264 KB part. `mpu` on the board prints what each core really has.
+
+The shadow map is a **copy** of `describe()` in `os/shell/apps.cpp`. It catches
+the loader handing out a span the hardware will not take. It would not notice
+`describe()` itself being changed to ask for the wrong permission, because it
+is not asking `describe()` anything.
+
+And **the whole slot path is proved by one 304-byte package.** A package
+reaches it only by being position-independent, `is_pic()` decides that on the
+presence of `R_ARM_GOT_BREL`, and `rpc_add_app(greet PIC)` is the only opt-in
+in `os/CMakeLists.txt` — so every slot-path assertion (r9 against the GOT base,
+the three gates being fetchable, each GOT slot landing in executable memory) is
+exercised by greet and nothing else. Nova D1 is in the list `realapp_test`
+loads but never reaches `check_pic`. The suite fails if that count ever drops
+to zero; it cannot tell that one is thin cover for the path #103 hid in.
 
 **Flash timing and watchdog margin.** `pkgslot_test` proves the slot format and
 the write order against a fake chip that erases to 0xFF and refuses to turn a
