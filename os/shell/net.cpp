@@ -270,7 +270,8 @@ const char *signal_word(int rssi) {
 //
 // Returns false when there is no reading rather than inventing a zero, because
 // 0 dBm is a valid and extraordinary value, not an absence.
-// Signal strength, from the cache — NOT from the chip.
+//
+// Answered from the cache, NOT from the chip.
 //
 // This used to call cyw43_wifi_get_rssi directly, with no lock and no check of
 // which core it was on, and fw_net_rssi puts it in front of every package. A
@@ -318,8 +319,15 @@ bool radio_locked(void) {
 // Every one of these steps is a call INTO the driver that does not yield, so if
 // one of them never returns the device hangs with nothing printed — the USB
 // buffer dies with it. bb_note_phase writes to memory the reset does not clear,
-// so the next boot can say which call it was. That is the only way this path is
-// debuggable at all; a hang here otherwise reports "wifi-join" and no more.
+// so the next boot can say which call it was.
+//
+// Worth knowing what these are NOT. The phase is one slot shared with every
+// package, and fw_millis writes it on every call, so on a device that is
+// drawing anything these are overwritten within a millisecond of being set —
+// by the OTHER core, which is still running, because only one core has stopped.
+// They are the answer on a quiet device and nothing at all on a busy one. The
+// fields that survive a running package are the ones in BlackBox with a single
+// writer each; max_stall_pc is what actually named the hang this path had.
 static inline void join_phase(const char *what) { bb_note_phase(what); }
 
 static bool radio_up(void) {
