@@ -265,8 +265,11 @@ static int do_check(bool quiet) {
     RepoEntry e;
     if (!fetch_manifest(&e)) return 1;
 
-    int cmp = repo_version_cmp(e.ver, RPC_OS_VERSION + 1);   // skip the leading 'v'
-    out_multi("  Installed  %s", RPC_OS_VERSION);
+    // Compared against version-plus-build, not the version alone. During a beta
+    // the version is frozen, so comparing only that would report "up to date"
+    // for every build ever published.
+    int cmp = repo_version_cmp(e.ver, RPC_OS_BUILDVER);
+    out_multi("  Installed  %s (build %s)", RPC_OS_VERSION, RPC_OS_BUILD);
     out_multi("  Available  %s", e.ver);
     if (e.size) out_multi("  Size       %lu KB", (unsigned long)(e.size / 1024));
 
@@ -295,8 +298,9 @@ static int do_install(bool force) {
     RepoEntry e;
     if (!fetch_manifest(&e)) return 1;
 
-    if (!force && repo_version_cmp(e.ver, RPC_OS_VERSION + 1) <= 0) {
-        out_ok("Already running %s. 'update install --force' to reinstall.", RPC_OS_VERSION);
+    if (!force && repo_version_cmp(e.ver, RPC_OS_BUILDVER) <= 0) {
+        out_ok("Already running %s build %s. 'update install --force' to reinstall.",
+               RPC_OS_VERSION, RPC_OS_BUILD);
         return 0;
     }
     if (!force && !strcmp(reg_get("System.Rollback_Refused", ""), e.ver)) {

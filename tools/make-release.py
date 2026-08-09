@@ -5,16 +5,37 @@ Run after ./build.sh. The manifest carries the size and SHA-256 of every image,
 and a device refuses to flash anything whose hash does not match — so a manifest
 that has drifted from the binaries is a failed update rather than a bad one.
 """
-import hashlib, json, os, sys
+import hashlib, json, os, subprocess, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 BASE = "https://raw.githubusercontent.com/dash1101/RPCortex/main/releases/"
 BOARDS = ("pico2_w", "pico_w", "pico2", "pico")
 
+# Frozen until v2.0.0 actually ships - see os/kernel/kernel.h for why. What
+# moves between beta builds is the fourth component below.
+BASE_VER = "2.0.0"
+
+
+def build_number():
+    """The commit count, which is what the firmware bakes in as its build.
+
+    Derived rather than passed so the manifest cannot claim a build the images
+    were not built at - a manifest that disagrees with the binary is a failed
+    update, not a wrong label.
+    """
+    try:
+        n = subprocess.check_output(["git", "-C", ROOT, "rev-list", "--count", "HEAD"],
+                                    stderr=subprocess.DEVNULL).decode().strip()
+        return n or "0"
+    except Exception:
+        return "0"
+
 
 def main():
-    ver = sys.argv[1] if len(sys.argv) > 1 else "2.0.0"
+    ver = sys.argv[1] if len(sys.argv) > 1 else "%s.%s" % (BASE_VER, build_number())
+    bits = ver.split(".")
+    shown, build = ".".join(bits[:3]), (bits[3] if len(bits) > 3 else "")
     out = []
     for b in BOARDS:
         p = os.path.join(ROOT, "out", "rpcortex-v2-%s.bin" % b)
@@ -25,7 +46,8 @@ def main():
         out.append({
             "name": b,
             "ver": ver,
-            "desc": "RPCortex v%s Vela II for %s" % (ver, b),
+            "desc": "RPCortex v%s Vela II for %s%s"
+                    % (shown, b, " build %s" % build if build else ""),
             "author": "dash1101",
             "arch": "armv6m" if b in ("pico", "pico_w") else "armv8m",
             "size": len(data),

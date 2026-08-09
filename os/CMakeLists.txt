@@ -244,8 +244,21 @@ else()
 endif()
 message(STATUS "build id: ${RPC_GIT_SHA}")
 
+# The build NUMBER, which is the commit count. A beta's version is frozen (see
+# kernel.h), so this is what actually distinguishes two images and what the
+# updater compares — and deriving it means it cannot be forgotten. Unlike the
+# sha it never carries a '+': it has to stay a number to compare.
+execute_process(COMMAND git -C ${OS_ROOT}/.. rev-list --count HEAD
+                OUTPUT_VARIABLE RPC_GIT_COUNT OUTPUT_STRIP_TRAILING_WHITESPACE
+                ERROR_QUIET RESULT_VARIABLE RPC_COUNT_RC)
+if(NOT RPC_COUNT_RC EQUAL 0 OR RPC_GIT_COUNT STREQUAL "")
+    set(RPC_GIT_COUNT "0")
+endif()
+message(STATUS "build number: ${RPC_GIT_COUNT}")
+
 target_compile_definitions(rpcortex_v2 PRIVATE
     RPC_BUILD_ID="${RPC_GIT_SHA}"
+    RPC_OS_BUILD="${RPC_GIT_COUNT}"
 
     LFS_NO_DEBUG=1 LFS_NO_WARN=1 LFS_NO_ERROR=1 LFS_NO_ASSERT=1
 

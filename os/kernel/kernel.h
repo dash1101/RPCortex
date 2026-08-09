@@ -10,8 +10,33 @@
 
 // Single source of truth for version + codename, as v1 kept them in
 // RPCortex.py. The banner and `ver` both read these.
-#define RPC_OS_VERSION  "v2.2.2"
+//
+// THE VERSION DOES NOT MOVE UNTIL v2.0.0 SHIPS. It is in beta, and everything
+// between pre-releases is a new BUILD of v2.0.0 rather than a new version.
+// Treating each fix as a release walked this to v2.2.2 in a few days, which
+// made a beta read as three shipped versions and made the published
+// pre-release look abandoned. It also quietly discouraged large changes, on
+// the grounds that a big change "needs" a version — exactly backwards for a
+// beta, where the build number is free and the version is not.
+//
+// Bump RPC_OS_BUILD as often as there are builds. Change this line at release.
+#define RPC_OS_VERNUM   "2.0.0"                  // no 'v': what comparisons use
+#define RPC_OS_VERSION  "v" RPC_OS_VERNUM        // what people read
 #define RPC_OS_CODENAME "Vela II"
+
+// The build number, set by CMake from the commit count so it rises on its own
+// and no one has to remember. "0" keeps a host build compiling — those do not
+// run CMake's git step.
+#ifndef RPC_OS_BUILD
+#define RPC_OS_BUILD "0"
+#endif
+
+// What the updater compares: the version with the build as a fourth component.
+// repo_version_cmp counts a missing component as zero, so "2.0.0.57" beats
+// "2.0.0" and a later build beats an earlier one — a frozen version needs no
+// special case. The git sha is deliberately NOT in here: it carries a '+' when
+// the tree was dirty, which is not a number and would not compare.
+#define RPC_OS_BUILDVER RPC_OS_VERNUM "." RPC_OS_BUILD
 
 enum LogLevel { LOG_INFO = 0, LOG_WARN = 1, LOG_ERROR = 2 };
 

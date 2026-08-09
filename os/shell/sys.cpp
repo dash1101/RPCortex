@@ -231,7 +231,12 @@ static int cmd_ver(int, char **) {
     // could not be told apart. Eight different images went onto a board in one
     // night and `ver` reported the same thing for all of them, which makes
     // "what is this device running" unanswerable exactly when it matters.
-    out_multi("Build: %s  (%s)  [C++ native]", RPC_BUILD_ID,
+    // Build NUMBER and commit both. The number is what rises between beta
+    // builds and what the updater compares; the commit is what identifies an
+    // image exactly, including the '+' that says it was built from a dirty
+    // tree. Two images from the same commit count are not necessarily the same
+    // image, which is the whole reason the sha stays.
+    out_multi("Build: %s  %s  (%s)  [C++ native]", RPC_OS_BUILD, RPC_BUILD_ID,
               reg_get("System.Stage", "dev"));
     out_multi("GCC %s   Platform: %s (%s)", __VERSION__, PICO_BOARD, RPC_ARCH);
     return 0;
