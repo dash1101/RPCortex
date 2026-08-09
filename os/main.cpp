@@ -218,6 +218,13 @@ int main(void) {
             out_multi("   Recovery  : none. The task could not be ended while it held the");
             out_multi("               core, so the watchdog was the only way out.");
         }
+        // And into the log, for the same reason the two lines above it are:
+        // this banner prints in the first second of boot, into a USB port the
+        // host may still be re-enumerating.
+        if (bb->stuck)
+            log_addf(LOG_K_ERR, "[Crash] nothing could recover it (%s)",
+                     bb->stuck == BB_STUCK_PACKAGE ? "inside a package call"
+                                                   : "the task could not be ended");
         out_blank();
     }
 

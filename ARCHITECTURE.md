@@ -82,6 +82,54 @@ mistake costs a reflash.
 This depends on preemption: containing a fault means being able to terminate the
 faulting task, which needs the machinery above.
 
+#### What an RP2040 board can and cannot do
+
+Pico and Pico W keep more than the headline suggests:
+
+- **Packages run.** `main.cpp` picks `LOADER_VENEER_DIRECT` instead of
+  `LOADER_VENEER_SVC`, so a veneer branches straight to the firmware's address
+  rather than raising an exception that names a function by index. Same `.app`
+  files, same loader, same 156 ABI symbols, same commands registered at load.
+  `pkgrepo` refuses an armv8m-only package up front, which is an instruction-set
+  question rather than this one.
+- **Multitasking runs**, unchanged. The scheduler, both cores, affinity,
+  sleeping, the job list and the graded watchdog never consult
+  `sandbox_supported`.
+- **Stack guards run.** There is no MSPLIM, so `mpu_rp2.cpp` spends protection
+  region 0 on a 32-byte no-access block at the bottom of every stack. It catches
+  the write rather than the stack pointer crossing a line.
+- **Flash slots, staging and rollback run.** `RPC_FW_RESERVE` is 768 KB here
+  against 1024 KB on RP2350 — smaller, not absent.
+
+What is missing, and what each absence costs:
+
+| Not available | Consequence |
+|---|---|
+| Unprivileged packages | A package reaches the task table, the command table, the peripherals and its own machine code. It is as trusted as the firmware is. |
+| Package W^X | `task_app_mem_apply` is a no-op on ARMv6-M: describing a 5 KB package with power-of-two self-aligned regions costs up to 16 KB of a 264 KB part. |
+| ABI pointer checks | `task_app_mem_current()` returns null for a privileged package, so `ptr_ok` passes everything. There is no region description to test a pointer against, and the package could reach the memory itself regardless. |
+| Fault containment | `fault_try_contain` needs the firmware stack pointer `app_call_unpriv` parks and a separate sandbox stack to test the faulting SP against. Neither exists, so a fault inside a package reports and reboots. |
+| Wedge recovery | A package command that stops responding costs a reboot. |
+
+The last one has no fix, rather than no fix yet. A package command runs on the
+shell task, so the alarm's other answer — end the task — would end the session;
+and nothing respawns the shell, since `main` spawns it once and `shell_run`
+never returns, so a device that ended it would come back with no console at all.
+There is no call to take back either: `sandbox_abandon_call` works by aiming an
+exception return at the shim that stood the firmware's stack back up, and with a
+direct veneer no shim ran. Unwinding the shell's own C stack instead was
+considered and rejected on two counts — the kill threshold is 6 s while the
+watchdog is 16 s precisely because a TLS handshake can hold the scheduler for
+seconds, so a 6-second unwind would abort working HTTPS fetches; and a package
+wedged inside a flash write has core 1 parked by `flash_safe_execute`, which
+unwinding would leave parked for good.
+
+So the watchdog stays the answer and is made to explain itself: `preempt_tick`
+records `BB_STUCK_PACKAGE` in the black box, which survives the reset, and the
+next boot prints why nothing could be done. On the device, `mpu` reports the
+whole table for the board in front of it and `help packages` says the privilege
+part in one line.
+
 ### 3. Crash reporting that survives power loss
 
 The ring and the black box now survive a *warm* reset, which covers the watchdog
