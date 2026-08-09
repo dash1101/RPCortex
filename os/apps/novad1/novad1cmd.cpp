@@ -8,6 +8,7 @@
 #include "novacore.h"
 #include "novaboard.h"
 #include "novagui.h"
+#include "novagui_apps.h"     // the staged-update flow selfupdate shares with the screen
 #include "novalog.h"
 #include "novanotify.h"
 #include "display.h"
@@ -626,20 +627,70 @@ int wifiprobe(void) {
 }
 
 // --- selfupdate --------------------------------------------------------------------
+//
+// The shell-side twin of the Updates screen, and it takes the same two routes
+// for the same reason: a package cannot install itself.
+//
+// The old version of this command ran `pkg install novad1` unconditionally. With
+// the screen up that is refused — apps_busy_pid finds the GUI holding the image
+// — and refused AFTER the whole download has been paid for, which reads as a
+// broken repo rather than as a thing that was never going to work. It only ever
+// succeeded from a prompt with the service already stopped.
+//
+// So: with nothing holding the image, install in place, as before. With the
+// screen running, stage the install on a maintenance boot instead, which is
+// what the Updates screen does — see the long note in novagui_apps.cpp for why
+// that is the only moment the package is replaceable.
 
 int selfupdate(void) {
-    char have[24] = "";
+    char out[512];
     fw_printf("Nova D1 update\n\n");
+
     // Straight through the package manager rather than a downloader of its own.
     // It verifies a SHA-256 against the index and validates the package by
     // actually loading it before installing — none of which is worth a second,
     // worse implementation inside the thing being replaced.
-    (void)have;
-    char out[512];
-    int rc = fw_shell_run("pkg install novad1", out, sizeof(out));
+    //
+    // The index first either way: a stale one is what makes an install report a
+    // checksum mismatch that reads like a corrupt download.
+    fw_shell_run("pkg update", out, sizeof(out));
     fw_printf("%s", out);
-    if (rc == 0) fw_printf("\nRestart the screen: `d1 service restart`.\n");
-    return rc;
+
+    if (!nova::gui::started()) {
+        int rc = fw_shell_run("pkg install novad1", out, sizeof(out));
+        fw_printf("%s", out);
+        if (rc == 0) fw_printf("\nStart the screen when you are ready: `d1 service start`.\n");
+        return rc;
+    }
+
+    fw_printf("\nThe screen is running, so the package is holding its own image and\n");
+    fw_printf("cannot be replaced in place.\n\n");
+
+    // A maintenance boot runs its staged command AFTER session_boot(), so it has
+    // to come up with no prompt and as somebody who can run `pkg install` and
+    // `reboot`. Say so, and offer the route that needs neither.
+    char sts[80];
+    fw_shell_run("autonomy status", sts, sizeof(sts));
+    fw_shell_run("whoami", out, sizeof(out));
+    if (!nova::screens::update_autonomy_ok(sts, out)) {
+        fw_printf("The next start has to come up as this admin with no login prompt,\n");
+        fw_printf("or the staged install never runs. `autonomy status` says:\n\n%s\n", sts);
+        fw_printf("Either stop the screen and install from here:\n");
+        fw_printf("  novad1 service stop\n");
+        fw_printf("  pkg install novad1\n");
+        fw_printf("  novad1 service start\n\n");
+        fw_printf("or set this account as the autonomous one with `autonomy on`.\n");
+        return 1;
+    }
+
+    if (!nova::screens::update_write_script()) {
+        fw_printf("Could not write the update script. Is the filesystem full?\n");
+        return 1;
+    }
+
+    fw_printf("Restarting with nothing loaded, installing there, and coming back.\n");
+    // Does not return: safeboot restarts from inside the call.
+    return fw_shell_run(nova::screens::update_stage_line(), out, sizeof(out));
 }
 
 }  // namespace cmd

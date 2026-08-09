@@ -181,6 +181,12 @@ static const App kApps[] = {
     { "tasks",      "Tasks",      CAT_SYSTEM,   screens::open_tasks,     nullptr },
     { "check",      "Sys Check",  CAT_SYSTEM,   screens::open_check,     nullptr },
     { "fix",        "Repair",     CAT_SYSTEM,   screens::open_repair,    nullptr },
+    // In System rather than in Tools beside the App Store, and the split is
+    // real: the store installs somebody else's package, this replaces the
+    // device's own software and the OS underneath it. It is the same shelf as
+    // Sys Check and Repair — things you open when you are asking after the
+    // device itself.
+    { "update",     "Updates",    CAT_SYSTEM,   screens::open_updates,   nullptr },
     { "power",      "Power",      CAT_SYSTEM,   screens::open_power,     nullptr },
     { "set_display","Display",    CAT_SYSTEM,   screens::open_display_settings, nullptr },
     { "set_home",   "Home",       CAT_SYSTEM,   screens::open_set_home,     nullptr },
@@ -753,6 +759,19 @@ bool begin(void) {
     g_level = LVL_ACTIVE;
     g_last_input = fw_millis();
     g_dirty = true;
+
+    // Did the update staged before the last restart land? Here rather than in
+    // the Updates screen, because somebody who asked for an update wants to be
+    // told how it went without having to go back and look — the same reason
+    // update_report_boot() sits where it does in main.cpp.
+    //
+    // Costs one registry read on a start where nothing was staged, which is
+    // every start but the one after an update.
+    //
+    // Only with a panel. The report is a notification, the notification queue
+    // is only readable from this screen, and firing it on a device that has no
+    // screen would spend the one telling on nobody.
+    if (panel) screens::update_report_start();
 
     // No panel means no runner, so the claim goes back. Holding it would mean a
     // device that failed to find its screen once could never be told to look
