@@ -517,15 +517,28 @@ set(APP_FLAGS -mthumb -mcpu=cortex-m0plus -Os -std=c++17
 # This exists because Nova D1 is not going to be one file, and the alternative —
 # a unity build stitched together with #include of .cpp files — hides the
 # dependency graph the layer rule depends on being visible.
+# rpc_add_app(name [PIC])
+#
+# PIC opts one package into position-independent code: .text and .rodata carry no
+# absolute address, so they can eventually run from flash and only .data/.bss plus
+# a GOT stay resident. It is OPT-IN per package on purpose while it is proven —
+# the default path stays byte-for-byte what it was, so a PIC package and a plain
+# one can be compared side by side. See notes/xip-packages.md and the GOT handling
+# in loader-spike/firmware/loader.cpp.
 function(rpc_add_app name)
     file(GLOB app_srcs CONFIGURE_DEPENDS ${OS_ROOT}/apps/${name}/*.cpp)
     if(NOT app_srcs)
         message(FATAL_ERROR "rpc_add_app(${name}): no .cpp files in apps/${name}/")
     endif()
 
+    set(this_flags ${APP_FLAGS})
+    if("${ARGN}" MATCHES "(^|;)PIC($|;)")
+        list(APPEND this_flags -fPIC -msingle-pic-base -mno-pic-data-is-text-relative)
+    endif()
+
     list(LENGTH app_srcs app_nsrc)
     if(app_nsrc EQUAL 1)
-        set(app_build COMMAND ${CMAKE_CXX_COMPILER} ${APP_FLAGS}
+        set(app_build COMMAND ${CMAKE_CXX_COMPILER} ${this_flags}
                               -c ${app_srcs} -o ${CMAKE_BINARY_DIR}/apps/${name}.app)
     else()
         # Compile each into apps/<name>.d/, then fold them into one object. The
@@ -538,7 +551,7 @@ function(rpc_add_app name)
         foreach(src ${app_srcs})
             get_filename_component(stem ${src} NAME_WE)
             set(obj ${CMAKE_BINARY_DIR}/apps/${name}.d/${stem}.o)
-            list(APPEND app_build COMMAND ${CMAKE_CXX_COMPILER} ${APP_FLAGS}
+            list(APPEND app_build COMMAND ${CMAKE_CXX_COMPILER} ${this_flags}
                                           -c ${src} -o ${obj})
             list(APPEND app_objs ${obj})
         endforeach()
@@ -586,7 +599,10 @@ rpc_add_app(dht)
 rpc_add_app(probe)
 rpc_add_app(gpio)
 rpc_add_app(i2cscan)
-rpc_add_app(greet)
+# greet is the position-independent exemplar while task #93 is proven: the
+# smallest real package, opted in so realapp_test exercises the r9/GOT path on
+# every host run. Every other package stays on the default (copy-to-RAM) path.
+rpc_add_app(greet PIC)
 rpc_add_app(tuidemo)
 rpc_add_app(stress)
 rpc_add_app(bench)

@@ -81,6 +81,8 @@ const char *elf_reloc_name(uint32_t type) {
         case R_ARM_ABS32:           return "R_ARM_ABS32";
         case R_ARM_REL32:           return "R_ARM_REL32";
         case R_ARM_THM_CALL:        return "R_ARM_THM_CALL";
+        case R_ARM_BASE_PREL:       return "R_ARM_BASE_PREL";
+        case R_ARM_GOT_BREL:        return "R_ARM_GOT_BREL";
         case R_ARM_ABS16:           return "R_ARM_ABS16";
         case R_ARM_ABS8:            return "R_ARM_ABS8";
         case R_ARM_THM_JUMP24:      return "R_ARM_THM_JUMP24";
@@ -423,6 +425,64 @@ LoadResult app_load(const AppSource &src, LoadedApp *out) {
         return LOAD_ERR_API_MISMATCH;
     }
 
+    // Streamed the same way in the pre-scan below and the relocation pass proper,
+    // so it is declared once here. Static rather than on the stack for the reason
+    // the whole file is: this runs on the shell's 8 KB stack, and two kilobytes
+    // of it is a third of what a command has to play with.
+    static Elf32_Rel relbuf[REL_CHUNK];
+
+    // --- size the GOT (position-independent packages only) -------------------
+    //
+    // A package built -fPIC -msingle-pic-base reaches every global through a GOT
+    // indexed off r9. A relocatable object carries no GOT — the loader
+    // synthesises one at the base of the writable block — so its size has to be
+    // known before that block is allocated, which is why this runs first.
+    //
+    // Counted by DISTINCT symbol index, which is an upper bound on distinct by
+    // address (two names can resolve to one place); the relocation pass dedups on
+    // the resolved address and never needs more than this many slots. A bare
+    // bitmap of the symbol table counts them — the mapping itself is rebuilt on
+    // the real pass, so none of this has to survive the function. A non-PIC
+    // package has no GOT_BREL, falls straight through with got_bytes = 0, and
+    // takes exactly the path it did before any of this existed.
+    uint32_t got_bytes = 0;
+    {
+        int symtab_i = -1;
+        for (int i = 0; i < eh.e_shnum; i++)
+            if (sh[i].sh_type == SHT_SYMTAB) { symtab_i = i; break; }
+        uint32_t nsyms = symtab_i < 0 ? 0 : sh[symtab_i].sh_size / sizeof(Elf32_Sym);
+        if (nsyms) {
+            uint8_t *seen = (uint8_t *)calloc((nsyms + 7) / 8, 1);
+            if (!seen) { free(names); return LOAD_ERR_OOM; }
+            uint32_t got_slots = 0;
+            for (int i = 0; i < eh.e_shnum; i++) {
+                if (sh[i].sh_type != SHT_REL) continue;
+                uint32_t n = sh[i].sh_size / sizeof(Elf32_Rel);
+                uint32_t have = 0, first = 0;
+                for (uint32_t r = 0; r < n; r++) {
+                    if (r >= first + have) {
+                        first = r;
+                        have  = n - r < REL_CHUNK ? n - r : REL_CHUNK;
+                        if (!read_exact(src, sh[i].sh_offset + first * sizeof(Elf32_Rel),
+                                        relbuf, have * sizeof(Elf32_Rel))) {
+                            free(seen); free(names); return LOAD_ERR_READ;
+                        }
+                    }
+                    const Elf32_Rel *rels = relbuf - first;
+                    if (ELF32_R_TYPE(rels[r].r_info) != R_ARM_GOT_BREL) continue;
+                    uint32_t sidx = ELF32_R_SYM(rels[r].r_info);
+                    if (sidx >= nsyms) continue;
+                    if (!(seen[sidx >> 3] & (1u << (sidx & 7)))) {
+                        seen[sidx >> 3] |= (1u << (sidx & 7));
+                        got_slots++;
+                    }
+                }
+            }
+            free(seen);
+            got_bytes = (got_slots * 4u + 3u) & ~3u;
+        }
+    }
+
     // --- lay the allocatable sections out in two halves, and TWO allocations.
     //
     // Everything the app may not write to first, everything it must be able to
@@ -469,6 +529,12 @@ LoadResult app_load(const AppSource &src, LoadedApp *out) {
         if (pass == 0) {
             total = (total + (APP_BLOCK_ALIGN - 1)) & ~(APP_BLOCK_ALIGN - 1);
             text_end = total;              // the writable half starts here
+            // The GOT goes at the very base of the writable half, so its origin
+            // — the value r9 holds — is the block base. Reserve it before any
+            // writable section is placed, so those sections land above it and
+            // `data` itself is the GOT. Zero for a non-PIC package, so the split
+            // is exactly where it was.
+            total += got_bytes;
         }
     }
     total = (total + (APP_BLOCK_ALIGN - 1)) & ~(APP_BLOCK_ALIGN - 1);
@@ -555,6 +621,14 @@ LoadResult app_load(const AppSource &src, LoadedApp *out) {
     out->text_size   = text_bytes;
     out->data        = data;
     out->data_size   = data_bytes;
+    // The GOT occupies the first got_bytes of the writable block. It is not an
+    // ELF section, so the section-load loop below never touches it — clear it
+    // here so its alignment tail is zero rather than whatever the heap held, and
+    // record its size, which is the one flag the entry points read to know this
+    // package needs r9 pointed at it.
+    out->got_size    = got_bytes;
+    out->got_count   = 0;              // filled as GOT_BREL relocations resolve
+    if (data && got_bytes) memset(data, 0, got_bytes);
     out->image = image;
     // A SUM, not a span. The two halves are separate allocations and there is
     // no address at image + image_size.
@@ -684,6 +758,29 @@ LoadResult app_load(const AppSource &src, LoadedApp *out) {
         return LOAD_OK;
     };
 
+    // The synthesised GOT: an array of resolved addresses at the base of the
+    // writable block, which the package reaches through r9. A GOT_BREL stores the
+    // byte offset of a symbol's slot; the code adds it to r9 and loads the slot.
+    //
+    // Deduped on the RESOLVED address, so two names for one place — a section
+    // symbol and a label at its start, say — share a slot. The sizing pass
+    // counted by symbol index, which is an upper bound on this, so the append
+    // can only run out if that pass and this one disagree, and then it is a clean
+    // refusal rather than a write past the block. Slot addresses carry the Thumb
+    // bit for functions exactly as resolve() returns them; realapp_test walks the
+    // writable half and would catch a code slot that lost it.
+    uint32_t *got = (uint32_t *)out->data;      // valid only when got_bytes != 0
+    uint32_t got_used = 0;
+    auto got_offset_for = [&](uint32_t S, uint32_t *off) -> bool {
+        for (uint32_t k = 0; k < got_used; k++)
+            if (got[k] == S) { *off = k * 4u; return true; }
+        if ((got_used + 1u) * 4u > got_bytes) return false;
+        got[got_used] = S;
+        *off = got_used * 4u;
+        got_used++;
+        return true;
+    };
+
     for (int i = 0; i < eh.e_shnum && rc == LOAD_OK; i++) {
         if (sh[i].sh_type != SHT_REL) continue;
         uint32_t target_sec = sh[i].sh_info;
@@ -691,15 +788,11 @@ LoadResult app_load(const AppSource &src, LoadedApp *out) {
 
         uint32_t n = sh[i].sh_size / sizeof(Elf32_Rel);
 
-        // STREAMED, not read whole. .rel.text alone is 29 KB on a Nova D1, and
-        // a relocation is looked at exactly once in order — there is no reason
-        // for the whole section to be resident, and holding it was 29 KB of the
-        // peak that stopped a device upgrading its own package.
-        //
-        // Static rather than a stack array: this runs on the shell's task,
-        // which has 8 KB, and two kilobytes of locals is a third of what a
-        // command has to play with.
-        static Elf32_Rel relbuf[REL_CHUNK];
+        // STREAMED, not read whole, into the shared `relbuf` declared at the top
+        // of the function. .rel.text alone is 29 KB on a Nova D1, and a
+        // relocation is looked at exactly once in order — there is no reason for
+        // the whole section to be resident, and holding it was 29 KB of the peak
+        // that stopped a device upgrading its own package.
         uint32_t have = 0, first = 0;
 
         for (uint32_t r = 0; r < n && rc == LOAD_OK; r++) {
@@ -749,6 +842,29 @@ LoadResult app_load(const AppSource &src, LoadedApp *out) {
             case R_ARM_REL32: {
                 uint32_t *p = (uint32_t *)(uintptr_t)P;
                 *p = *p + S - P;
+                break;
+            }
+
+            case R_ARM_GOT_BREL: {
+                // The value the code needs is the byte offset of S's GOT slot
+                // from the GOT origin (r9). S was resolved above and already
+                // carries the Thumb bit if it names a function, so the slot is
+                // stored verbatim.
+                //
+                // The addend rides in the patch-site word and is 0 for every
+                // GOT_BREL GCC emits with these flags (measured across every
+                // package). A nonzero one would mean "S's slot, then N bytes on",
+                // which an r9-relative load cannot express — so it is refused
+                // rather than made to point one slot away and fault far from here.
+                uint32_t *p = (uint32_t *)(uintptr_t)P;
+                if (*p != 0) {
+                    set_detail(out, "GOT_BREL addend");
+                    rc = LOAD_ERR_RELOC_UNSUPPORTED;
+                    break;
+                }
+                uint32_t off;
+                if (!got_offset_for(S, &off)) { rc = LOAD_ERR_RELOC_RANGE; break; }
+                *p = off;
                 break;
             }
 
@@ -838,6 +954,9 @@ LoadResult app_load(const AppSource &src, LoadedApp *out) {
         }
     }
 
+    // What the GOT actually cost, for the same accounting the veneer counts get.
+    out->got_count = got_used;
+
     // --- entry point
     if (rc == LOAD_OK) {
         rc = LOAD_ERR_NO_ENTRY;
@@ -873,6 +992,13 @@ uint32_t app_exit_gate(const LoadedApp *app) {
     return ((uint32_t)(uintptr_t)app->veneers + VENEER_GATE_EXIT) | 1u;
 }
 
+uint32_t app_pic_base(const LoadedApp *app) {
+    // The GOT origin, which is the base of the writable block. Zero for a
+    // non-PIC package (no GOT), which every entry point reads as "leave r9".
+    if (!app || !app->got_size) return 0;
+    return (uint32_t)(uintptr_t)app->data;
+}
+
 void app_unload(LoadedApp *app) {
     if (!app) return;
     // The RAW pointers, not the aligned ones. They are usually the same address
@@ -886,6 +1012,7 @@ void app_unload(LoadedApp *app) {
     app->data = app->data_raw = nullptr;
     app->entry = nullptr;
     app->image_size = app->text_size = app->data_size = 0;
+    app->got_size = app->got_count = 0;
     app->veneer_size = app->veneers_used = app->veneer_gates = 0;
     app->bytes_allocated = 0;
 }

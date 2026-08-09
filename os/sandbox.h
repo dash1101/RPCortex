@@ -32,9 +32,22 @@ bool sandbox_supported(void);
 // the caller asked for that cannot be done, and the caller can say so usefully.
 #define SANDBOX_REENTERED (-2)
 
+// `pic_base` is the value r9 must hold on entry — the package's GOT origin — or
+// 0 for a non-PIC package, which leaves r9 alone. It is set at the enter gate,
+// inside the window where app_call_unpriv has saved the firmware's r9, and every
+// callee the package reaches (firmware, libgcc, the SVC round trip) treats r9 as
+// callee-saved, so it survives from there. See app_pic_base in the loader.
 int sandbox_enter(void *fn, int arg0, void *arg1, void *stack_top,
                   uint32_t return_gate, uint32_t enter_gate, uint32_t exit_gate,
-                  uint32_t stack_size);
+                  uint32_t stack_size, uint32_t pic_base);
+
+// Enter package code that runs PRIVILEGED — ARMv6-M, where there is no sandbox,
+// and the RP2350 fallback when one could not be allocated — with r9 pointed at
+// the package's GOT. A non-PIC package needs none of this and takes the ordinary
+// C call; this exists for the PIC case, where r9 has to be the GOT base on entry.
+// `fn` is int(int) for app_main and int(int,char**) for a registered command;
+// both pass their arguments in r0/r1 under AAPCS, so one trampoline serves both.
+extern "C" int app_call_direct(void *fn, int arg0, void *arg1, uint32_t pic_base);
 
 // The stack a task is running on while inside a package, so the scheduler can
 // arm the stack guard against THAT rather than against the task's own stack.
@@ -70,7 +83,8 @@ void sandbox_forget(int slot);
 // arguments are; sandbox_switch.S is where they mean something.
 extern "C" int  app_call_unpriv(void *fn, int arg0, void *arg1, void *stack_top,
                                 uint32_t exit_gate, uint32_t *park_sp_here,
-                                uint32_t enter_gate, uint32_t stack_guard);
+                                uint32_t enter_gate, uint32_t stack_guard,
+                                uint32_t pic_base);
 extern "C" void app_call_unpriv_tail(void);
 // The same unwind for a call that is being abandoned rather than finished. It
 // takes the firmware stack pointer in r1 instead of asking for it, so it uses

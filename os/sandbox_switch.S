@@ -56,6 +56,7 @@ isr_svcall:
 //   [sp, #44] = where to park the firmware's stack pointer
 //   [sp, #48] = enter_gate, in the veneer pool: where privilege is dropped
 //   [sp, #52] = where to set the stack limit once standing on that stack
+//   [sp, #56] = pic_base, the GOT origin r9 must hold in package code (0 = none)
 //
 // The package needs a stack of its own and this is the reason: app_main and
 // every command a package registers would otherwise run on the SHELL's stack,
@@ -89,6 +90,9 @@ app_call_unpriv:
     ldr     r7, [sp, #48]           // the gate that drops privilege
     mov     r8, r0                  // fn, before r0 becomes an argument
     ldr     r9, [sp, #52]           // where the guard goes once SP has moved
+    ldr     r10, [sp, #56]          // pic_base, read NOW: the stacked arguments
+                                    // are on the firmware stack and vanish the
+                                    // moment SP moves to the package's below
 
     // RELEASE THE LIMIT, MOVE, THEN ARM IT AGAIN.
     //
@@ -114,6 +118,11 @@ app_call_unpriv:
     msr     msplim, r5
     mov     sp, r3                  // stand on the package's stack
     msr     msplim, r9              // and guard it at its own bottom
+    mov     r9, r10                 // r9 = pic_base: the package's GOT origin, or
+                                    // 0 for a non-PIC package, which never reads
+                                    // it. This is the last write before the enter
+                                    // gate; from here every callee treats r9 as
+                                    // callee-saved, so it holds all the way in.
 
     mov     r0, r1                  // the package's two arguments
     mov     r1, r2
