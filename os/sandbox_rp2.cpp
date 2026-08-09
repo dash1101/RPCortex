@@ -224,7 +224,7 @@ extern "C" void sandbox_svc(uint32_t *frame, uint32_t which) {
 
 int sandbox_enter(void *fn, int arg0, void *arg1, void *stack_top,
                   uint32_t return_gate, uint32_t enter_gate, uint32_t exit_gate,
-                  uint32_t stack_size) {
+                  uint32_t stack_size, uint32_t pic_base) {
     SandboxState *s = state_of_current();
     if (!s || !fn || !stack_top || !return_gate || !enter_gate || !exit_gate) return -1;
 
@@ -265,7 +265,7 @@ int sandbox_enter(void *fn, int arg0, void *arg1, void *stack_top,
     // the exit gate, the return gate branches to LR.
     int ret = app_call_unpriv(fn, arg0, arg1, stack_top, exit_gate,
                               &s->kernel_sp, enter_gate,
-                              guard_for(s->stack_base));
+                              guard_for(s->stack_base), pic_base);
     // Reached whether the package returned normally or was unwound out of by
     // the fault handler. A contained fault that never gets here died in the
     // tail, on the firmware stack, between the exception return and this line.
@@ -369,7 +369,8 @@ void sandbox_counts(uint32_t *calls, uint32_t *refused) {
     if (calls) *calls = 0;
     if (refused) *refused = 0;
 }
-int sandbox_enter(void *, int, void *, void *, uint32_t, uint32_t, uint32_t, uint32_t) {
+int sandbox_enter(void *, int, void *, void *, uint32_t, uint32_t, uint32_t, uint32_t,
+                  uint32_t) {
     return -1;
 }
 

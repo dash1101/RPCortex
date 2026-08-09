@@ -36,6 +36,42 @@ static LoadedApp *find(const char *name) {
     return nullptr;
 }
 
+// Enter PRIVILEGED package code with r9 = the package's GOT origin.
+//
+// The boxed path sets r9 at the enter gate (sandbox_switch.S); this is its
+// counterpart for a package running unsandboxed — ARMv6-M, where there is no
+// sandbox, and the RP2350 fallback when one could not be allocated. A PIC package
+// must have r9 pointing at its GOT before its first instruction, which a plain C
+// call cannot promise, so the PIC case comes through here. r9 is callee-saved, so
+// it is kept for this function's own caller and restored before returning; in
+// between it belongs to the package. One trampoline serves app_main (int(int))
+// and a registered command (int(int,char**)): both pass arguments in r0/r1.
+#if defined(__arm__)
+// The attribute follows `extern "C"`, not the other way round: placed before it,
+// GCC drops it with -Wattributes and the function silently gets a compiler
+// prologue that fights the one below. naked means the asm is the whole function.
+extern "C" __attribute__((naked))
+int app_call_direct(void * /*fn*/, int /*a0*/, void * /*a1*/, uint32_t /*pic_base*/) {
+    __asm volatile(
+        "push {r4, lr}\n"
+        "mov  r4, r9\n"          // save the caller's r9 (callee-saved)
+        "mov  r9, r3\n"          // r9 = pic_base: the package's GOT origin
+        "mov  r12, r0\n"         // fn, before r0 becomes an argument
+        "mov  r0, r1\n"          // arg0
+        "mov  r1, r2\n"          // arg1
+        "blx  r12\n"             // fn(arg0[, arg1]) -> result in r0
+        "mov  r9, r4\n"          // restore the caller's r9
+        "pop  {r4, pc}\n");
+}
+#else
+// The host cannot run the trampoline and never needs to: a fixture app is not PIC
+// (app_pic_base is 0), so app_run takes the ordinary call and this is linked but
+// not entered. Defined so apps_test links, and correct if it ever is reached.
+extern "C" int app_call_direct(void *fn, int a0, void *a1, uint32_t) {
+    return ((int (*)(int, void *))fn)(a0, a1);
+}
+#endif
+
 // --- entering package code --------------------------------------------------
 
 static void describe(const LoadedApp *a, TaskAppMem *m) {
@@ -620,12 +656,17 @@ int app_run_stack(const LoadedApp *app, int (*fn)(int), int arg,
     task_app_mem_set(&m);
     if (boxed) task_arena_set(&sa.arena);
 
+    // The GOT origin r9 must hold in package code; 0 for a non-PIC package, and
+    // then both paths below are exactly what they were.
+    uint32_t pic = app_pic_base(app);
     int ret;
     if (boxed) {
         ret = sandbox_enter((void *)fn, arg, nullptr,
                             (uint8_t *)sa.stack + m.stack_size,
                             app_return_gate(app), app_enter_gate(app),
-                            app_exit_gate(app), m.stack_size);
+                            app_exit_gate(app), m.stack_size, pic);
+    } else if (pic) {
+        ret = app_call_direct((void *)fn, arg, nullptr, pic);
     } else {
         ret = fn(arg);
     }
@@ -778,6 +819,7 @@ bool app_run_owner(const void *owner, int (*fn)(int, char **), int argc,
         had_saved = task_app_mem_get(&saved);
         task_app_mem_set(&m);
         if (boxed) task_arena_set(&sa.arena);
+        uint32_t pic = app_pic_base(a);
         if (boxed) {
             uint32_t top = m.stack_size;
             char **boxed_argv = marshal_argv(sa.stack, &top, argc, argv);
@@ -789,8 +831,10 @@ bool app_run_owner(const void *owner, int (*fn)(int, char **), int argc,
                 *ret = sandbox_enter((void *)fn, argc, boxed_argv,
                                      (uint8_t *)sa.stack + top,
                                      app_return_gate(a), app_enter_gate(a),
-                                     app_exit_gate(a), top);
+                                     app_exit_gate(a), top, pic);
             }
+        } else if (pic) {
+            *ret = app_call_direct((void *)fn, argc, argv, pic);
         } else {
             *ret = fn(argc, argv);
         }

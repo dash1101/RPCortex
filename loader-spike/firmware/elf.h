@@ -65,6 +65,15 @@ typedef struct { uint32_t r_offset, r_info; } Elf32_Rel;
 #define R_ARM_THM_JUMP24     30
 #define R_ARM_TARGET1        38
 #define R_ARM_PREL31         42
+// Position-independent data access. A package compiled -fPIC -msingle-pic-base
+// reaches every global through a GOT indexed off r9, so .text carries no
+// absolute data address at all — which is what lets it run from flash. The
+// value is the byte offset of the symbol's GOT slot from the GOT origin; the
+// loader synthesises the GOT (there is none in a relocatable object) and points
+// r9 at it. BASE_PREL names the origin and does not appear with single-pic-base,
+// but is named here so a stray one reports itself rather than "unknown".
+#define R_ARM_BASE_PREL      25
+#define R_ARM_GOT_BREL       26
 #define R_ARM_THM_MOVW_ABS_NC 47
 #define R_ARM_THM_MOVT_ABS   48
 #define R_ARM_THM_JUMP11     102
