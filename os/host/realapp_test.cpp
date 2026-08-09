@@ -20,6 +20,7 @@
 #include "loader.h"
 #include "elf.h"
 #include "mpu.h"
+#include "pkgslot.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -676,6 +677,36 @@ static bool slot_sink(void *ctx, uint32_t off, const void *data, uint32_t len) {
     return true;
 }
 
+// A flash chip, for the end-to-end run through the real slot format. It has to
+// be inside the low arena rather than in bss, because the loader keeps addresses
+// in uint32_t and a package loaded from a slot resolves against the slot's own
+// address — the same reason the images are mmapped low.
+//
+// pkgslot_test proves the format against a fake in far more detail; this one
+// exists so the pipeline can be run end to end with a REAL package. It still
+// refuses to program a bit back on, because that is the rule whose breaking
+// would make everything else here meaningless.
+static uint8_t *g_fake_flash;
+static uint32_t g_fake_bytes;
+static bool     g_fake_violation;
+
+static bool fake_slot_erase(void *, uint32_t off, uint32_t len) {
+    if (off % PKGSLOT_ERASE || len % PKGSLOT_ERASE) { g_fake_violation = true; return false; }
+    if ((uint64_t)off + len > g_fake_bytes) { g_fake_violation = true; return false; }
+    memset(g_fake_flash + off, 0xFF, len);
+    return true;
+}
+static bool fake_slot_program(void *, uint32_t off, const void *data, uint32_t len) {
+    if (off % PKGSLOT_PROG || len % PKGSLOT_PROG) { g_fake_violation = true; return false; }
+    if ((uint64_t)off + len > g_fake_bytes) { g_fake_violation = true; return false; }
+    const uint8_t *s = (const uint8_t *)data;
+    for (uint32_t i = 0; i < len; i++) {
+        if ((g_fake_flash[off + i] & s[i]) != s[i]) g_fake_violation = true;
+        g_fake_flash[off + i] &= s[i];
+    }
+    return true;
+}
+
 // A package is position-independent iff it reaches its data through a GOT — i.e.
 // it carries at least one R_ARM_GOT_BREL. That is exactly what makes the slot
 // path apply to it, so it is how the test decides whether to run at all.
@@ -843,15 +874,15 @@ static int check_pic(const char *path) {
     // Resolve a symbol to its runtime address the way the CPU would see it, from
     // the ELF alone: firmware -> the blob veneer holding its ABI index; a defined
     // symbol -> the slot (RO) or the RAM block (writable) at its section offset.
-    auto resolve = [&](const LoadedApp &app, uint32_t sidx, bool *ok) -> uint32_t {
+    auto resolve = [&](const LoadedApp &app, const uint8_t *blob, uint32_t sidx, bool *ok) -> uint32_t {
         *ok = true;
         const Elf32_Sym &s = syms[sidx];
         bool func = (ELF32_ST_TYPE(s.st_info) == STT_FUNC);
-        uint32_t slotbase = (uint32_t)(uintptr_t)slotA;
+        uint32_t slotbase = (uint32_t)(uintptr_t)blob;
         if (s.st_shndx == SHN_UNDEF) {
             int ix = api_index_of(str + s.st_name);
             for (uint32_t off = mA.veneer_off; off + 16 <= mA.veneer_off + mA.veneer_size; off += 16)
-                if (*(uint32_t *)(slotA + off + 12) == (uint32_t)ix) return (slotbase + off) | 1u;
+                if (*(uint32_t *)(blob + off + 12) == (uint32_t)ix) return (slotbase + off) | 1u;
             *ok = false; return 0;
         }
         if (s.st_shndx == SHN_ABS) return s.st_value;
@@ -861,7 +892,7 @@ static int check_pic(const char *path) {
         return a | (func ? 1u : 0u);
     };
 
-    auto verify = [&](const LoadedApp &app, const char *tag) {
+    auto verify = [&](const LoadedApp &app, const uint8_t *blob, const char *tag) {
         const uint32_t *got = (const uint32_t *)app.data;
         int got_sites = 0, abs_sites = 0;
         for (int si = 0; si < eh->e_shnum; si++) {
@@ -876,9 +907,9 @@ static int check_pic(const char *path) {
                 if (type == R_ARM_GOT_BREL) {
                     got_sites++;
                     // the offset the loader baked into .text, followed to its slot
-                    uint32_t off = *(uint32_t *)(slotA + blob_off[tgt] + rel[r].r_offset);
+                    uint32_t off = *(uint32_t *)(blob + blob_off[tgt] + rel[r].r_offset);
                     if (off % 4 || off >= mA.got_bytes) { printf("       FAIL %s GOT offset %u out of range\n", tag, off); bad = 1; continue; }
-                    bool ok; uint32_t want = resolve(app, sidx, &ok);
+                    bool ok; uint32_t want = resolve(app, blob, sidx, &ok);
                     if (!ok) { printf("       FAIL %s cannot resolve %s\n", tag, str + syms[sidx].st_name); bad = 1; continue; }
                     if (got[off / 4] != want) {
                         printf("       FAIL %s GOT[%u] = %08x, %s is at %08x\n",
@@ -887,7 +918,7 @@ static int check_pic(const char *path) {
                 } else if (type == R_ARM_ABS32 || type == R_ARM_TARGET1) {
                     abs_sites++;
                     if (!writ[tgt]) continue;      // handled as a branch/GOT in RO
-                    bool ok; uint32_t S = resolve(app, sidx, &ok);
+                    bool ok; uint32_t S = resolve(app, blob, sidx, &ok);
                     if (!ok) { printf("       FAIL %s cannot resolve ABS %s\n", tag, str + syms[sidx].st_name); bad = 1; continue; }
                     // expected = the ORIGINAL addend (from the ELF's .data) + S,
                     // applied exactly once.
@@ -907,8 +938,8 @@ static int check_pic(const char *path) {
         if (!bad) printf("       %s: %d GOT + %d ABS32 site(s) resolve against the slot at %p\n",
                          tag, got_sites, abs_sites, (void *)app.data);
     };
-    verify(appA, "load A");
-    verify(appB, "load B");
+    verify(appA, slotA, "load A");
+    verify(appB, slotA, "load B");
 
     // 4) a slot built for another ABI is refused, not run — the one failure that
     // would otherwise not fault, because a stale index calls the wrong function.
@@ -917,6 +948,65 @@ static int check_pic(const char *path) {
     if (app_pic_load(slotA, &badver, &appX) != LOAD_ERR_API_MISMATCH) {
         printf("       FAIL a slot from a newer ABI was not refused\n"); bad = 1;
         app_unload(&appX);
+    }
+
+    // 5) THE WHOLE PIPELINE, through the real slot format.
+    //
+    // Everything above proves the producer and the loader agree with each other.
+    // This proves they still agree with a package that went to FLASH in between:
+    // the same ELF, streamed page by page into a real PkgSlotWriter over a fake
+    // chip that erases to 0xFF and refuses to turn a bit back on, committed,
+    // reopened from the mapping, and loaded from there.
+    //
+    // slotB is reused as the chip. It has already done its job — proving the blob
+    // is position-independent — and 256 KB more of the arena would be spent on
+    // nothing.
+    {
+        g_fake_flash = slotB;
+        g_fake_bytes = SLOTCAP;
+        g_fake_violation = false;
+        SlotFlash fl{ nullptr, fake_slot_erase, fake_slot_program };
+        static PkgSlotWriter w;
+        PicManifest mS{};
+        bool okw = pkgslot_begin(&w, &fl, 0, SLOTCAP);
+        g_f = fopen(path, "rb");
+        LoadResult rcS = okw ? app_pic_install(src, pkgslot_sink, &w, &mS) : LOAD_ERR_OOM;
+        fclose(g_f);
+        if (rcS != LOAD_OK) {
+            printf("       FAIL install into a slot: %s\n", load_result_str(rcS)); bad = 1;
+        } else if (!pkgslot_commit(&w, &mS)) {
+            printf("       FAIL committing the slot\n"); bad = 1;
+            app_pic_manifest_free(&mS);
+        } else {
+            app_pic_manifest_free(&mS);      // the slot is the copy that matters now
+            PicManifest ms{};
+            PkgSlotStatus st = pkgslot_open(slotB, SLOTCAP, &ms);
+            if (st != PKGSLOT_OK) {
+                printf("       FAIL reopening the slot: %s\n", pkgslot_status_str(st)); bad = 1;
+            } else {
+                const uint8_t *blob = (const uint8_t *)pkgslot_blob(slotB);
+                // Page-at-a-time through a flash format must reproduce the blob
+                // the one-shot path produced, byte for byte. If the page cut, the
+                // 0xFF padding or the CRC range were wrong, this is where it shows.
+                if (ms.ro_size != mA.ro_size || memcmp(blob, slotA, mA.ro_size) != 0) {
+                    printf("       FAIL the slot blob differs from the assembled one\n"); bad = 1;
+                }
+                LoadedApp appS{};
+                if (app_pic_load(blob, &ms, &appS) != LOAD_OK) {
+                    printf("       FAIL loading from the slot\n"); bad = 1;
+                } else {
+                    verify(appS, blob, "from slot");
+                    printf("       ran the whole way: ELF -> %u B slot -> %u B resident\n",
+                           ms.ro_size, appS.bytes_allocated);
+                    app_unload(&appS);
+                }
+                app_pic_manifest_free(&ms);   // borrowed: must release nothing
+            }
+        }
+        if (g_fake_violation) {
+            printf("       FAIL the install programmed flash it had not erased\n"); bad = 1;
+        }
+        g_fake_flash = nullptr;
     }
 
     app_unload(&appA);
