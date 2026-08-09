@@ -350,6 +350,15 @@ extern "C" void preempt_tick(uint32_t *frame) {
     // WHICH OF THE THREE ANSWERS THIS IS, decided in core/preempt.cpp so the
     // combinations can be built directly in a host test. What is left here is
     // reading the facts and carrying the answer out.
+    //
+    // ALL FOUR ARE READ EAGERLY, INCLUDING should_force, which the old chain
+    // only reached when the abandon had already failed. That is safe and it is
+    // worth saying why, because it is the first thing to check here: everything
+    // it consults is lock-free. task_crit_active reads one field of the current
+    // task, task_count scans the table, task_current reads a memo, and
+    // preempt_decide is arithmetic. None of them touches the hardware spinlock
+    // — which from an interrupt, on a core that already holds it, is the
+    // permanent stop lock_hw_enter warns about rather than a wait.
     StallFacts f{};
     f.past_kill        = true;
     f.in_package       = task_in_package();
