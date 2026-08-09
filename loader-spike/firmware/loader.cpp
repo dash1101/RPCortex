@@ -598,15 +598,44 @@ LoadResult app_load(const AppSource &src, LoadedApp *out) {
     if (symtab_idx < 0) { free(names); app_unload(out); return LOAD_ERR_NO_ENTRY; }
 
     uint32_t nsyms = sh[symtab_idx].sh_size / sizeof(Elf32_Sym);
-    Elf32_Sym *syms = (Elf32_Sym *)malloc(sh[symtab_idx].sh_size);
-    if (!syms) { free(names); app_unload(out); return LOAD_ERR_OOM; }
-    if (!read_exact(src, sh[symtab_idx].sh_offset, syms,
-                    sh[symtab_idx].sh_size)) {
-        free(syms); free(names); app_unload(out); return LOAD_ERR_READ;
-    }
+
+    // THE SYMBOL TABLE IS NOT READ INTO RAM EITHER.
+    //
+    // At ~48 KB for a Nova D1-sized package it was the FOURTH large block the
+    // loader asked for, after the code half, the data half and the veneers —
+    // and it was the one that failed. A device with 263 KB free but no 48 KB
+    // hole left once those three had carved up the biggest region could not
+    // install its own update, with an "out of memory" that named nothing:
+    // this was the one OOM path that set no detail.
+    //
+    // A symbol is read through a small window instead, the way .rel.* and the
+    // string table already are. The relocation loop touches indices in bursts
+    // that cluster — a section's own symbols are contiguous — and the app_main
+    // scan walks them in order, so a 256-entry window turns what would be a
+    // read per lookup into a handful of refills, and the 48 KB stays on flash.
+    const uint32_t symtab_off = sh[symtab_idx].sh_offset;
+    static Elf32_Sym symwin[REL_CHUNK];
+    static const Elf32_Sym sym_zero = {};
+    uint32_t symwin_first = 0, symwin_have = 0;
+    bool sym_io = true;
+    auto sym_at = [&](uint32_t idx) -> const Elf32_Sym & {
+        if (idx >= nsyms) { sym_io = false; return sym_zero; }
+        if (idx < symwin_first || idx >= symwin_first + symwin_have) {
+            uint32_t base = idx - (idx % REL_CHUNK);
+            uint32_t cnt  = nsyms - base < REL_CHUNK ? nsyms - base : REL_CHUNK;
+            if (!read_exact(src, symtab_off + base * sizeof(Elf32_Sym),
+                            symwin, cnt * sizeof(Elf32_Sym))) {
+                sym_io = false;
+                return sym_zero;
+            }
+            symwin_first = base; symwin_have = cnt;
+        }
+        return symwin[idx - symwin_first];
+    };
+
     uint32_t strtab_idx = sh[symtab_idx].sh_link;
     if (strtab_idx >= eh.e_shnum) {
-        free(syms); free(names); app_unload(out); return LOAD_ERR_READ;
+        free(names); app_unload(out); return LOAD_ERR_READ;
     }
     // THE STRING TABLE IS NOT READ INTO RAM.
     //
@@ -646,7 +675,8 @@ LoadResult app_load(const AppSource &src, LoadedApp *out) {
     // Resolve one symbol to an absolute address. Defined symbols come from the
     // loaded image; undefined ones must be exported by the firmware.
     auto resolve = [&](uint32_t idx, uint32_t *addr, bool *is_func) -> LoadResult {
-        const Elf32_Sym &s = syms[idx];
+        const Elf32_Sym &s = sym_at(idx);
+        if (!sym_io) return LOAD_ERR_READ;
         *is_func = (ELF32_ST_TYPE(s.st_info) == STT_FUNC);
         if (s.st_shndx == SHN_UNDEF) {
             const char *nm = sym_name(s.st_name);
@@ -842,17 +872,18 @@ LoadResult app_load(const AppSource &src, LoadedApp *out) {
     if (rc == LOAD_OK) {
         rc = LOAD_ERR_NO_ENTRY;
         for (uint32_t i = 0; i < nsyms; i++) {
-            if (syms[i].st_shndx == SHN_UNDEF) continue;
-            if (strcmp(sym_name(syms[i].st_name), "app_main") != 0) continue;
-            if (syms[i].st_shndx >= eh.e_shnum || !map[syms[i].st_shndx].loaded) break;
-            uint32_t a = map[syms[i].st_shndx].addr + syms[i].st_value;
+            const Elf32_Sym &s = sym_at(i);
+            if (!sym_io) { rc = LOAD_ERR_READ; break; }
+            if (s.st_shndx == SHN_UNDEF) continue;
+            if (strcmp(sym_name(s.st_name), "app_main") != 0) continue;
+            if (s.st_shndx >= eh.e_shnum || !map[s.st_shndx].loaded) break;
+            uint32_t a = map[s.st_shndx].addr + s.st_value;
             out->entry = (int (*)(int))(uintptr_t)(a | 1u);       // Thumb
             rc = LOAD_OK;
             break;
         }
     }
 
-    free(syms);
     free(names);
     if (rc != LOAD_OK) app_unload(out);
     return rc;
