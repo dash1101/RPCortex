@@ -77,6 +77,33 @@ int main(void) {
     ck(v8_sh(r8) == 0, "SRAM stays non-shareable, as the default map has it");
     ck(((r8.rlar >> 1) & 0x7u) == 0, "and uses attribute 0, which is set to match");
 
+    // Package code IN FLASH, which is what a package running from a slot needs
+    // (see #93). The encoder was only ever handed SRAM bases, and "it has never
+    // been given a flash base" was the open question that would have sunk
+    // running packages from XIP — so it is pinned here rather than left to be
+    // rediscovered.
+    //
+    // Nothing in the encoder looks at WHERE the region is: it checks the
+    // granule, the size and the wrap, and a slot is 4 KB-aligned so it passes
+    // on all three. The permission matters more than the address — AP 0b11 is
+    // read-only to ANY privilege level, which is exactly "unprivileged code may
+    // execute this", and XN stays clear.
+    //
+    // Attribute 0 is the other half of the answer. MAIR0 is 0xFF (mpu_rp2.cpp),
+    // meaning Normal write-back cacheable — NOT Device memory, from which an
+    // instruction fetch is architecturally forbidden. A region over XIP flash
+    // carrying attribute 0 is therefore legally executable.
+    //
+    // DEVICE-UNCONFIRMED: that the RP2350 actually fetches unprivileged from a
+    // flash region at run time. This proves the encoding permits it, which is
+    // the part that can be proven on a host.
+    ck(mpu_v8_encode(0x10180000u, 0x40000u, MPU_RO_EXEC, &r8),
+       "a package slot in XIP flash encodes");
+    ck(v8_xn(r8) == 0, "and is executable from flash");
+    ck(v8_ap(r8) == 0b11, "readable by unprivileged code, writable by nobody");
+    ck(((r8.rlar >> 1) & 0x7u) == 0,
+       "and uses attribute 0 - Normal memory, so a fetch is allowed");
+
     // --- what it refuses. Each of these is a request that CANNOT be encoded,
     // and rounding it to something legal would protect memory the caller never
     // asked about.
