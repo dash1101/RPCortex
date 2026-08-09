@@ -68,6 +68,13 @@ static void free32(void *) { }      // one-shot; the arena goes away with us
 
 static FILE *g_f;
 static int g_loaded;   // how many apps actually got checked
+// How many went through the SLOT path, which is a different question. A package
+// reaches it only by being position-independent, so the count is not `g_loaded`
+// and it is not a constant: it is however many packages os/CMakeLists.txt has
+// opted into PIC. If that ever reaches zero, every slot-path check in this file
+// stops running and nothing else here would notice — which is precisely how
+// #103 survived sixty-one green suites.
+static int g_pic_checked;
 // What the loader READ, as well as what it allocated. The page-at-a-time
 // installer buys its small footprint by re-reading the relocation table once per
 // page, and "that is cheap" is a claim rather than a fact until the number is on
@@ -121,6 +128,27 @@ uint32_t api_addr_at(uint32_t i) { return i < (uint32_t)g_ns ? g_addr[i] : 0; }
 // met would size the pool from whichever app ran first.
 uint32_t api_symbol_count(void) { return FAKE_SYMS; }
 
+// What to say when an artifact this suite needs is not on disk.
+//
+// It is a FAILURE and not a skip, and that distinction is the whole of task
+// #101. A missing .app used to print SKIP and return 0, so a tree that had
+// never run build.sh — or one holding a partial build — checked whatever
+// happened to be there and reported a pass. The suite then looked flaky: green
+// in a tree that had built, meaningless in one that had not, with nothing in
+// the output saying which of those it was.
+//
+// Naming the file and naming the command is the point. Everything this test
+// asserts is about the join between what the compiler produced and what the
+// hardware will take, and it cannot assert any of it against a file that is
+// not there.
+static int missing_artifact(const char *path) {
+    printf("  FAIL %s is not there.\n"
+           "       This suite loads the packages build.sh produces; there is\n"
+           "       nothing to load. Run ./build.sh from the repository root\n"
+           "       (or ./build.sh pico2_w for one board) and try again.\n", path);
+    return 1;
+}
+
 // Where a section landed in the loaded image, recomputed from the ELF so the
 // answers match what was actually placed.
 //
@@ -165,9 +193,79 @@ static uint32_t section_flags_at(const char *path, uint32_t want_off,
     return flags;
 }
 
-static bool in_text(const char *path, uint32_t off) {
-    return (section_flags_at(path, off, nullptr) & SHF_EXECINSTR) != 0;
+// --- the loader's placement, recomputed from the ELF -------------------------
+//
+// Every check that has to know where a symbol ENDED UP needs this, and it
+// MIRRORS app_load rather than sharing its code: a helper that called the
+// loader's own placement would agree with it whatever either of them did. It
+// has to be kept in step by hand, which is the price of being able to disagree.
+//
+// Two passes, non-writable first, with the GOT reserved at the base of the
+// writable half exactly as app_load does.
+struct ElfMirror {
+    uint8_t     *b;
+    Elf32_Ehdr  *eh;
+    Elf32_Shdr  *sh;
+    Elf32_Sym   *syms;
+    const char  *str;
+    uint32_t     nsyms;
+    uint32_t     addr[LOADER_MAX_SECTIONS];   // runtime address of each section
+    bool         placed[LOADER_MAX_SECTIONS];
+    bool         writ[LOADER_MAX_SECTIONS];
+    uint32_t     text_end;                    // where the halves divide
+};
+
+static bool mirror_open(const char *path, const LoadedApp &app, ElfMirror *m) {
+    memset(m, 0, sizeof(*m));
+    FILE *f = fopen(path, "rb");
+    if (!f) return false;
+    fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET);
+    m->b = (uint8_t *)malloc(sz);
+    if (!m->b || sz <= 0 || fread(m->b, 1, sz, f) != (size_t)sz) {
+        fclose(f); free(m->b); m->b = nullptr; return false;
+    }
+    fclose(f);
+    m->eh = (Elf32_Ehdr *)m->b;
+    m->sh = (Elf32_Shdr *)(m->b + m->eh->e_shoff);
+    if (m->eh->e_shnum > LOADER_MAX_SECTIONS) { free(m->b); m->b = nullptr; return false; }
+
+    uint32_t total = 0;
+    for (int pass = 0; pass < 2; pass++) {
+        for (int i = 0; i < m->eh->e_shnum; i++) {
+            if (!(m->sh[i].sh_flags & SHF_ALLOC) || m->sh[i].sh_size == 0) continue;
+            if (((m->sh[i].sh_flags & SHF_WRITE) != 0) != (pass == 1)) continue;
+            uint32_t al = m->sh[i].sh_addralign ? m->sh[i].sh_addralign : 4;
+            if (al < 4) al = 4;
+            total = (total + al - 1) & ~(al - 1);
+            m->addr[i] = total;
+            m->placed[i] = true;
+            m->writ[i] = (pass == 1);
+            total += m->sh[i].sh_size;
+        }
+        if (pass == 0) {
+            total = (total + (APP_BLOCK_ALIGN - 1)) & ~(APP_BLOCK_ALIGN - 1);
+            m->text_end = total;
+            total += app.got_size;                 // the GOT the loader reserved
+        }
+    }
+    // Offsets become addresses: the two halves are separate allocations.
+    for (int i = 0; i < m->eh->e_shnum; i++) {
+        if (!m->placed[i]) continue;
+        m->addr[i] = m->writ[i]
+                   ? (uint32_t)(uintptr_t)app.data + (m->addr[i] - m->text_end)
+                   : (uint32_t)(uintptr_t)app.image + m->addr[i];
+    }
+
+    int symtab_i = -1;
+    for (int i = 0; i < m->eh->e_shnum; i++)
+        if (m->sh[i].sh_type == SHT_SYMTAB) symtab_i = i;
+    if (symtab_i < 0) { free(m->b); m->b = nullptr; return false; }
+    m->syms  = (Elf32_Sym *)(m->b + m->sh[symtab_i].sh_offset);
+    m->str   = (const char *)(m->b + m->sh[m->sh[symtab_i].sh_link].sh_offset);
+    m->nsyms = m->sh[symtab_i].sh_size / sizeof(Elf32_Sym);
+    return true;
 }
+static void mirror_close(ElfMirror *m) { free(m->b); m->b = nullptr; }
 
 // --- the GOT, for a position-independent package -----------------------------
 //
@@ -184,45 +282,19 @@ static bool in_text(const char *path, uint32_t off) {
 // so the default path is neither changed nor judged by a rule that is not its.
 static int check_got(const char *path, const LoadedApp &app) {
     int bad = 0;
-    FILE *f = fopen(path, "rb");
-    if (!f) return 0;
-    fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET);
-    uint8_t *b = (uint8_t *)malloc(sz);
-    if (fread(b, 1, sz, f) != (size_t)sz) { fclose(f); free(b); return 0; }
-    fclose(f);
-    Elf32_Ehdr *eh = (Elf32_Ehdr *)b;
-    Elf32_Shdr *sh = (Elf32_Shdr *)(b + eh->e_shoff);
-
-    // Redo the loader's placement to get each section's RUNTIME base, so a symbol
-    // address can be computed independently and the GOT slot checked against it.
-    // Two passes, non-writable first, with the GOT reserved at the base of the
-    // writable half exactly as app_load does — this MIRRORS the loader on purpose
-    // rather than sharing its code, so the two can disagree.
-    static uint32_t base[LOADER_MAX_SECTIONS];
-    static bool     placed[LOADER_MAX_SECTIONS];
-    for (int i = 0; i < eh->e_shnum; i++) { base[i] = 0; placed[i] = false; }
-    uint32_t total = 0, text_end = 0;
-    for (int pass = 0; pass < 2; pass++) {
-        for (int i = 0; i < eh->e_shnum; i++) {
-            if (!(sh[i].sh_flags & SHF_ALLOC) || sh[i].sh_size == 0) continue;
-            if (((sh[i].sh_flags & SHF_WRITE) != 0) != (pass == 1)) continue;
-            uint32_t al = sh[i].sh_addralign ? sh[i].sh_addralign : 4; if (al < 4) al = 4;
-            total = (total + al - 1) & ~(al - 1);
-            base[i] = total; placed[i] = true;
-            total += sh[i].sh_size;
-        }
-        if (pass == 0) {
-            total = (total + (APP_BLOCK_ALIGN - 1)) & ~(APP_BLOCK_ALIGN - 1);
-            text_end = total;
-            total += app.got_size;                 // the GOT the loader reserved
-        }
+    ElfMirror mm;
+    // A failure to mirror used to `return 0`, which reads as "the GOT is fine".
+    // It is not a verdict, it is the absence of one.
+    if (!mirror_open(path, app, &mm)) {
+        printf("       FAIL could not read %s back to check the GOT against\n", path);
+        return 1;
     }
-    for (int i = 0; i < eh->e_shnum; i++) {
-        if (!placed[i]) continue;
-        bool w = (sh[i].sh_flags & SHF_WRITE) != 0;
-        base[i] = w ? (uint32_t)(uintptr_t)app.data + (base[i] - text_end)
-                    : (uint32_t)(uintptr_t)app.image + base[i];
-    }
+    Elf32_Ehdr *eh = mm.eh;
+    Elf32_Shdr *sh = mm.sh;
+    uint8_t *b = mm.b;
+    const uint32_t *base = mm.addr;
+    const bool *placed = mm.placed;
+    const uint32_t text_end = mm.text_end;
 
     if (text_end != app.text_size) {
         printf("       FAIL GOT: layout disagrees on where the halves divide (%u vs %u)\n",
@@ -235,11 +307,8 @@ static int check_got(const char *path, const LoadedApp &app) {
     if ((uint32_t)(uintptr_t)app.data % APP_BLOCK_ALIGN) { printf("       FAIL GOT: base is off the block boundary\n"); bad = 1; }
     if (app.got_count * 4 > app.got_size) { printf("       FAIL GOT: %u slots overrun a %u-byte GOT\n", app.got_count, app.got_size); bad = 1; }
 
-    int symtab_i = -1;
-    for (int i = 0; i < eh->e_shnum; i++) if (sh[i].sh_type == SHT_SYMTAB) symtab_i = i;
-    if (symtab_i < 0) { free(b); return bad; }
-    Elf32_Sym *syms = (Elf32_Sym *)(b + sh[symtab_i].sh_offset);
-    const char *str = (const char *)(b + sh[sh[symtab_i].sh_link].sh_offset);
+    Elf32_Sym *syms = mm.syms;
+    const char *str = mm.str;
     const uint32_t *got = (const uint32_t *)app.data;
 
     int sites = 0;
@@ -283,7 +352,7 @@ static int check_got(const char *path, const LoadedApp &app) {
     if (sites && !bad)
         printf("       GOT ok: %d GOT_BREL site(s) through %u slot(s), every one resolves right\n",
                sites, app.got_count);
-    free(b);
+    mirror_close(&mm);
     return bad;
 }
 
@@ -342,7 +411,7 @@ static int check_mpu_regions(const LoadedApp &app, const char *how) {
 
 static int load_one(const char *path) {
     g_f = fopen(path, "rb");
-    if (!g_f) { printf("  SKIP %s (not built)\n", path); return 0; }
+    if (!g_f) return missing_artifact(path);
     fseek(g_f, 0, SEEK_END); uint32_t sz = ftell(g_f);
 
     loader_set_allocator(alloc32, free32);
@@ -466,49 +535,62 @@ static int load_one(const char *path) {
     // exactly what happened, and only to commands, because the entry point is
     // resolved by symbol lookup rather than by a relocation.
     //
-    // Scanning the whole image for words that land inside it and look like code
-    // catches the whole class: any ABS32 to a function, not just the ones a
-    // hand-written test thought to check.
-    // TWO RANGES, walked separately, because the halves are separate
-    // allocations. Reading `image_size` words from `image` used to be the whole
-    // image and is now the read-only block plus whatever the heap put after it:
-    // the first run after the split reported a bad code pointer at +0xf10c,
-    // which was not in the package at all.
+    // DRIVEN BY THE RELOCATIONS, and that is the fix for a flake that made this
+    // whole suite untrustworthy (task #101). It used to scan every word of both
+    // halves and judge any value that landed inside the loaded ranges and
+    // pointed at an executable section. That cannot be made to work, for a
+    // reason easy to miss: most words in the read-only half are INSTRUCTIONS,
+    // and an instruction pair is a 32-bit number like any other. novad1 holds
+    // `cmp r6, r2 / adcs r3, r3` at .text+0xac8 — the word 0x415b4296 — and the
+    // host's arena is mmapped at an address the kernel randomises, so about one
+    // run in ten it landed at 0x415b____ and that pair "pointed" into the image.
+    // The suite then reported a code pointer with no Thumb bit at an offset
+    // holding no pointer at all, at a different offset each time, and it read
+    // exactly like a loader bug. It was the test.
     //
-    // The offsets this reports and hands to in_text are ELF-LAYOUT offsets —
-    // the writable half continues where the read-only half stopped — because
-    // that is the space section_flags_at and in_text describe. Only the
-    // addresses are in two pieces.
-    const uintptr_t db = (uintptr_t)app.data;
-    struct Half { const uint32_t *words; uint32_t bytes; uint32_t off_base; uintptr_t addr; };
-    const Half halves[2] = {
-        { (const uint32_t *)app.image, app.text_size, 0,              b  },
-        { (const uint32_t *)app.data,  app.data_size, app.text_size,  db },
-    };
-
+    // The relocations know which words are pointers, so ask them. That is also
+    // strictly stricter: a site is judged because it IS one, and the symbol it
+    // names says whether it is a function, instead of an address range being
+    // asked to guess. R_ARM_ABS32 and R_ARM_TARGET1 are the two the loader
+    // applies by writing an absolute address into a word — see the switch in
+    // loader.cpp — so they are the two walked here.
     int checked = 0, even_ptrs = 0;
-    for (const Half &h : halves) {
-        if (!h.words || !h.bytes) continue;
-        for (uint32_t w = 0; w < h.bytes / 4; w++) {
-            uint32_t v = h.words[w];
-            uint32_t a = v & ~1u;
-            // Which half does it point into, if either?
-            uint32_t off;
-            if (a >= b && a < b + app.text_size)                 off = a - (uint32_t)b;
-            else if (db && a >= db && a < db + app.data_size)    off = (a - (uint32_t)db) + app.text_size;
-            else continue;                                        // not a pointer into us
-            // Only judge values that point into an executable section. Data
-            // pointers are legitimately even, so counting them would be noise.
-            if (!in_text(path, off)) continue;
-            checked++;
-            if (!(v & 1u)) {
-                printf("       FAIL word at +0x%x holds %08x -> code at +0x%x with NO Thumb bit\n",
-                       h.off_base + w * 4, v, off);
-                even_ptrs++;
+    {
+        ElfMirror pm;
+        if (!mirror_open(path, app, &pm)) {
+            printf("       FAIL could not read %s back to walk its relocations\n", path);
+            bad = 1;
+        } else {
+            for (int s = 0; s < pm.eh->e_shnum; s++) {
+                if (pm.sh[s].sh_type != SHT_REL) continue;
+                uint32_t tgt = pm.sh[s].sh_info;
+                if (tgt >= (uint32_t)pm.eh->e_shnum || !pm.placed[tgt]) continue;
+                Elf32_Rel *rel = (Elf32_Rel *)(pm.b + pm.sh[s].sh_offset);
+                uint32_t n = pm.sh[s].sh_size / sizeof(Elf32_Rel);
+                for (uint32_t r = 0; r < n; r++) {
+                    uint32_t type = ELF32_R_TYPE(rel[r].r_info);
+                    if (type != R_ARM_ABS32 && type != R_ARM_TARGET1) continue;
+                    uint32_t sidx = ELF32_R_SYM(rel[r].r_info);
+                    if (sidx >= pm.nsyms) continue;
+                    const Elf32_Sym &sy = pm.syms[sidx];
+                    // Only a function pointer has to be odd. A pointer to data
+                    // is legitimately even, and judging one would be noise.
+                    if (ELF32_ST_TYPE(sy.st_info) != STT_FUNC) continue;
+                    uint32_t site = pm.addr[tgt] + rel[r].r_offset;
+                    uint32_t v = *(const uint32_t *)(uintptr_t)site;
+                    checked++;
+                    if (!(v & 1u)) {
+                        printf("       FAIL %s is stored at %08x as %08x — a function "
+                               "pointer with NO Thumb bit\n",
+                               pm.str + sy.st_name, site, v);
+                        even_ptrs++;
+                    }
+                }
             }
+            mirror_close(&pm);
         }
     }
-    if (checked) printf("       %d code pointer(s), %d missing the Thumb bit\n",
+    if (checked) printf("       %d stored function pointer(s), %d missing the Thumb bit\n",
                         checked, even_ptrs);
     if (even_ptrs) bad = 1;
 
@@ -550,7 +632,7 @@ static int load_one(const char *path) {
 // supervisor call a different function than the one the package asked for.
 static int load_svc(const char *path) {
     g_f = fopen(path, "rb");
-    if (!g_f) return 0;
+    if (!g_f) return missing_artifact(path);
     fseek(g_f, 0, SEEK_END); uint32_t sz = ftell(g_f);
 
     loader_set_veneer_mode(LOADER_VENEER_SVC);
@@ -780,16 +862,25 @@ static int check_pic(const char *path) {
     // The ELF in RAM, for the INDEPENDENT layout below — mirrored, never shared
     // with the loader, so the two can disagree.
     FILE *f = fopen(path, "rb");
-    if (!f) { printf("  SKIP %s (not built)\n", name); return 0; }
+    if (!f) return missing_artifact(path);
     fseek(f, 0, SEEK_END); uint32_t fsz = ftell(f); fseek(f, 0, SEEK_SET);
     uint8_t *b = (uint8_t *)malloc(fsz);
-    if (!b || fread(b, 1, fsz, f) != fsz) { fclose(f); free(b); return 0; }
+    // Every one of the three exits below used to `return 0` — a pass, from a
+    // function that had checked nothing. The slot path is the one #103 hid in,
+    // so an unchecked run of it must be loud.
+    if (!b || fread(b, 1, fsz, f) != fsz) {
+        printf("  FAIL %-12s could not be read back for the slot checks\n", name);
+        fclose(f); free(b); return 1;
+    }
     fclose(f);
     Elf32_Ehdr *eh = (Elf32_Ehdr *)b;
     Elf32_Shdr *sh = (Elf32_Shdr *)(b + eh->e_shoff);
     int symtab_i = -1;
     for (int i = 0; i < eh->e_shnum; i++) if (sh[i].sh_type == SHT_SYMTAB) symtab_i = i;
-    if (symtab_i < 0) { free(b); return 0; }
+    if (symtab_i < 0) {
+        printf("  FAIL %-12s has no symbol table — nothing here can be checked\n", name);
+        free(b); return 1;
+    }
     Elf32_Sym *syms = (Elf32_Sym *)(b + sh[symtab_i].sh_offset);
     const char *str = (const char *)(b + sh[sh[symtab_i].sh_link].sh_offset);
 
@@ -843,7 +934,15 @@ static int check_pic(const char *path) {
     };
     uint8_t *slotA = slot_alloc();
     uint8_t *slotB = slot_alloc();
-    if (!slotA || !slotB) { printf("  SKIP %-12s (arena too small)\n", name); free(b); return 0; }
+    // Not a skip. An arena too small for two slots means the whole slot path
+    // went unchecked for this package, and a suite that prints a pass for that
+    // is the exact instrument that let #103 through. Raise ARENA instead.
+    if (!slotA || !slotB) {
+        printf("  FAIL %-12s the %u KB arena does not fit two %u KB slots — nothing\n"
+               "       on the slot path was checked. Raise ARENA in this file.\n",
+               name, (unsigned)(ARENA / 1024), (unsigned)(SLOTCAP / 1024));
+        free(b); return 1;
+    }
     SlotBuf sbA{slotA, SLOTCAP, 0}, sbB{slotB, SLOTCAP, 0};
     PicManifest mA{}, mB{};
     AppSource src{}; src.read = file_read; src.ctx = nullptr; src.size = fsz;
@@ -886,6 +985,7 @@ static int check_pic(const char *path) {
     if (rcB != LOAD_OK) { printf("  FAIL %-12s pic-install(B): %s\n", name, load_result_str(rcB)); free(b); app_pic_manifest_free(&mA); return 1; }
 
     g_loaded++;
+    g_pic_checked++;
     printf("  ok   %-12s slot %u B (text %u + rodata %u + veneers %u), RAM %u B\n",
            name, mA.ro_size, mA.text_size, mA.rodata_size, mA.veneer_size, mA.ram_size);
 
@@ -1271,17 +1371,50 @@ static const char *kBuildDirs[] = {
 // to handle it identically or a package that builds fine will not load.
 static const char *kNames[] = { "greet", "bench", "stress", "tuidemo", "httpd", "novad1" };
 
+// --- the inputs, named rather than skipped (task #101) -----------------------
+//
+// This suite is only as good as the artifacts it reads, and it used to be
+// entirely silent about not having them. A directory was chosen on the presence
+// of greet.app ALONE, and every other name that was not in it printed SKIP and
+// counted as a pass — so a tree that had built one package, or built five of
+// six, or held a directory left over from an older layout, ran a fraction of
+// the checks and reported success. In a tree that had never run build.sh the
+// only complaint was one line at the very end.
+//
+// Both are the same mistake in miniature as #103 itself: something silently did
+// not happen, and nothing said so. So: a directory qualifies only if it holds
+// EVERY package, an incomplete one is named along with the first file it is
+// missing, and there is no path through this file where an artifact is absent
+// and the answer is a pass.
+static bool dir_has(const char *dir, const char *name) {
+    char p[96];
+    snprintf(p, sizeof(p), "%s/%s.app", dir, name);
+    FILE *f = fopen(p, "rb");
+    if (!f) return false;
+    fclose(f);
+    return true;
+}
+// The first package this directory does NOT hold, or null if it holds them all.
+static const char *missing_from(const char *dir) {
+    for (const char *n : kNames) if (!dir_has(dir, n)) return n;
+    return nullptr;
+}
+
 int main(int argc, char **argv) {
     static char paths[8][64];
     static const char *kApps[8];
     int napps = 0;
 
+    // Complete directories only. A partial one is remembered separately, because
+    // "half a build" is worth naming and an empty tree is merely expected.
     const char *dir = nullptr;
+    const char *partial = nullptr, *partial_missing = nullptr;
     for (const char *d : kBuildDirs) {
-        char probe[80];
-        snprintf(probe, sizeof(probe), "%s/greet.app", d);
-        FILE *f = fopen(probe, "rb");
-        if (f) { fclose(f); dir = d; break; }
+        const char *miss = missing_from(d);
+        if (!miss) { dir = d; break; }
+        if (!partial)
+            for (const char *n : kNames)
+                if (dir_has(d, n)) { partial = d; partial_missing = miss; break; }
     }
     if (dir) {
         printf("  from %s\n", dir);
@@ -1290,6 +1423,25 @@ int main(int argc, char **argv) {
             kApps[napps] = paths[napps];
             napps++;
         }
+    } else if (argc == 1) {
+        // Nothing to run against, so say which artifact is missing and how to
+        // produce it, rather than failing later inside the loader and reading
+        // like a loader bug.
+        if (partial)
+            printf("  FAIL %s has some packages but not %s.app.\n"
+                   "       That is a partial or stale build directory, and running against\n"
+                   "       it would check a fraction of what this suite covers and still\n"
+                   "       print a pass. Run ./build.sh from the repository root.\n",
+                   partial, partial_missing);
+        else
+            printf("  FAIL no built packages anywhere: looked for %s.app in %s\n"
+                   "       and %d other place(s), and found none of them.\n"
+                   "       Run ./build.sh from the repository root (or ./build.sh pico2_w\n"
+                   "       for one board), and run this from os/host.\n",
+                   kNames[0], kBuildDirs[0],
+                   (int)(sizeof(kBuildDirs) / sizeof(kBuildDirs[0])) - 1);
+        printf("  realapp: 0 loaded, 1 failed\n");
+        return 1;
     }
     int fails = 0;
 
@@ -1410,10 +1562,23 @@ int main(int argc, char **argv) {
     // the precise shape of the bug this file exists to catch, and it would be
     // absurd for the test to have it too.
     if (g_loaded == 0) {
-        printf("  FAIL loaded no apps at all — build them first, and run this "
-               "from os/host\n");
+        printf("  FAIL loaded no apps at all — run ./build.sh from the repository "
+               "root, and run this from os/host\n");
         fails++;
     }
-    printf("  realapp: %d loaded, %d failed\n", g_loaded, fails);
+    // And nothing on the slot path is a failure of the same kind. Everything
+    // #103 turned out to be lived there, and a package reaches it only by being
+    // position-independent — so if the last PIC opt-in were ever removed, every
+    // slot check in this file would stop running and the suite would go on
+    // saying "ok". Only assert it for the full run: a single named .app may
+    // legitimately be a package nobody made PIC.
+    if (argc == 1 && g_pic_checked == 0) {
+        printf("  FAIL no position-independent package was checked, so the whole\n"
+               "       flash-slot path ran none of its checks. Something has to be\n"
+               "       opted in — see rpc_add_app(... PIC) in os/CMakeLists.txt.\n");
+        fails++;
+    }
+    printf("  realapp: %d loaded (%d through a flash slot), %d failed\n",
+           g_loaded, g_pic_checked, fails);
     return fails ? 1 : 0;
 }
