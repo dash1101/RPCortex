@@ -81,6 +81,21 @@ static void index_walk(PkgIndexFn cb, void *ctx) {
 //
 // The decision itself is pkg_route (pkgslot.cpp), which is pure and host-tested.
 // What is here is the filesystem and chip either side of it.
+//
+// DEVICE-UNCONFIRMED, all of it, and the list is the list because no host can
+// shorten it:
+//   * the erase and the program themselves (pkg_erase / pkg_program in
+//     storage.cpp). A fake chip proves the ORDER, never the chip.
+//   * executing from the slot at all — the CPU fetching a package's
+//     instructions out of XIP flash instead of out of SRAM.
+//   * unprivileged execute-from-flash. app_enter hands `image` to the memory
+//     protection unit as the package's read-only executable region, and with a
+//     slot that base is a flash address for the first time. mpu_v8_encode has
+//     never been given one. A refusal here is a MemManage on the package's very
+//     first instruction, which is why it is worth knowing to look for.
+//   * the watchdog margin. A slot install is roughly forty sector erases and
+//     six hundred page programs; slot_sink feeds the watchdog on every page,
+//     but sixteen seconds against several is a measurement nobody has taken.
 
 #define PKG_SLOTS_MAX 4     // more than any board carries; the table is static
 
