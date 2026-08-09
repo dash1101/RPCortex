@@ -168,9 +168,36 @@ int main(void) {
         out_errp("Crash", "Last run stopped while running '%s' (pid %d, core %u).",
                  bb->task, bb->pid, (unsigned)bb->core);
         if (bb->cmd[0])   out_multi("   Command   : %s", bb->cmd);
-        if (bb->phase[0]) out_multi("   Reached   : %s%s%s   <- it stopped here",
-                                    C_WARN, bb->phase, C_RESET);
+        // The checkpoint goes in the LOG too, not only on the console.
+        //
+        // This banner prints once, in the first second of boot, and a host that
+        // is still re-enumerating its USB port never sees it — which is exactly
+        // the situation after the reset that a hang causes. The one line that
+        // says which call did not return is then lost, and the crash record
+        // that survives in `logdump` names only the task. Logging it means the
+        // answer is still there to be read minutes later.
+        if (bb->phase[0]) {
+            out_multi("   Reached   : %s%s%s   <- it stopped here",
+                      C_WARN, bb->phase, C_RESET);
+            log_addf(LOG_K_WARN, "[Crash] It stopped at '%s'.", bb->phase);
+        }
         out_multi("   Yields    : %u before it stopped", (unsigned)bb->yields);
+        // What KIND of stop it was. Logged as well as printed, for the same
+        // reason the checkpoint is.
+        if (bb->hw_twice) {
+            out_multi("   Deadlock  : %shardware lock taken twice on core %u, from %08x%s",
+                      C_WARN, (unsigned)bb->hw_twice_core, (unsigned)bb->hw_twice_pc, C_RESET);
+            log_addf(LOG_K_ERR, "[Crash] hardware lock taken twice on core %u from %08x",
+                     (unsigned)bb->hw_twice_core, (unsigned)bb->hw_twice_pc);
+        }
+        if (bb->max_stall_ms) {
+            out_multi("   Longest   : %u ms held without yielding at %08x%s",
+                      (unsigned)bb->max_stall_ms, (unsigned)bb->max_stall_pc,
+                      bb->stall_crit ? "  (holding a lock)" : "");
+            log_addf(LOG_K_WARN, "[Crash] core 0 held %u ms at %08x%s",
+                     (unsigned)bb->max_stall_ms, (unsigned)bb->max_stall_pc,
+                     bb->stall_crit ? " holding a lock" : "");
+        }
         if (bb->stack_size)
             out_multi("   Stack     : %u of %u bytes used%s",
                       (unsigned)bb->stack_used, (unsigned)bb->stack_size,

@@ -27,6 +27,7 @@
 #include "persist.h"
 #include "lock.h"
 #include "blackbox.h"
+#include "joinguard.h"
 #include "rpc_app.h"
 
 #include <stdio.h>
@@ -162,8 +163,15 @@ struct NetStatus {
     char     gw[16];
     char     mask[16];
     volatile int link;
+    // The two readings that can only be had by TALKING to the chip, kept here
+    // for the same reason as everything above: so that asking for them costs a
+    // load and cannot stop the device. Both are drawn on a status bar, every
+    // frame, by an unpinned package task — see net_signal and net_power_source.
+    volatile int  rssi;            // dBm; meaningful only while rssi_ok
+    volatile bool rssi_ok;
+    volatile int  power;           // -1 unknown, 0 battery, 1 USB
 };
-static NetStatus g_status;
+static NetStatus g_status = { false, {0}, {0}, {0}, {0}, 0, 0, false, -1 };
 
 // Whether the radio has been powered up. Declared here because the status
 // refresh below needs it.
@@ -172,21 +180,57 @@ static NetStatus g_status;
 // calling in from the other core is undefined, and the SDK's own asserts for it
 // compile out in a release build, so it fails silently rather than loudly.
 
+bool net_core_ok(void);
+
+// The readings that need a conversation with the chip, refreshed into the cache
+// above. Only ever called by a task that already owns g_net_op AND is on the
+// radio's core, and NOT from inside a NetLock: both of these take the driver's
+// own lock themselves, and an ioctl issued with the background worker shut out
+// is a question asked of something that has been told not to answer.
+static void chip_reads_refresh(void) {
+    if (!g_radio_up) { g_status.rssi_ok = false; g_status.power = -1; return; }
+    int32_t r = 0;
+    bool ok = g_status.link == CYW43_LINK_UP &&
+              cyw43_wifi_get_rssi(&cyw43_state, &r) == 0;
+    if (ok) g_status.rssi = (int)r;
+    g_status.rssi_ok = ok;
+    g_status.power = cyw43_arch_gpio_get(CYW43_WL_GPIO_VBUS_PIN) ? 1 : 0;
+}
+
 // Refresh the cache from lwIP. Only ever called by whoever holds g_net_op.
 static void status_refresh(void) {
-    NetLock _l;
-    g_status.link = g_radio_up ? cyw43_tcpip_link_status(&cyw43_state, CYW43_ITF_STA)
-                               : CYW43_LINK_DOWN;
-    bool up = g_radio_up && netif_default && netif_is_up(netif_default) &&
-              !ip4_addr_isany(netif_ip4_addr(netif_default));
-    if (up) {
-        snprintf(g_status.ip,   sizeof(g_status.ip),   "%s", ip4addr_ntoa(netif_ip4_addr(netif_default)));
-        snprintf(g_status.gw,   sizeof(g_status.gw),   "%s", ip4addr_ntoa(netif_ip4_gw(netif_default)));
-        snprintf(g_status.mask, sizeof(g_status.mask), "%s", ip4addr_ntoa(netif_ip4_netmask(netif_default)));
-    } else {
-        g_status.ip[0] = g_status.gw[0] = g_status.mask[0] = 0;
+    {
+        NetLock _l;
+        g_status.link = g_radio_up ? cyw43_tcpip_link_status(&cyw43_state, CYW43_ITF_STA)
+                                   : CYW43_LINK_DOWN;
+        bool up = g_radio_up && netif_default && netif_is_up(netif_default) &&
+                  !ip4_addr_isany(netif_ip4_addr(netif_default));
+        if (up) {
+            snprintf(g_status.ip,   sizeof(g_status.ip),   "%s", ip4addr_ntoa(netif_ip4_addr(netif_default)));
+            snprintf(g_status.gw,   sizeof(g_status.gw),   "%s", ip4addr_ntoa(netif_ip4_gw(netif_default)));
+            snprintf(g_status.mask, sizeof(g_status.mask), "%s", ip4addr_ntoa(netif_ip4_netmask(netif_default)));
+        } else {
+            g_status.ip[0] = g_status.gw[0] = g_status.mask[0] = 0;
+        }
+        g_status.connected = up;
     }
-    g_status.connected = up;
+    // Outside the NetLock, for the reason given on chip_reads_refresh.
+    chip_reads_refresh();
+}
+
+// Refresh those two IF it can be done without waiting for anything.
+//
+// Never blocks, never migrates, never brings the chip up. On the wrong core, or
+// while another task owns the radio, it does nothing at all and the caller is
+// given the last reading taken. That is the whole design: these feed a status
+// bar, and a signal icon a few seconds out of date is worth immeasurably more
+// than one that can stop the device.
+static void chip_reads_try(void) {
+    if (!g_radio_up) return;
+    if (!net_core_ok()) return;
+    if (!lock_try(&g_net_op)) return;
+    chip_reads_refresh();
+    lock_release(&g_net_op);
 }
 
 #define NET_SAVED     4        // saved networks, registry-backed
@@ -226,12 +270,35 @@ const char *signal_word(int rssi) {
 //
 // Returns false when there is no reading rather than inventing a zero, because
 // 0 dBm is a valid and extraordinary value, not an absence.
+// Signal strength, from the cache — NOT from the chip.
+//
+// This used to call cyw43_wifi_get_rssi directly, with no lock and no check of
+// which core it was on, and fw_net_rssi puts it in front of every package. A
+// status bar drawing signal bars therefore reached into the driver from an
+// unpinned task, sixty times a second, while the boot join was inside it on
+// core 0 — and cyw43's own lock is keyed on the CORE, not the task, and waits
+// for the other core in a __wfe loop that neither yields nor times out. Core 0
+// stopped reaching the scheduler while holding g_net_op, which defers
+// preemption, and the watchdog is fed from the scheduler. Sixteen seconds later
+// the board was dead with no fault and an empty log. That was task #98, and it
+// took a third of all cold boots.
+//
+// So: a load, like every other question this file answers. See NetStatus.
 bool net_signal(int *rssi_out) {
-    if (!g_radio_up || g_status.link != CYW43_LINK_UP) return false;
-    int32_t r = 0;
-    if (cyw43_wifi_get_rssi(&cyw43_state, &r) != 0) return false;
-    if (rssi_out) *rssi_out = (int)r;
+    chip_reads_try();
+    if (!g_status.rssi_ok) return false;
+    if (rssi_out) *rssi_out = g_status.rssi;
     return true;
+}
+
+// What is powering the board, from the same cache and for the same reason.
+//
+// VBUS sense is WL_GPIO2 on the CYW43, so reading it means a SPI transaction
+// with the radio — which is exactly what a battery icon must never do on its
+// own account. Returns -1 when it has not been read yet.
+int net_power_source(void) {
+    chip_reads_try();
+    return g_status.power;
 }
 
 // --- radio lifecycle --------------------------------------------------------
@@ -246,16 +313,27 @@ bool radio_locked(void) {
     return strcmp(reg_get("System.RadioLock", "false"), "true") == 0;
 }
 
+// Checkpoints through the radio bring-up and join.
+//
+// Every one of these steps is a call INTO the driver that does not yield, so if
+// one of them never returns the device hangs with nothing printed — the USB
+// buffer dies with it. bb_note_phase writes to memory the reset does not clear,
+// so the next boot can say which call it was. That is the only way this path is
+// debuggable at all; a hang here otherwise reports "wifi-join" and no more.
+static inline void join_phase(const char *what) { bb_note_phase(what); }
+
 static bool radio_up(void) {
     if (radio_locked()) {
         out_err("Radios are locked off. 'radio on' to release the lock.");
         return false;
     }
     if (g_radio_up) return true;
+    join_phase("cyw43_arch_init");
     if (cyw43_arch_init() != 0) {
         out_err("Could not start the wireless chip.");
         return false;
     }
+    join_phase("enable_sta_mode");
     cyw43_arch_enable_sta_mode();
 
     // POWER SAVE, turned down from the driver's default.
@@ -271,10 +349,12 @@ static bool radio_up(void) {
     // Set HERE and not in the join path: the driver only applies its default
     // while the interface is down, so once is enough and it survives every
     // rejoin. It takes its own lock internally, so none is needed around it.
+    join_phase("wifi_pm");
     cyw43_wifi_pm(&cyw43_state, cyw43_pm_value(CYW43_PM2_POWERSAVE_MODE, 200, 1, 1, 1));
 
     g_radio_core = task_this_core();
     g_radio_up = true;
+    join_phase("radio up");
     return true;
 }
 
@@ -520,10 +600,12 @@ static int scan_collect(bool quiet = false) {
     cyw43_wifi_scan_options_t opts;
     memset(&opts, 0, sizeof(opts));
     if (!quiet) out_info("Scanning...");
+    join_phase("scan start");
     if (cyw43_wifi_scan(&cyw43_state, &opts, nullptr, scan_cb) != 0) {
         out_err("Could not start a scan.");
         return 1;
     }
+    join_phase("scan wait");
     // A scan takes a couple of seconds; bail out rather than hang if the driver
     // never clears the flag.
     absolute_time_t deadline = make_timeout_time_ms(15000);
@@ -577,6 +659,56 @@ static int wifi_connect(const char *ssid, const char *pw, bool quiet = false,
                         bool persist = true);
 static int wifi_autoconnect(bool quiet, bool persist = true);
 
+// --- surviving a join that stopped the device -------------------------------
+
+#if defined(PICO_ON_DEVICE) && PICO_ON_DEVICE
+  #define NET_NOINIT __attribute__((section(".uninitialized_data.rpcnet")))
+#else
+  #define NET_NOINIT
+#endif
+#define JOINBB_MAGIC 0x574A4731u    // 'WJG1'
+
+// Kept in memory the reset does not clear, so the next boot can read it.
+//
+// `joining` is the whole reason this exists. The crash record names the task
+// that was scheduled when the device stopped, and THIS task is called
+// 'wifi-join' for the entire life of the device — it stays on to watch the
+// link — so the task name on its own accused the join of every hang that
+// happened to land while the watcher was asleep. A flag that is only raised
+// while a join is genuinely in progress says what the name cannot.
+//
+// After a power cycle this is whatever the SRAM happens to contain, which the
+// magic catches. That is the right answer rather than an accident: somebody who
+// has just pulled the plug to fix something has earned a clean slate.
+static NET_NOINIT struct {
+    uint32_t magic;
+    uint32_t strikes;
+    uint8_t  joining;
+} g_joinbb;
+
+// Nesting only, and only within this run — autoconnect calls connect.
+static uint32_t g_join_depth;
+
+static void joinbb_valid(void) {
+    if (g_joinbb.magic == JOINBB_MAGIC) return;
+    g_joinbb.magic   = JOINBB_MAGIC;
+    g_joinbb.strikes = 0;
+    g_joinbb.joining = 0;
+}
+
+// Raised while a join is running, lowered when it finishes — and finishing is
+// also what clears the strikes, because a join that reached its end did not
+// hang, whatever else it may have failed to do.
+struct JoinMark {
+    JoinMark()  { joinbb_valid(); g_join_depth++; g_joinbb.joining = 1; }
+    ~JoinMark() {
+        if (g_join_depth) g_join_depth--;
+        if (g_join_depth) return;
+        g_joinbb.joining = 0;
+        g_joinbb.strikes = 0;
+    }
+};
+
 // The last SSID actually joined. Kept outside the registry so a caller that
 // deliberately does not write settings can still report what it did.
 static char g_last_joined[33];
@@ -593,6 +725,7 @@ static bool wifi_connect_quiet(const char *ssid, const char *pw) {
 
 static int wifi_connect(const char *ssid, const char *pw, bool quiet, bool persist) {
     // Whoever holds this is the one task allowed inside cyw43 and lwIP.
+    JoinMark  _mark;
     LockGuard _own(&g_net_op);
     if (!radio_up()) return 1;
 
@@ -611,7 +744,9 @@ static int wifi_connect(const char *ssid, const char *pw, bool quiet, bool persi
     // the scheduler in that window, so nothing feeds the watchdog, and it
     // reported the shell as unresponsive during an entirely normal WiFi setup.
     int rc;
+    join_phase("connect_async");
     { NetLock _l; rc = cyw43_arch_wifi_connect_async(ssid, (pw && pw[0]) ? pw : nullptr, auth); }
+    join_phase("join wait");
     if (rc == 0) {
         absolute_time_t deadline = make_timeout_time_ms(JOIN_TIMEOUT);
         uint32_t started = task_now_ms();
@@ -642,8 +777,10 @@ static int wifi_connect(const char *ssid, const char *pw, bool quiet, bool persi
     snprintf(g_last_joined, sizeof(g_last_joined), "%s", ssid);
     // Static addressing and a chosen resolver are applied at every connect, so
     // they survive a rejoin rather than lasting until the next DHCP lease.
+    join_phase("addressing");
     net_apply_addressing();
     net_apply_dns();
+    join_phase("status");
     status_refresh();
     snprintf(g_status.ssid, sizeof(g_status.ssid), "%s", ssid);
     if (persist) {
@@ -771,6 +908,11 @@ static int autoconnect_task(void *) {
     // written by a join.
     //
     // This task now stays for the life of the device instead of returning.
+    //
+    // The checkpoint is reset here so that a hang hours later is not reported
+    // as one in whichever driver call the boot join last made. From this point
+    // the task is asleep almost all of the time, and "watching" says so.
+    join_phase("wifi watching");
     for (;;) {
         task_sleep_ms(WATCH_IDLE_MS);
         if (task_should_stop()) break;
@@ -804,18 +946,40 @@ static int autoconnect_task(void *) {
 }
 
 void net_autoconnect(void) {
+    // Read what the last run left BEFORE this run touches any of it.
+    //
+    // Two things have to agree for this to count against the join: a join was
+    // in progress, and the run did not end on purpose. bb_previous() gives up
+    // its record only for an unclean end, so a `reboot` typed while a join was
+    // running is not held against it.
+    const BlackBox *prev = bb_previous();
+    bool stopped_in_join = g_joinbb.magic == JOINBB_MAGIC && g_joinbb.joining &&
+                           prev && prev->task[0];
+    joinbb_valid();
+    g_joinbb.strikes = join_guard_strikes(g_joinbb.strikes, stopped_in_join);
+    g_joinbb.joining = 0;
+
     if (strcmp(reg_get("WiFi.Auto", "false"), "true") != 0) return;
 
-    // If the LAST run died joining, do not try again automatically. Without
-    // this a fault during the join is a boot loop, and a device that is
-    // unusable is far worse than one that is merely offline.
-    const BlackBox *prev = bb_previous();
-    if (prev && (strcmp(prev->task, "wifi-join") == 0 ||
-                 strstr(prev->cmd, "autoconnect") != nullptr)) {
-        out_warnp("wifi", "The last boot crashed while connecting — not retrying automatically.");
-        out_multi("  'wifi autoconnect' to try by hand, or 'wifi auto off' to stop.");
-        log_add(LOG_K_WARN, "wifi: automatic join skipped after a crash in it");
+    // What to do about it. The old rule was one strike and the radio stayed off
+    // for the whole boot — which meant a single transient stall presented as
+    // the WiFi having stopped working, mended only by knowing to type a command
+    // nobody had been told about. The reason the guard exists is narrower than
+    // that: a device that cannot join without hanging must not spend every boot
+    // hanging. Once is weather. Twice running is the thing worth refusing.
+    switch (join_guard_decide(g_joinbb.strikes)) {
+    case JOIN_STAND_BACK:
+        out_warnp("wifi", "Connecting stopped the device twice running — leaving the radio alone.");
+        out_multi("  'wifi autoconnect' to try by hand, or 'wifi auto off' to stop looking.");
+        log_add(LOG_K_WARN, "wifi: automatic join left alone after two stalls in a row");
         return;
+    case JOIN_RETRY:
+        out_warnp("wifi", "The last boot stopped while connecting. Trying once more.");
+        log_add(LOG_K_WARN, "wifi: retrying the join after one stall");
+        break;
+    case JOIN_GO:
+    default:
+        break;
     }
 
     g_join_done = false;
@@ -953,6 +1117,7 @@ static int wifi_connect_interactive(const char *ssid, bool quiet) {
 static int wifi_autoconnect(bool quiet, bool persist) {
     // Held across the whole scan-then-join, so nothing else touches the driver
     // in between and finds it mid-operation.
+    JoinMark  _mark;
     LockGuard _own(&g_net_op);
     char k[REG_KEY_MAX];
     bool any = false;
@@ -1408,6 +1573,10 @@ bool net_core_ok(void) { return true; }
 // No radio, so no reading — and false rather than a made-up zero, because
 // 0 dBm is a valid and extraordinary value, not an absence.
 bool net_signal(int *) { return false; }
+
+// Likewise unknown. A board without the part reads VBUS off an ordinary pin,
+// and api.cpp does that itself rather than asking here.
+int net_power_source(void) { return -1; }
 const char *signal_bars(int) { return "____"; }
 const char *signal_word(int) { return "no radio"; }
 bool radio_locked(void) { return false; }   // nothing to lock

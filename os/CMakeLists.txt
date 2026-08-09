@@ -91,6 +91,7 @@ add_executable(rpcortex_v2
     ${OS_ROOT}/core/httpfetch.cpp
     ${OS_ROOT}/core/repoindex.cpp
     ${OS_ROOT}/core/preempt.cpp
+    ${OS_ROOT}/core/joinguard.cpp
     ${OS_ROOT}/core/excframe.cpp
     ${OS_ROOT}/core/tui.cpp
     ${OS_ROOT}/core/tuikey.cpp

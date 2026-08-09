@@ -651,16 +651,28 @@ extern "C" unsigned fw_power_min_sleep_ms(void) { return power_min_sleep_ms(); }
 // using it here brought the chip up, or faulted trying, as a side effect of
 // drawing the battery icon every frame. That was the incognito freeze.
 bool net_radio_is_up(void);
+int  net_power_source(void);
 extern "C" int fw_power_source(void) {
     task_alive();
 #if defined(RPC_HAS_WIFI) && RPC_HAS_WIFI
-    // WL_GPIO2 on the CYW43 is the VBUS sense on a Pico W and a Pico 2 W. It
-    // can only be read through the radio driver, and ONLY while the radio is
-    // already up — asking otherwise would either fail or, worse, bring the chip
-    // up as a side effect of drawing a battery icon.
+    // WL_GPIO2 on the CYW43 is the VBUS sense on a Pico W and a Pico 2 W, so
+    // reading it means a SPI transaction with the radio. That is asked for HERE
+    // sixty times a second, by a status bar drawing a battery icon, on a task
+    // that is not pinned to anything.
+    //
+    // It used to call cyw43_arch_gpio_get straight out, which takes the
+    // driver's own lock — keyed on the CORE, and a __wfe wait with no yield and
+    // no timeout when the other core holds it. Drawing the icon while the boot
+    // join was inside the driver on core 0 stopped core 0 dead, and since the
+    // joiner holds a lock, preemption was deferred and the watchdog starved:
+    // task #98, a third of all cold boots, no fault and nothing in the log.
+    //
+    // net_power_source answers from the cache that every other network reading
+    // comes from, and refreshes it only when that costs nothing.
     if (!net_radio_is_up()) return FW_POWER_UNKNOWN;
-    return cyw43_arch_gpio_get(CYW43_WL_GPIO_VBUS_PIN) ? FW_POWER_USB
-                                                       : FW_POWER_BATTERY;
+    int p = net_power_source();
+    if (p < 0) return FW_POWER_UNKNOWN;
+    return p ? FW_POWER_USB : FW_POWER_BATTERY;
 #elif defined(PICO_VBUS_PIN)
     // A non-wireless board has it on an ordinary pin, and nothing else is using
     // it there. Left as an input; the boot ROM has already configured it.
