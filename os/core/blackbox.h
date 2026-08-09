@@ -23,6 +23,17 @@
 #define BB_NAME_MAX 16
 #define BB_CMD_MAX  72
 
+// Whether anything could have been done about the stall that ended the run.
+//
+// A watchdog reboot looks the same whether the OS tried everything and had
+// nothing left, or never noticed. The preemption alarm knows which, and this is
+// how it says so across the reset.
+enum BbStuck {
+    BB_STUCK_NO = 0,        // nothing to report: no stall, or one that was dealt with
+    BB_STUCK_TASK,          // a task stopped responding and could not be ended
+    BB_STUCK_PACKAGE,       // ...and it was a package's code that was running
+};
+
 struct BlackBox {
     uint32_t magic;
     int      pid;
@@ -34,6 +45,7 @@ struct BlackBox {
     uint32_t stack_used;           // and how close it was to its limit
     uint32_t stack_size;
     char     phase[40];            // the last checkpoint a program reported
+    uint8_t  stuck;                // a BbStuck: why nothing saved the run
 };
 
 // Record the task about to run. Called from the scheduler; deliberately cheap.
@@ -46,7 +58,17 @@ void bb_note_command(const char *line);
 
 // Mark progress. Separate from bb_note_task because a long-running task keeps
 // yielding without being rescheduled onto a different core.
+//
+// Also clears `stuck`: progress is the definition of not being stuck, and a
+// flag left set by a stall the device recovered from would be reported against
+// whatever went wrong next.
 void bb_note_yield(uint32_t now_ms);
+
+// Record that a stall could not be recovered from. Called FROM THE PREEMPTION
+// ALARM, which is an interrupt that fired inside an arbitrary instruction — so
+// this is one byte, written directly. No formatting, no lock, nothing that can
+// need the stack of the task it is describing.
+void bb_note_stuck(uint8_t why);
 
 // A checkpoint inside a long-running program. Printed output is lost when the
 // device hangs — the terminal never receives what was in the USB buffer — but

@@ -49,6 +49,40 @@ struct PreemptState {
 
 PreemptAction preempt_decide(const PreemptState &s);
 
+// --- what can be done about a task that has stopped yielding entirely --------
+//
+// preempt_decide answers one question — may this task be taken off the core —
+// and there are two answers above it that it does not cover. A package command
+// runs on the SHELL task, so ending the task ends the session; the better
+// outcome is to end the CALL and leave the task standing. And on a part with no
+// sandbox there is no call to end, because a package there branches straight
+// into the firmware rather than through a supervisor call that could be
+// returned from differently.
+//
+// That last case is the one worth naming. It has no recovery at all: the shell
+// cannot be ended (nothing respawns it, so the device would come back with no
+// console), and the call cannot be taken back. The watchdog reboot is the only
+// way out — and a reboot that had no alternative should say so rather than look
+// like one nobody tried to prevent.
+enum StallAction {
+    STALL_LEAVE = 0,        // not yet, or it may still come back on its own
+    STALL_ABANDON_CALL,     // take the package call back; the task survives
+    STALL_END_TASK,         // end the task where it stands
+    STALL_NO_RECOURSE,      // neither is possible; the watchdog is the way out
+};
+
+// Passed in rather than read from globals, for the same reason as PreemptState:
+// the combinations that matter are the awkward ones, and a test has to be able
+// to build them directly.
+struct StallFacts {
+    bool past_kill;          // asking the task nicely has already failed
+    bool in_package;         // a package's code is what is running
+    bool call_reclaimable;   // and there is a way to take that call back
+    bool may_end_task;       // preempt_decide says this task may be ended
+};
+
+StallAction stall_decide(const StallFacts &f);
+
 // How long the task has held the core. Signed subtraction, because the
 // timestamp can predate a reset and an unsigned wrap reads as 49 days — the bug
 // that made the graded watchdog fire constantly.

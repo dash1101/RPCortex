@@ -950,6 +950,11 @@ const TaskAppMem *task_app_mem_current(void) {
     return &t->app_mem;
 }
 
+bool task_in_package(void) {
+    Task *t = cur();
+    return t && t->app_mem_set && t->app_mem.text != nullptr;
+}
+
 void task_app_mem_set(const TaskAppMem *mem) {
     Task *t = cur();
     if (!t || !mem) return;

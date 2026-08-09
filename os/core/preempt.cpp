@@ -40,3 +40,21 @@ PreemptAction preempt_decide(const PreemptState &s) {
 
     return PREEMPT_SWITCH;
 }
+
+StallAction stall_decide(const StallFacts &f) {
+    if (!f.past_kill) return STALL_LEAVE;
+
+    // LOSING THE CALL BEATS LOSING THE TASK, so it is tried first even for a
+    // task that could perfectly well be ended. The task most likely to be
+    // holding a wedged package command is the shell, and the difference between
+    // the two answers there is one lost command against a lost session.
+    if (f.in_package && f.call_reclaimable) return STALL_ABANDON_CALL;
+
+    if (f.may_end_task) return STALL_END_TASK;
+
+    // Neither. Note that this is reached for an ordinary wedged shell built-in
+    // as well, not only for a package — the shell is exempt from being ended
+    // whatever it is running. What differs is what can be said about it, and
+    // in_package is carried through the answer so the report can say which.
+    return STALL_NO_RECOURSE;
+}

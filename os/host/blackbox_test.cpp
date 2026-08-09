@@ -75,6 +75,62 @@ int main(void) {
     ck(bb_stall_ms(16000) == 0, "equal timestamps are no stall");
     ck(bb_stall_ms(16500) == 500, "and forwards still measures correctly");
 
+    // --- "nothing could be done about it" ------------------------------------
+    //
+    // Written from the preemption alarm and read at the next boot, so the two
+    // ends have to agree across bb_init. The flag matters most on a part with
+    // no sandbox, where a wedged package command has no recovery at all and
+    // this is the only thing that turns a bare watchdog reset into an
+    // explanation.
+    bb_init();
+    bb_note_task(3, 0, "shell", 0, 0);
+    bb_note_stuck(BB_STUCK_PACKAGE);
+    bb_init();
+    {
+        const BlackBox *prev = bb_previous();
+        ck(prev != nullptr, "the stalled run is carried over");
+        ck(prev && prev->stuck == BB_STUCK_PACKAGE,
+           "and it says a package call was what could not be recovered");
+    }
+
+    // PROGRESS CLEARS IT. A device that stalled and then came back must not
+    // carry the flag into whatever goes wrong next — the report would name a
+    // cause belonging to an incident that resolved itself.
+    bb_init();
+    bb_note_task(3, 0, "shell", 0, 0);
+    bb_note_stuck(BB_STUCK_TASK);
+    bb_note_yield(1000);
+    bb_init();
+    {
+        const BlackBox *prev = bb_previous();
+        ck(prev && prev->stuck == BB_STUCK_NO,
+           "a stall that was recovered from leaves nothing behind");
+    }
+
+    // A DELIBERATE REBOOT IS NOT A STALL. bb_note_clean_exit is what tells the
+    // reporters to stay quiet, and leaving the flag set would make `reboot`
+    // print a recovery failure on the way back up.
+    bb_init();
+    bb_note_task(3, 0, "shell", 0, 0);
+    bb_note_stuck(BB_STUCK_PACKAGE);
+    bb_note_clean_exit();
+    bb_init();
+    {
+        const BlackBox *prev = bb_previous();
+        ck(prev && prev->stuck == BB_STUCK_NO && prev->task[0] == 0,
+           "a clean exit clears the flag along with the task name");
+    }
+
+    // A fresh run starts with nothing to explain.
+    bb_init();
+    bb_note_task(3, 0, "shell", 0, 0);
+    bb_init();
+    {
+        const BlackBox *prev = bb_previous();
+        ck(prev && prev->stuck == BB_STUCK_NO,
+           "a run nobody had to intervene in reports no recovery failure");
+    }
+
     printf("  blackbox: %d checks, %d failed\n", checks, fails);
     return fails ? 1 : 0;
 }

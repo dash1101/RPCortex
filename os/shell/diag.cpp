@@ -595,6 +595,26 @@ static int cmd_mpu(int argc, char **argv) {
         if (bad)
             out_warn("  %lu call%s refused for pointing outside the package.",
                      (unsigned long)bad, bad == 1 ? " was" : "s were");
+    } else {
+        // WHAT IS NOT MEASURED HERE, said rather than left blank.
+        //
+        // sandbox_counts() answers 0 and 0 on a part with no sandbox. Those are
+        // not readings, they are the absence of a counter — and printed in the
+        // column above next to numbers that ARE readings, two zeroes look like
+        // a clean bill of health. So the counters are not printed at all and
+        // the three consequences are named instead. Every line below is a fact
+        // about the part, not a measurement, and none of them is a fault:
+        // ARMv6-M has no way to gate a package's access to the firmware, so
+        // there is nothing here to fix, only something to know.
+        out_multi("    ABI calls served  : not counted — a package branches "
+                  "straight into the firmware");
+        out_multi("    Pointer checks    : not applied — a package can reach "
+                  "that memory itself anyway");
+        out_multi("    A fault or a wedge: reboots the device. There is no "
+                  "package call to unwind,");
+        out_multi("                        so neither one can be contained.");
+        out_multi("    %sA package here is as trusted as the OS is. Install ones "
+                  "you trust.%s", C_GRAY, C_RESET);
     }
 
     // THE FAULT HANDLER'S OWN STACK.

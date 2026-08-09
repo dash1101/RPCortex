@@ -369,6 +369,18 @@ void task_app_mem_set(const TaskAppMem *mem);
 const TaskAppMem *task_app_mem_current(void);
 void task_app_mem_clear(void);
 
+// Is a package's code what this task is running?
+//
+// Deliberately NOT task_app_mem_current() != null. That one answers "is there a
+// sandbox to range-check pointers against", and it returns null for a package
+// running with the OS's own privileges — which is every package on ARMv6-M. So
+// on the one part where the question matters most, it would answer no.
+//
+// This answers "whose code is this", which is true on every part. Reads two
+// fields of the current task and takes no lock, so it is safe from the
+// preemption alarm, which is the caller it exists for.
+bool task_in_package(void);
+
 // The heap the running task's package allocates from, or null when it is not in
 // a sandboxed package and fw_malloc should use the ordinary one.
 //
