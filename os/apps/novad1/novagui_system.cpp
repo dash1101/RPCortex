@@ -150,7 +150,11 @@ public:
     }
 
     void enter(void) override {
-        sel_ = 0;
+        // Reload every time — including when a slider pops back — is now correct,
+        // because the slider wrote its value through to the registry. What must
+        // NOT repeat is zeroing the cursor: a slider popping back should leave you
+        // on the row you opened, not jump you to Brightness.
+        if (!started_) { sel_ = 0; started_ = true; }
         bright_ = nova::reg_int(NOVA_KEY_PREFIX "Contrast", 128);
         dim_    = nova::reg_int(NOVA_KEY_PREFIX "DimSec", 30);
         off_    = nova::reg_int(NOVA_KEY_PREFIX "OffSec", 120);
@@ -193,7 +197,7 @@ private:
     static const char *const kLabels[ROWS];
 
     int  sel_, bright_, dim_, off_;
-    bool invert_, dirty_;
+    bool invert_, dirty_, started_;
 
     void value(int i, char *out, unsigned cap) const {
         switch (i) {
@@ -214,19 +218,19 @@ private:
             case 0: {
                 ui::Slider *s = gui::push<ui::Slider>();
                 if (s) s->set("Brightness", bright_, 15, 255, 16,
-                              ui::SL_PERCENT255, on_slide, this);
+                              ui::SL_PERCENT255, on_slide, this, on_commit_save);
                 break;
             }
             case 1: {
                 ui::Slider *s = gui::push<ui::Slider>();
                 if (s) s->set_stops("Dim After", dim_, kTimeouts, TIMEOUTS,
-                                    ui::SL_SECONDS, on_slide, this);
+                                    ui::SL_SECONDS, on_slide, this, on_commit_save);
                 break;
             }
             case 2: {
                 ui::Slider *s = gui::push<ui::Slider>();
                 if (s) s->set_stops("Screen Off", off_, kTimeouts, TIMEOUTS,
-                                    ui::SL_SECONDS, on_slide, this);
+                                    ui::SL_SECONDS, on_slide, this, on_commit_save);
                 break;
             }
             case 3:
@@ -239,17 +243,24 @@ private:
     }
 
     // Applied LIVE as the slider moves — brightness dims under your thumb — and
-    // saved with the rest on the way out of this screen. Routed by the row that
+    // WRITTEN THROUGH to the registry (in RAM; the slider flushes once on the way
+    // out). Writing the registry rather than only a member is what makes the row
+    // read right when the slider pops: enter() reloads from the registry, so a
+    // value kept only in a member would be reloaded away. Routed by the row that
     // opened the slider, since only one is ever open.
     static void on_slide(void *ctx, int v) {
         DisplaySettings *s = (DisplaySettings *)ctx;
-        s->dirty_ = true;
         switch (s->sel_) {
-            case 0: s->bright_ = v; display().contrast((uint8_t)v); break;
-            case 1: s->dim_ = v; break;
-            case 2: s->off_ = v; break;
+            case 0: s->bright_ = v; display().contrast((uint8_t)v);
+                    nova::reg_set_int(NOVA_KEY_PREFIX "Contrast", v); break;
+            case 1: s->dim_ = v; nova::reg_set_int(NOVA_KEY_PREFIX "DimSec", v); break;
+            case 2: s->off_ = v; nova::reg_set_int(NOVA_KEY_PREFIX "OffSec", v); break;
         }
     }
+
+    // The one flash write, when the slider is done. on_slide wrote each step to
+    // the registry in RAM; this flushes.
+    static void on_commit_save(void *, int) { nova::reg_save(); }
 
     // Cycle the panel controller, and say so — the change cannot be shown,
     // because the screen it would be shown on is the one being reconfigured.

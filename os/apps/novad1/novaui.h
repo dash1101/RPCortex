@@ -211,17 +211,25 @@ typedef void (*SliderFn)(void *ctx, int value);
 
 class Slider : public Screen {
 public:
-    // A continuous range. `value` is clamped into [lo, hi].
+    // A continuous range. `value` is clamped into [lo, hi]. on_change fires on
+    // every detent (the owner persists to the registry in RAM there); on_commit
+    // fires ONCE on leave, if anything moved (the owner flushes to flash there).
+    // Split this way so scrubbing costs no flash and the widget itself stays free
+    // of the registry — the flush is the owner's, called back through on_commit.
     void set(const char *title, int value, int lo, int hi, int step,
-             SliderFmt fmt, SliderFn on_change, void *ctx);
+             SliderFmt fmt, SliderFn on_change, void *ctx, SliderFn on_commit = nullptr);
 
     // A curated set of stops; the encoder moves between them. `stops` belongs to
     // the caller and must outlive the slider (a static, like a MenuItem array).
     void set_stops(const char *title, int value, const int *stops, int n,
-                   SliderFmt fmt, SliderFn on_change, void *ctx);
+                   SliderFmt fmt, SliderFn on_change, void *ctx, SliderFn on_commit = nullptr);
 
     void draw(Canvas &c) override;
     Action on_event(Event e) override;
+    // Flush the value to flash — ONCE, on the way out. on_change persists each
+    // detent to the registry in RAM (cheap); this is the single flash write that
+    // makes it survive a reboot, so scrubbing costs no flash and does not lag.
+    void leave(void) override;
     const char *title(void) const override { return title_; }
 
     int help(const char **out, int max) const override {
@@ -237,12 +245,14 @@ private:
 
     const char *title_;
     SliderFn    cb_;
+    SliderFn    commit_;    // owner's flush-to-flash, called once on leave
     void       *ctx_;
     const int  *stops_;     // null for a continuous range
     int         n_;         // stop count, or 0
     int         idx_;       // current stop, in STOPS mode
     int         val_, lo_, hi_, step_;
     SliderFmt   fmt_;
+    bool        moved_;     // did anything change, so leave() need flush
 };
 
 // --- helpers ------------------------------------------------------------------

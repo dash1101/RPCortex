@@ -605,7 +605,7 @@ protected:
             case R_AUTO: {
                 ui::Slider *s = gui::push<ui::Slider>();
                 if (s) s->set_stops("Auto-lock", secs_, kLockSteps, LOCK_STEPS,
-                                    ui::SL_SECONDS, on_auto_slide, this);
+                                    ui::SL_SECONDS, on_auto_slide, this, on_auto_commit);
                 break;
             }
             default:
@@ -619,13 +619,19 @@ protected:
         return ui::ACT_STAY;
     }
 
-    // The auto-lock timeout, scrubbed on the slider and saved with the rest on
-    // the way out. Routed through the owning screen so store() still writes it.
+    // The auto-lock timeout. Written THROUGH to the registry (in RAM; the slider
+    // flushes once on the way out), not just to the member: SettingsList::enter
+    // reloads from the registry when the slider pops, so a member-only change
+    // would be reloaded away and the row would still read the old value — which
+    // is the bug this fixes. Base enter() reads LockSec straight back.
     static void on_auto_slide(void *ctx, int v) {
         SecuritySettings *s = (SecuritySettings *)ctx;
         s->secs_ = v;
-        s->dirty_ = true;
+        nova::reg_set_int(NOVA_KEY_PREFIX "LockSec", v);
     }
+
+    // The one flash write, when the slider is done.
+    static void on_auto_commit(void *, int) { nova::reg_save(); }
 
 private:
     static const char *const kLabels[R_COUNT];

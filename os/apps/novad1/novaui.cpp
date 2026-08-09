@@ -97,16 +97,16 @@ Action Menu::on_event(Event e) {
 // --- the slider ----------------------------------------------------------------
 
 void Slider::set(const char *title, int value, int lo, int hi, int step,
-                 SliderFmt fmt, SliderFn on_change, void *ctx) {
-    title_ = title; cb_ = on_change; ctx_ = ctx; fmt_ = fmt;
-    stops_ = nullptr; n_ = 0; idx_ = 0;
+                 SliderFmt fmt, SliderFn on_change, void *ctx, SliderFn on_commit) {
+    title_ = title; cb_ = on_change; commit_ = on_commit; ctx_ = ctx; fmt_ = fmt;
+    stops_ = nullptr; n_ = 0; idx_ = 0; moved_ = false;
     lo_ = lo; hi_ = hi; step_ = step > 0 ? step : 1;
     val_ = value < lo ? lo : value > hi ? hi : value;
 }
 
 void Slider::set_stops(const char *title, int value, const int *stops, int n,
-                       SliderFmt fmt, SliderFn on_change, void *ctx) {
-    title_ = title; cb_ = on_change; ctx_ = ctx; fmt_ = fmt;
+                       SliderFmt fmt, SliderFn on_change, void *ctx, SliderFn on_commit) {
+    title_ = title; cb_ = on_change; commit_ = on_commit; ctx_ = ctx; fmt_ = fmt; moved_ = false;
     stops_ = stops; n_ = n > 0 ? n : 1; step_ = 1;
     lo_ = stops ? stops[0] : 0;
     hi_ = stops ? stops[n_ - 1] : 0;
@@ -129,7 +129,17 @@ void Slider::move(int dir) {
         if (val_ < lo_) val_ = lo_;
         if (val_ > hi_) val_ = hi_;
     }
+    moved_ = true;
     if (cb_) cb_(ctx_, val_);
+}
+
+// The one flush, on the way out. on_change has already put every step in the
+// registry in RAM through the owner's callback; on_commit is the owner's
+// flush-to-flash, called once and only if anything moved — so opening a slider
+// and backing straight out costs nothing, and the widget never touches the
+// registry itself.
+void Slider::leave(void) {
+    if (moved_ && commit_) commit_(ctx_, val_);
 }
 
 void Slider::fmt_value(char *out, unsigned cap) const {
