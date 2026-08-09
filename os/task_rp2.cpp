@@ -336,6 +336,14 @@ extern "C" void preempt_tick(uint32_t *frame) {
     }
 
     uint32_t stall = bb_stall_ms(task_now_ms());
+    // How long core 0 was ever held, recorded whether or not anything is done
+    // about it. This is the other half of naming a hang: if the tick was still
+    // arriving while the device was dead, the core was running and refusing to
+    // yield; if the largest stall ever recorded is a normal one, the core
+    // stopped taking interrupts at all and the cause is a spinlock. Two plain
+    // stores, and no formatting — see the note above.
+    // frame[6] is the stacked PC — the layout the redirect below relies on.
+    bb_note_stall(stall, crit_active(), frame ? frame[6] : 0);
     if (stall < STALL_KILL_MS) { g_acted = false; return; }
     if (g_acted) return;
 
@@ -522,7 +530,18 @@ extern "C" void lock_hw_enter(void) {
     // The note is written before blocking, into memory a reset does not clear,
     // so the next boot names it. It costs one byte and a branch on a path that
     // should never be taken.
-    if (g_hw_held[c]) bb_note_phase("hw lock taken twice - deadlock");
+    //
+    // The phase note is kept for a reader looking at the console, but it is NOT
+    // what makes this visible: `phase` is one shared slot and fw_millis writes
+    // it on every ABI call, so the OTHER core — which is still running, because
+    // only this one has stopped — overwrites the note within a millisecond.
+    // Every hang this guard was meant to name came back as "entered fw_millis".
+    // bb_note_hw_twice has no other writer, and it carries the return address
+    // of whoever asked, which is the only way to find the path.
+    if (g_hw_held[c]) {
+        bb_note_phase("hw lock taken twice - deadlock");
+        bb_note_hw_twice((uint8_t)c, (uint32_t)(uintptr_t)__builtin_return_address(0));
+    }
 
     g_hw_save[c] = spin_lock_blocking(g_hw);
     g_hw_held[c] = true;

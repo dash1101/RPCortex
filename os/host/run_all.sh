@@ -24,6 +24,7 @@ declare -A SRC=(
     [httpparse_test]="$CORE/httpparse.cpp"
     [repoindex_test]="$CORE/repoindex.cpp"
     [preempt_test]="$CORE/preempt.cpp"
+    [joinguard_test]="$CORE/joinguard.cpp"
     [mpu_test]="$CORE/mpu.cpp"
     # The package source is INCLUDED by the test rather than linked: its scanners
     # are static, and they are the part that fails without saying so.
