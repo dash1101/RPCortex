@@ -355,6 +355,31 @@ static void draw_status(Canvas &c, Screen *s) {
 static char     g_toast_msg[64];
 static uint32_t g_toast_until;      // fw_millis deadline, 0 when nothing is up
 
+// A hash of exactly what the STATUS BAR draws that can change on its own. The
+// bar is the runner's, not any screen's, so when the clock ticked or the power
+// changed nothing marked the frame dirty and it went stale until a gesture
+// forced a redraw. The loop compares this each frame and redraws when it moves.
+//
+// Only SAFE, cheap reads: the connected flag and power are cached, the clock is
+// a timer read, the stopwatch is a bool. The link BARS are deliberately NOT in
+// here — reading live RSSI means a cyw43 call, and doing that on a timer from
+// this (the GUI) core is the cross-core radio hazard the incognito freeze was.
+// The bars still refresh, because draw_status reads them live on every paint and
+// these other changes cause paints; only an RSSI-only change waits for the next.
+static uint32_t g_status_sig;
+
+static uint32_t status_signature(void) {
+    uint32_t h = 2166136261u;      // FNV-1a, folded inline (no macro — checkuniq)
+    h = (h ^ (uint32_t)(fw_net_connected() ? 1 : 0)) * 16777619u;
+    char hhmm[12];
+    nova::time_hhmm(hhmm, sizeof(hhmm));
+    for (const char *p = hhmm; *p; p++) h = (h ^ (uint8_t)*p) * 16777619u;
+    h = (h ^ (uint32_t)power::source()) * 16777619u;
+    h = (h ^ (uint32_t)(power::percent() + 1)) * 16777619u;
+    h = (h ^ (uint32_t)(screens::stopwatch_running() ? 1 : 0)) * 16777619u;
+    return h;
+}
+
 static void draw_toast(Canvas &c, const char *msg) {
     const int h = ui::ROWH + 3;
     const int y = ui::TOP + 3;
@@ -821,6 +846,17 @@ void run(void) {
         // stayed up until a gesture arrived and pushed things along by another
         // route. Nothing crashed, which is why it looked like a timing problem.
         s = top();
+
+        // The status bar changes on its own — the clock (so a timezone change
+        // shows without a gesture), the power state, the stopwatch — and it is
+        // the runner's, not the screen's, so nothing above marked the frame
+        // dirty when it moved. Redraw when a drawn value changes. Only while
+        // ACTIVE and not fullscreen: a dimmed panel means nobody is looking, and
+        // a fullscreen screen has no bar.
+        if (s && !s->fullscreen() && g_level == LVL_ACTIVE) {
+            uint32_t sig = status_signature();
+            if (sig != g_status_sig) { g_status_sig = sig; g_dirty = true; }
+        }
 
         // Dim, then off, on their own timers. Both are contrast changes, so
         // waking is instant and nothing has to be re-initialised.
