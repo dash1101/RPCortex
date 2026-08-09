@@ -287,6 +287,59 @@ static int check_got(const char *path, const LoadedApp &app) {
     return bad;
 }
 
+// Every region the OS will hand the hardware must actually be encodable.
+//
+// This is the join between the loader's layout and the protection hardware's
+// rules, and it fails silently in the direction that matters: an unencodable
+// region is refused, set_region leaves it DISABLED, and unprivileged code has
+// no default map to fall back on — so "no region" means no access at all,
+// including no instruction fetch. Everything reports success and the package
+// hard-faults on the first instruction it executes unprivileged.
+//
+// A veneer is sixteen bytes and a region is described in thirty-twos, so a
+// length that is not a whole number of blocks is the shape of the mistake. It
+// has now happened twice: once on app_load's pool, and once on app_pic_load's
+// three gates, which are 48 bytes — one and a half blocks, refused every time,
+// and the fault landed on the enter gate's `bx` at veneers+24. So the check
+// runs against BOTH load paths rather than only the one it was written for.
+//
+// Mirrors describe() in os/shell/apps.cpp, which is static and cannot be called
+// from here; the arithmetic is copied deliberately so a change to one and not
+// the other shows up as a failure rather than as a fault on a board.
+static int check_mpu_regions(const LoadedApp &app, const char *how) {
+    int bad = 0;
+    MpuV8Region r;
+    uint32_t vsize = mpu_align_up(app.veneers_used, MPU_V8_GRAIN);
+    if (vsize > app.veneer_size) vsize = app.veneer_size;
+    struct { const char *what; uintptr_t base; uint32_t size; MpuPerm perm; } rgn[] = {
+        { "code",    (uintptr_t)app.image,   app.text_size, MPU_RO_EXEC },
+        { "data",    (uintptr_t)app.data,    app.data_size, MPU_RW_NOEXEC },
+        { "veneers", (uintptr_t)app.veneers, vsize,         MPU_RO_EXEC },
+    };
+    for (auto &g : rgn) {
+        if (!g.size) continue;                    // legitimately absent
+        if (!mpu_v8_encode((uint32_t)g.base, g.size, g.perm, &r)) {
+            printf("       FAIL %s: the %s region cannot be encoded "
+                   "(base %08lx, %u bytes)\n",
+                   how, g.what, (unsigned long)g.base, g.size);
+            bad = 1;
+        }
+    }
+    if (app.veneers_used && !vsize) {
+        printf("       FAIL %s: veneers were written but the region is empty\n", how);
+        bad = 1;
+    }
+    // The gates are the first thing a sandboxed package executes and the last
+    // thing it executes on the way out, so the region has to reach past the LAST
+    // of them — not merely past the first.
+    if (app.veneer_gates && vsize < app.veneer_gates) {
+        printf("       FAIL %s: the region stops at %u B, short of the %u B of gates\n",
+               how, vsize, app.veneer_gates);
+        bad = 1;
+    }
+    return bad;
+}
+
 static int load_one(const char *path) {
     g_f = fopen(path, "rb");
     if (!g_f) { printf("  SKIP %s (not built)\n", path); return 0; }
@@ -383,40 +436,7 @@ static int load_one(const char *path) {
         bad = 1;
     }
 
-    // Every region the OS will hand the hardware must actually be encodable.
-    //
-    // This is the join between the loader's layout and the protection
-    // hardware's rules, and it fails silently in the direction that matters: an
-    // unencodable region is refused, the region is left disabled, and the result
-    // is a package running with no protection while everything reports success.
-    //
-    // A veneer is sixteen bytes and a region is described in thirty-twos, so a
-    // package with an odd number of veneers produces a length the hardware
-    // cannot express — which is exactly what happened, and only to some
-    // packages, depending on how many distinct firmware functions they call.
-    {
-        MpuV8Region r;
-        uint32_t vsize = mpu_align_up(app.veneers_used, MPU_V8_GRAIN);
-        if (vsize > app.veneer_size) vsize = app.veneer_size;
-        struct { const char *what; uintptr_t base; uint32_t size; MpuPerm perm; } rgn[] = {
-            { "code",    (uintptr_t)app.image,   app.text_size, MPU_RO_EXEC },
-            { "data",    (uintptr_t)app.data,    app.data_size, MPU_RW_NOEXEC },
-            { "veneers", (uintptr_t)app.veneers, vsize,         MPU_RO_EXEC },
-        };
-        for (auto &g : rgn) {
-            if (!g.size) continue;                    // legitimately absent
-            if (!mpu_v8_encode((uint32_t)g.base, g.size, g.perm, &r)) {
-                printf("       FAIL the %s region cannot be encoded "
-                       "(base %08lx, %u bytes)\n",
-                       g.what, (unsigned long)g.base, g.size);
-                bad = 1;
-            }
-        }
-        if (app.veneers_used && !vsize) {
-            printf("       FAIL veneers were written but the region is empty\n");
-            bad = 1;
-        }
-    }
+    bad |= check_mpu_regions(app, "copy-to-RAM");
     // And the decisive one: walk every byte of the image and check that nothing
     // writable ended up before text_end and nothing read-only after it.
     {
@@ -809,8 +829,20 @@ static int check_pic(const char *path) {
     const uint32_t SLOTCAP = 256u * 1024u;
 
     // 1) install twice, at two different arena addresses.
-    uint8_t *slotA = (uint8_t *)alloc32(SLOTCAP);
-    uint8_t *slotB = (uint8_t *)alloc32(SLOTCAP);
+    //
+    // BLOCK-ALIGNED, because a real slot is a flash sector and one is. The arena
+    // deliberately hands out 8-aligned pointers so a loader that forgot to align
+    // its own heap blocks is caught — but the slot is not a heap block, and
+    // leaving it 8-aligned models a device that does not exist while hiding the
+    // thing that matters here: the blob base is handed to the protection unit as
+    // the code region, so it has to be one the hardware can describe.
+    auto slot_alloc = [&]() -> uint8_t * {
+        uint8_t *p = (uint8_t *)alloc32(SLOTCAP + APP_BLOCK_ALIGN);
+        if (!p) return nullptr;
+        return (uint8_t *)(((uintptr_t)p + (APP_BLOCK_ALIGN - 1)) & ~(uintptr_t)(APP_BLOCK_ALIGN - 1));
+    };
+    uint8_t *slotA = slot_alloc();
+    uint8_t *slotB = slot_alloc();
     if (!slotA || !slotB) { printf("  SKIP %-12s (arena too small)\n", name); free(b); return 0; }
     SlotBuf sbA{slotA, SLOTCAP, 0}, sbB{slotB, SLOTCAP, 0};
     PicManifest mA{}, mB{};
@@ -961,6 +993,12 @@ static int check_pic(const char *path) {
     if (app_pic_load(slotA, &mA, &appA) != LOAD_OK) { printf("       FAIL pic-load A\n"); free(b); app_pic_manifest_free(&mA); return bad + 1; }
     if (app_pic_load(slotA, &mA, &appB) != LOAD_OK) { printf("       FAIL pic-load B\n"); app_unload(&appA); free(b); app_pic_manifest_free(&mA); return bad + 1; }
 
+    // The same join the copy path is held to. It was NOT checked here, and that
+    // is the whole of why a slot-loaded package hard-faulted on a board while
+    // every host suite stayed green: the gate pool was 48 bytes, the hardware
+    // cannot describe 48 bytes, and the region was silently left off.
+    bad |= check_mpu_regions(appA, "from a slot");
+
     // Resolve a symbol to its runtime address the way the CPU would see it, from
     // the ELF alone: firmware -> the blob veneer holding its ABI index; a defined
     // symbol -> the slot (RO) or the RAM block (writable) at its section offset.
@@ -1066,6 +1104,15 @@ static int check_pic(const char *path) {
         app_unload(&appX);
     }
 
+    // And a slot that does not start on a protection block, which would give the
+    // package a code region the hardware silently declines to program. Refused
+    // rather than loaded: `pkg` falls back to the file, which works.
+    LoadedApp appY{};
+    if (app_pic_load(slotA + 8, &mA, &appY) != LOAD_ERR_SLOT_ALIGN) {
+        printf("       FAIL a slot off the block boundary was not refused\n"); bad = 1;
+        app_unload(&appY);
+    }
+
     // 5) THE WHOLE PIPELINE, through the real slot format.
     //
     // Everything above proves the producer and the loader agree with each other.
@@ -1112,6 +1159,7 @@ static int check_pic(const char *path) {
                     printf("       FAIL loading from the slot\n"); bad = 1;
                 } else {
                     verify(appS, blob, "from slot");
+                    bad |= check_mpu_regions(appS, "from a real slot");
                     printf("       ran the whole way: ELF -> %u B slot -> %u B resident\n",
                            ms.ro_size, appS.bytes_allocated);
                     app_unload(&appS);

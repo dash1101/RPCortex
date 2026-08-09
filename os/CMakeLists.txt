@@ -653,6 +653,10 @@ rpc_add_app(i2cscan)
 # greet is the position-independent exemplar while task #93 is proven: the
 # smallest real package, opted in so realapp_test exercises the r9/GOT path on
 # every host run. Every other package stays on the default (copy-to-RAM) path.
+#
+# Proven on a Pico 2 W, both routes, 2026-08-09: loaded by copy-to-RAM at 576 B
+# resident and from a flash slot at 160 B, registering its command and running
+# it correctly either way.
 rpc_add_app(greet PIC)
 rpc_add_app(tuidemo)
 rpc_add_app(stress)
@@ -668,21 +672,28 @@ rpc_add_app(httpd)
 # blob places anywhere and the writable half clears 89 KB. The device slot-install
 # and load-from-slot wiring is the remaining stage-3 work; until it lands novad1
 # still loads by copy-to-RAM, which is why this is a branch and not shipped.
-# NOT PIC yet. Building it position-independent is the point of the flash slot,
-# and the slot machinery below is finished and host-proven — but a PIC novad1
-# FAULTS ON REAL HARDWARE, and it does so on the copy-to-RAM path, before a slot
-# is ever involved:
+# NOT PIC yet, and the reason is no longer the one recorded here.
 #
-#     HARD FAULT in novad1  pc=0x2003eef8  IACCVIOL not executable
+# The fault that took novad1 back out of PIC —
 #
-# That pc is in SRAM, so this is the ordinary copy path executing an address the
-# MPU says is not code. The likely cause is that -fPIC moves novad1's const
-# pointer tables out of .rodata into .data, and .data is the WRITABLE half —
-# which package W^X maps non-executable. Anything reached through those tables
-# that is expected to be executable is then unreachable by construction.
+#     HARD FAULT in novad1  pc=0x2003eef8  lr=0x2003ef01  IACCVIOL
 #
-# Host tests do not catch it because they neither apply W^X nor execute the
-# image. Opting back in belongs with a device check, not with a green suite.
+# — was blamed on -fPIC moving const pointer tables into the writable half,
+# which W^X maps non-executable. That was wrong, twice over. The pc is not in
+# the package's code at all: it is the `bx r3` in the enter gate, at
+# veneers+24, with lr holding the exit gate at veneers+32 — the first
+# instruction a sandboxed package executes after privilege is dropped. And it
+# was not the copy-to-RAM path. It was the flash slot, whose gate pool was 48
+# bytes, which the protection unit cannot describe, so the region was silently
+# left off. app_pic_load rounds it now; see the note there.
+#
+# With that fixed, a PIC greet was proved on a Pico 2 W by both routes. A PIC
+# novad1 has NOT been: getting 300 KB onto a board over the serial console
+# produced a corrupt file twice, and a package that has never been loaded on
+# hardware is not one to turn on by default. The host numbers say what it is
+# worth — 62144 B resident from a slot against 194240 B copied into RAM, and
+# the 129 KB read-only half no longer needing a contiguous block a booted
+# device does not have. Turning this on belongs with a device check.
 rpc_add_app(novad1)
 
 # --- packages that ship installed -------------------------------------------

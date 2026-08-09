@@ -127,6 +127,7 @@ const char *load_result_str(LoadResult r) {
         case LOAD_ERR_RELOC_UNSUPPORTED: return "unsupported relocation";
         case LOAD_ERR_RELOC_RANGE:       return "relocation out of range";
         case LOAD_ERR_TOO_MANY_SECTIONS: return "too many sections";
+        case LOAD_ERR_SLOT_ALIGN:        return "the slot is not block-aligned";
         default:                         return "unknown error";
     }
 }
@@ -1774,6 +1775,11 @@ LoadResult app_pic_load(const void *slot, const PicManifest *m, LoadedApp *out) 
     // index. Refuse it, the same test app_peek/app_load make on the ELF.
     if (m->api_major != RPC_API_MAJOR || m->api_minor > RPC_API_MINOR)
         return LOAD_ERR_API_MISMATCH;
+    // The blob becomes the code region verbatim, so its base has to be one the
+    // protection unit can describe. A slot is a flash sector and always is; this
+    // is here so that if that ever stops being true it arrives as a refusal
+    // naming itself rather than as a package that cannot fetch its own code.
+    if ((uintptr_t)slot & (APP_BLOCK_ALIGN - 1)) return LOAD_ERR_SLOT_ALIGN;
 
     // The one resident allocation: GOT + .data + .bss, in a single block, its base
     // the GOT origin and so the value of r9. This is the whole cost of a loaded
@@ -1804,16 +1810,47 @@ LoadResult app_pic_load(const void *slot, const PicManifest *m, LoadedApp *out) 
     // executes the privilege-restoring instruction, and that is the one thing kept
     // off flash so it is not also the first test of unprivileged fetch-from-flash.
     // The firmware veneers, which only ever `svc`, live in the blob beside .text.
-    uint8_t *ven_raw = (uint8_t *)g_alloc(VENEER_GATE_BYTES + APP_BLOCK_ALIGN);
+    //
+    // ROUNDED TO A WHOLE BLOCK, and that is not tidiness — it is the whole
+    // difference between a slot-loaded package running and hard-faulting.
+    //
+    // A protection region is described by a base and a LIMIT, both on a 32-byte
+    // granule, so mpu_v8_encode refuses a size that is not a multiple of one:
+    // rounding it down would leave the tail unprotected and rounding it up would
+    // cover memory the package was never given. Refusing is right. But the
+    // refusal is silent — set_region programs no region rather than a wrong one
+    // — and unprivileged code has no default map, so "no region" means "no
+    // access", including no instruction fetch.
+    //
+    // The three gates are 48 bytes. That is one and a half blocks, so the region
+    // was refused every time, and the FIRST instruction a slot-loaded package
+    // ever executes unprivileged is the `bx r3` in the enter gate. It faulted
+    // there, every time, on hardware:
+    //
+    //     HARD FAULT in greet  pc=0x2006b1f8  lr=0x2006b201  cfsr=0x00000001
+    //
+    // — pc is the gate's `bx` at veneers+24, lr the exit gate at veneers+32.
+    // app_load's own pool never hit this because it block-aligns its size; this
+    // one asked for the bare 48.
+    uint32_t gate_bytes = (VENEER_GATE_BYTES + (APP_BLOCK_ALIGN - 1)) & ~(APP_BLOCK_ALIGN - 1);
+    uint8_t *ven_raw = (uint8_t *)g_alloc(gate_bytes + APP_BLOCK_ALIGN);
     if (!ven_raw) { g_free(data_raw); return LOAD_ERR_OOM; }
     out->veneers     = (void *)block_align((uintptr_t)ven_raw);
     out->veneers_raw = ven_raw;
-    out->veneer_size = VENEER_GATE_BYTES;
+    out->veneer_size = gate_bytes;
     veneer_write_gates(out);                              // sets veneers_used / veneer_gates
 
     out->image      = (void *)slot;      // read-only half, in the slot — NOT freed
     out->image_raw  = nullptr;
-    out->text_size  = m->ro_size;        // the whole blob is the RO region
+    // The same rule, for the same reason, on the blob: `ro_size` is only
+    // four-aligned (veneer_off rounds to 4, and a veneer is 16), so five slot
+    // installs in eight produced a code region the hardware would not take
+    // either. Rounded UP rather than down: the tail of the blob is real package
+    // code and leaving it out is a fault in the package's last function. What
+    // the rounding adds is at most 31 bytes of the slot's own recipe, further
+    // along the same flash — read-only to the hardware whatever the region says,
+    // and only reachable while this package is the one running.
+    out->text_size  = (m->ro_size + (APP_BLOCK_ALIGN - 1)) & ~(APP_BLOCK_ALIGN - 1);
     out->data       = data;
     out->data_raw   = data_raw;
     out->data_size  = m->ram_size;
@@ -1824,7 +1861,7 @@ LoadResult app_pic_load(const void *slot, const PicManifest *m, LoadedApp *out) 
     out->header     = m->header;         // name and version: a registered command
                                          // is tagged by this, so it must be real
     // Resident RAM only: the block and the gate pool. The slot is flash, not heap.
-    out->bytes_allocated = m->ram_size + VENEER_GATE_BYTES + 2 * APP_BLOCK_ALIGN;
+    out->bytes_allocated = m->ram_size + gate_bytes + 2 * APP_BLOCK_ALIGN;
     return LOAD_OK;
 }
 

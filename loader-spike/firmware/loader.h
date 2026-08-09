@@ -30,6 +30,16 @@ enum LoadResult {
     LOAD_ERR_RELOC_UNSUPPORTED,
     LOAD_ERR_RELOC_RANGE,
     LOAD_ERR_TOO_MANY_SECTIONS,
+    // A flash slot whose blob does not start on a protection-unit block.
+    //
+    // Refused rather than loaded, because the blob IS the code region: a base
+    // the hardware cannot describe means the region is silently left off, and
+    // then unprivileged package code cannot fetch its own instructions. A
+    // real slot is a flash sector and is aligned by construction, so this
+    // cannot happen on a device — it exists so that if the slot layout ever
+    // moves, it fails as a refusal that names itself rather than as a hard
+    // fault with no explanation. `pkg` already falls back to the file.
+    LOAD_ERR_SLOT_ALIGN,
 };
 
 // Sections in one .app, not bytes. Every function and every data item gets its
