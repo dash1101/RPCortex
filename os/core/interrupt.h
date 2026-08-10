@@ -71,6 +71,12 @@ void intr_set_poll(IntrPollFn fn);
 bool intr_input_claim(void);       // false when somebody else already has it
 void intr_input_release(void);
 
+// Would a poll by `pid` be allowed right now? This is the predicate intr_check
+// asks, exposed so a host test can put a pid other than its own to it — there
+// is one thread there, so the case that matters cannot be reached any other
+// way.
+bool intr_input_may_read(int pid);
+
 // Scoped, so no early return can leave the console claimed by a command that
 // has finished.
 struct InputClaim {

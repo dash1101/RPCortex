@@ -42,9 +42,7 @@ Worth reading before trusting a pass.
     `unload novad1`. That is correct behaviour rather than a bug —
     relocation cannot work on a scattered image — but it does mean the
     install path is proved here by greet, a 1.4 KB package, and not by a
-    260 KB one. (The OS's own advice on that failure names a
-    `novad1 service clear` subcommand, which does not exist: the service
-    verbs are start, stop, restart and status.)
+    260 KB one.
   * Timing. Nothing here measures jitter, flash-write duration or watchdog
     margin. `probe` is the tool for that and it wants reading, not
     asserting.

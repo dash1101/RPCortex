@@ -351,13 +351,15 @@ static int cmd_put(int argc, char **argv) {
     bool ok = true;
     Sha256Ctx sha; sha256_init(&sha);
 
-    // Anything a background task took off the console between the command line
-    // being read and the claim above is payload — it arrived after the Enter —
-    // so it goes into the file rather than back to the line editor.
-    for (int st; got < len && (st = intr_stashed()) >= 0; ) {
-        buf[held++] = (uint8_t)st;
-        got++;
-    }
+    // The stash goes, rather than being read into the file.
+    //
+    // Feeding it in was the first attempt and it is subtly wrong: it shifts
+    // every chunk boundary by however many bytes were in there, so the device
+    // finishes a chunk early, acknowledges it, and leaves the sender's last few
+    // bytes on the wire to land at the prompt. A sender waits for the line
+    // above before sending anything, which is what makes this empty in the
+    // first place; if it is not, the transfer comes up short and says so.
+    intr_stash_clear();
 
     while (got < len && ok) {
         int c;
