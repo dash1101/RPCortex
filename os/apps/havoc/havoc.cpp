@@ -23,7 +23,12 @@
 //   havoc fault      a bad pointer                 (expects to be CONTAINED)
 //   havoc stack      deliberate stack exhaustion   (expects a NAMED reset)
 //   havoc spin       a loop that never yields      (expects to be killed)
+//   havoc net <host> the radio at rate, off-core   (expects to SURVIVE)
 //   havoc <group>    one group: ptr, str, handle, mem, task, io
+//
+// `net` is the odd one among the odd ones: it has to be run as
+// `bg havoc net <host>` or it is pinned to core 0 with the shell and tests
+// nothing. See group_net.
 //
 // `stack` and `spin` are separated out because they are SUPPOSED to end badly.
 // The question for those two is whether the ending is a clean report naming the
@@ -396,6 +401,69 @@ static void group_fault(void) {
     fw_printf("    it was ALLOWED — the package wrote to firmware flash\n");
 }
 
+// The network, at the highest rate a package can drive it, from wherever the
+// scheduler put this task.
+//
+// This is the shape of #98 and #102 and nothing else reproduces it. A package
+// task is spawned with no affinity, which on this chip means core 1 almost
+// always, and every network call it makes ends up inside the cyw43 driver's own
+// lock — which the SDK keys on the CORE. Two things follow, and both need a
+// HIGH RATE to be seen at all:
+//
+//   * Every transmit goes through cyw43_ll_sdpcm_send_common, which, when the
+//     chip has run out of transmit credits, waits for the async_context worker
+//     to replenish them — for up to a full second. That worker is a
+//     low-priority interrupt on the core that brought the radio up, and it
+//     cannot run while another core holds the driver's lock. So a package
+//     transmitting under flow control from the wrong core holds that lock for
+//     a second at a time, and the other core's cyw43_arch_lwip_begin is a
+//     __wfe with no timeout.
+//   * The same lock lets a SECOND TASK on the same core straight through,
+//     because as far as it is concerned they are the same owner.
+//
+// So: no sleeps, no gaps, and run it as `bg havoc net <host>` while the shell
+// does something that talks to the chip — `wifi scan` is the one. Run in the
+// foreground it is pinned to core 0 with the shell and proves nothing.
+//
+//   Expected: it finishes, and the shell answered throughout. A reset, a
+//   pause of seconds, or a stall report naming either task is the finding.
+static void group_net(const char *host) {
+    fw_printf("\n[net] the radio, at rate, from whichever core this landed on\n");
+    if (!fw_net_connected()) {
+        fw_printf("  Not connected — nothing to hammer. 'wifi connect' first.\n");
+        return;
+    }
+    fw_printf("  Host %s. Run this as 'bg havoc net %s' and then 'wifi scan'.\n",
+              host, host);
+    fw_printf("  Expected: both finish. A reset or a long pause is the finding.\n\n");
+
+    // A listener, so the tcp entries are exercised too and not only the ping
+    // path. The port is high and arbitrary; nothing is expected to connect.
+    int lsn = fw_tcp_listen(48512);
+    if (lsn < 0) fw_printf("  (no listener — the tcp calls are skipped)\n");
+
+    step("hammering");
+    unsigned pings = 0, taken = 0, locks = 0;
+    // The rate is the whole point, so the inner loop must not contain anything
+    // that yields. fw_tcp_accept with a zero timeout is the tightest entry into
+    // the driver's lock there is: it takes it, looks, and gives it back, with
+    // no sleep on the way out. The ping is what puts packets on the air, and it
+    // waits five milliseconds a time — so it is one in every hundred rather
+    // than every iteration, and the other ninety-nine are lock churn.
+    for (unsigned i = 0; i < 60000 && !fw_task_should_stop(); i++) {
+        if (lsn >= 0) {
+            int c = fw_tcp_accept(lsn, 0);
+            locks++;
+            if (c >= 0) { fw_tcp_close(c); taken++; }
+        }
+        if ((i % 100) == 0 && fw_net_ping(host, 1) != -1) pings++;
+        if ((i % 10000) == 0) fw_printf("    %u\n", i);
+    }
+    if (lsn >= 0) fw_tcp_close(lsn);
+    fw_printf("  %u driver entries, %u pings, %u taken. It came back.\n",
+              locks, pings, taken);
+}
+
 static void group_spin(void) {
     fw_printf("\n[spin] a loop that never yields\n");
     fw_printf("  The watchdog should name this task and stop it, and the shell\n");
@@ -444,6 +512,16 @@ static int havoc_cmd(int argc, char **argv) {
         if (is(argv[1], "stack")) { group_stack(); report(); return 0; }
         if (is(argv[1], "fault")) { group_fault(); report(); return 0; }
         if (is(argv[1], "spin"))  { group_spin();  return 0; }   // never returns
+        if (is(argv[1], "net")) {
+            if (argc < 3) {
+                fw_printf("Usage: havoc net <host>   (an address on the LAN)\n");
+                fw_printf("Run it as 'bg havoc net <host>', or it is pinned to\n");
+                fw_printf("core 0 with the shell and proves nothing.\n");
+                return 1;
+            }
+            group_net(argv[2]);
+            return 0;
+        }
         if (is(argv[1], "ptr"))   { group_ptr();    report(); return 0; }
         if (is(argv[1], "str"))   { group_str();    report(); return 0; }
         if (is(argv[1], "handle")){ group_handle(); report(); return 0; }
@@ -457,7 +535,7 @@ static int havoc_cmd(int argc, char **argv) {
             return 0;
         }
         fw_printf("Unknown group '%s'.\n", argv[1]);
-        fw_printf("Try: ptr str handle mem task io fault stack spin all\n");
+        fw_printf("Try: ptr str handle mem task io fault stack spin net all\n");
         return 1;
     }
 

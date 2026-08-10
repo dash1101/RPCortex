@@ -9,6 +9,13 @@
 // shell must be wrapped in cyw43_arch_lwip_begin/end. Getting that wrong does
 // not fail loudly — it corrupts the stack's internal lists under load, which is
 // the worst kind of bug to find later. Every raw lwIP call below is wrapped.
+//
+// Wrapping is necessary and it is not sufficient. The lwIP lock is keyed on the
+// CORE, so it neither separates two tasks on one core nor lets a task on the
+// other core do anything but stop — netown.h has the mechanism and the reset it
+// caused. Every entry below therefore takes NetOwn first, which is what makes
+// `ping` safe to call from the shell and fw_net_ping safe to call from a
+// package's unpinned task.
 
 #include "kernel.h"
 #include "command.h"
@@ -16,6 +23,7 @@
 #include "registry.h"
 #include "interrupt.h"
 #include "task.h"
+#include "netown.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -121,8 +129,11 @@ static u8_t ping_recv(void *, struct raw_pcb *, struct pbuf *p, const ip_addr_t 
 // Scoped form of the begin/end pair this file uses elsewhere. The function
 // below has several exits and a paired call at each one is a lock left held the
 // first time somebody adds another.
+// A NetOwn has to be in scope above it, every time. The constructor notes it
+// when there is not, so the rule is enforced by the build rather than by
+// remembering.
 struct LwipLock {
-    LwipLock()  { cyw43_arch_lwip_begin(); }
+    LwipLock()  { if (!net_op_held()) net_unowned_note(); cyw43_arch_lwip_begin(); }
     ~LwipLock() { cyw43_arch_lwip_end(); }
 };
 
@@ -137,6 +148,13 @@ struct LwipLock {
 // reply before the timeout.
 int net_pkg_ping(const char *host, uint32_t timeout_ms) {
     if (!host || !net_is_connected()) return -1;
+
+    // Held for the whole call, resolve included. A package reaches this from a
+    // task with no affinity; without the migration NetOwn does, the raw_pcb
+    // work below is a __wfe with no way out. See netown.h.
+    NetOwn own;
+    if (!own.ok) return -1;
+
     if (!resolve_host(host, &g_ping.target)) return -1;
 
     struct raw_pcb *pcb;
@@ -194,15 +212,23 @@ static int cmd_ping(int argc, char **argv) {
     uint32_t count = (argc >= 3) ? (uint32_t)strtoul(argv[2], nullptr, 10) : 4;
     if (count == 0 || count > 100) count = 4;
 
+    // One command owns the network at a time, and a ping run is a command. It
+    // is held to the end so the raw PCB opened here is torn down by the same
+    // owner that opened it.
+    NetOwn own;
+    if (!own.ok) { out_err("Could not reach the wireless chip from this task."); return 1; }
+
     if (!resolve_host(argv[1], &g_ping.target)) {
         out_err("Could not resolve '%s'.", argv[1]);
         return 1;
     }
 
-    cyw43_arch_lwip_begin();
-    struct raw_pcb *pcb = raw_new(IP_PROTO_ICMP);
-    if (pcb) { raw_recv(pcb, ping_recv, nullptr); raw_bind(pcb, IP_ADDR_ANY); }
-    cyw43_arch_lwip_end();
+    struct raw_pcb *pcb;
+    {
+        LwipLock lk;
+        pcb = raw_new(IP_PROTO_ICMP);
+        if (pcb) { raw_recv(pcb, ping_recv, nullptr); raw_bind(pcb, IP_ADDR_ANY); }
+    }
     if (!pcb) { out_err("Could not open a raw socket."); return 1; }
 
     out_info("PING %s (%s): %d data bytes", argv[1], ipaddr_ntoa(&g_ping.target),
@@ -211,9 +237,9 @@ static int cmd_ping(int argc, char **argv) {
     uint32_t sent = 0, recvd = 0, total_us = 0, best = 0xFFFFFFFFu, worst = 0;
     for (uint32_t i = 0; i < count; i++) {
         struct pbuf *p;
-        cyw43_arch_lwip_begin();
-        p = pbuf_alloc(PBUF_IP, sizeof(struct icmp_echo_hdr) + PING_DATA_LEN, PBUF_RAM);
-        cyw43_arch_lwip_end();
+        { LwipLock lk; p = pbuf_alloc(PBUF_IP,
+                                      sizeof(struct icmp_echo_hdr) + PING_DATA_LEN,
+                                      PBUF_RAM); }
         if (!p) { out_err("Out of packet buffers."); break; }
 
         auto *hdr = (struct icmp_echo_hdr *)p->payload;
@@ -232,10 +258,8 @@ static int cmd_ping(int argc, char **argv) {
         g_ping.seq     = (uint16_t)(i + 1);
         g_ping.sent_us = (uint32_t)time_us_64();
 
-        cyw43_arch_lwip_begin();
-        err_t e = raw_sendto(pcb, p, &g_ping.target);
-        pbuf_free(p);
-        cyw43_arch_lwip_end();
+        err_t e;
+        { LwipLock lk; e = raw_sendto(pcb, p, &g_ping.target); pbuf_free(p); }
         if (e != ERR_OK) { out_warn("Send failed (%d).", (int)e); continue; }
         sent++;
 
@@ -260,9 +284,7 @@ static int cmd_ping(int argc, char **argv) {
         if (intr_check()) break;
     }
 
-    cyw43_arch_lwip_begin();
-    raw_remove(pcb);
-    cyw43_arch_lwip_end();
+    { LwipLock lk; raw_remove(pcb); }
 
     out_blank();
     out_multi("  %u packets transmitted, %u received, %u%% packet loss",
@@ -315,13 +337,19 @@ static void ntp_recv(void *, struct udp_pcb *, struct pbuf *p,
 static int ntp_sync(const char *server, bool set_clock) {
     if (!require_network()) return 1;
 
+    // As for ping: one owner, from the resolve to the socket being removed.
+    NetOwn own;
+    if (!own.ok) { out_err("Could not reach the wireless chip from this task."); return 1; }
+
     ip_addr_t addr;
     if (!resolve_host(server, &addr)) { out_err("Could not resolve '%s'.", server); return 1; }
 
-    cyw43_arch_lwip_begin();
-    struct udp_pcb *pcb = udp_new_ip_type(IPADDR_TYPE_ANY);
-    if (pcb) udp_recv(pcb, ntp_recv, nullptr);
-    cyw43_arch_lwip_end();
+    struct udp_pcb *pcb;
+    {
+        LwipLock lk;
+        pcb = udp_new_ip_type(IPADDR_TYPE_ANY);
+        if (pcb) udp_recv(pcb, ntp_recv, nullptr);
+    }
     if (!pcb) { out_err("Could not open a UDP socket."); return 1; }
 
     g_ntp.got = false;
@@ -329,22 +357,21 @@ static int ntp_sync(const char *server, bool set_clock) {
 
     bool sent = false;
     for (int attempt = 0; attempt < 3 && !g_ntp.got; attempt++) {
-        cyw43_arch_lwip_begin();
-        struct pbuf *p = pbuf_alloc(PBUF_TRANSPORT, NTP_MSG_LEN, PBUF_RAM);
-        if (p) {
-            uint8_t *req = (uint8_t *)p->payload;
-            memset(req, 0, NTP_MSG_LEN);
-            req[0] = 0x1b;              // LI = 0, VN = 3, Mode = 3 (client)
-            sent = (udp_sendto(pcb, p, &addr, NTP_PORT) == ERR_OK) || sent;
-            pbuf_free(p);
+        {
+            LwipLock lk;
+            struct pbuf *p = pbuf_alloc(PBUF_TRANSPORT, NTP_MSG_LEN, PBUF_RAM);
+            if (p) {
+                uint8_t *req = (uint8_t *)p->payload;
+                memset(req, 0, NTP_MSG_LEN);
+                req[0] = 0x1b;              // LI = 0, VN = 3, Mode = 3 (client)
+                sent = (udp_sendto(pcb, p, &addr, NTP_PORT) == ERR_OK) || sent;
+                pbuf_free(p);
+            }
         }
-        cyw43_arch_lwip_end();
         wait_for(g_ntp.got, 2500);
     }
 
-    cyw43_arch_lwip_begin();
-    udp_remove(pcb);
-    cyw43_arch_lwip_end();
+    { LwipLock lk; udp_remove(pcb); }
 
     if (!sent)      { out_err("Could not send the request."); return 1; }
     if (!g_ntp.got) { out_err("No reply from %s.", server); return 1; }

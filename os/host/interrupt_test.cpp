@@ -5,6 +5,7 @@
 // the shell unusable (every command dies on a keypress from a minute ago).
 
 #include "interrupt.h"
+#include "task.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -125,6 +126,63 @@ int main(void) {
 
     intr_stash_clear();
     ck(intr_stashed() < 0, "stash_clear empties it");
+
+    // --- the console as DATA rather than as typing ---------------------------
+    //
+    // #105. `put` reads the console directly, and every package calls
+    // fw_task_should_stop in its loop, which is intr_check, which takes up to
+    // 32 bytes off that same console. On a board with the Nova D1 screen
+    // service running, a 300 KB upload lost 735 bytes to exactly this. The
+    // claim is what stops it.
+    //
+    // To see this fail, take the g_input_owner check out of intr_check: the
+    // first assertion below goes red because the bytes end up in the stash.
+    intr_clear();
+    intr_stash_clear();
+
+    // The predicate intr_check asks. One thread here, so the pid that matters —
+    // somebody else's — has to be put to it directly.
+    const int OTHER = 4242;
+    ck(intr_input_may_read(OTHER), "with nobody holding it, anyone may read");
+    ck(intr_input_claim(), "the console can be claimed");
+    ck(!intr_input_may_read(OTHER), "while claimed, another task may not read");
+    ck(intr_input_may_read(task_self()), "...but the claimant still may");
+    ck(intr_input_claim(), "the owner re-claiming is not a refusal");
+    intr_input_release();
+    ck(intr_input_may_read(OTHER), "released, and anyone may read again");
+    ck(intr_input_claim(), "and it can be taken again");
+
+    // A claim must not swallow the flag or the stop request: a transfer still
+    // has to be stoppable.
+    intr_raise();
+    ck(intr_check(), "Ctrl+C already raised is still seen while claimed");
+    intr_clear();
+    intr_input_release();
+
+    intr_stash_clear();
+
+    // --- and that intr_check ASKS ---------------------------------------------
+    //
+    // The predicate above being right is worth nothing if intr_check does not
+    // consult it, and that is the line #105 turns on. One thread here means
+    // task_self() does not vary on its own — so the identity is changed for
+    // real: the claim is taken before there is a current task, and task_init
+    // then makes task_self() somebody else. From there intr_check is a
+    // non-owner and must leave the stream alone.
+    //
+    // Take the intr_input_may_read line out of intr_check and the two
+    // assertions below go red: the bytes end up in the stash.
+    intr_input_release();
+    ck(intr_input_claim(), "claimed while there is no current task");
+    task_init("owner-test");
+    intr_clear();
+    intr_stash_clear();
+    g_polls = 0;
+    feed("payload-bytes");
+    ck(!intr_check(), "a non-owner does not turn a claimed stream into an interrupt");
+    ck(g_polls == 0, "a non-owner does not read the claimed stream at all");
+    ck(intr_stashed() < 0, "and nothing of the payload lands in the stash");
+    intr_stash_clear();
 
     // --- no poll installed ---------------------------------------------------
     intr_set_poll(nullptr);

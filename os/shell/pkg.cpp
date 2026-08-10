@@ -528,7 +528,12 @@ bool pkg_install_file(const char *file, bool quiet, bool consume) {
             out_multi("  An upgrade to a LARGER package is the hard case: the old");
             out_multi("  copy's space is its own old size, and the new one does");
             out_multi("  not fit in it. What works:");
-            out_multi("    service clear      so nothing loads it at boot");
+            // "service clear" is the OS command, spelled out because in this
+            // context — a failing `pkg install novad1` — it reads as a novad1
+            // subcommand, and `novad1 service` has only start, stop, restart
+            // and status. Somebody following this literally gets "unknown".
+            out_multi("    service clear      the OS command, at the prompt, so");
+            out_multi("                       nothing loads it at boot");
             out_multi("    reboot");
             out_multi("    pkg install %s", name);
             out_multi("    novad1 setup       to put the service back");

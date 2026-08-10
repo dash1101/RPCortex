@@ -163,6 +163,19 @@ have — and packages there run with the OS's own privileges.
 - **A task inside a lock or a flash write cannot be taken off its core.**
   Everything else can, at 250 ms. The exception is the case where interrupting
   costs more than waiting.
+- **The wireless driver's lock is keyed on the core, and the OS works around
+  it rather than fixing it.** cyw43's own mutex treats two tasks on one core as
+  the same owner and makes a task on the other core wait in a `__wfe` with no
+  timeout. Everything that reaches the radio therefore goes through one
+  operation lock which migrates the caller to the core the chip came up on —
+  `os/shell/netown.h` states the rule and every entry checks it, with `wifi`
+  reporting a count of any that got through without it. The count is zero. The
+  underlying SDK behaviour is unchanged and a new call site added carelessly
+  can still reintroduce it.
+- **`put` needs a sender that waits.** The device acknowledges each 256 bytes
+  once they are on flash; `tools/putfile.py` waits for that and verifies a
+  sha256, and is the only sender worth using. Bytes pasted by hand still work
+  and are still unverified.
 - **Not every v1 package has been ported.** The ones that have are in
   `repo-v2/index.json`; the rest are transcription rather than design, but they
   are still the distance left to parity.

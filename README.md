@@ -168,7 +168,7 @@ os/               the operating system
   apps/           the packages built from this tree, worked examples included
 loader-spike/     the runtime package loader, and the experiment that proved it
 emu/             boots an image under Renode, with no board attached
-tools/            host-side helpers (rpc-push.sh copies a package to a device)
+tools/            host-side helpers (putfile.py copies a package to a device)
 ```
 
 Anything with real logic lives in `os/core/` and is compiled by the host tests
@@ -198,10 +198,12 @@ extern "C" int app_main(int) {
 Build it with `rpc_add_app(greet)` in the OS `CMakeLists.txt`, then:
 
 ```
-tools/rpc-push.sh build/apps/greet.app /dev/ttyACM0
+tools/putfile.py build/apps/greet.app --port /dev/ttyACM0
 ```
 
-and `pkg install greet.app` on the device. `os/apps/greet/` is the worked
+and `pkg install greet.app` on the device. `putfile.py` waits for the device to
+acknowledge each chunk and checks the sha256 of what landed, which is the
+difference between a transfer that worked and one that appeared to. `os/apps/greet/` is the worked
 example; `os/include/rpc_app.h` is the only header a package includes.
 
 ---

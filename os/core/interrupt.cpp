@@ -37,6 +37,28 @@ void intr_stash_clear(void) { g_head = g_tail = 0; }
 
 void intr_set_poll(IntrPollFn fn) { g_poll = fn; }
 
+// Who owns the console byte stream. Held as a flag AND a pid rather than "pid
+// or zero": task_self() is 0 before the scheduler has a current task, and a
+// claim that stored 0 would read as "nobody has it" and quietly do nothing.
+static bool g_input_held;
+static int  g_input_owner;
+
+bool intr_input_claim(void) {
+    int me = task_self();
+    if (g_input_held && g_input_owner != me) return false;
+    g_input_held  = true;
+    g_input_owner = me;
+    return true;
+}
+
+void intr_input_release(void) {
+    if (g_input_held && g_input_owner == task_self()) g_input_held = false;
+}
+
+bool intr_input_may_read(int pid) {
+    return !g_input_held || g_input_owner == pid;
+}
+
 void intr_raise(void)  { g_pending = true; }
 bool intr_pending(void){ return g_pending; }
 void intr_clear(void)  { g_pending = false; }
@@ -54,6 +76,11 @@ bool intr_check(void) {
 
     if (g_pending) return true;
     if (!g_poll) return false;
+    // Somebody else is reading the console as DATA. Taking bytes off it here
+    // would be taking them out of their file — see intr_input_claim. The flag
+    // and the stop request above still work, which is everything a background
+    // task actually needs.
+    if (!intr_input_may_read(task_self())) return false;
     // Bounded: a command polling in a loop must not be able to spin in here on
     // a flooded input.
     for (int i = 0; i < 32; i++) {

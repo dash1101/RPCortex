@@ -27,16 +27,37 @@
 // it with none of that. No TLS server, because a server certificate has to come
 // from somewhere and nothing on the device can issue one.
 //
-// The one-owner network lock is NOT taken. It exists so two tasks are never
-// inside cyw43 or lwIP at once, and it is held for the length of an operation —
-// which for a server is its whole lifetime, and would stop every other network
-// command until the server was shut down. Each call below is short and holds
-// the lwIP lock for exactly the calls that need it, which is what that lock is
-// for.
+// --- ownership, and the wedge that came of not having it ---------------------
+//
+// This file used to say the one-owner network lock was deliberately not taken:
+// it is held for the length of an operation, and for a server that is its whole
+// lifetime, so taking it would stop every other network command until the
+// server shut down. The reasoning was right and the conclusion was wrong,
+// because it left the lwIP lock as the only thing standing between two tasks —
+// and that lock cannot do the job. It is keyed on the CORE.
+//
+// The consequences are in netown.h, in full. In short, a package task reaching
+// fw_tcp_* runs with no affinity, which on this chip means core 1 almost
+// always, and from there cyw43_arch_lwip_begin() is a __wfe loop with no yield
+// and no timeout the moment core 0 is inside the driver. That is the shape that
+// took a third of all cold boots as #98.
+//
+// So ownership IS taken, per CALL rather than per socket. That keeps the
+// objection above answered — a listening server holds nothing between calls, so
+// `wifi scan` and `pkg install` still work while httpd is up — while making
+// every entry into lwIP happen under the lock and on the radio's core. The
+// scope is the same one the lwIP lock already had; only the lock above it is
+// new.
+//
+// What it costs: a call arriving on core 1 is migrated to core 0 and migrated
+// back on release, which is a handful of yields. Measured on a Pico 2 W, an
+// accept loop ticking every 250 ms and a receive loop ticking every 200 ms do
+// not notice it.
 #include "command.h"
 #include "out.h"
 #include "task.h"
 #include "interrupt.h"
+#include "netown.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -52,8 +73,11 @@ bool net_is_connected(void);
 #include "lwip/pbuf.h"
 
 // Scoped lwIP lock. Every function here has more than one exit.
+//
+// Never on its own: a NetOwn has to be in scope above it. The constructor says
+// so if one is not, rather than trusting a comment to be read.
 struct LwipLock {
-    LwipLock()  { cyw43_arch_lwip_begin(); }
+    LwipLock()  { if (!net_op_held()) net_unowned_note(); cyw43_arch_lwip_begin(); }
     ~LwipLock() { cyw43_arch_lwip_end(); }
 };
 
@@ -196,6 +220,8 @@ static err_t on_accept(void *arg, struct tcp_pcb *newpcb, err_t err) {
 int net_pkg_tcp_listen(unsigned port) {
     if (!net_is_connected() || port == 0 || port > 65535) return -1;
 
+    NetOwn own;
+    if (!own.ok) return -1;
     LwipLock lk;
     TcpSlot *s = slot_claim();
     if (!s) return -1;
@@ -225,6 +251,11 @@ int net_pkg_tcp_accept(int listener, uint32_t timeout_ms) {
         struct tcp_pcb *taken = nullptr;
         TcpSlot *conn = nullptr;
         {
+            // Inside the loop, so the wait between polls happens with the
+            // network free. Holding it across the sleep would let a server with
+            // a 250 ms accept tick own the radio essentially all the time.
+            NetOwn own;
+            if (!own.ok) return -1;
             LwipLock lk;
             TcpSlot *lsn = slot_of(listener, true);
             if (!lsn) return -1;
@@ -262,6 +293,8 @@ int net_pkg_tcp_recv(int handle, void *buf, unsigned cap, uint32_t timeout_ms) {
     absolute_time_t deadline = make_timeout_time_ms(timeout_ms);
     for (;;) {
         {
+            NetOwn own;
+            if (!own.ok) return -1;
             LwipLock lk;
             TcpSlot *s = slot_of(handle, false);
             if (!s) return -1;
@@ -295,6 +328,8 @@ int net_pkg_tcp_send(int handle, const void *buf, unsigned len) {
     while (sent < len) {
         unsigned chunk = 0;
         {
+            NetOwn own;
+            if (!own.ok) return sent ? (int)sent : -1;
             LwipLock lk;
             TcpSlot *s = slot_of(handle, false);
             if (!s || s->failed || !s->pcb) return sent ? (int)sent : -1;
@@ -330,6 +365,8 @@ int net_pkg_tcp_send(int handle, const void *buf, unsigned len) {
 }
 
 int net_pkg_tcp_close(int handle) {
+    NetOwn own;
+    if (!own.ok) return -1;
     LwipLock lk;
     TcpSlot *s = slot_of(handle, false);
     if (!s) s = slot_of(handle, true);
@@ -340,7 +377,24 @@ int net_pkg_tcp_close(int handle) {
 
 // A package's task has gone. Anything it left open is closed here, or the
 // listener stays bound and the port cannot be used again until a reboot.
+//
+// Called from task_slot_recycled, which runs on the SPAWN and REAP paths — so
+// most of the time it is some unrelated task creating another one, and taking
+// the network for that would migrate a caller who never asked to go anywhere.
+// Hence the cheap scan first: nothing to do is the normal case, and it costs
+// six loads and no lock.
 extern "C" void net_tcp_task_ended(int slot) {
+    bool any = false;
+    for (int i = 0; i < TCP_SLOTS; i++)
+        if (g_slots[i].used && g_slots[i].owner == slot) { any = true; break; }
+    if (!any) return;
+
+    // Could not get onto the radio's core. The slots stay allocated and the
+    // port stays bound until a reboot, which is a leak — and strictly better
+    // than tearing lwIP's structures down from the wrong core, which is not a
+    // leak but a fault somewhere unrelated, minutes later.
+    NetOwn own;
+    if (!own.ok) return;
     LwipLock lk;
     for (int i = 0; i < TCP_SLOTS; i++)
         if (g_slots[i].used && g_slots[i].owner == slot) slot_release(&g_slots[i]);
