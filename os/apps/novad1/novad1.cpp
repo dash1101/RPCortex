@@ -25,7 +25,7 @@
 // help` and `novad1 info` — and three copies of a number that must agree is a
 // version that eventually disagrees with itself in a way nobody notices until a
 // bug report quotes the wrong one.
-#define NOVAD1_VER "1.4.1"
+#define NOVAD1_VER "1.5.0"
 
 RPC_APP_VER("novad1", NOVAD1_VER);
 
@@ -163,6 +163,7 @@ void usage(void) {
     fw_printf("\n");
     fw_printf("  style [folders|gallery|menu]   the home layout\n");
     fw_printf("  apps [show|hide|reset] <key>   which apps are on the home screen\n");
+    fw_printf("  apps install <url> | remove <key>  apps somebody else wrote\n");
     fw_printf("  fav [add|remove|clear] <key>   the favourites bar\n");
     fw_printf("  pin [set|clear|auto]   the screen lock\n");
     fw_printf("\n");

@@ -1,6 +1,7 @@
 // Desc: The runner — the screen stack, the status bar, and the home screen.
 // File: novagui.cpp
 #include "novagui.h"
+#include "novaapps.h"
 #include "novakeys.h"
 #include "novanotify.h"
 #include "novaicons.h"
@@ -205,8 +206,47 @@ static const App kApps[] = {
 
 #define APP_COUNT (sizeof(kApps) / sizeof(kApps[0]))
 
-const App *apps(void)    { return kApps; }
+// The apps somebody else wrote, as catalogue rows.
+//
+// A SECOND array rather than a longer first one. The built-in table is
+// .data.rel.ro — every field is a relocated pointer, so it is already in RAM —
+// and copying it into a combined table would cost seven hundred bytes to say
+// what two accessors say for nothing. The key and label point INTO the scan's
+// own entry, which outlives every row here because both are statics.
+static App g_user_apps[NAPP_MAX];
+static unsigned g_user_n;
+
+const App *apps(void)      { return kApps; }
 unsigned   app_count(void) { return APP_COUNT; }
+
+unsigned app_total(void)   { return APP_COUNT + g_user_n; }
+
+const App *app_at(unsigned i) {
+    if (i < APP_COUNT) return &kApps[i];
+    i -= APP_COUNT;
+    return i < g_user_n ? &g_user_apps[i] : nullptr;
+}
+
+// Rebuild the user half from whatever the last scan found.
+static void user_apps_build(void) {
+    g_user_n = 0;
+    for (int i = 0; i < napps::count() && g_user_n < NAPP_MAX; i++) {
+        const napps::NappItem *it = napps::at(i);
+        if (!it) break;
+        App &a = g_user_apps[g_user_n++];
+        a.key    = it->key;
+        a.label  = it->label;
+        a.cat    = it->cat;
+        // Openable even when the header is faulty. The screen is where the
+        // reason gets said, and an app that greys out instead has nowhere to
+        // say it — which is how the MicroPython suite left somebody with a file
+        // on the device, no icon and no explanation.
+        a.open   = screens::open_user_app;
+        // No module gate. An app's rows name commands, and whether a command
+        // works is the command's business to report.
+        a.module = nullptr;
+    }
+}
 
 bool app_available(const App &a) {
     if (!a.open) return false;
@@ -405,6 +445,9 @@ static void draw_toast(Canvas &c, const char *msg) {
 // it beyond that, and nothing should.
 static const App *g_chosen;
 
+void chose(const App *a) { g_chosen = a; }
+const App *chosen(void)  { return g_chosen; }
+
 class Gallery : public Screen {
 public:
     void set(const char *title, const App *const *items, int count) {
@@ -548,7 +591,7 @@ public:
             // cast, and the read was never written: every folder opened the
             // first category. Reported as "the System folder takes me to
             // Network, and so do all the others".
-            g_chosen = a;
+            chose(a);
             if (a->open && app_available(*a)) a->open();
             else explain_unavailable(*a);
             return ACT_STAY;
@@ -590,7 +633,10 @@ protected:
 
 // The lists a gallery points at. Static because a Gallery holds the pointer and
 // the pool slot it lives in is smaller than the list would be.
-static const App *g_cat_items[CAT_COUNT][APP_COUNT];
+// Sized for the built-ins AND the installed apps. Sizing these by APP_COUNT
+// while app_total() could exceed it is a write past the end of a static into
+// whatever bss sits next to it — silent on a host, arbitrary on a device.
+static const App *g_cat_items[CAT_COUNT][APP_COUNT + NAPP_MAX];
 static int        g_cat_count[CAT_COUNT];
 static const App *g_folder_items[CAT_COUNT];
 static App        g_folder_apps[CAT_COUNT];
@@ -600,10 +646,12 @@ static Category   g_open_cat;
 static void open_category(void);
 
 static void build_catalogue(void) {
+    user_apps_build();
     for (int i = 0; i < CAT_COUNT; i++) g_cat_count[i] = 0;
-    for (unsigned i = 0; i < APP_COUNT; i++) {
-        Category cat = kApps[i].cat;
-        g_cat_items[cat][g_cat_count[cat]++] = &kApps[i];
+    for (unsigned i = 0; i < app_total(); i++) {
+        const App *a = app_at(i);
+        if (!a) break;
+        g_cat_items[a->cat][g_cat_count[a->cat]++] = a;
     }
     // A folder for every category that has anything in it. The folder itself is
     // an App so the same Gallery draws both levels — one widget, one set of
@@ -625,11 +673,17 @@ static void build_catalogue(void) {
 class Home : public Gallery {
 public:
     void enter(void) override {
+        // An app installed since the last look. Home is re-entered on the way
+        // out of everything, so this is where a new icon appears without
+        // anybody rebooting — and it costs a directory listing only when
+        // something has actually said it changed.
+        if (napps::rescan_if_dirty()) build_catalogue();
         style_ = nova::reg(NOVA_KEY_PREFIX "HomeStyle", "folders");
         if (nova::ieq(style_, "gallery")) {
-            static const App *flat[APP_COUNT];
-            for (unsigned i = 0; i < APP_COUNT; i++) flat[i] = &kApps[i];
-            set("", flat, (int)APP_COUNT);
+            static const App *flat[APP_COUNT + NAPP_MAX];
+            const unsigned n = app_total();
+            for (unsigned i = 0; i < n; i++) flat[i] = app_at(i);
+            set("", flat, (int)n);
         } else {
             // Folders is the default, and the fallback when there are too few
             // groups for folders to be worth the extra level.
@@ -740,6 +794,8 @@ bool begin(void) {
     g_claimed = true;
 
     g_canvas.attach(g_fb, 128, 64);
+    // What somebody else installed, before the first catalogue is built from it.
+    napps::scan();
     build_catalogue();
 
     bool panel = display().begin();

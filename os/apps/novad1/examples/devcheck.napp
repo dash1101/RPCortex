@@ -1,0 +1,33 @@
+# A Nova D1 app: one text file in /nova/apps. No rebuild, no package, no reboot.
+# Only app.name is required. Keep the header near the top — the home screen
+# reads the first 512 bytes of each file to build the catalogue.
+
+app.name:     Device Check
+app.ver:      1.0.0
+app.dev:      dash1101
+# Wireless, Sensors, Tools, System or Testing. Default is Tools.
+app.category: System
+app.desc:     Four questions worth asking a board that is behaving oddly.
+app.kind:     rows
+
+Tasks       = ps
+Storage     = df
+Memory      = free
+Packages    = pkg list
+
+# A row is "Label = command". The command is an ordinary shell line — whatever
+# you would type over serial — and its output lands in a scrollable pane. The
+# label stops at the FIRST '=', so the rest of the line is all command.
+#
+# You can call the FIRMWARE commands: cc1101, sx1276, bt, nfc, ibutton, net,
+# fetch, ping, reg, pkg, script, sd, ls, cat, ps, df, free, service.
+#
+# You cannot call the PACKAGED ones: gpio, i2cscan, dht, ws2812, calc. A Nova D1
+# screen is already inside Nova D1's sandbox and the OS allows one package call
+# per task, so it refuses a second. The same line works typed at the console,
+# because a console is not inside a package — that catches people out, and it is
+# not a bug in your app.
+#
+# Anything with a loop or a condition in it belongs in a script:
+#
+#   Sweep = script /nova/scripts/sweep.rps

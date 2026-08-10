@@ -82,6 +82,9 @@ declare -A SRC=(
     # lets the drawing code be checked here at all.
     [novacanvas_test]=""
     [novacore_test]=""
+    # Third-party apps, with a filesystem the test rewrites between cases: most
+    # of what can go wrong with an app is a directory whose contents are wrong.
+    [novaapps_test]=""
     # The runner, with the hardware faked. Catches what is logic rather than
     # electrons: screen lifetimes, a stack pushed past its pool, navigation that
     # traps, and a runner started twice — which is what took a board down.

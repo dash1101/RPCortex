@@ -36,6 +36,7 @@
 #include "../apps/novad1/display.cpp"
 #include "../apps/novad1/novainput.cpp"
 #include "../apps/novad1/novaui.cpp"
+#include "../apps/novad1/novaapps.cpp"
 #include "../apps/novad1/novabootcheck.cpp"
 #include "../apps/novad1/novagui_tools.cpp"
 #include "../apps/novad1/novagui_system.cpp"
@@ -60,6 +61,13 @@ static void ok(bool c, const char *what) {
 static void eq(int got, int want, const char *what) {
     checks++;
     if (got != want) { failures++; printf("    FAIL %s: got %d want %d\n", what, got, want); }
+}
+static void streq_(const char *got, const char *want, const char *what) {
+    checks++;
+    if (strcmp(got ? got : "(null)", want)) {
+        failures++;
+        printf("    FAIL %s: got '%s' want '%s'\n", what, got ? got : "(null)", want);
+    }
 }
 
 // Drive the runner the way the loop does, without entering run() — one frame,
@@ -394,6 +402,116 @@ static void test_catalogue(void) {
         if (a.module) ok(module_by_id(a.module) != nullptr, a.key);
     }
     ok(with_screen > 0, "some of them open something");
+}
+
+
+// --- an app somebody else installed -----------------------------------------------------
+//
+// The whole path, end to end: a file in /nova/apps becomes a catalogue row,
+// the row opens a screen, the encoder moves down it, and SELECT runs the
+// command the file named. That is the claim the framework makes, and none of
+// it is provable by looking at any one piece.
+//
+// The fake filesystem carries two apps on purpose. devcheck.napp is written
+// correctly; dice.napp says `app.kind: py`, which is exactly what somebody
+// porting a MicroPython app writes, and it must be LISTED and must refuse to
+// run rather than disappearing.
+
+// Defined with the media screens further down, and wanted here too.
+static int lit_pixels(void);
+
+static const nova::gui::App *find_app(const char *key) {
+    for (unsigned i = 0; i < nova::gui::app_total(); i++) {
+        const nova::gui::App *a = nova::gui::app_at(i);
+        if (a && !strcmp(a->key, key)) return a;
+    }
+    return nullptr;
+}
+
+// Open an app the way the Gallery does — record the choice, then call.
+static nova::ui::Screen *open_app(const char *key) {
+    const nova::gui::App *a = find_app(key);
+    if (!a || !a->open) return nullptr;
+    nova::gui::go_home();
+    nova::gui::chose(a);
+    a->open();
+    return nova::gui::top();
+}
+
+static void test_installed_apps(void) {
+    using namespace nova;
+
+    ok(gui::app_total() == gui::app_count() + 2, "both installed apps joined the catalogue");
+
+    const gui::App *dev = find_app("app_devcheck");
+    ok(dev != nullptr, "the working one is there under its prefixed key");
+    if (dev) {
+        streq_(dev->label, "Device Check", "labelled with app.name");
+        eq(dev->cat, CAT_SYSTEM, "in the folder its header asked for");
+        ok(gui::app_available(*dev), "and it is openable");
+    }
+    // The prefix is what stops an app called cc1101.napp landing a second row
+    // under a key a built-in already owns.
+    for (unsigned i = 0; i < gui::app_count(); i++)
+        ok(strncmp(gui::apps()[i].key, NAPP_KEY_PREFIX, 4) != 0,
+           "no built-in wears the installed-app prefix");
+
+    ui::Screen *s = open_app("app_devcheck");
+    ok(s != nullptr, "it opens");
+    if (!s) return;
+    // novashots refuses a screen whose title disagrees with its row, and an
+    // installed app has to hold to the same rule.
+    streq_(s->title(), "Device Check", "and titles itself the way the home row is labelled");
+
+    gui::canvas().clear(0);
+    s->draw(gui::canvas());
+    ok(lit_pixels() > 12, "it draws its rows");
+
+    // The encoder. Down two, and the row that runs must be the third one in the
+    // file rather than the first — a menu that ignores the encoder still looks
+    // right in a photograph.
+    s->on_event(EV_ROT_CW);
+    s->on_event(EV_ROT_CW);
+    ui::Menu *m = (ui::Menu *)s;
+    eq(m->selected(), 2, "the encoder moves the cursor");
+
+    g_last_shell[0] = 0;
+    g_run_spawned = 1;                 // let the job finish inside the gesture
+    shell_says("free", "  used 12K free 240K", 0);
+    s->on_event(EV_SELECT);
+    g_run_spawned = 0;
+    streq_(g_last_shell, "free", "SELECT runs the command that row named");
+
+    // The output arrives on the next tick, and it arrives in a pane.
+    s->tick(33);
+    ui::Screen *pane = gui::top();
+    ok(pane != s, "the output opens a pane over the app");
+    if (pane) streq_(pane->title(), "Memory", "titled with the row that produced it");
+    gui::pop();
+
+    // Coming BACK re-reads the file, so an app edited on the device picks its
+    // new rows up without anybody leaving the screen.
+    ok(gui::top() == s, "and BACK returns to the app");
+    eq(napps::count_rows(), 4, "with its rows still loaded");
+
+    // The one written the way a MicroPython app is written.
+    ui::Screen *d = open_app("app_dice");
+    ok(d != nullptr, "a kind:py app is listed and opens");
+    if (d) {
+        streq_(d->title(), "Dice", "under its own name");
+        gui::canvas().clear(0);
+        d->draw(gui::canvas());
+        ok(lit_pixels() > 12, "and draws the reason it will not run");
+        // It must not run anything. The row is there in the file; the refusal
+        // has to happen before the rows are ever offered.
+        g_last_shell[0] = 0;
+        d->on_event(EV_SELECT);
+        streq_(g_last_shell, "", "and pressing SELECT runs nothing at all");
+    }
+
+    // The file that is not an app was never a row.
+    ok(find_app("app_readme") == nullptr, "a .txt in the apps folder is not an app");
+    gui::go_home();
 }
 
 // --- the media player -------------------------------------------------------------------
@@ -1094,6 +1212,7 @@ int main(void) {
     STAGE(test_stack_bounds);
     STAGE(test_one_step_per_frame);
     STAGE(test_catalogue);
+    STAGE(test_installed_apps);
     STAGE(test_media_parsing);
     STAGE(test_media_screens);
     STAGE(test_contact_readers);

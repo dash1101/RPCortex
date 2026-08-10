@@ -36,6 +36,7 @@
 #include "../apps/novad1/display.cpp"
 #include "../apps/novad1/novainput.cpp"
 #include "../apps/novad1/novaui.cpp"
+#include "../apps/novad1/novaapps.cpp"
 #include "../apps/novad1/novabootcheck.cpp"
 #include "../apps/novad1/novagui_tools.cpp"
 #include "../apps/novad1/novagui_system.cpp"

@@ -317,7 +317,9 @@ int fw_file_write(const char *path, const void *data, uint32_t len) {
     g_write_body[n] = 0;
     return 1;
 }
-uint32_t fw_file_read(const char *, void *, uint32_t) { return 0; }
+// A read is answered by the little filesystem further down, beside the media
+// library it grew out of.
+uint32_t fw_file_read(const char *path, void *buf, uint32_t cap);
 int      fw_file_remove(const char *p) {
     snprintf(g_removed, sizeof(g_removed), "%s", p ? p : "");
     return 1;
@@ -376,6 +378,10 @@ struct FakeEntry {
     uint16_t    channels;
     const char *inam;           // the RIFF INFO title, when the file carries one
     const char *iart;
+    // What a read of this file returns. Null for the music, which is
+    // synthesised from a real RIFF header instead; set for anything whose
+    // CONTENT is the point, which is every third-party app manifest.
+    const char *body;
 };
 
 static const FakeEntry g_fake_fs[] = {
@@ -390,6 +396,32 @@ static const FakeEntry g_fake_fs[] = {
     { "/nova/music/Ambient", "drift.wav", 0, 3528044, 44100, 2, "Drift", "Nova Labs" },
     { "/nova/music/Ambient", "halo.wav",  0, 1764044, 44100, 2, nullptr, nullptr },
     { "/nova/music/Ambient", "tide.wav",  0,  882044, 44100, 2, nullptr, nullptr },
+
+    // --- apps somebody else wrote ---------------------------------------------
+    //
+    // Two, on purpose. One that works, so the runner has a real installed app to
+    // open and novashots has a screen to photograph; and one written the way
+    // somebody porting a MicroPython app would write it, so the panel that
+    // explains the refusal is photographed too. A harness with only the working
+    // case proves half of a feature whose other half is the error message.
+    { "/nova/apps", "devcheck.napp", 0, 0, 0, 0, nullptr, nullptr,
+      "app.name: Device Check\n"
+      "app.ver: 1.0.0\n"
+      "app.category: System\n"
+      "app.desc: Ask a board that is behaving oddly.\n"
+      "\n"
+      "Tasks = ps\n"
+      "Storage = df\n"
+      "Memory = free\n"
+      "Packages = pkg list\n" },
+    { "/nova/apps", "dice.napp", 0, 0, 0, 0, nullptr, nullptr,
+      "app.name: Dice\n"
+      "app.kind: py\n"
+      "app.category: Tools\n"
+      "Roll = nothing this build can run\n" },
+    // Not an app. It is here to prove the scan's filter does something rather
+    // than merely compiling.
+    { "/nova/apps", "readme.txt", 0, 0, 0, 0, nullptr, nullptr, "not an app" },
 };
 static const unsigned FAKE_FS_N = sizeof(g_fake_fs) / sizeof(g_fake_fs[0]);
 
@@ -400,6 +432,17 @@ static const FakeEntry *fake_find(const char *path) {
         if (!strcmp(full, path)) return &g_fake_fs[i];
     }
     return nullptr;
+}
+
+// Files with a BODY read back; everything else reads as empty, which is what
+// this returned for every path before there was anything worth reading.
+uint32_t fw_file_read(const char *path, void *buf, uint32_t cap) {
+    const FakeEntry *e = fake_find(path);
+    if (!e || !e->body) return 0;
+    uint32_t n = (uint32_t)strlen(e->body);
+    if (n > cap) n = cap;
+    memcpy(buf, e->body, n);
+    return n;
 }
 
 int fw_dir_count(const char *path) {
@@ -424,7 +467,8 @@ int fw_dir_entry(const char *path, unsigned index, FwDirEntry *out) {
 
 uint32_t fw_file_size(const char *path) {
     const FakeEntry *e = fake_find(path);
-    return e ? e->size : 0;
+    if (!e) return 0;
+    return e->body ? (uint32_t)strlen(e->body) : e->size;
 }
 
 // A REAL RIFF header, built byte for byte, because the media screens parse one

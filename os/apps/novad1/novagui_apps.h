@@ -25,6 +25,14 @@ void open_scripts(void);
 void open_store(void);
 void open_updates(void);
 
+// Every installed app opens through this one. Which app is being opened comes
+// from gui::chosen(), the same way the folders find their category — an OpenFn
+// takes no arguments and there is nowhere else to put it.
+//
+// Here with the other four because it runs commands, and this file is one file
+// precisely so that the single output capture has a single owner.
+void open_user_app(void);
+
 // --- the update flow, shared with `novad1 selfupdate` -------------------------
 //
 // A package cannot install itself, so both routes stage the install on a

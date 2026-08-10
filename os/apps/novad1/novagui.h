@@ -74,8 +74,27 @@ struct App {
     const char *module;     // the module it needs, or null for a built-in
 };
 
+// The apps BUILT IN to this package, and how many. The home-screen picker
+// edits these and only these, deliberately: a Hidden list written before
+// somebody installed an app must not be able to hide it.
 const App *apps(void);
 unsigned   app_count(void);
+
+// The built-ins AND whatever is in /nova/apps, as one sequence. Everything that
+// asks "what can this device open" goes through these two rather than indexing
+// apps() to app_count(), because a third-party app is an app.
+unsigned   app_total(void);
+const App *app_at(unsigned i);
+
+// Which row's open() is running.
+//
+// An OpenFn takes nothing and returns nothing, so an opener shared between
+// several rows — the folders, and now every installed app — has no other way to
+// know which one was chosen. The Gallery sets this immediately before the call;
+// anything else that opens an app the way a person would has to set it too, or
+// the opener reads whatever was chosen last.
+void chose(const App *a);
+const App *chosen(void);
 
 // Is this app usable right now? An app whose module is absent is still LISTED —
 // a device somebody has not finished wiring should say what is missing rather

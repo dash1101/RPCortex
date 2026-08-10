@@ -43,6 +43,7 @@
 #include "../apps/novad1/display.cpp"
 #include "../apps/novad1/novainput.cpp"
 #include "../apps/novad1/novaui.cpp"
+#include "../apps/novad1/novaapps.cpp"
 #include "../apps/novad1/novabootcheck.cpp"
 #include "../apps/novad1/novagui_tools.cpp"
 #include "../apps/novad1/novagui_system.cpp"
@@ -106,6 +107,11 @@ static void settle(int frames = 4, uint32_t dt = 33) {
 static void shoot(const nova::gui::App &a) {
     if (!a.open) return;
     nova::gui::go_home();
+    // The same two steps the Gallery takes, in the same order. An opener shared
+    // between rows — the folders, and every installed app — reads chosen() to
+    // find out which one it is, so calling open() without this photographs
+    // whatever was opened last.
+    nova::gui::chose(&a);
     a.open();
     Screen *s = nova::gui::top();
     if (!s) { printf("=== %s === (nothing opened)\n\n", a.key); return; }
@@ -128,17 +134,21 @@ static void shoot(const nova::gui::App &a) {
 // screens is meant to change, and a test that fails when a label is reworded is
 // a test somebody turns off.
 static int check_all(void) {
-    const nova::gui::App *apps = nova::gui::apps();
-    const unsigned n = nova::gui::app_count();
+    // app_total, not app_count: an app somebody installed is an app, and the
+    // whole point of the framework is that it reaches the same screens the
+    // built-ins do. A pass over the built-ins alone would photograph none of it.
+    const unsigned n = nova::gui::app_total();
     nova::Canvas &c = nova::gui::canvas();
     int bad = 0, looked = 0;
 
     for (unsigned i = 0; i < n; i++) {
-        if (!apps[i].open) continue;
+        const nova::gui::App &a = *nova::gui::app_at(i);
+        if (!a.open) continue;
         nova::gui::go_home();
-        apps[i].open();
+        nova::gui::chose(&a);
+        a.open();
         Screen *s = nova::gui::top();
-        if (!s) { printf("    FAIL %s opened nothing\n", apps[i].key); bad++; continue; }
+        if (!s) { printf("    FAIL %s opened nothing\n", a.key); bad++; continue; }
         settle();
         compose();
         looked++;
@@ -148,7 +158,7 @@ static int check_all(void) {
             for (int x = 0; x < c.width(); x++) if (c.get(x, y)) lit++;
         // A title and one row of anything is well over a dozen pixels. Below
         // that the screen is empty, whatever it thinks it drew.
-        if (lit < 12) { printf("    FAIL %s drew an empty panel\n", apps[i].key); bad++; }
+        if (lit < 12) { printf("    FAIL %s drew an empty panel\n", a.key); bad++; }
 
         // The header has to agree with the row that opened it. "Versions"
         // opened a screen calling itself "Device", which reads as having landed
@@ -158,10 +168,10 @@ static int check_all(void) {
         // Files is the deliberate exception. A browser titles itself with the
         // path it is showing, which is worth more than repeating its own name.
         const char *t = s->title();
-        if (strcmp(apps[i].key, "files") != 0 && t && t[0] &&
-            strcmp(t, apps[i].label) != 0) {
+        if (strcmp(a.key, "files") != 0 && t && t[0] &&
+            strcmp(t, a.label) != 0) {
             printf("    FAIL %s is labelled '%s' but titles itself '%s'\n",
-                   apps[i].key, apps[i].label, t);
+                   a.key, a.label, t);
             bad++;
         }
 
@@ -171,7 +181,7 @@ static int check_all(void) {
                 for (int x = 0; x < c.width(); x++) if (c.get(x, y)) intruding++;
             if (intruding) {
                 printf("    FAIL %s paints %d pixel(s) into the status bar\n",
-                       apps[i].key, intruding);
+                       a.key, intruding);
                 bad++;
             }
         }
@@ -181,20 +191,24 @@ static int check_all(void) {
 }
 
 int main(int argc, char **argv) {
-    const nova::gui::App *apps = nova::gui::apps();
-    const unsigned n = nova::gui::app_count();
-
-    if (argc > 1 && !strcmp(argv[1], "--list")) {
-        for (unsigned i = 0; i < n; i++)
-            printf("  %-12s %-12s %s\n", apps[i].key, apps[i].label,
-                   apps[i].open ? "" : "(no screen yet)");
-        return 0;
-    }
-
+    // The catalogue is only complete after begin() has scanned /nova/apps, so
+    // --list starts the runner too rather than printing the built-ins and
+    // calling that the list.
     if (!nova::gui::begin()) {
         printf("the runner would not start — no panel in the fake firmware?\n");
         return 1;
     }
+    const unsigned n = nova::gui::app_total();
+
+    if (argc > 1 && !strcmp(argv[1], "--list")) {
+        for (unsigned i = 0; i < n; i++) {
+            const nova::gui::App &a = *nova::gui::app_at(i);
+            printf("  %-12s %-12s %s\n", a.key, a.label,
+                   a.open ? "" : "(no screen yet)");
+        }
+        return 0;
+    }
+
     // The boot check pushes itself over home and pops when it finishes. Let it.
     settle(40, 60);
     nova::gui::go_home();
@@ -205,7 +219,10 @@ int main(int argc, char **argv) {
     // were the name of an app and reported missing.
     if (strcmp(argv[1], "--dump") != 0) {
         for (unsigned i = 0; i < n; i++)
-            if (!strcmp(apps[i].key, argv[1])) { shoot(apps[i]); return 0; }
+            if (!strcmp(nova::gui::app_at(i)->key, argv[1])) {
+                shoot(*nova::gui::app_at(i));
+                return 0;
+            }
         printf("no app with key '%s' — try --dump, --list, or a catalogue key\n", argv[1]);
         return 1;
     }
@@ -224,6 +241,6 @@ int main(int argc, char **argv) {
     }
     fw_reg_set("Apps.NovaD1_HomeStyle", "folders");
 
-    for (unsigned i = 0; i < n; i++) shoot(apps[i]);
+    for (unsigned i = 0; i < n; i++) shoot(*nova::gui::app_at(i));
     return 0;
 }

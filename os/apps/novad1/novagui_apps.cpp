@@ -2,6 +2,7 @@
 // File: novagui_apps.cpp
 #include "novagui_apps.h"
 #include "novagui.h"
+#include "novaapps.h"
 #include "novakeys.h"
 #include "novacore.h"
 #include "novanotify.h"
@@ -1668,6 +1669,137 @@ void open_updates(void) {
     UpdateScreen *s = gui::push<UpdateScreen>();
     if (s) s->begin();
 }
+
+// --- an app somebody else wrote ---------------------------------------------------------
+//
+// A manifest of rows, drawn as a menu, each row a shell command line.
+//
+// This is the whole of the third-party app framework on the screen side, and it
+// is deliberately small. The interesting question was answered in novaapps.h:
+// a Nova D1 screen cannot call into another package, so an app is DATA that
+// this interprets rather than code that runs. What is left here is a Menu whose
+// items came off the filesystem instead of out of a static array.
+//
+// The reach is the firmware command surface — cc1101, sx1276, bt, nfc, ibutton,
+// net, fetch, reg, script, sd, pkg — which is the radios and rather more. What
+// it cannot reach is the packaged tools: gpio, i2cscan, dht, ws2812. A row
+// naming one of those gets the firmware's own refusal in the output pane, in
+// full, rather than a summary of it invented here.
+
+// The rows, as menu items. They point at the label and command strings inside
+// napps' own text buffer, which stays put until another app is loaded — and
+// only one is loaded at a time, by construction.
+static ui::MenuItem g_user_items[NAPP_ROWS_MAX];
+
+// Which app is up, and why it will not open when it will not.
+static const napps::NappItem *g_user_app;
+static napps::NappFault       g_user_fault;
+
+// The command being run, copied out of the manifest.
+//
+// COPIED, because the pane the output goes into shares g_apps_out with
+// everything else on this screen, and because a rescan while a job is in flight
+// would rewrite the text the row points into. Cheaper to hold 96 bytes than to
+// reason about that every time somebody adds a screen.
+static char g_user_cmd[96];
+static char g_user_row[24];
+
+class UserAppScreen : public ui::Menu {
+public:
+    void enter(void) override {
+        waiting_ = false;
+        phase_   = 0;
+
+        // enter(), not begin(): this runs again on the way back from the output
+        // pane, so an app whose file was replaced underneath picks the new rows
+        // up without anybody leaving the screen.
+        const gui::App *a = gui::chosen();
+        g_user_app   = a ? napps::by_key(a->key) : nullptr;
+        g_user_fault = napps::NAPP_UNREADABLE;
+
+        if (!g_user_app) { set("App", nullptr, 0); return; }
+
+        const int n = napps::load(*g_user_app, &g_user_fault);
+        for (int i = 0; i < n; i++) {
+            const napps::NappRow *r = napps::row(i);
+            g_user_items[i].label = r->label;
+            g_user_items[i].fn    = run_row;
+            g_user_items[i].ctx   = this;
+        }
+        // The app's own name, and it has to MATCH the label on the home icon —
+        // a screen that titles itself something else reads as having landed
+        // somewhere unintended, and novashots refuses it for that reason.
+        set(g_user_app->label, g_user_items, n);
+    }
+
+    int help(const char **out, int max) const override {
+        if (max < 3) return 0;
+        out[0] = "Rows come from the file in";
+        out[1] = NOVA_APPS_DIR ".";
+        out[2] = "SELECT runs one.";
+        return 3;
+    }
+
+    bool animating(void) const override { return waiting_; }
+
+    bool tick(uint32_t dt) override {
+        if (!waiting_) return false;
+        phase_ += dt;
+        if (job_take(this)) {
+            waiting_ = false;
+            if (!g_apps_out[0])
+                nova::copy(g_apps_out, APPS_OUT_BYTES,
+                           "The command ran.\nIts output could not\nbe captured: something\nelse held the buffer.");
+            pane_show(g_user_row);
+        }
+        return true;
+    }
+
+    void draw(Canvas &c) override {
+        if (waiting_) {
+            c.text_centred(ui::TOP + ui::ROWH, "Running", 1);
+            c.text_centred(ui::TOP + 2 * ui::ROWH, g_user_row, 1);
+            c.spinner(c.width() / 2 - 2, ui::TOP + 4 * ui::ROWH, phase_ / SPIN_MS, 1);
+            return;
+        }
+        if (count_ > 0) { ui::Menu::draw(c); return; }
+
+        // WHY, not "Nothing here". An app with no rows is a file somebody wrote
+        // and got wrong, and the panel is where they are looking for the reason.
+        // The MicroPython suite skipped an app that would not load and said
+        // nothing at all, which left the file on the device and no way in.
+        c.text_centred(ui::TOP, g_user_app ? g_user_app->label : "App", 1);
+        static char store[192];
+        const char *lines[5];
+        const int n = ui::wrap(napps::fault_text(g_user_fault), c.cols() - 1,
+                               store, sizeof(store), lines, 5);
+        for (int i = 0; i < n; i++)
+            c.text(2, ui::TOP + (i + 1) * ui::ROWH, lines[i], 1);
+    }
+
+private:
+    bool     waiting_;
+    uint32_t phase_;
+
+    static Action run_row(void *ctx, int index) {
+        UserAppScreen *s = (UserAppScreen *)ctx;
+        const napps::NappRow *r = napps::row(index);
+        if (!r) return ui::ACT_STAY;
+
+        nova::copy(g_user_cmd, sizeof(g_user_cmd), r->action);
+        nova::copy(g_user_row, sizeof(g_user_row), r->label);
+
+        if (!job_start(s, g_user_cmd, g_apps_out, APPS_OUT_BYTES)) {
+            ui::notice("Busy", "Another command is still running. Try again in a moment.");
+            return ui::ACT_STAY;
+        }
+        s->waiting_ = true;
+        s->phase_   = 0;
+        return ui::ACT_STAY;
+    }
+};
+
+void open_user_app(void) { gui::push<UserAppScreen>(); }
 
 }  // namespace screens
 }  // namespace nova
