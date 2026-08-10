@@ -107,11 +107,21 @@ has the limits and what it would take to lift them.
 
 ```
 tools/devsmoke.py   boot, version, install, run, render, memory, protection
+tools/putfile.py    a file onto the device, acknowledged per chunk and verified
 probe               cores, timing, jitter, hardware, memory - paste the whole block
 diag                version, uptime, storage, and whether the last run crashed
 mpu                 what the memory protection has configured, per core
 logdump             the log ring, when something looks wrong
+wifi                among other things, a count of unowned entries into the
+                    radio driver - it prints that line only when it is not zero
+havoc net <host>    the radio at rate from an unpinned task; run it as
+                    'bg havoc net <host>' with 'wifi scan' against it
 ```
+
+Two of those exist because a host test structurally cannot ask the question.
+`havoc net` needs two real cores and a real radio driver, and the `wifi` count
+needs the driver's own lock to be the core-keyed one the SDK ships — the
+harness has neither.
 
 `devsmoke.py` is the one to run first and the only one that answers by itself —
 everything else prints numbers for a person to read. It takes `--port` and
