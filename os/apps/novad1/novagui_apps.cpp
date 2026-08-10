@@ -1685,6 +1685,13 @@ void open_updates(void) {
 // it cannot reach is the packaged tools: gpio, i2cscan, dht, ws2812. A row
 // naming one of those gets the firmware's own refusal in the output pane, in
 // full, rather than a summary of it invented here.
+//
+// DEVICE-UNCONFIRMED, and it is the one thing on this screen a host cannot say
+// anything about. sandbox_in_package() is a stub returning false here, so a row
+// naming a package command runs on the host exactly as any other row does. On a
+// board it must come back with app_run_owner's refusal and leave the device
+// standing — that is the whole premise of this design being safe, and it is
+// first on the device list.
 
 // The rows, as menu items. They point at the label and command strings inside
 // napps' own text buffer, which stays put until another app is loaded — and

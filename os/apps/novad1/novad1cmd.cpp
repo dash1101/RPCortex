@@ -402,6 +402,9 @@ static bool url_filename(const char *url, char *out, unsigned cap) {
     return n > x && !strcmp(out + n - x, NOVA_APP_EXT);
 }
 
+// DEVICE-UNCONFIRMED. Everything below the URL check needs a real network and a
+// real filesystem: fw_http_download is a stub on the host, so what is proved
+// here is the name it derives and the refusals, not that a file arrives.
 static int apps_install(const char *url) {
     char name[40];
     if (!url_filename(url, name, sizeof(name))) {
