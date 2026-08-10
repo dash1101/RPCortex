@@ -152,11 +152,46 @@ int parse_rows(char *text, NappRow *out, int max) {
     return n;
 }
 
+// --- where a download may land ------------------------------------------------------------
+
+bool url_filename(const char *url, char *out, unsigned cap) {
+    if (!url || !out || cap < 2) return false;
+    const char *last = url;
+    for (const char *p = url; *p; p++) if (*p == '/') last = p + 1;
+
+    unsigned n = 0;
+    while (last[n] && last[n] != '?' && last[n] != '#') n++;
+    if (!n || n + 1 > cap) return false;
+    // Refuses "..", and hidden files with it. A name whose first character is a
+    // dot has nothing this wants and one particular value that is dangerous.
+    if (last[0] == '.') return false;
+    for (unsigned i = 0; i < n; i++) {
+        const char c = last[i];
+        const bool okc = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                         (c >= '0' && c <= '9') || c == '.' || c == '-' || c == '_';
+        if (!okc) return false;
+    }
+    // It has to BE an app. Renaming somebody's file to make it one would be
+    // doing the author's job for them, and leaving it un-renamed would put a
+    // file in the folder that is silently ignored.
+    const unsigned x = (unsigned)strlen(NOVA_APP_EXT);
+    if (n <= x) return false;
+    for (unsigned i = 0; i < x; i++) {
+        char a = last[n - x + i], b = NOVA_APP_EXT[i];
+        if (a >= 'A' && a <= 'Z') a = (char)(a + 32);
+        if (a != b) return false;
+    }
+    memcpy(out, last, n);
+    out[n] = 0;
+    return true;
+}
+
 // --- discovery ---------------------------------------------------------------------------
 
 static NappItem g_napp[NAPP_MAX];
 static int      g_napp_n;
-static bool     g_napp_dirty;
+static bool     g_napp_dirty = true;      // nothing has looked yet
+static bool     g_napp_scanning;
 
 int count(void) { return g_napp_n; }
 
@@ -205,13 +240,21 @@ static bool napp_named(const char *name, char *stem, unsigned cap) {
 }
 
 int scan(void) {
+    // One at a time. The shell task scans when somebody types `novad1 apps` and
+    // the GUI task scans when the home screen is entered; they share the header
+    // buffer, and two of them interleaving in it would parse one file's header
+    // out of another file's bytes. The loser reads the table the winner is
+    // building, which is at worst one listing out of date.
+    if (g_napp_scanning) return g_napp_n;
+    g_napp_scanning = true;
+
     // Twice, at most — the same bargain scripts_scan makes, and for the same
     // reason: the listing is read by index, and an entry added or removed
     // between two calls shifts every index after it.
     for (int attempt = 0; attempt < 2; attempt++) {
         g_napp_n = 0;
         const int n = fw_dir_count(NOVA_APPS_DIR);
-        if (n <= 0) return 0;
+        if (n <= 0) { g_napp_scanning = false; return 0; }
 
         for (int i = 0; i < n && g_napp_n < NAPP_MAX; i++) {
             FwDirEntry de;
@@ -255,8 +298,9 @@ int scan(void) {
             }
             g_napp_n++;
         }
-        if (fw_dir_count(NOVA_APPS_DIR) == n) return g_napp_n;
+        if (fw_dir_count(NOVA_APPS_DIR) == n) break;
     }
+    g_napp_scanning = false;
     return g_napp_n;
 }
 

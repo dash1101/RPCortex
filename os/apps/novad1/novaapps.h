@@ -102,6 +102,15 @@ struct NappItem {
 // --- discovery ----------------------------------------------------------------
 
 // Re-read NOVA_APPS_DIR and every app's header. Returns how many were found.
+//
+// Safe to call from either task. A scan already running is not started a second
+// time — the buffer it reads each header into is one static, because half a
+// kilobyte of a package's three-kilobyte stack is too much to spend inside the
+// runner's event loop.
+//
+// What it is NOT safe to do from the shell task is rebuild the CATALOGUE from
+// the result; that rewrites the array a Gallery is drawing out of. gui marks
+// itself dirty and does that part on its own task.
 int scan(void);
 
 int count(void);
@@ -116,6 +125,10 @@ const NappItem *by_key(const char *key);
 // both run the same image and the flag is one bool. The MicroPython suite had
 // no equivalent, so a freshly installed app appeared only after some unrelated
 // rebuild while the screen said "Installed (on home)!".
+//
+// It starts SET, so the first ask always looks at the disk. Nothing has scanned
+// on a device where the runner has never been started, and "no apps" and "not
+// looked yet" are not the same answer.
 void mark_dirty(void);
 
 // Rescan if anything said so. TRUE when it did, so the caller knows to rebuild
@@ -157,6 +170,18 @@ int parse_rows(char *text, NappRow *out, int max);
 // app it could not place, and it is the right default: a tool is what an app
 // somebody wrote is, until it says otherwise.
 Category category_from(const char *name);
+
+// The file name at the end of a URL, if it is one this may write.
+//
+// The ONLY thing between a URL and a write to the filesystem, so it refuses
+// rather than repairs: a segment carrying a slash, starting with a dot, holding
+// anything outside [A-Za-z0-9._-], longer than the field, or not ending in
+// NOVA_APP_EXT. A query string is not part of the name.
+//
+// Here rather than beside the command that uses it because it is pure string
+// work guarding a write, which is exactly the kind of thing that belongs where
+// a host test can reach it.
+bool url_filename(const char *url, char *out, unsigned cap);
 
 }  // namespace napps
 }  // namespace nova

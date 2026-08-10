@@ -374,32 +374,16 @@ static bool home_shows(const char *key) {
     return !nova::csv_has(nova::reg(NOVA_KEY_PREFIX "Hidden", ""), key);
 }
 
-// The last path segment of a URL, as a file name. "…/subghz.napp" -> that.
+// Look at /nova/apps, and leave the CATALOGUE to whoever owns it.
 //
-// A DOWNLOAD NAMES ITS OWN FILE and this is the only thing that decides it, so
-// it is also the only thing standing between a URL and a write to somewhere
-// else on the filesystem. A segment carrying a slash, a dot-dot or nothing at
-// all is refused rather than repaired.
-static bool url_filename(const char *url, char *out, unsigned cap) {
-    const char *last = url;
-    for (const char *p = url; *p; p++) if (*p == '/') last = p + 1;
-    // A query string is not part of the name.
-    unsigned n = 0;
-    while (last[n] && last[n] != '?' && last[n] != '#') n++;
-    if (!n || n + 1 > cap) return false;
-    if (last[0] == '.') return false;                 // .. and hidden files both
-    for (unsigned i = 0; i < n; i++) {
-        const char c = last[i];
-        const bool okc = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-                         (c >= '0' && c <= '9') || c == '.' || c == '-' || c == '_';
-        if (!okc) return false;
-    }
-    memcpy(out, last, n);
-    out[n] = 0;
-    // It has to be an app, or a rename would be doing the author's job for
-    // them and the file would sit in the folder being ignored.
-    const unsigned x = (unsigned)strlen(NOVA_APP_EXT);
-    return n > x && !strcmp(out + n - x, NOVA_APP_EXT);
+// The scan is safe from the shell task; rebuilding the catalogue is not, since
+// that rewrites the array a Gallery is drawing out of and the labels it holds
+// pointers into. So this scans, marks the result as something the home screen
+// still has to take up, and only rebuilds here when there is no home to do it.
+static void apps_look(void) {
+    napps::scan();
+    napps::mark_dirty();
+    if (!gui::started()) gui::refresh_apps();
 }
 
 // DEVICE-UNCONFIRMED. Everything below the URL check needs a real network and a
@@ -407,7 +391,7 @@ static bool url_filename(const char *url, char *out, unsigned cap) {
 // here is the name it derives and the refusals, not that a file arrives.
 static int apps_install(const char *url) {
     char name[40];
-    if (!url_filename(url, name, sizeof(name))) {
+    if (!napps::url_filename(url, name, sizeof(name))) {
         fw_printf("That URL does not end in a %s file name.\n", NOVA_APP_EXT);
         return 1;
     }
@@ -418,11 +402,10 @@ static int apps_install(const char *url) {
         fw_printf("Could not fetch it. Check the URL and `net status`.\n");
         return 1;
     }
-    // The home screen rescans on its next entry, so the icon appears without a
-    // reboot. The MicroPython store forgot this step and told people the app
+    // The home screen takes it up on its next entry, so the icon appears without
+    // a reboot. The MicroPython store forgot this step and told people the app
     // was installed while nothing on the home screen changed.
-    napps::mark_dirty();
-    napps::rescan_if_dirty();
+    apps_look();
     const napps::NappItem *it = nullptr;
     for (int i = 0; i < napps::count(); i++)
         if (!strcmp(napps::at(i)->file, name)) it = napps::at(i);
@@ -435,7 +418,7 @@ static int apps_install(const char *url) {
 }
 
 static int apps_remove(const char *key) {
-    napps::rescan_if_dirty();
+    apps_look();
     const napps::NappItem *it = napps::by_key(key);
     if (!it) {
         fw_printf("No installed app called '%s'. `novad1 apps` lists them.\n", key);
@@ -444,30 +427,39 @@ static int apps_remove(const char *key) {
     char path[80];
     nova::path_join(path, sizeof(path), NOVA_APPS_DIR, it->file);
     if (!fw_file_remove(path)) { fw_printf("Could not delete %s.\n", path); return 1; }
-    napps::mark_dirty();
-    napps::rescan_if_dirty();
+    apps_look();
     fw_printf("Removed %s.\n", path);
     return 0;
 }
 
+// Is this a key anything answers to? Built in, or installed.
+static bool apps_known(const char *key) {
+    for (unsigned i = 0; i < gui::app_count(); i++)
+        if (!strcmp(gui::apps()[i].key, key)) return true;
+    return napps::by_key(key) != nullptr;
+}
+
 int apps(int argc, char **argv) {
-    // Whatever is on disk right now. This runs on the shell task and the runner
-    // may not be up at all, so it cannot rely on the home screen having
-    // rescanned — and a listing that is out of date is worse than none.
-    napps::mark_dirty();
-    napps::rescan_if_dirty();
+    apps_look();
 
     if (argc < 3) {
         fw_printf("%-14s %-9s %-6s %s\n", "app", "folder", "home", "state");
-        for (unsigned i = 0; i < gui::app_total(); i++) {
-            const gui::App &e = *gui::app_at(i);
-            const char *state = !e.open ? "not built"
-                              : gui::app_available(e) ? "ready" : "no module";
-            // An installed app knows more about itself than the catalogue does.
-            const napps::NappItem *u = napps::by_key(e.key);
-            if (u) state = u->fault == napps::NAPP_OK ? "installed" : "bad file";
+        for (unsigned i = 0; i < gui::app_count(); i++) {
+            const gui::App &e = gui::apps()[i];
             fw_printf("%-14s %-9s %-6s %s\n", e.key, category_name(e.cat),
-                      home_shows(e.key) ? "yes" : "no", state);
+                      home_shows(e.key) ? "yes" : "no",
+                      !e.open ? "not built"
+                              : gui::app_available(e) ? "ready" : "no module");
+        }
+        // Read from napps rather than from the catalogue. The catalogue's rows
+        // point INTO the scan's table and are only rebuilt on the runner's task,
+        // so straight after an install they are one home-entry behind — and the
+        // one moment somebody types this is straight after an install.
+        for (int i = 0; i < napps::count(); i++) {
+            const napps::NappItem &u = *napps::at(i);
+            fw_printf("%-14s %-9s %-6s %s\n", u.key, category_name(u.cat),
+                      home_shows(u.key) ? "yes" : "no",
+                      u.fault == napps::NAPP_OK ? "installed" : "bad file");
         }
         fw_printf("\n  novad1 apps show <key> | hide <key> | reset\n");
         fw_printf("  novad1 apps install <url> | remove <key>\n");
@@ -494,10 +486,10 @@ int apps(int argc, char **argv) {
 
     // Check the key exists before writing it. A typo saved into the list is a
     // setting that does nothing and gives no hint why.
-    bool known = false;
-    for (unsigned i = 0; i < gui::app_total(); i++)
-        if (!strcmp(gui::app_at(i)->key, argv[3])) known = true;
-    if (!known) { fw_printf("No app called '%s'. `novad1 apps` lists them.\n", argv[3]); return 1; }
+    if (!apps_known(argv[3])) {
+        fw_printf("No app called '%s'. `novad1 apps` lists them.\n", argv[3]);
+        return 1;
+    }
 
     bool hide = !strcmp(argv[2], "hide");
     char csv[NOVA_VAL_MAX];

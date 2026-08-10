@@ -651,6 +651,11 @@ static int        g_folder_count;
 static Category   g_open_cat;
 
 static void open_category(void);
+static void build_catalogue(void);
+
+void refresh_apps(void) {
+    if (napps::rescan_if_dirty()) build_catalogue();
+}
 
 static void build_catalogue(void) {
     user_apps_build();
@@ -684,7 +689,11 @@ public:
         // out of everything, so this is where a new icon appears without
         // anybody rebooting — and it costs a directory listing only when
         // something has actually said it changed.
-        if (napps::rescan_if_dirty()) build_catalogue();
+        //
+        // ON THIS TASK, which is the point. A shell command that installed an
+        // app marked napps dirty and left the rebuild here rather than doing it
+        // underneath a Gallery that was drawing.
+        refresh_apps();
         style_ = nova::reg(NOVA_KEY_PREFIX "HomeStyle", "folders");
         if (nova::ieq(style_, "gallery")) {
             static const App *flat[APP_COUNT + NAPP_MAX];
@@ -803,9 +812,12 @@ bool begin(void) {
     g_claimed = true;
 
     g_canvas.attach(g_fb, 128, 64);
-    // What somebody else installed, before the first catalogue is built from it.
-    napps::scan();
-    build_catalogue();
+    // What somebody else installed, before the first catalogue is built from
+    // it. Marked dirty first because `novad1 apps` may have scanned before the
+    // runner started — a catalogue that is up to date is not the same as one
+    // that has been built.
+    napps::mark_dirty();
+    refresh_apps();
 
     bool panel = display().begin();
     if (input().begin()) input().start();

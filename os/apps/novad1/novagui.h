@@ -86,6 +86,15 @@ unsigned   app_count(void);
 unsigned   app_total(void);
 const App *app_at(unsigned i);
 
+// Bring the catalogue back in step with what is in /nova/apps, if anything has
+// said it changed.
+//
+// THE RUNNER'S TASK ONLY, or with the runner down. It rebuilds the arrays a
+// Gallery is drawing out of and rewrites the labels it is holding pointers
+// into. A shell command marks napps dirty and lets the home screen do this on
+// its own task; when there is no home, it can do it itself.
+void refresh_apps(void);
+
 // Which row's open() is running.
 //
 // An OpenFn takes nothing and returns nothing, so an opener shared between

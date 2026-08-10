@@ -364,6 +364,12 @@ static void test_dirty(void) {
     scan();
     eq(count(), 1, "one app");
 
+    // The flag starts SET, so the first ask always looks at the disk — on a
+    // device where the runner has never started, nothing has scanned, and "no
+    // apps" is not the same answer as "not looked yet". It is still set here
+    // because nothing in this test file has consumed it.
+    ok(rescan_if_dirty(), "the first ask always looks");
+
     fs_add("two.napp", kGood);
     ok(!rescan_if_dirty(), "nothing rescans until something says so");
     eq(count(), 1, "so the second app is not seen yet");
@@ -437,6 +443,77 @@ static void test_load(void) {
     eq(why, NAPP_NO_NAME, "and the missing name is reported alongside");
 }
 
+// --- where a download may land ----------------------------------------------------------
+//
+// The only thing between a URL and a write to the filesystem, so every way it
+// can be talked into the wrong path is here.
+
+static void test_url_filename(void) {
+    char out[40];
+
+    ok(url_filename("https://example.com/apps/subghz.napp", out, sizeof(out)),
+       "an ordinary URL gives a name");
+    streq(out, "subghz.napp", "and it is the last segment");
+
+    ok(url_filename("https://x.dev/a.napp?raw=1&v=2", out, sizeof(out)), "a query string is fine");
+    streq(out, "a.napp", "and is not part of the name");
+    ok(url_filename("https://x.dev/a.napp#top", out, sizeof(out)), "and so is a fragment");
+    streq(out, "a.napp", "also not part of the name");
+
+    ok(url_filename("subghz.napp", out, sizeof(out)), "a bare name is a name");
+    ok(url_filename("https://x.dev/My-App_2.napp", out, sizeof(out)),
+       "dashes, underscores and digits are allowed");
+
+    // A URL full of dot-dot is not refused, and it does not need to be: only the
+    // LAST segment is ever used and it is a plain name. Asserted this way round
+    // because the first version of this test asserted the refusal, which was a
+    // claim about the wrong thing — what matters is what comes OUT.
+    ok(url_filename("https://x.dev/../../etc/passwd.napp", out, sizeof(out)),
+       "dot-dot segments earlier in a URL are simply not part of the name");
+    streq(out, "passwd.napp", "only the last segment is used");
+    ok(!strchr(out, '/') && out[0] != '.',
+       "so what comes out is always a plain name in the apps folder");
+
+    // Everything that has to be refused rather than repaired.
+    ok(!url_filename("https://x.dev/.napp", out, sizeof(out)),
+       "and so is a name that is only an extension");
+    ok(!url_filename("https://x.dev/.hidden.napp", out, sizeof(out)),
+       "a leading dot is refused whatever follows it");
+    ok(!url_filename("https://x.dev/apps/", out, sizeof(out)),
+       "a trailing slash leaves no name");
+    ok(!url_filename("https://x.dev/a b.napp", out, sizeof(out)),
+       "a space is refused");
+    ok(!url_filename("https://x.dev/a;rm.napp", out, sizeof(out)),
+       "and so is anything else outside the allowed set");
+    ok(!url_filename("https://x.dev/notes.txt", out, sizeof(out)),
+       "a file that is not an app is refused rather than renamed");
+    ok(!url_filename("https://x.dev/plain", out, sizeof(out)),
+       "and so is one with no extension at all");
+    ok(!url_filename("", out, sizeof(out)), "an empty URL gives nothing");
+    ok(!url_filename(nullptr, out, sizeof(out)), "and neither does no URL");
+
+    // The extension is matched the way the scan matches it.
+    ok(url_filename("https://x.dev/Shouty.NAPP", out, sizeof(out)),
+       "a capitalised extension is still an app");
+
+    // Exactly at the field, and one over. The buffer is what an install writes
+    // a path out of, so a name that did not fit must be refused rather than cut.
+    char url[128];
+    for (unsigned len = 30; len <= 41; len++) {
+        char stem[64];
+        for (unsigned i = 0; i < len - 5; i++) stem[i] = 'a';
+        stem[len - 5] = 0;
+        snprintf(url, sizeof(url), "https://x.dev/%s.napp", stem);
+        const bool got = url_filename(url, out, sizeof(out));
+        const bool want = len < sizeof(out);
+        checks++;
+        if (got != want) {
+            failures++;
+            printf("    FAIL a %u-character name: got %d want %d\n", len, got, want);
+        }
+    }
+}
+
 // --- the shipped example ----------------------------------------------------------------
 //
 // The file in examples/ is what an author is told to copy, so it is read off
@@ -503,6 +580,7 @@ int main(void) {
     test_scan();
     test_dirty();
     test_load();
+    test_url_filename();
     test_example();
     printf("  %d checks, %d failure(s)\n", checks, failures);
     return failures ? 1 : 0;
