@@ -511,7 +511,30 @@ static void test_installed_apps(void) {
 
     // The file that is not an app was never a row.
     ok(find_app("app_readme") == nullptr, "a .txt in the apps folder is not an app");
+
+    // The OTHER home style. Folders reach an installed app through its
+    // category; the flat gallery reaches it by index out of an array that was
+    // sized by the number of BUILT-IN apps, so this is the one place where
+    // merging a thirty-sixth app writes past the end of a static.
+    fw_reg_set("Apps.NovaD1_HomeStyle", "gallery");
     gui::go_home();
+    ui::Screen *flat_home = gui::top();
+    ok(flat_home != nullptr, "the flat home comes up");
+    if (flat_home) {
+        flat_home->enter();
+        // One detent backwards from the first icon is the last one, and the
+        // last one is the last app installed.
+        flat_home->on_event(EV_ROT_CCW);
+        flat_home->on_event(EV_SELECT);
+        ui::Screen *last = gui::top();
+        ok(last && last != flat_home, "and its last icon opens something");
+        if (last && last != flat_home)
+            streq_(last->title(), "Dice", "which is the last installed app");
+    }
+    fw_reg_set("Apps.NovaD1_HomeStyle", "folders");
+    gui::go_home();
+    ui::Screen *h2 = gui::top();
+    if (h2) h2->enter();
 }
 
 // --- the media player -------------------------------------------------------------------

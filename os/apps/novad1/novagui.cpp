@@ -633,10 +633,17 @@ protected:
 
 // The lists a gallery points at. Static because a Gallery holds the pointer and
 // the pool slot it lives in is smaller than the list would be.
-// Sized for the built-ins AND the installed apps. Sizing these by APP_COUNT
-// while app_total() could exceed it is a write past the end of a static into
-// whatever bss sits next to it — silent on a host, arbitrary on a device.
+// Sized for the built-ins AND the installed apps.
+//
+// Filled by iterating to app_total(), so anything sized by APP_COUNT is a write
+// past the end of a static into whatever bss sits next to it. The static_assert
+// is what actually holds the line: this is out of reach of a host test — ASan
+// does not redzone these, and the values written and read back agree either
+// way, so a suite that overran by two pointers passed with 314 checks green. A
+// number no test can check has to be checked by the compiler.
 static const App *g_cat_items[CAT_COUNT][APP_COUNT + NAPP_MAX];
+static_assert(sizeof(g_cat_items[0]) / sizeof(g_cat_items[0][0]) >= APP_COUNT + NAPP_MAX,
+              "a category must hold every app, built-in and installed");
 static int        g_cat_count[CAT_COUNT];
 static const App *g_folder_items[CAT_COUNT];
 static App        g_folder_apps[CAT_COUNT];
@@ -681,6 +688,8 @@ public:
         style_ = nova::reg(NOVA_KEY_PREFIX "HomeStyle", "folders");
         if (nova::ieq(style_, "gallery")) {
             static const App *flat[APP_COUNT + NAPP_MAX];
+            static_assert(sizeof(flat) / sizeof(flat[0]) >= APP_COUNT + NAPP_MAX,
+                          "the flat home must hold every app, built-in and installed");
             const unsigned n = app_total();
             for (unsigned i = 0; i < n; i++) flat[i] = app_at(i);
             set("", flat, (int)n);

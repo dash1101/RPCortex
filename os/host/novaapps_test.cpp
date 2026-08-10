@@ -28,12 +28,15 @@ static FakeFile g_files[16];
 static int      g_files_n;
 static const char *g_dir = "/nova/apps";
 
-// A listing that CHANGES between the two counts scan() takes. Set to a name and
-// the first count is one larger than what is actually enumerable, which is the
-// case the two-pass scan exists for.
-static int g_shrink_after;
+// A file that APPEARS between the two counts scan() takes — a download landing,
+// a drag-and-drop finishing. The first count does not include it and the second
+// does, which is the case the two-pass scan exists for and the only arrangement
+// where one pass and two give different answers: a file that goes AWAY mid-scan
+// is missed by both, and a stale high count is caught by the entry read.
+static const char *g_appears;
+static const char *g_appears_body;
 
-static void fs_reset(void) { g_files_n = 0; g_shrink_after = 0; }
+static void fs_reset(void) { g_files_n = 0; g_appears = nullptr; }
 
 static void fs_add(const char *name, const char *body, int is_dir = 0) {
     g_files[g_files_n].name   = name;
@@ -55,9 +58,11 @@ extern "C" {
 
 int fw_dir_count(const char *path) {
     if (strcmp(path, g_dir)) return 0;
-    // The first ask is answered high, once, so the second disagrees with it.
-    if (g_shrink_after) { g_shrink_after--; return g_files_n + 1; }
-    return g_files_n;
+    const int now = g_files_n;
+    // Answered, THEN the new file lands. So the count the scan is working from
+    // is already one behind by the time it starts reading entries.
+    if (g_appears) { fs_add(g_appears, g_appears_body); g_appears = nullptr; }
+    return now;
 }
 
 int fw_dir_entry(const char *path, unsigned index, FwDirEntry *out) {
@@ -343,12 +348,14 @@ static void test_scan(void) {
     eq(scan(), NAPP_MAX, "the app cap is honoured");
     ok(at(NAPP_MAX) == nullptr, "and there is no entry past it");
 
-    // The listing changing under the scan. One pass would report a gap.
+    // A file landing WHILE the scan is running. One pass takes the stale count
+    // and reports two apps out of three; the second pass sees all of them.
     fs_reset();
     fs_add("one.napp", kGood);
     fs_add("two.napp", kGood);
-    g_shrink_after = 1;
-    eq(scan(), 2, "a listing that moved underneath is read again");
+    g_appears      = "three.napp";
+    g_appears_body = kGood;
+    eq(scan(), 3, "a listing that grew underneath is read again");
 }
 
 static void test_dirty(void) {
