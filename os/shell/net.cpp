@@ -28,6 +28,7 @@
 #include "lock.h"
 #include "blackbox.h"
 #include "joinguard.h"
+#include "netown.h"
 #include "rpc_app.h"
 
 #include <stdio.h>
@@ -62,8 +63,13 @@
 // within seconds of associating.
 //
 // Scoped, so no early return can take the lock and forget to give it back.
+//
+// The constructor also checks the rule netown.h states: this must be taken
+// under the operation lock, or the driver's own core-keyed mutex excludes
+// nothing between tasks and deadlocks between cores. Noting it rather than
+// refusing, because a latent wedge reported is better than a live one caused.
 struct NetLock {
-    NetLock()  { cyw43_arch_lwip_begin(); }
+    NetLock()  { if (!net_op_held()) net_unowned_note(); cyw43_arch_lwip_begin(); }
     ~NetLock() { cyw43_arch_lwip_end(); }
 };
 
@@ -148,6 +154,26 @@ void net_op_release(void) {
     }
     lock_release(&g_net_op);
 }
+
+bool net_op_held(void) { return lock_held_by_me(&g_net_op); }
+
+// The tripwire. One counter and the caller that tripped it first.
+//
+// Every entry into cyw43 or lwIP is supposed to be under the operation lock,
+// and three files have quietly not been. Counting is enough: the count is zero
+// on a correct build, so `wifi` says nothing, and the first time somebody adds
+// a fourth the number appears with an address to look up.
+static uint32_t g_unowned;
+static uint32_t g_unowned_pc;
+
+// The address recorded is where this call returns to, which after the guard's
+// constructor is inlined is the offending scope itself. addr2line on the ELF
+// names the line.
+void net_unowned_note(void) {
+    if (!g_unowned) g_unowned_pc = (uint32_t)(uintptr_t)__builtin_return_address(0);
+    g_unowned++;
+}
+uint32_t net_unowned_count(void) { return g_unowned; }
 
 // What the last operation saw, in plain memory.
 //
@@ -336,6 +362,18 @@ static bool radio_up(void) {
         return false;
     }
     if (g_radio_up) return true;
+
+    // Ownership HERE, not only in the callers. Bringing the chip up is the
+    // single most core-sensitive thing in this file — g_radio_core is set to
+    // whatever core runs it, and every later call has to match — and two of the
+    // three callers reach it without holding anything (`radio on`, and
+    // bluetooth through net_radio_up). Recursive, so the caller that does hold
+    // it pays nothing.
+    NetOwn own;
+    if (!own.ok) {
+        out_err("Could not reach the wireless chip from this task.");
+        return false;
+    }
     join_phase("cyw43_arch_init");
     if (cyw43_arch_init() != 0) {
         out_err("Could not start the wireless chip.");
@@ -403,15 +441,19 @@ bool net_radio_is_up(void) { return g_radio_up; }
 //
 // g_net_op guarantees one task at a time inside the driver, which is not the
 // same as one CORE — a task with AFFINITY_ANY can be scheduled onto either, and
-// the driver only works on the one that initialised it. Everything that touches
-// the network today is pinned to core 0 (the shell, and wifi-join since it
-// started binding the chip), so this never fires; it exists because the day a
-// package does its own networking from an unpinned task, the failure would
-// otherwise be memory corruption with no message attached.
+// the driver only works on the one that initialised it.
 //
-// Refusing is the right answer rather than migrating. Moving a running task to
-// another core needs scheduler support that does not exist yet, and inventing
-// it inside a lock is how the last round of faults happened.
+// It DOES fire. A package doing its own networking from an unpinned task was
+// the hypothetical this was written for, and TCP for packages made it real:
+// fw_tcp_* and fw_net_ping are reached from a task spawned with no affinity,
+// which on this chip means core 1 almost always.
+//
+// net_op_acquire migrates the caller here rather than leaving it to fail, so by
+// the time anything asks this the answer is normally yes. It is still asked,
+// because the migration can be refused — the table that remembers where a task
+// came from is finite, and a migration that cannot be undone later is worse
+// than one not made. What is NOT allowed is going ahead anyway: see netown.h
+// for what the driver does to a caller on the wrong core.
 bool net_core_ok(void) {
     return !g_radio_up || task_this_core() == g_radio_core;
 }
@@ -529,6 +571,7 @@ static int wifi_status(void) {
     char addr[20] = "", gw[20] = "", mask[20] = "";
     bool up = false;
     {
+        LockGuard _own(&g_net_op);
         NetLock _l;
         up = netif_default && netif_is_up(netif_default);
         if (up) {
@@ -542,6 +585,12 @@ static int wifi_status(void) {
         out_multi("  Gateway: %s", gw);
         out_multi("  Netmask: %s", mask);
     }
+    // Zero on a correct build, so this says nothing at all until something
+    // enters the driver without owning it. See netown.h for why that matters
+    // and net_unowned_note for how to find the caller.
+    if (net_unowned_count())
+        out_warn("%u unowned entries into the wireless driver — see netown.h.",
+                 (unsigned)net_unowned_count());
     return 0;
 }
 
@@ -1059,6 +1108,7 @@ static bool net_is_connected_live(void) {
     // command about to send a packet cares about the second. netif is asked
     // directly rather than trusting a link enum, because that is the state the
     // packet path will actually use.
+    LockGuard _own(&g_net_op);
     NetLock _l;
     return netif_default && netif_is_up(netif_default) &&
            !ip4_addr_isany(netif_ip4_addr(netif_default));
@@ -1213,6 +1263,7 @@ void net_apply_addressing(void) {
         return;
     }
 
+    LockGuard _own(&g_net_op);
     NetLock _l;
     if (!netif_default) return;
     // Stop DHCP first, or its next renewal replaces what was just set.
@@ -1223,6 +1274,7 @@ void net_apply_addressing(void) {
 void net_apply_dns(void) {
     const char *p = reg_get("Net.DNS", "");
     const char *sec = reg_get("Net.DNS2", "");
+    LockGuard _own(&g_net_op);
     NetLock _l;
     ip_addr_t a;
     if (p[0] && ip4addr_aton(p, ip_2_ip4(&a))) { IP_SET_TYPE(&a, IPADDR_TYPE_V4); dns_setserver(0, &a); }
@@ -1237,6 +1289,7 @@ static void net_show(void) {
     char ip[20] = "", mask[20] = "", gw[20] = "", d1[20] = "", d2[20] = "";
     bool up = false;
     {
+        LockGuard _own(&g_net_op);
         NetLock _l;
         up = netif_default && netif_is_up(netif_default);
         if (up) {
@@ -1527,8 +1580,17 @@ static bool dns_wait(volatile bool &flag, uint32_t ms) {
 
 bool net_resolve(const char *host, ip_addr_t *out) {
     if (!host || !out) return false;
-    // Already a dotted quad: no lookup, no record.
+    // Already a dotted quad: no lookup, no record. Answered before ownership is
+    // taken, because nothing here touches the radio.
     if (ip4addr_aton(host, ip_2_ip4(out))) { IP_SET_TYPE(out, IPADDR_TYPE_V4); return true; }
+
+    // Ownership here rather than at each caller. This is the widest lwIP window
+    // in the file — NetLock taken four times around a wait of up to six
+    // seconds — and it is reachable from `nslookup`, `ping`, `ntp` and
+    // fw_net_ping, which is a package's unpinned task. Recursive, so the HTTP
+    // transport holding it across a whole connection pays nothing.
+    NetOwn own;
+    if (!own.ok) return false;
 
     DnsWait *w = nullptr;
     {
@@ -1593,6 +1655,11 @@ void net_op_acquire(void) {}
 void net_op_release(void) {}
 // No radio, so no core to be wrong about. The transport still calls it.
 bool net_core_ok(void) { return true; }
+// ...and nothing to own, so the rule is trivially kept and the tripwire is
+// permanently silent.
+bool net_op_held(void) { return true; }
+void net_unowned_note(void) {}
+uint32_t net_unowned_count(void) { return 0; }
 
 // No radio, so no reading — and false rather than a made-up zero, because
 // 0 dBm is a valid and extraordinary value, not an absence.

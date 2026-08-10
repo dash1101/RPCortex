@@ -242,27 +242,72 @@ static bool read_line(const char *prompt, char *buf, size_t max) {
 // the USB drive use — so the ceiling is free space rather than free memory, the
 // filesystem guard applies as it does to every other write, and a transfer that
 // runs out of room is refused rather than half-written.
+//
+// --- why bytes went missing, and what stops it -------------------------------
+//
+// Two 300 KB uploads arrived corrupt and neither said so. cc2bc6d made the
+// damage loud by hashing what landed. This is the part that stops it happening,
+// and it turned out to be two different problems wearing the same symptom.
+//
+// THE ONE THAT WAS ACTUALLY DOING IT. Every package calls fw_task_should_stop
+// in its loop, that is intr_check, and intr_check reads up to 32 bytes off the
+// console looking for a Ctrl+C. Those bytes are stashed for the line editor,
+// which is right when somebody is typing and ruinous when the console is
+// carrying a file: they never reach the loop below. With the Nova D1 screen
+// service running, a 300 KB upload lost 735 bytes and timed out; with the same
+// file, the same sender and the service stopped, it was byte-exact. The stash
+// even hands the evidence back — the last 128 stolen bytes are replayed at the
+// prompt when the transfer gives up. So the console is CLAIMED here, and
+// intr_check stops reading while it is.
+//
+// THE ONE THE COMMENT PREDICTED. A flash write is slow and it parks the other
+// core; bytes still arriving during it have nowhere to go. USB CDC flow control
+// makes that survivable rather than certain — the endpoint is simply not armed
+// when the buffer is full, so the host is told to wait — but "survivable" is a
+// property of timing, and timing is what changes when a service is added. So
+// the device now ACKs each chunk once it is on flash and a sender that waits
+// for the ACK can never have more than one chunk in flight.
+//
+// The ACK is unconditional. An opt-in flag would mean the next sender written
+// in a hurry silently gets the old behaviour, which is exactly how this bug
+// arrived twice. A sender that ignores it (a person pasting, the old
+// rpc-push.sh) behaves as before: one 0x06 per chunk, invisible in a terminal.
+// tools/putfile.py is the one that waits.
 #define PUT_CHUNK 256
+// ASCII ACK. One byte, raw, no newline and no colour — the sender should not
+// have to parse anything.
+#define PUT_ACK   0x06
+
+// One ACK, on the wire before this returns.
+//
+// Both flushes are needed and they do different things. fflush pushes the byte
+// out of the C library's buffer into the stdio driver; stdio_flush is what
+// reaches tud_task and puts it on the bus. Without the second the ACK sits in
+// the TX buffer until the USB task next runs, and the USB task does not run
+// while this loop is spinning on getchar — so a sender waiting for it would be
+// waiting for a byte the device thinks it has already sent.
+static void put_ack(void) {
+    putchar_raw(PUT_ACK);
+    fflush(stdout);
+    stdio_flush();
+}
 
 static int cmd_put(int argc, char **argv) {
-    if (argc < 3) { out_multi("Usage: put <name> <len> [sha256]"); return 1; }
+    if (argc < 3) {
+        out_multi("Usage: put <name> <len> [sha256]");
+        out_multi("  Raw bytes on the console. One 0x06 is sent back per %u bytes",
+                  (unsigned)PUT_CHUNK);
+        out_multi("  written; wait for it before sending more. tools/putfile.py does.");
+        return 1;
+    }
     uint32_t len = (uint32_t)strtoul(argv[2], nullptr, 10);
 
-    // WHAT ARRIVED IS NOT NECESSARILY WHAT WAS SENT, and the length does not
-    // say so. This loop reads a byte at a time and stops to write a chunk to
-    // flash, which is slow and parks the other core; bytes still arriving over
-    // USB during that window overflow the CDC buffer and are dropped. The count
-    // then reaches `len` anyway, using bytes that came later — so a corrupt
-    // transfer looks exactly like a good one.
-    //
-    // Two 300 KB uploads landed that way. The damage surfaced far from here: a
-    // package that would not load, reported as "out of memory", and then a
-    // firmware fault inside strcmp on a section-header table made of garbage.
-    //
-    // So the bytes are hashed as they land. Given an expected digest this
-    // refuses the file outright; given none it still prints what was stored, so
-    // whoever sent it can compare. It does not stop the dropping — that needs
-    // the sender to wait for each chunk — but it stops silence.
+    // The bytes are hashed as they land. Given an expected digest this refuses
+    // the file outright; given none it still prints what was stored, so whoever
+    // sent it can compare. Kept even now that the two ways bytes went missing
+    // are both closed: a digest is the only thing that can say a transfer was
+    // right, and everything above it is a reason to believe rather than a
+    // proof.
     const char *want = (argc >= 4) ? argv[3] : nullptr;
     if (want && strlen(want) != 64) {
         out_err("A sha256 is 64 hex characters.");
@@ -282,15 +327,37 @@ static int cmd_put(int argc, char **argv) {
         return 1;
     }
 
+    // Claimed BEFORE the sink is opened and before anything is printed, so
+    // there is no window where the console is carrying payload and another
+    // task is still entitled to read it.
+    InputClaim console;
+    if (!console.ok) {
+        out_err("Another transfer already has the console.");
+        return 1;
+    }
+
     void *sink = storage_open_sink(argv[1]);
     if (!sink) { out_err("Could not open %s for writing.", argv[1]); return 1; }
 
     out_info("Send %u raw bytes now...", (unsigned)len);
+    // Pushed out before the first byte is expected. A sender that waits for
+    // this line and then starts is the whole reason the claim above has nothing
+    // to race with.
+    fflush(stdout);
+    stdio_flush();
 
     uint8_t buf[PUT_CHUNK];
     uint32_t got = 0, held = 0;
     bool ok = true;
     Sha256Ctx sha; sha256_init(&sha);
+
+    // Anything a background task took off the console between the command line
+    // being read and the claim above is payload — it arrived after the Enter —
+    // so it goes into the file rather than back to the line editor.
+    for (int st; got < len && (st = intr_stashed()) >= 0; ) {
+        buf[held++] = (uint8_t)st;
+        got++;
+    }
 
     while (got < len && ok) {
         int c;
@@ -313,11 +380,16 @@ static int cmd_put(int argc, char **argv) {
             sha256_update(&sha, buf, held);
             ok = storage_sink_write(sink, buf, held);
             held = 0;
+            // AFTER the write returns, never before. The ACK means "that chunk
+            // is on flash and I am ready for the next", and a sender holding to
+            // that can never have bytes in flight during an erase.
+            if (ok) put_ack();
         }
     }
     if (ok && held) {
         sha256_update(&sha, buf, held);
         ok = storage_sink_write(sink, buf, held);
+        if (ok) put_ack();
     }
 
     // Close either way: the handle has to be given back, and a failed close is
@@ -340,8 +412,9 @@ static int cmd_put(int argc, char **argv) {
         out_err("What arrived is not what was sent — %s was not kept.", argv[1]);
         out_multi("  expected  %s", want);
         out_multi("  received  %s", hex);
-        out_multi("  Bytes are dropped when the sender does not wait for each");
-        out_multi("  chunk to reach flash. Send it again, more slowly.");
+        out_multi("  A sender that waits for the 0x06 after each %u bytes cannot",
+                  (unsigned)PUT_CHUNK);
+        out_multi("  lose any. tools/putfile.py does; send it again with that.");
         return 1;
     }
 
