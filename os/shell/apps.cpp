@@ -37,6 +37,28 @@ static LoadedApp *find(const char *name) {
     return nullptr;
 }
 
+// Free a package's image, and first drop everything still holding its address.
+//
+// THE IMAGE POINTER IS AN IDENTITY, not just a block of memory. A registered
+// command carries it as its owner and so does a detached shell run, and the heap
+// will hand that same address out again — so a package loaded at the same base
+// afterwards inherits the previous one's claims, and a poll against it would
+// pass every check by matching the wrong package exactly.
+//
+// Every path that frees an image goes through here for that reason. Three of
+// them are inside launch_loaded, where app_main has already run and could
+// already have started a detached run: a package that registered nothing, one
+// whose registration was refused, and one the resident table had no room for.
+// None of them is an obvious place to remember this, which is precisely why it
+// is not left to the caller.
+//
+// (Commands are removed by whoever already knows whether the package became
+// resident; this is only the part every caller shares.)
+static void unload_image(LoadedApp *a) {
+    detach_forget_owner(a->image);
+    app_unload(a);
+}
+
 // Enter PRIVILEGED package code with r9 = the package's GOT origin.
 //
 // The boxed path sets r9 at the enter gate (sandbox_switch.S); this is its
@@ -908,11 +930,7 @@ bool apps_unload(const char *name) {
     // still mapped), then free the image. The reverse would leave the registry
     // holding function pointers into freed memory for the moment between.
     cmd_remove_owner(a->image);
-    // And any detached shell run this package started. The run itself is the
-    // firmware's and carries on; what goes is the package's claim on it, so
-    // nothing can be collected into memory that is about to be handed back.
-    detach_forget_owner(a->image);
-    app_unload(a);
+    unload_image(a);
     for (int i = 0; i < APPS_MAX; i++) if (&g_apps[i] == a) { g_used[i] = false; break; }
     return true;
 }
@@ -976,7 +994,7 @@ static int launch_loaded(LoadedApp *appp, int arg, bool quiet, uint32_t before) 
             // Table full or already loaded: pull the commands back rather than
             // orphan them, and unload.
             cmd_remove_owner(app.image);
-            app_unload(&app);
+            unload_image(&app);
             if (!quiet) out_err("'%s' could not stay resident.", app.header.name);
         }
     } else if (cmd_refused() != refused_before) {
@@ -985,7 +1003,7 @@ static int launch_loaded(LoadedApp *appp, int arg, bool quiet, uint32_t before) 
         // full — which sent people looking for a limit they were nowhere near
         // when a name was simply already registered.
         bool full = cmd_full();
-        app_unload(&app);
+        unload_image(&app);
         out_errp("apps", "'%s' could not register its command%s.",
                  app.header.name,
                  cmd_refused() - refused_before > 1 ? "s" : "");
@@ -996,7 +1014,7 @@ static int launch_loaded(LoadedApp *appp, int arg, bool quiet, uint32_t before) 
                       "copy of itself that is still loaded.");
         return -1;
     } else {
-        app_unload(&app);
+        unload_image(&app);
         if (!quiet) {
             uint32_t after = heap_free();
             if (after == before) out_ok("'%s' finished  (exit %d).", app.header.name, ret);

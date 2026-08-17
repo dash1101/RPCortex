@@ -79,7 +79,24 @@ int detach_claim(const void *owner, const char *line,
     // One capture in the OS, so one capturing run. Said here, at the point of
     // asking, rather than letting the second one run and hand back an empty
     // buffer that reads exactly like a command which printed nothing.
-    if (wants_output && g_capture_slot >= 0) return -1;
+    //
+    // A run that has FINISHED does not still hold it, even if nobody has
+    // collected it. That is not a nicety: a screen fires a command, the run
+    // finishes, somebody navigates away without polling — and the slot is still
+    // free, so nothing would ever reclaim it and every capturing run afterwards
+    // was refused for the rest of the uptime. On the panel that reads as the
+    // command screen having stopped working, permanently.
+    //
+    // Taking it costs the stale run its slot, which is the same answer the cap
+    // already gives: an uncollected finished run is reclaimed and its handle
+    // stops working. Better a documented -1 on a handle nobody was reading than
+    // a status handed over with an empty buffer, which reads as a command that
+    // printed nothing.
+    if (wants_output && g_capture_slot >= 0) {
+        DetachRun *held = &g_runs[g_capture_slot];
+        if (!held->used || held->done) free_slot(held);
+        else                           return -1;
+    }
 
     DetachRun *r = free_or_reclaimed();
     if (!r) return -1;

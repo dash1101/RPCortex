@@ -114,6 +114,24 @@ int main(void) {
     ck(c3 >= 0, "collecting the capturing run frees the capture for the next");
     ck(detach_capture_buffer(c3) != nullptr, "which then has it");
 
+    // AND WITHOUT COLLECTING IT, which is the case that actually happens. A
+    // screen fires a command, the run finishes, somebody navigates away and
+    // never polls. The slot is still free so nothing reclaims it — and if a
+    // finished run kept its hold on the capture, every capturing run after that
+    // would be refused for the rest of the uptime. On the panel that reads as
+    // the command screen having simply stopped working.
+    detach_reset();
+    int n1 = detach_claim(PKG_A, "ls", g_out_a, sizeof(g_out_a));
+    detach_finish(n1, 0);
+    int n2 = detach_claim(PKG_A, "df", g_out_b, sizeof(g_out_b));
+    ck(n2 >= 0, "a finished run nobody collected does not hold the capture for ever");
+    ck(detach_capture_buffer(n2) != nullptr, "and the next capturing run gets the buffer");
+    ck(detach_find(n1, PKG_A) == nullptr, "the stale one was reclaimed to release it");
+
+    // A run that is still GOING keeps it, which is the whole rule.
+    ck(detach_claim(PKG_A, "ps", g_out_a, sizeof(g_out_a)) < 0,
+       "a live capturing run is still not displaced");
+
     // --- a package that unloads ----------------------------------------------
     //
     // The run is the firmware's and carries on; what goes is the package's claim
