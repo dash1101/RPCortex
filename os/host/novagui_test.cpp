@@ -1310,6 +1310,54 @@ static void test_lan_sweep(void) {
     streq_(label, "Scan again", "the control row offers a second sweep");
     streq_(value, "4", "and says how many it found");
 
+    // THE WIDEST ROW THIS SCREEN CAN PRODUCE. Every case above is 192.168.1.x,
+    // which is eleven characters and fits with room to spare; a /24 on a
+    // three-digit third octet is fifteen, and the address is the one thing on
+    // this row that must not be cut — a truncated address is a different
+    // address, not a shorter one.
+    g_net_ip = "192.168.100.42";
+    ping_clear();
+    ping_add(1, 999000);            // the gateway, at the longest reading
+    ping_add(254, 999000);
+    shell_says("net", "  Gateway   192.168.100.1\n");
+    screens::lan_sweep();
+    eq(screens::g_lan_n, 3, "the long-base sweep lists three");
+
+    nova::Canvas &cv = gui::canvas();
+    screens::lan_row(1, label, sizeof(label), value, sizeof(value));
+    streq_(label, "192.168.100.1", "the gateway on a long base");
+    streq_(value, "gw 999ms", "with the widest value this screen has");
+
+    // What the screen ACTUALLY DRAWS, compared against the same address drawn
+    // condensed into a canvas of its own. Comparing the arithmetic would pass
+    // whatever flag draw() passed; comparing the pixels is the only way to catch
+    // the address being cut, and being cut is the failure — a truncated address
+    // is a different address, not a shorter one.
+    const int w    = cv.text_width(value, 1, false);
+    // The same width draw() works to, scrollbar and all: with four rows on a
+    // six-row panel there is nothing to scroll, so the lane is not taken. A
+    // reference drawn to a different width would be comparing two layouts.
+    const int rowsv  = nova::ui::rows_for(cv);
+    const bool scrol = screens::g_lan_n + 1 > rowsv;
+    const int right  = scrol ? cv.width() - (nova::ui::SB_W + 1) : cv.width();
+    const int y      = nova::ui::TOP + nova::ui::ROWH;
+
+    cv.clear(0);
+    gui::top()->draw(cv);
+
+    static uint8_t expbuf[128 * 64 / 8];
+    nova::Canvas exp;
+    exp.attach(expbuf, cv.width(), cv.height());
+    exp.clear(0);
+    exp.text_fit(3, y, label, 1, right - w - 6, true);
+
+    int differs = 0;
+    for (int yy = y; yy < y + nova::ui::FH; yy++)
+        for (int xx = 0; xx < right - w - 6 + 3; xx++)
+            if (cv.get(xx, yy) != exp.get(xx, yy)) differs++;
+    eq(differs, 0, "the address is drawn condensed, in full, not cut");
+
+    g_net_ip = "192.168.1.42";
     shell_says(nullptr, nullptr);
 }
 
@@ -1785,6 +1833,30 @@ static void test_help_is_reachable(void) {
     gui::go_home();
 }
 
+// Power + Controls is TWO pushes, and the runner is what makes room for them.
+// Room for one and not for two left Controls dead at exactly depth seven: the
+// menu fitted, the screen its first row offers did not, and nothing said so.
+static void test_help_is_reachable_from_a_deep_stack(void) {
+    using namespace nova;
+    gui::go_home();
+
+    // Fill the stack to one below the pool. Any screen will do; the notice is
+    // the cheapest one to stack.
+    while (gui::depth() < gui::STACK_MAX - 1) ui::notice("x", "y");
+    eq((int)gui::depth(), (int)gui::STACK_MAX - 1, "one slot short of the pool");
+
+    // The runner's own rule, not a copy of it.
+    ok(gui::power_gesture_ok(), "the power gesture is allowed");
+    if (gui::depth() >= gui::STACK_MAX - 1) gui::go_home();
+    screens::open_power();
+    streq_(gui::top() ? gui::top()->title() : "", "Power", "the menu opens");
+
+    input().inject(EV_SELECT); frame();
+    streq_(gui::top() ? gui::top()->title() : "", "Controls",
+           "and Controls opens too, rather than silently not");
+    gui::go_home();
+}
+
 // --- the sweep: a list must remember where you were ------------------------------
 //
 // enter() runs on the first push AND every time a child screen pops, so a screen
@@ -1923,6 +1995,7 @@ int main(void) {
     STAGE(test_lock_yields_to_a_modal);
     STAGE(test_device_naming);
     STAGE(test_help_is_reachable);
+    STAGE(test_help_is_reachable_from_a_deep_stack);
     STAGE(test_pool_slots_arrive_zeroed);
     STAGE(test_menu_keeps_its_place);
     STAGE(test_list_keeps_its_place);

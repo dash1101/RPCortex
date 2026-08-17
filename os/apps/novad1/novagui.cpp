@@ -966,7 +966,12 @@ void run(void) {
                     // Safe HERE and nowhere else: nothing on this line is inside
                     // a screen's own method, whereas open_power() is also an
                     // OpenFn called from inside Gallery::on_event.
-                    if (depth() >= STACK_MAX) go_home();
+                    // STACK_MAX - 1, not STACK_MAX: the menu's own first row
+                    // is Controls, which is a second push. Making room for one
+                    // and not for two left Controls dead at exactly depth seven
+                    // — the menu fitted, the screen it offers did not, and it
+                    // said nothing about it.
+                    if (depth() >= STACK_MAX - 1) go_home();
                     screens::open_power();
                 }
                 g_dirty = true;

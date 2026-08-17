@@ -1005,8 +1005,11 @@ public:
     }
 
     void enter(void) override {
+        // top_ is NOT reset. This screen is mostly text to be read to the end,
+        // and enter() runs again when the confirmation it raises pops — so
+        // answering No used to throw somebody back to the top of what they had
+        // just scrolled through. draw() clamps it against the line count.
         state_ = ST_VIEW;
-        top_   = 0;
         acc_   = 0;
         spin_  = 0;
     }

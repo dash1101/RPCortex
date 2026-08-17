@@ -1336,7 +1336,19 @@ public:
 
             lan_row(idx, label, sizeof(label), value, sizeof(value));
             const int w = value[0] ? c.text_width(value, 1, false) : 0;
-            c.text_fit(3, y, label, on ? 0 : 1, right - w - 8, false);
+            // CONDENSED, and this is the one screen where it decides whether the
+            // row works at all. On this panel the address IS the value — a
+            // truncated one is not a shorter answer, it is a different address —
+            // so the usual rule that the label gives way first inverts, and the
+            // label has to be made to fit instead.
+            //
+            // The numbers: "192.168.100.254" is 89 pixels at the normal advance
+            // and 68 condensed, against 69 left over once "gw 999ms" and the
+            // scrollbar have taken theirs. Dropping each glyph's blank column is
+            // exactly the difference between the longest row this screen can
+            // produce fitting and being cut. DeviceScreen does the same, for the
+            // same reason.
+            c.text_fit(3, y, label, on ? 0 : 1, right - w - 6, true);
             if (value[0]) c.text(right - w - 2, y, value, on ? 0 : 1);
         }
 

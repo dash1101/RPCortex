@@ -368,7 +368,10 @@ static const char *g_net_ssid_s = "Nova";
 // takes. A LIST rather than a predicate because the interesting cases are all
 // "these three out of 254" and a predicate would have to be rewritten for each.
 static uint8_t  g_ping_hosts[8];
-static uint16_t g_ping_us[8];
+// MICROSECONDS, and 32 bits of them. It was 16, which silently wrapped anything
+// over 65 ms — so a test asking for a slow reply got a fast one and the row it
+// checked was not the row it meant to check.
+static uint32_t g_ping_us[8];
 static int      g_ping_n;
 static int      g_ping_calls;                   // how many addresses were probed
 static char     g_ping_last[FW_NET_ADDR_MAX];   // and the last one asked for
@@ -376,7 +379,7 @@ static char     g_ping_last[FW_NET_ADDR_MAX];   // and the last one asked for
 static void ping_add(int last_octet, int us) {
     if (g_ping_n >= 8) return;
     g_ping_hosts[g_ping_n] = (uint8_t)last_octet;
-    g_ping_us[g_ping_n]    = (uint16_t)us;
+    g_ping_us[g_ping_n]    = (uint32_t)us;
     g_ping_n++;
 }
 
@@ -405,7 +408,7 @@ int fw_net_ping(const char *host, uint32_t timeout_ms) {
     g_ping_calls++;
     snprintf(g_ping_last, sizeof(g_ping_last), "%s", host);
     for (int i = 0; i < g_ping_n; i++)
-        if (g_ping_hosts[i] == (uint8_t)n) return g_ping_us[i];
+        if (g_ping_hosts[i] == (uint8_t)n) return (int)g_ping_us[i];
     return -2;
 }
 
