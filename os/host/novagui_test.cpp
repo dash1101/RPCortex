@@ -1748,6 +1748,43 @@ static void test_pool_slots_arrive_zeroed(void) {
     gui::pop();
 }
 
+// --- the '?' in the status bar had nothing behind it -------------------------------
+//
+// Every Screen has a help(), the status bar draws a '?' for any screen that
+// returns lines, and novaui.h described holding HOME as the way to see them.
+// Holding HOME opens the power menu and always has, so the marker pointed at a
+// screen that did not exist — on nearly every screen in the suite.
+static void test_help_is_reachable(void) {
+    using namespace nova;
+    gui::go_home();
+
+    // A screen with help on it, and not the home screen, so the check is about
+    // the subject rather than about whatever happens to be at the bottom.
+    open_by_key("diag");
+    ui::Screen *subject = gui::top();
+    const char *want[8];
+    const int n = subject->help(want, 8);
+    ok(n > 0, "the Hardware screen has help to show");
+
+    screens::open_power();
+    streq_(gui::top() ? gui::top()->title() : "", "Power", "holding HOME opens Power");
+    input().inject(EV_SELECT); frame();          // row 0 is Controls
+    streq_(gui::top() ? gui::top()->title() : "", "Controls",
+           "and its first row opens the controls for the screen underneath");
+
+    // What it draws has to be the SUBJECT's help, not the power menu's own —
+    // capturing the wrong screen is the way this goes quietly wrong.
+    gui::canvas().clear(0);
+    gui::top()->draw(gui::canvas());
+    int lit = 0;
+    for (int y = 0; y < gui::canvas().height(); y++)
+        for (int x = 0; x < gui::canvas().width(); x++) if (gui::canvas().get(x, y)) lit++;
+    ok(lit > 40, "it draws something");
+    ok(screens::g_help_of == subject, "and it is about the screen Power was opened over");
+
+    gui::go_home();
+}
+
 // --- the sweep: a list must remember where you were ------------------------------
 //
 // enter() runs on the first push AND every time a child screen pops, so a screen
@@ -1885,6 +1922,7 @@ int main(void) {
     STAGE(test_lock_idle);
     STAGE(test_lock_yields_to_a_modal);
     STAGE(test_device_naming);
+    STAGE(test_help_is_reachable);
     STAGE(test_pool_slots_arrive_zeroed);
     STAGE(test_menu_keeps_its_place);
     STAGE(test_list_keeps_its_place);

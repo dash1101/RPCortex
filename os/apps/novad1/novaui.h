@@ -132,9 +132,17 @@ public:
     //
     // The MicroPython suite spent the bottom row of every screen on a permanent
     // hint like "SEL rec  HOME edit" — a sixth of a six-row panel, given over to
-    // text somebody reads once. Holding HOME shows these instead, and the status
-    // bar marks a screen that has them with a '?'. Lists went from five rows to
-    // six the day that changed.
+    // text somebody reads once. These are shown on demand instead, and the
+    // status bar marks a screen that has them with a '?'. Lists went from five
+    // rows to six the day that changed.
+    //
+    // ON DEMAND means: hold HOME, then Controls, which is the first row of the
+    // power menu. It used to say "holding HOME shows these", and holding HOME
+    // has only ever opened the power menu — so for a long time the '?' marked a
+    // screen whose help nothing on the device could reach. There is no spare
+    // gesture to give it (turn, press, back, home and the two holds are all
+    // spoken for), so it lives behind the one gesture that already works from
+    // anywhere.
     //
     // A dynamic STATUS message is a different thing and still belongs on the
     // screen: "Connected", "Wrong password" is feedback about what just

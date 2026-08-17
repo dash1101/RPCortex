@@ -581,6 +581,54 @@ void lock_engage(void) {
     g_lock_depth = gui::depth();
 }
 
+// --- what the buttons do here -----------------------------------------------------
+//
+// Every Screen has had a help() since the port started — fifty-odd of them, one
+// line per control, and novaui.h describes the whole arrangement: "Holding HOME
+// shows these instead, and the status bar marks a screen that has them with a
+// '?'. Lists went from five rows to six the day that changed."
+//
+// The '?' was drawn. Nothing ever showed the lines. Holding HOME opens the power
+// menu, and it always has, so the marker promised a screen that did not exist —
+// on nearly every screen on the device, which makes it the largest dead button
+// in the suite by some distance. Fifty screens' worth of good text was dead
+// code lighting a mark nobody could act on.
+//
+// There is no spare gesture to give it: turn, press, back, home, and the two
+// holds are all spoken for. So it goes where the one from-anywhere gesture
+// already leads, as the FIRST row of the power menu — which is also the safest
+// row there, and the power menu's whole shape is built around the cursor landing
+// on something nobody minds pressing.
+
+// The screen the help is ABOUT. Captured before the power menu is pushed,
+// because after the push the top of the stack is the menu. It is the screen
+// directly underneath, so it outlives the menu by construction — and the menu is
+// the only thing that reads it.
+static const ui::Screen *g_help_of;
+
+class HelpScreen : public ui::Screen {
+public:
+    const char *title(void) const override { return "Controls"; }
+
+    void draw(Canvas &c) override {
+        const char *lines[8];
+        const int n = g_help_of ? g_help_of->help(lines, 8) : 0;
+        if (n <= 0) {
+            c.text_centred(ui::TOP + ui::ROWH, "Turn, press, and BACK.", 1);
+            c.text_centred(ui::TOP + 2 * ui::ROWH, "Nothing else here.", 1);
+            return;
+        }
+        const int rows = ui::rows_for(c);
+        for (int i = 0; i < n && i < rows; i++)
+            c.text_fit(2, ui::TOP + i * ui::ROWH, lines[i], 1, c.width() - 4, false);
+    }
+};
+
+static Action power_help(void *, int) {
+    gui::push<HelpScreen>();
+    return ui::ACT_STAY;
+}
+
 // --- Power ----------------------------------------------------------------------
 //
 // Holding HOME opens this from anywhere, which decides the whole shape of it.
@@ -664,7 +712,10 @@ static Action power_shutdown(void *, int) {
 }
 
 // The safest first, so the row the cursor lands on is one nobody minds pressing.
+// Controls is safer still than Screen off and answers the question somebody
+// holding an unfamiliar screen is most likely to have, so it takes the front.
 static const ui::MenuItem kPowerItems[] = {
+    { "Controls",    power_help,       nullptr },
     { "Screen off",  power_screen_off, nullptr },
     { "Lock",        power_lock,       nullptr },
     { g_incognito,   power_incognito,  nullptr },
@@ -678,11 +729,12 @@ static const ui::MenuItem kPowerItems[] = {
 class PowerScreen : public ui::Menu {
 public:
     int help(const char **out, int max) const override {
-        if (max < 3) return 0;
-        out[0] = "Screen off wakes on a press.";
-        out[1] = "Sleep and Shut down stop the";
-        out[2] = "processor until a button.";
-        return 3;
+        if (max < 4) return 0;
+        out[0] = "Controls explains the screen";
+        out[1] = "underneath this one.";
+        out[2] = "Sleep and Shut down stop the";
+        out[3] = "processor until a button.";
+        return 4;
     }
 
     void enter(void) override {
@@ -711,6 +763,9 @@ void open_power(void) {
     // Cleared here rather than trusted: the slot this lands in has been used
     // before and bss is not re-zeroed between pushes.
     g_pending = PEND_NONE;
+    // BEFORE the push, while the top of the stack is still the screen somebody
+    // was looking at. That screen is what Controls is about.
+    g_help_of = gui::top();
     // Just the push. Making room for it is the RUNNER's job and not this
     // function's, and the difference is not tidiness: open_power is also the
     // catalogue row's OpenFn, called from inside Gallery::on_event, so a
