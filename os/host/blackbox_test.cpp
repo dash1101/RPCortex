@@ -131,6 +131,59 @@ int main(void) {
            "a run nobody had to intervene in reports no recovery failure");
     }
 
+    // --- did the last run end badly? -----------------------------------------
+    //
+    // One predicate, because there were two: the boot banner tested the task
+    // name and `diag` tested only that a record existed. `diag` therefore
+    // announced an unclean shutdown after every single reboot, since the region
+    // survives the reset and every deliberate restart on this part is carried
+    // out by the watchdog.
+    bb_init();
+    ck(bb_previous_crash() == nullptr, "a cold start reports no crash");
+
+    // The ordinary case: something was running and the run stopped.
+    bb_init();
+    bb_note_task(4, 0, "shell", 100, 2048);
+    bb_note_command("havoc spin");
+    bb_init();
+    {
+        const BlackBox *c = bb_previous_crash();
+        ck(c != nullptr, "a run that stopped while a task was scheduled is a crash");
+        eq(c ? c->task : nullptr, "shell", "and it names the task");
+        ck(bb_previous() == c, "the raw record and the crash record are the same one");
+    }
+
+    // A `reboot`. Nothing should be reported at the next boot.
+    bb_init();
+    bb_note_task(4, 0, "shell", 100, 2048);
+    bb_note_clean_exit();
+    bb_init();
+    ck(bb_previous_crash() == nullptr, "a deliberate restart is not a crash");
+    ck(bb_previous() != nullptr, "though the record itself is still there to read");
+
+    // THE ONE THIS EXISTS FOR. A deliberate restart clears the task name and
+    // then takes over a hundred milliseconds to land, with the other core still
+    // scheduling — so the name is written straight back before the reset. Every
+    // reader that keyed off the name saw a crash; the boot banner did too, and
+    // `diag` never even looked.
+    bb_init();
+    bb_note_task(4, 0, "shell", 100, 2048);
+    bb_note_clean_exit();
+    bb_note_task(9, 1, "usb", 200, 2048);      // core 1, during the 120 ms wait
+    bb_note_phase("entered fw_millis");
+    bb_note_yield(4000);
+    bb_init();
+    ck(bb_previous_crash() == nullptr,
+       "core 1 scheduling during the shutdown does not turn it back into a crash");
+
+    // Nothing to name is nothing to report: both readers print the task first,
+    // and a report with an empty name sends somebody looking for a task that
+    // never existed.
+    bb_init();
+    bb_note_command("something");
+    bb_init();
+    ck(bb_previous_crash() == nullptr, "a record with no task in it reports nothing");
+
     printf("  blackbox: %d checks, %d failed\n", checks, fails);
     return fails ? 1 : 0;
 }

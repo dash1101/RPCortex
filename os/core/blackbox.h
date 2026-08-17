@@ -64,6 +64,10 @@ struct BlackBox {
     uint32_t max_stall_ms;         // longest the preempt tick ever saw core 0 held
     uint32_t max_stall_pc;         // and the instruction it was sitting on
     uint8_t  stuck;                // a BbStuck: why nothing saved the run
+    // This run went down ON PURPOSE. One writer, bb_note_clean_exit, and that
+    // is the entire reason it is a field of its own rather than a thing to be
+    // inferred from the ones above — see the note there.
+    uint8_t  clean;
 };
 
 // Record the task about to run. Called from the scheduler; deliberately cheap.
@@ -115,8 +119,34 @@ void bb_note_hw_twice(uint8_t core, uint32_t pc);
 void bb_note_stall(uint32_t ms, bool crit, uint32_t pc);
 
 // Read what the previous run left behind. Returns null when there is nothing —
-// a cold boot, or a clean shutdown.
+// a cold boot, or a firmware update that moved this struct about.
+//
+// This is the RAW record and says nothing about whether the run ended badly.
+// Anything reporting a crash to a person wants bb_previous_crash below.
 const BlackBox *bb_previous(void);
+
+// The same record, but only when the previous run ended BADLY. Null otherwise.
+//
+// The one predicate, because there were two and they disagreed. The boot banner
+// asked whether a task name had been recorded; `diag` asked only whether the
+// struct existed at all — which it always does, since every deliberate restart
+// on this part goes through the watchdog and leaves the region intact. So `diag`
+// announced "the previous run did not shut down cleanly" after every ordinary
+// reboot, and a warning that fires every time is one nobody reads on the day it
+// means something.
+//
+// Two conditions, and each is here for its own reason:
+//
+//   * the run did not mark itself as going down on purpose. `clean` is written
+//     by bb_note_clean_exit and by nothing else, which is what makes it worth
+//     having — `task` and `phase` are rewritten by the scheduler and by every
+//     ABI call, and a deliberate reboot spends over a hundred milliseconds with
+//     the other core still running before the reset lands. Anything the
+//     shutdown clears in that window is written straight back by core 1.
+//
+//   * there is something to name. A record with no task in it cannot produce a
+//     report anybody can act on, and both readers print the task first.
+const BlackBox *bb_previous_crash(void);
 
 // Prepare for this run. Must be called before anything else touches it: it
 // snapshots whatever the last run left, then resets for this one.
@@ -127,6 +157,15 @@ void bb_init(void);
 // the reset does not clear — so without this every `reboot` reported itself as
 // an unclean shutdown. A crash detector that cries wolf on every restart is how
 // a real crash gets scrolled past.
+//
+// It sets `clean` and is the ONLY thing that ever does. Clearing the task name
+// is not enough on its own and never was: the reset is over a hundred
+// milliseconds away when this runs, core 1 is still scheduling, and the first
+// task it picks writes the name straight back.
+//
+// Nothing clears `clean` except the next run's bb_init. In particular a yield
+// must not, however tempting — the yields that happen while the reboot is being
+// carried out are exactly the ones that would undo it.
 void bb_note_clean_exit(void);
 
 // How long the running task has gone without yielding. The number the graded

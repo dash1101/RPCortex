@@ -186,7 +186,14 @@ static int cmd_diag(int, char **) {
 
     // The one thing worth surfacing without being asked: whether the last run
     // ended badly. Someone running diag is usually asking exactly that.
-    const BlackBox *bb = bb_previous();
+    //
+    // THE SAME PREDICATE THE BOOT BANNER USES. This asked only whether the
+    // black box existed, which it does after every restart — the region is not
+    // cleared and every deliberate reboot on this part goes through the
+    // watchdog — so it announced an unclean shutdown after every ordinary
+    // `reboot`, twice confirmed on hardware. A warning nobody can ever act on
+    // teaches people to scroll past the one that matters.
+    const BlackBox *bb = bb_previous_crash();
     if (bb) {
         out_blank();
         out_warn("The previous run did not shut down cleanly.");
