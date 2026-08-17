@@ -86,6 +86,14 @@ static int g_movw_fixture;
 // path has always decoded these; the copy path checked nothing but the parity of
 // a veneer's target word, which says nothing about whether any BL goes there.
 static int g_branches;
+// How much the flash-slot path was really exercised, and by the biggest package
+// that went through it. The count of PIC packages says only that the path RAN;
+// it cannot say the run was worth anything. TESTING.md's own words about the
+// state before this: "the whole slot path is proved by one 304-byte package...
+// the suite fails if that count ever drops to zero; it cannot tell that one is
+// thin cover for the path #103 hid in."
+static int      g_slot_got, g_slot_branch, g_slot_abs;
+static uint32_t g_slot_biggest_blob;
 // What the loader READ, as well as what it allocated. The page-at-a-time
 // installer buys its small footprint by re-reading the relocation table once per
 // page, and "that is cheap" is a claim rather than a fact until the number is on
@@ -170,13 +178,21 @@ static int missing_artifact(const char *path) {
 //
 // `want_off` is the offset being asked about. Returns the flags of the section
 // containing it, or 0 if none does.
+static bool g_section_read_failed;
 static uint32_t section_flags_at(const char *path, uint32_t want_off,
                                  uint32_t *text_end_out) {
+    // A failure to read is NOT "no section covers this offset". Both answers are
+    // zero, and the caller treats zero as padding — so an unreadable file would
+    // have every offset skipped and the whole placement check would pass without
+    // examining a byte. It is recorded rather than returned, because the caller
+    // asks this once per word and wants one complaint, not thousands.
     FILE *f = fopen(path, "rb");
-    if (!f) return 0;
+    if (!f) { g_section_read_failed = true; return 0; }
     fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET);
-    uint8_t *b = (uint8_t *)malloc(sz);
-    if (fread(b, 1, sz, f) != (size_t)sz) { fclose(f); free(b); return 0; }
+    uint8_t *b = (uint8_t *)malloc(sz > 0 ? sz : 1);
+    if (!b || sz <= 0 || fread(b, 1, sz, f) != (size_t)sz) {
+        fclose(f); free(b); g_section_read_failed = true; return 0;
+    }
     fclose(f);
     Elf32_Ehdr *eh = (Elf32_Ehdr *)b;
     Elf32_Shdr *sh = (Elf32_Shdr *)(b + eh->e_shoff);
@@ -769,7 +785,7 @@ static int check_branches(const ElfMirror &m, const LoadedApp &app,
 //
 // Runs only for a PIC package (got_size != 0); a non-PIC one skips it entirely,
 // so the default path is neither changed nor judged by a rule that is not its.
-static int check_got(const char *path, const LoadedApp &app) {
+static int check_got(const char *path, const LoadedApp &app, bool svc, const char *how) {
     int bad = 0;
     ElfMirror mm;
     // A failure to mirror used to `return 0`, which reads as "the GOT is fine".
@@ -820,25 +836,34 @@ static int check_got(const char *path, const LoadedApp &app) {
             }
             uint32_t slot = got[off / 4];
             const Elf32_Sym &sy = syms[sidx];
-            uint32_t expect;
-            if (sy.st_shndx == SHN_UNDEF)      expect = api_lookup(str + sy.st_name);
-            else if (sy.st_shndx == SHN_ABS)   expect = sy.st_value;
-            else if (sy.st_shndx < eh->e_shnum && placed[sy.st_shndx])
-                                               expect = base[sy.st_shndx] + sy.st_value;
-            else continue;                     // a section the loader did not place
+            // Resolved through the SAME mirror the branch and MOVW checks use,
+            // and told which veneer mode it is in. That is not tidying: in SVC
+            // mode an undefined symbol does not resolve to a firmware address at
+            // all, it resolves to the package's own supervisor-call veneer — so
+            // a GOT checked with the privileged answer would be checked against
+            // a number the sandboxed loader never produces.
+            uint32_t expect = 0; bool is_func = false;
+            if (!mirror_resolve(mm, app, sidx, svc, &expect, &is_func)) {
+                // Not a skip. A slot whose expected value cannot be worked out
+                // is a slot nothing checked, and the whole subject of this file
+                // is checks that did not happen quietly.
+                printf("       FAIL %s GOT: cannot work out where %s ended up, so "
+                       "its slot went unchecked\n", how, str + sy.st_name);
+                bad = 1; continue;
+            }
             if (slot != expect) {
-                printf("       FAIL GOT: slot for %s holds %08x, the symbol is at %08x\n",
-                       str + sy.st_name, slot, expect);
+                printf("       FAIL %s GOT: slot for %s holds %08x, the symbol is at %08x\n",
+                       how, str + sy.st_name, slot, expect);
                 bad = 1;
             }
             // A GOT slot naming a FUNCTION is a code pointer the package will
             // load and branch to. Right value is not the same claim as
             // reachable: it has to land somewhere the hardware will let the
             // CPU fetch from.
-            if (ELF32_ST_TYPE(sy.st_info) == STT_FUNC) {
+            if (is_func || ELF32_ST_TYPE(sy.st_info) == STT_FUNC) {
                 char what[80];
                 snprintf(what, sizeof(what), "the GOT slot for %s", str + sy.st_name);
-                bad |= check_code_addr(sm, "copy-to-RAM", what, slot);
+                bad |= check_code_addr(sm, how, what, slot);
             }
         }
     }
@@ -848,9 +873,16 @@ static int check_got(const char *path, const LoadedApp &app) {
     for (uint32_t k = 0; k < app.got_count; k++)
         if (got[k] == 0) { printf("       FAIL GOT: slot %u was never filled\n", k); bad = 1; }
 
+    // A GOT with slots and no sites, or sites and no slots, is a walk that read
+    // nothing — which reads exactly like a pass.
+    if (app.got_count && !sites) {
+        printf("       FAIL %s GOT: %u slot(s) and not one GOT_BREL site was "
+               "walked\n", how, app.got_count);
+        bad = 1;
+    }
     if (sites && !bad)
-        printf("       GOT ok: %d GOT_BREL site(s) through %u slot(s), every one resolves right\n",
-               sites, app.got_count);
+        printf("       %s GOT ok: %d GOT_BREL site(s) through %u slot(s), every one resolves right\n",
+               how, sites, app.got_count);
     mirror_close(&mm);
     return bad;
 }
@@ -1086,6 +1118,7 @@ static int load_one(const char *path) {
     // writable ended up before text_end and nothing read-only after it.
     {
         uint32_t text_end = 0, misplaced = 0;
+        g_section_read_failed = false;
         for (uint32_t off = 0; off < app.image_size; off += 4) {
             uint32_t fl = section_flags_at(path, off, &text_end);
             if (!(fl & 0x80000000u)) continue;             // padding between sections
@@ -1099,6 +1132,11 @@ static int load_one(const char *path) {
         if (text_end != app.text_size) {
             printf("       FAIL the loader and this test disagree on where the "
                    "halves divide (%u vs %u)\n", app.text_size, text_end);
+            bad = 1;
+        }
+        if (g_section_read_failed) {
+            printf("       FAIL %s could not be read back, so no byte of it was "
+                   "checked against the half it landed in\n", path);
             bad = 1;
         }
     }
@@ -1203,8 +1241,8 @@ static int load_one(const char *path) {
             mirror_close(&pm);
         }
     }
-    if (checked) printf("       %d stored function pointer(s), %d missing the Thumb bit, "
-                        "%d not executable\n", checked, even_ptrs, exec_bad);
+    printf("       %d stored function pointer(s), %d missing the Thumb bit, "
+           "%d not executable\n", checked, even_ptrs, exec_bad);
     if (even_ptrs || exec_bad) bad = 1;
 
     // And every veneer's target word, which the scan above structurally cannot
@@ -1224,12 +1262,20 @@ static int load_one(const char *path) {
             veven++;
         }
     }
-    if (vtargets) printf("       %d veneer target(s), %d missing the Thumb bit\n",
-                         vtargets, veven);
+    printf("       %d veneer target(s), %d missing the Thumb bit\n", vtargets, veven);
     if (veven) bad = 1;
+    // Every package here calls the firmware, and firmware is 256 MB away in XIP
+    // flash, so every one of them MUST have gone through a trampoline. A pool
+    // with bytes in it and no target words in range is a pool full of something
+    // else, and it used to print nothing at all.
+    if (app.veneers_used && !vtargets) {
+        printf("       FAIL %u B of veneers and not one target address among them\n",
+               app.veneers_used);
+        bad = 1;
+    }
 
     // A position-independent package: verify the whole r9/GOT indirection.
-    if (app.got_size) bad += check_got(path, app);
+    if (app.got_size) bad += check_got(path, app, false, "copy-to-RAM");
 
     fclose(g_f);
     return bad;
@@ -1385,6 +1431,14 @@ static int load_svc(const char *path) {
             mirror_close(&pm);
         }
     }
+
+    // And the GOT this mode produces, which is a DIFFERENT GOT. Nothing checked
+    // it: check_got ran on the privileged load only, where an undefined symbol
+    // resolves to a firmware address. Sandboxed it resolves to the package's own
+    // supervisor-call veneer instead, so every slot naming firmware holds a
+    // different number — the numbers a device actually runs on, and the ones
+    // that were never read back.
+    if (app.got_size) bad += check_got(path, app, true, "sandboxed");
 
     printf("  ok   %-12s sandboxed: %d gate(s) + %d supervisor call(s)\n",
            name, 3, calls);
@@ -1613,6 +1667,7 @@ static int check_pic(const char *path) {
 
     g_loaded++;
     g_pic_checked++;
+    if (mA.ro_size > g_slot_biggest_blob) g_slot_biggest_blob = mA.ro_size;
     printf("  ok   %-12s slot %u B (text %u + rodata %u + veneers %u), RAM %u B\n",
            name, mA.ro_size, mA.text_size, mA.rodata_size, mA.veneer_size, mA.ram_size);
 
@@ -1736,6 +1791,18 @@ static int check_pic(const char *path) {
         uint32_t slotbase = (uint32_t)(uintptr_t)blob;
         if (s.st_shndx == SHN_UNDEF) {
             int ix = api_index_of(str + s.st_name);
+            // -1 is not an index. Left to become (uint32_t)-1 it is
+            // VENEER_NOT_AN_INDEX, the literal the gates carry — so a fake
+            // symbol table that filled up would go looking for a veneer holding
+            // the gate's own marker, and the failure would name the symbol
+            // rather than the table. That has happened once already, at
+            // FAKE_SYMS 64, and it read exactly like a loader bug.
+            if (ix < 0) {
+                printf("       FAIL the fake firmware symbol table filled up at %u "
+                       "entries — raise FAKE_SYMS; nothing below this point was "
+                       "checked for %s\n", api_symbol_count(), str + s.st_name);
+                *ok = false; return 0;
+            }
             for (uint32_t off = mA.veneer_off; off + 16 <= mA.veneer_off + mA.veneer_size; off += 16)
                 if (*(uint32_t *)(blob + off + 12) == (uint32_t)ix) return (slotbase + off) | 1u;
             *ok = false; return 0;
@@ -1859,9 +1926,23 @@ static int check_pic(const char *path) {
         // three gates, and r9. The gates are what #103 faulted on and this path
         // is where it hid.
         bad |= check_executable(app, tag);
-        if (!bad) printf("       %s: %d GOT + %d branch + %d ABS32 site(s) resolve against the slot at %p, "
-                         "every code pointer executable\n",
-                         tag, got_sites, br_sites, abs_sites, (void *)app.data);
+        // A WALK THAT FOUND NOTHING IS NOT A PASS. Every line above is inside a
+        // loop over relocation sections, so a mirror that placed nothing, a
+        // section index that stopped matching, or an ELF read back wrong would
+        // run all of it zero times and fall out here with `bad` untouched —
+        // which is the shape of #103 exactly, one level up.
+        if (!got_sites && !br_sites && !abs_sites) {
+            printf("       FAIL %s: not one relocation site was resolved — this "
+                   "instance was not checked at all\n", tag);
+            bad = 1;
+        }
+        g_slot_got += got_sites; g_slot_branch += br_sites; g_slot_abs += abs_sites;
+        // Reported whether or not something else already failed: the counts are
+        // how a reader sees how much cover this path really has, and suppressing
+        // them on the first failure hides exactly that.
+        printf("       %s: %d GOT + %d branch + %d ABS32 site(s) resolve against the slot at %p%s\n",
+               tag, got_sites, br_sites, abs_sites, (void *)app.data,
+               bad ? "" : ", every code pointer executable");
     };
     verify(appA, slotA, "load A");
     verify(appB, slotA, "load B");
@@ -2366,7 +2447,13 @@ int main(int argc, char **argv) {
         char path[80];
         snprintf(path, sizeof(path), "%s/novad1.app", dir);
         FILE *probe_f = fopen(path, "rb");
-        if (probe_f) {
+        // `dir` was chosen because it holds EVERY package, so this file is there
+        // by construction. It used to be an `if` with no else, which meant the
+        // whole install-order regression below could stop running because of a
+        // missing file and say nothing at all.
+        if (!probe_f) {
+            fails += missing_artifact(path);
+        } else {
             fclose(probe_f);
             printf("  two-at-once on a one-image heap\n");
 
@@ -2443,7 +2530,14 @@ int main(int argc, char **argv) {
                 }
                 g_arena_cap = 0;
             } else {
+                // The measurement this whole block is built on. It used to fall
+                // through here in silence, so a package that stopped loading
+                // took the install-order regression with it and the run still
+                // printed a pass.
                 fclose(g_f);
+                printf("     FAIL the reference image did not load, so nothing "
+                       "about the install order was checked\n");
+                fails++;
             }
             g_arena = nullptr; g_used_bytes = 0;
         }
@@ -2482,6 +2576,33 @@ int main(int argc, char **argv) {
                "       flash-slot path ran none of its checks. Something has to be\n"
                "       opted in — see rpc_add_app(... PIC) in os/CMakeLists.txt.\n");
         fails++;
+    }
+    // And that what it ran on was worth running on.
+    //
+    // "At least one PIC package" was the old bar, and it was cleared for months
+    // by greet: 304 bytes, three branches, no GOT worth the name. Every slot-path
+    // assertion — r9 against the GOT base, the three gates being fetchable, each
+    // slot landing in executable memory — was exercised by that and nothing else,
+    // while the package the path exists FOR is 123 KB with two thousand GOT slots.
+    // A count of one cannot tell those apart; these numbers can.
+    //
+    // The floors are far below what novad1 actually produces (2328 / 3066 / 133 KB)
+    // and far above anything a stub can reach, so they say "a real package went
+    // through here" without being a figure that has to be revised whenever one
+    // changes size.
+    if (argc == 1 && dir) {
+        printf("  slot-path cover: %d GOT + %d branch + %d ABS32 site(s), biggest "
+               "blob %u B\n", g_slot_got, g_slot_branch, g_slot_abs, g_slot_biggest_blob);
+        if (g_slot_got < 500 || g_slot_branch < 500 || g_slot_biggest_blob < 32u * 1024u) {
+            printf("  FAIL the flash-slot path ran, but only over something small: "
+                   "%d GOT and %d branch site(s) in a %u B blob.\n"
+                   "       That is the cover greet gave it while every real package\n"
+                   "       took the copy path — enough to say the code ran, not enough\n"
+                   "       to say it works. Keep a substantial package opted in with\n"
+                   "       rpc_add_app(... PIC) in os/CMakeLists.txt.\n",
+                   g_slot_got, g_slot_branch, g_slot_biggest_blob);
+            fails++;
+        }
     }
 
     // The relocation no package currently contains. Run whatever else did or did
