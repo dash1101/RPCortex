@@ -917,6 +917,11 @@ int apps_busy_pid(const char *name) {
     return a ? task_app_mem_holder(a->image) : -1;
 }
 
+const void *apps_owner_of(const char *name) {
+    LoadedApp *a = find(name);
+    return a ? a->image : nullptr;
+}
+
 // Everything after the load, which is the same whichever way the package got
 // here: run app_main, keep it resident if it registered a command, and say
 // something useful if it did not.

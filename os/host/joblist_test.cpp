@@ -107,6 +107,34 @@ int main(void) {
     ck(!joblist_split_interval("", &secs, &cmd), "an empty line is refused");
     ck(!joblist_split_interval("99999999 x", &secs, &cmd), "an absurd interval is refused");
 
+    // --- which command a service line runs -----------------------------------
+    //
+    // `pkg install` reads this to decide whether a running service belongs to
+    // the package it is about to replace, and stops it if it does. So the
+    // answer picks a task to end — which is why the failure cases below matter
+    // more than the ordinary one.
+    char w[8];
+    ck(joblist_first_word("novad1 gui --bg", w, sizeof(w)), "a service line has a command");
+    eq(w, "novad1", "and it is the first word");
+
+    ck(joblist_first_word("  \t httpd", w, sizeof(w)), "leading space and tabs are skipped");
+    eq(w, "httpd", "leaving the command");
+
+    ck(joblist_first_word("httpd\tport 80", w, sizeof(w)), "a tab separates too");
+    eq(w, "httpd", "and does not end up in the word");
+
+    // A NAME THAT DOES NOT FIT IS REFUSED, NOT SHORTENED. Truncating turns one
+    // package's service into another's: "novad1-legacy" cut to seven characters
+    // is "novad1", which resolves, matches, and gets stopped on behalf of a
+    // package that has nothing to do with it.
+    ck(!joblist_first_word("novad1-legacy start", w, sizeof(w)),
+       "a command name too long for the buffer is refused");
+    eq(w, "", "and nothing shorter is offered in its place");
+
+    ck(!joblist_first_word("", w, sizeof(w)), "an empty line runs nothing");
+    ck(!joblist_first_word("   \t ", w, sizeof(w)), "nor does one that is only whitespace");
+    ck(!joblist_first_word(nullptr, w, sizeof(w)), "and a null line is not read");
+
     printf("  joblist: %d checks, %d failed\n", checks, fails);
     return fails ? 1 : 0;
 }
