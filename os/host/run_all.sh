@@ -34,6 +34,7 @@ declare -A SRC=(
     # a fake underneath it — a filesystem in a map, a screen of cells, a device
     # that answers about itself.
     [backup_test]=""
+    [fileexp_test]=""
     [arena_test]="$CORE/arena.cpp"
     [fatview_test]="$CORE/fatview.cpp"
     [fatimage_test]="$CORE/fatview.cpp"
