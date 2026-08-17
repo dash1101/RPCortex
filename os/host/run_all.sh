@@ -30,6 +30,10 @@ declare -A SRC=(
     # are static, and they are the part that fails without saying so.
     [websearch_test]=""
     [httpd_test]=""
+    # Ported from v1: the same three, each with its package source included and
+    # a fake underneath it — a filesystem in a map, a screen of cells, a device
+    # that answers about itself.
+    [backup_test]=""
     [arena_test]="$CORE/arena.cpp"
     [fatview_test]="$CORE/fatview.cpp"
     [fatimage_test]="$CORE/fatview.cpp"
