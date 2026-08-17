@@ -367,6 +367,16 @@ int main(void) {
         n = sm_tail("  indented\n\n   \n", SM_LOG_ROWS, rows[0], sizeof(rows), SM_LOG_COLS);
         ck(n == 1, "blank lines are not lines");
         ck(strcmp(rows[0], "indented") == 0, "and the indent comes off");
+
+        // Asking for more rows than the scratch array holds must be clamped, not
+        // written past. One caller today passes the right number, which is the
+        // situation in which the second caller gets it wrong.
+        n = sm_tail("a\nb\nc\nd\ne\nf\ng\nh\n", SM_LOG_ROWS + 40,
+                    rows[0], sizeof(rows), SM_LOG_COLS);
+        ck(n <= SM_LOG_ROWS, "asking for too many rows is clamped");
+        ck(strcmp(rows[SM_LOG_ROWS - 1], "h") == 0, "and still ends with the newest");
+        n = sm_tail("a\nb\n", 0, rows[0], sizeof(rows), SM_LOG_COLS);
+        ck(n == 0, "asking for none gives none");
     }
 
     // --- the panel ----------------------------------------------------------

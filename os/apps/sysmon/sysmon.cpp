@@ -153,6 +153,11 @@ static void sm_row(char *out, unsigned cap, const char *l1, const char *v1,
 // what turns one into the other.
 static int sm_tail(const char *text, int want, char *out, unsigned cap, unsigned stride) {
     const char *starts[SM_LOG_ROWS];
+    // Clamped to what `starts` can hold. There is one caller and it passes the
+    // right number, which is exactly the situation in which the second caller
+    // gets it wrong - and the failure would be writing past a stack array.
+    if (want > SM_LOG_ROWS) want = SM_LOG_ROWS;
+    if (want < 1) return 0;
     int n = 0;
     for (const char *p = text; *p; ) {
         const char *line = p;
