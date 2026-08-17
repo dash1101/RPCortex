@@ -168,7 +168,16 @@ public:
     // The item array belongs to the caller and must outlive the menu. Screens
     // hold theirs as a static, which is the only lifetime that is obviously
     // right on a device with no allocator worth the name.
+    //
+    // set() PUTS THE CURSOR BACK AT THE TOP, so it belongs in a screen's begin()
+    // — the once-only setup — and not in enter(), which runs again every time a
+    // child screen pops. A menu that calls set() from enter() sends you back to
+    // row zero every time you look at a row's output and come back, which on the
+    // twelve-row Commands list means finding your place again after every single
+    // command. refresh() is the same call for the screen that has to rebuild its
+    // rows on the way in: it keeps the cursor, clamped to the new count.
     void set(const char *title, const MenuItem *items, int count);
+    void refresh(const char *title, const MenuItem *items, int count);
 
     void draw(Canvas &c) override;
     Action on_event(Event e) override;

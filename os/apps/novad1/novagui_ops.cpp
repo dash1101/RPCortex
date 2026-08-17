@@ -455,12 +455,35 @@ const char *lock_state(void) {
 
 bool lock_armed(void) { return !nova::ieq(lock_state(), "None"); }
 
-static bool g_locked;               // the screen is up
-static bool g_lock_pass;            // the code just entered was right
-static char g_lock_note[24];        // and what to say when it was not
-static int  g_lock_tries;
+static bool     g_locked;           // the screen is up
+static bool     g_lock_pass;        // the code just entered was right
+static char     g_lock_note[24];    // and what to say when it was not
+static int      g_lock_tries;
+static unsigned g_lock_depth;       // where on the stack the lock screen sits
 
 bool lock_active(void) { return g_locked; }
+
+// Forget that the lock was ever up. For the runner's own start, which resets the
+// screen stack to nothing — a lock left marked active across that would be a
+// device with no power menu and a go_home() floor pointing at a slot that no
+// longer holds a lock screen, for the rest of the session.
+void lock_forget(void) {
+    g_locked     = false;
+    g_lock_depth = 1;
+    g_lock_pass  = false;
+    g_lock_tries = 0;
+    g_lock_note[0] = 0;
+}
+
+// The lowest depth go_home() may pop to. THE LOCK IS THE FLOOR.
+//
+// A screen pushed OVER the lock can ask to go home, and one of them does: the
+// on-screen keyboard returns ACT_HOME from EV_HOME, and it is the password
+// lock's entry screen. Without a floor, HOME on that keyboard popped the lock
+// with everything else — leaving a device unlocked with g_locked still set,
+// which is a permanent unlock AND a power menu that never comes back, because
+// both of those read g_locked. A reboot was the only way out.
+unsigned lock_floor(void) { return g_locked ? g_lock_depth : 1; }
 
 // The code, checked. Constant-time comparison would be theatre on a registry
 // value anyone with a cable can read; what matters is that a wrong answer says
@@ -520,8 +543,9 @@ public:
     // would be left standing over an unlocked device.
     bool tick(uint32_t) override {
         if (!g_lock_pass) return false;
-        g_lock_pass = false;
-        g_locked    = false;
+        g_lock_pass  = false;
+        g_locked     = false;      // before the pop: go_home's floor reads it
+        g_lock_depth = 1;
         g_lock_tries = 0;
         gui::pop();
         return true;
@@ -553,7 +577,8 @@ void lock_engage(void) {
     g_lock_note[0] = 0;
     g_lock_pass    = false;
     if (!gui::push<LockScreen>()) return;    // a full stack; better unlocked than wedged
-    g_locked = true;
+    g_locked    = true;
+    g_lock_depth = gui::depth();
 }
 
 // --- Power ----------------------------------------------------------------------
@@ -667,7 +692,10 @@ public:
         // already on — the one place somebody would go to turn it off.
         nova::copy(g_incognito, sizeof(g_incognito),
                    incognito_on() ? "Incognito  on" : "Incognito  off");
-        set("Power", kPowerItems, POWER_ROWS);
+        // refresh, so answering No to "Shut down" leaves the cursor on Shut
+        // down rather than moving it to Screen off — which reads as the
+        // question having been about something else.
+        refresh("Power", kPowerItems, POWER_ROWS);
     }
 
     bool animating(void) const override { return g_pending != PEND_NONE; }
@@ -683,6 +711,12 @@ void open_power(void) {
     // Cleared here rather than trusted: the slot this lands in has been used
     // before and bss is not re-zeroed between pushes.
     g_pending = PEND_NONE;
+    // Just the push. Making room for it is the RUNNER's job and not this
+    // function's, and the difference is not tidiness: open_power is also the
+    // catalogue row's OpenFn, called from inside Gallery::on_event, so a
+    // go_home() here would pop the Gallery whose method is still executing and
+    // return into a destroyed object. The runner's own loop has no screen method
+    // on the stack and can make room safely — see EV_HOME_HOLD in run().
     gui::push<PowerScreen>();
 }
 
@@ -1046,7 +1080,10 @@ public:
         return 2;
     }
 
-    void enter(void) override { set("Repair", kFixItems, FIX_ROWS); }
+    // refresh, not set: every row here pushes a notice, an output pane or a
+    // confirmation, and each of those pops back through enter(). set() would
+    // put the cursor on "Rescan modules" after every one of them.
+    void enter(void) override { refresh("Repair", kFixItems, FIX_ROWS); }
 
     bool animating(void) const override { return g_pending != PEND_NONE; }
     bool tick(uint32_t dt) override { (void)dt; return pending_tick(); }
@@ -1135,7 +1172,9 @@ public:
         return 3;
     }
 
-    void enter(void) override { set("Commands", kCmdItems, CMD_ROWS); }
+    // Twelve rows, and every one of them opens an output pane you then back
+    // out of. set() here meant finding your place again after each command.
+    void enter(void) override { refresh("Commands", kCmdItems, CMD_ROWS); }
 };
 
 void open_commands(void) { gui::push<CommandsScreen>(); }

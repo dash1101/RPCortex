@@ -36,7 +36,15 @@ public:
         return 3;
     }
 
-    void enter(void) override { sel_ = 0; top_ = 0; }
+    // Clamped, not reset. enter() runs again when a module's pin detail pops,
+    // and a twelve-row list that puts you back on the first module every time
+    // you look at one is a list you have to find your place in after every
+    // single row. Zeroed on the first push by the pool's own construction.
+    void enter(void) override {
+        const int n = (int)module_count();
+        if (sel_ < 0 || sel_ >= n) sel_ = 0;
+        if (top_ < 0 || top_ >= n) top_ = 0;
+    }
 
     void draw(Canvas &c) override {
         const int rows = ui::rows_for(c);
@@ -64,6 +72,11 @@ public:
 
     Action on_event(Event e) override {
         const int n = (int)module_count();
+        // Guarded like every other list in the suite. The module table is fixed
+        // and cannot be empty today, which is exactly the argument that stops
+        // being true the first time somebody builds a board profile with none
+        // of it — and a modulo by zero is not a wrong cursor, it is a fault.
+        if (n <= 0) return Screen::on_event(e);
         if (e == EV_ROT_CW)  { sel_ = (sel_ + 1) % n; return ui::ACT_STAY; }
         if (e == EV_ROT_CCW) { sel_ = (sel_ + n - 1) % n; return ui::ACT_STAY; }
         if (e == EV_SELECT)  { push_detail(); return ui::ACT_STAY; }
@@ -94,6 +107,17 @@ public:
 
     const char *title(void) const override { return g_mod ? g_mod->label : "Module"; }
 
+    // It had none, which also meant no '?' in the status bar — so a screen that
+    // deliberately does nothing looked exactly like one that was broken. The
+    // question somebody actually has here is why the numbers cannot be edited.
+    int help(const char **out, int max) const override {
+        if (max < 3) return 0;
+        out[0] = "Nothing here can be changed.";
+        out[1] = "Pins come from the board";
+        out[2] = "profile: 'novad1 pins'.";
+        return 3;
+    }
+
     void draw(Canvas &c) override {
         if (!g_mod) return;
         const Module &m = *g_mod;
@@ -110,14 +134,24 @@ public:
             y += ui::ROWH;
         }
 
-        for (unsigned i = 0; i < m.npins && y < c.height() - ui::FH; i++) {
-            int g = board::pin(m.pins[i]);
+        unsigned shown = 0;
+        for (; shown < m.npins && y < c.height() - ui::FH; shown++) {
+            int g = board::pin(m.pins[shown]);
             if (g == board::PIN_NONE)
-                snprintf(line, sizeof(line), "%-9s --", board::name(m.pins[i]));
+                snprintf(line, sizeof(line), "%-9s --", board::name(m.pins[shown]));
             else
-                snprintf(line, sizeof(line), "%-9s %d", board::name(m.pins[i]), g);
+                snprintf(line, sizeof(line), "%-9s %d", board::name(m.pins[shown]), g);
             c.text(0, y, line, 1);
             y += ui::ROWH;
+        }
+        // The widest module in the table is five signals and that fits exactly,
+        // so nothing overflows today. This screen does not scroll, though, and a
+        // sixth signal would simply not be drawn — a wiring screen quietly
+        // missing a wire. Say so instead, and add the scrolling when something
+        // needs it rather than carrying it for a case that does not exist.
+        if (shown < m.npins) {
+            snprintf(line, sizeof(line), "+%u more - novad1 pins", m.npins - shown);
+            c.text(0, c.height() - ui::FH, line, 1);
         }
         if (m.bus == BUS_NONE) c.text(0, y, "on the board", 1);
     }

@@ -41,6 +41,16 @@ bool lock_armed(void);       // ...in one word, for the callers that only need i
 // power menu over it, which would be a way round it.
 bool lock_active(void);
 
+// The lowest depth gui::go_home() may pop to — 1 normally, the lock's own depth
+// while it is up. A screen pushed over the lock may ask to go home (the
+// keyboard does, from EV_HOME) and must not be able to take the lock with it.
+unsigned lock_floor(void);
+
+// Forget it was ever up. gui::begin() calls this: it resets the screen stack to
+// nothing, and a lock still marked active across that would leave the device
+// with no power menu and a floor pointing at a slot that holds something else.
+void lock_forget(void);
+
 // Put it up. Refuses when nothing is set, when it is already up, and when the
 // screen on top is modal — a staged update must not be interrupted by it.
 void lock_engage(void);

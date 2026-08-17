@@ -126,7 +126,18 @@ void pop(void) {
 }
 
 void go_home(void) {
-    while (g_depth > 1) pop();
+    // "Home" means the bottom of the stack — unless the lock is up, in which
+    // case it means the lock, because the lock IS the floor. See lock_floor():
+    // the on-screen keyboard returns ACT_HOME from EV_HOME and it is the
+    // password lock's entry screen, so without this a locked device is one
+    // press away from being unlocked for good.
+    //
+    // Here rather than in run(), so it holds for every caller — including the
+    // harness, which drives the loop with its own copy and would otherwise be
+    // testing a rule that is not the one the device follows.
+    unsigned floor = screens::lock_floor();
+    if (floor < 1) floor = 1;
+    while (g_depth > floor) pop();
     g_dirty = true;
 }
 
@@ -453,6 +464,22 @@ const App *chosen(void)  { return g_chosen; }
 
 class Gallery : public Screen {
 public:
+    // The home screen and every folder had NO help at all, which also meant no
+    // '?' in the status bar — so the first screen anybody sees was the one with
+    // no way to ask what its two conventions mean. Both are non-obvious and
+    // neither is spelled out anywhere else on the device: a struck-through icon
+    // is an app whose hardware is missing (pressing it says which), and the pips
+    // along the bottom are where you are in the ring.
+    int help(const char **out, int max) const override {
+        if (max < 5) return 0;
+        out[0] = "Turn to move, SELECT opens.";
+        out[1] = "A crossed-out icon needs";
+        out[2] = "hardware — press it to see";
+        out[3] = "which. The pips below are";
+        out[4] = "your place in the ring.";
+        return 5;
+    }
+
     void set(const char *title, const App *const *items, int count) {
         // KEEP THE SELECTION when the same list comes back.
         //
@@ -840,6 +867,9 @@ bool begin(void) {
     modules_scan();
 
     g_depth = 0;
+    // The stack is gone, so anything that remembers a position in it has to go
+    // with it. The lock is the only such thing today, and it remembers two.
+    screens::lock_forget();
     push<Home>();
     // On TOP of home, so it pops back to a screen that is already built rather
     // than building one after the animation. That is what stops the splash
@@ -925,7 +955,20 @@ void run(void) {
             // written down and where it is checked.
             if (e == EV_HOME_HOLD && power_gesture_ok()) {
                 Screen *s = top();
-                if (!s || !nova::ieq(s->title(), "Power")) screens::open_power();
+                if (!s || !nova::ieq(s->title(), "Power")) {
+                    // Make room first. This is the one push reached by a gesture
+                    // from ANY screen, and it is the one that can find the pool
+                    // already full — home, the roots, five levels of files and a
+                    // viewer is eight. A silent nothing there is the guarantee
+                    // quietly not being kept, and from the outside it is
+                    // indistinguishable from a button that did not register.
+                    //
+                    // Safe HERE and nowhere else: nothing on this line is inside
+                    // a screen's own method, whereas open_power() is also an
+                    // OpenFn called from inside Gallery::on_event.
+                    if (depth() >= STACK_MAX) go_home();
+                    screens::open_power();
+                }
                 g_dirty = true;
                 continue;
             }

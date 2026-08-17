@@ -80,8 +80,10 @@ public:
     void enter(void) override {
         dirty_ = false;
         load();
-        // The pool slot arrives holding whatever the last screen left in it, so
-        // the cursor is clamped rather than trusted. It is NOT reset: enter()
+        // Clamped rather than trusted. A pool slot does in fact arrive zeroed —
+        // push<T> value-initialises, and novagui_test checks it — but the count
+        // changes under this screen, so the clamp is what has to be right. It is
+        // NOT a reset: enter()
         // also runs when a sub-screen pops back to here, and putting somebody
         // back on row zero every time they set a PIN or picked an app is the
         // difference between a tree that remembers where you were and one that
@@ -796,9 +798,14 @@ static void bump_cpu_clock(void) {
     }
     // And keep it after a restart. Setting the clock without setting the boot
     // clock is a setting that undoes itself overnight, which reads as the row
-    // never having worked.
+    // never having worked — so the second half is checked as carefully as the
+    // first. It used to be fired with a null capture and its status dropped,
+    // which is a promise nobody would find out was broken until the morning.
     snprintf(line, sizeof(line), "pulse boot %d", want);
-    fw_shell_run(line, nullptr, 0);
+    if (fw_shell_run(line, out, sizeof(out)) != 0)
+        ui::notice("CPU clock", out[0] ? out
+                   : "Running at the new speed, but it will go back to the old "
+                     "one at the next restart.");
 }
 
 // --- Clock --------------------------------------------------------------------------
@@ -929,8 +936,21 @@ private:
         char line[40], out[80];
         snprintf(line, sizeof(line), "date set %04d-%02d-%02d %02d:%02d:00",
                  v_[F_Y], v_[F_MO], v_[F_D], v_[F_H], v_[F_MI]);
-        fw_shell_run(line, out, sizeof(out));
-        ui::notice("Set Time", out[0] ? out : "Clock set.");
+        // Zeroed first, and the STATUS is what decides the wording.
+        //
+        // It used to report whatever was in the buffer, and "Clock set." when
+        // the buffer was empty — which is exactly what a refusal with the
+        // output capture held by something else looks like. So a clock that had
+        // not been set said it had, which is the worst answer a confirmation
+        // can give.
+        out[0] = 0;
+        const int rc = fw_shell_run(line, out, sizeof(out));
+        if (rc != 0 && !out[0])
+            nova::copy(out, sizeof(out), "Refused, and it did not say why. "
+                                         "Setting the clock needs an admin session.");
+        else if (rc == 0 && !out[0])
+            nova::copy(out, sizeof(out), "Clock set.");
+        ui::notice("Set Time", out);
         return ui::ACT_BACK;
     }
 };

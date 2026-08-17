@@ -725,10 +725,10 @@ static void media_glyph(Canvas &c, int cell_x, int cy, int control, int col) {
 
 class MediaNowScreen : public Screen {
 public:
-    // EVERY member, every time. A stack slot is reused: the pool is zeroed once
-    // at load and a screen constructed into it inherits whatever the last
-    // occupant left there, so a field this forgets is a field holding another
-    // screen's bytes.
+    // EVERY member, every time. Not because the slot is dirty — push<T> value-
+    // initialises, so it arrives zeroed, and novagui_test checks that — but
+    // because zero is not the right starting value for most of these, and a
+    // field this forgets is a field silently starting at zero instead.
     void begin(void) {
         sel_ = MEDIA_C_PLAY;
         vol_mode_ = false;
@@ -1415,7 +1415,22 @@ public:
         const int n = row_count();
         if (e == EV_ROT_CW)  { sel_ = (sel_ + 1) % n; return ui::ACT_STAY; }
         if (e == EV_ROT_CCW) { sel_ = (sel_ + n - 1) % n; return ui::ACT_STAY; }
-        if (e == EV_SELECT_HOLD && sel_ == 0 && saved_[0]) {
+        if (e == EV_SELECT_HOLD) {
+            // Forgetting only means anything on the saved-speaker row. It used
+            // to fall through in silence on the other two kinds, which is two
+            // rows out of three where the help's promise did nothing.
+            if (sel_ != 0) {
+                ui::notice("Speaker", "Hold SELECT on the top row to forget the "
+                                      "speaker this device remembers.");
+                return ui::ACT_STAY;
+            }
+            if (!saved_[0]) {
+                ui::notice("Speaker", "No speaker is saved, so there is nothing "
+                                      "to forget.");
+                return ui::ACT_STAY;
+            }
+            // Forgetting says so by itself: the top row is the saved speaker,
+            // and it becomes the absence of one on the next frame.
             nova::reg_set(MEDIA_KEY_SPEAKER, "");
             nova::reg_save();
             saved_[0] = 0;

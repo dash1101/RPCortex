@@ -1338,15 +1338,41 @@ static void test_lan_interrupts(void) {
     // 3. Leaving the screen ends it. The survey next door deliberately runs on;
     //    this one is a question, and the answer stops mattering when you walk
     //    away from it.
+    // 3. Navigation does NOT stop it, and that is the deliberate half.
+    //    gui::push_slot() calls leave() on the screen it is about to COVER, not
+    //    only on the one being popped — so a "stop on leave" rule would have had
+    //    every notice this screen raises quietly cancel a minute of work,
+    //    including the one on our own address, which is a press that looks like
+    //    a press and kills the scan.
     ping_clear();
+    ping_add(1, 2000);
     open_lan_screen();
-    // Cleared with the screen already up, because go_home() on the way in pops
-    // whatever was there and that is itself a leave().
+    g_run_spawned = 1;
+    input().inject(EV_SELECT); frame();          // a full sweep, run inline
+    g_run_spawned = 0;
+    eq(screens::g_lan_n, 2, "our own address and the one that answered");
+
+    input().inject(EV_ROT_CW); frame();          // onto 192.168.1.1
+    input().inject(EV_ROT_CW); frame();          // onto our own address
+
+    // A row pressed DURING a sweep is refused — one worker, one radio — and it
+    // says so instead of doing nothing.
     screens::g_lan_stop = false;
-    frame();
-    ok(!screens::g_lan_stop, "a frame with the screen up stops nothing");
-    gui::pop();
-    ok(screens::g_lan_stop, "leaving the screen ends the sweep");
+    screens::g_lan_run  = true;                  // as if the worker were still out
+    const unsigned deep = gui::depth();
+    input().inject(EV_SELECT); frame();
+    eq((int)gui::depth(), (int)deep, "a row pressed mid-sweep opens nothing");
+    ok(screens::g_lan_msg[0] != 0, "and says why");
+    ok(!screens::g_lan_stop, "and does not cancel the sweep");
+
+    // And with the sweep finished, our own row explains itself — through a
+    // notice, which is a PUSH, which calls leave() on this screen. That is the
+    // trap: a "stop the sweep on leave" rule would fire there.
+    screens::g_lan_run = true;                   // still nominally sweeping
+    screens::g_lan_stop = false;
+    ui::notice("LAN", "anything");               // the same push the row makes
+    ok(!screens::g_lan_stop, "a notice over the screen does NOT stop the sweep");
+    screens::g_lan_run = false;
     gui::go_home();
 }
 
@@ -1530,6 +1556,47 @@ static void test_lock_screen(void) {
     clear_lock();
 }
 
+// A PASSWORD lock, which is a different screen from the PIN pad and was the one
+// with the hole in it.
+//
+// ui::keyboard's screen returns ACT_HOME from EV_HOME — not ACT_STAY, so the
+// runner's "modal opts out of the HOME fallback" rule never came into it — and
+// go_home() popped the lock along with the keyboard while g_locked stayed true.
+// That is not just an unlock: lock_engage() and power_gesture_ok() both read
+// g_locked, so the device would have been permanently unlocked AND permanently
+// without a power menu, until a reboot.
+static void test_password_lock_is_not_escapable(void) {
+    using namespace nova;
+    gui::go_home();
+    fw_reg_set("Apps.NovaD1_Lock_Kind", "password");
+    fw_reg_set("Apps.NovaD1_PIN", "");
+    fw_reg_set("Apps.NovaD1_Pass", "hunter2");
+    streq_(screens::lock_state(), "Password", "a stored password is a lock");
+
+    screens::lock_engage();
+    ok(screens::lock_active(), "it goes up");
+    const unsigned at = gui::depth();
+
+    input().inject(EV_SELECT); frame();
+    streq_(gui::top() ? gui::top()->title() : "", "Password",
+           "SELECT opens the keyboard, not the PIN pad");
+
+    input().inject(EV_HOME); frame();
+    ok(screens::lock_active(), "HOME on the keyboard does not unlock the device");
+    eq((int)gui::depth(), (int)at, "and lands back on the lock, not on home");
+
+    // The floor moves with it: once unlocked, home means home again.
+    screens::g_lock_pass = true;
+    frame();
+    ok(!screens::lock_active(), "the lock comes down when it is answered");
+    eq((int)screens::lock_floor(), 1, "and stops being the floor");
+    gui::go_home();
+    eq((int)gui::depth(), 1, "so HOME reaches home");
+
+    clear_lock();
+    fw_reg_set("Apps.NovaD1_Pass", "");
+}
+
 // The runner arms it off the idle clock, the same one that dims and blanks the
 // panel. Driven through gui::lock_due so the rule is the runner's own and not a
 // second copy written here.
@@ -1643,6 +1710,148 @@ static void test_device_naming(void) {
     fw_reg_set("System.Device_ID", "vela");
 }
 
+// --- what a pool slot arrives holding ----------------------------------------------
+//
+// Several comments in this package say a re-used slot holds the last screen's
+// bytes. It does not: gui::push<T>() is `new (slot) T()`, and value-initialising
+// a class with an implicit default constructor zeroes it first. That matters
+// because fourteen screens stopped resetting their cursor in enter(), and what
+// they lean on instead is the slot being zero on the FIRST push and the clamp
+// doing the rest.
+//
+// It is checked rather than reasoned about because the reasoning is a language
+// rule three steps deep, and getting it wrong looks like a cursor that lands on
+// a random row once in a while.
+struct SlotProbe : nova::ui::Screen {
+    int      a;
+    unsigned b;
+    void    *c;
+    const char *title(void) const override { return "probe"; }
+};
+
+static void test_pool_slots_arrive_zeroed(void) {
+    using namespace nova;
+    gui::go_home();
+
+    SlotProbe *p = gui::push<SlotProbe>();
+    ok(p != nullptr, "a screen can be pushed");
+    // Dirty every byte a screen of this shape could see.
+    p->a = -12345;
+    p->b = 0xdeadbeefu;
+    p->c = (void *)p;
+    gui::pop();
+
+    SlotProbe *q = gui::push<SlotProbe>();
+    ok(q == p, "the next push lands in the same slot");
+    eq(q->a, 0, "and its members arrive zeroed, not holding the last screen's");
+    ok(q->b == 0 && q->c == nullptr, "all of them");
+    gui::pop();
+}
+
+// --- the sweep: a list must remember where you were ------------------------------
+//
+// enter() runs on the first push AND every time a child screen pops, so a screen
+// that sets its cursor there sends you back to row zero after every look at a
+// row. It was true of fourteen screens. Two of them are checked here, one of
+// each kind — a ui::Menu that rebuilds its rows on the way in, and a hand-rolled
+// list that pushes a detail screen.
+static void test_menu_keeps_its_place(void) {
+    using namespace nova;
+    open_by_key("cmds");
+    ui::Menu *m = (ui::Menu *)gui::top();
+    ok(m != nullptr, "the Commands list opens");
+    streq_(gui::top()->title(), "Commands", "and is the menu");
+
+    for (int i = 0; i < 3; i++) { input().inject(EV_ROT_CW); frame(); }
+    eq(m->selected(), 3, "the cursor moves to the fourth row");
+
+    // Every row here opens an output pane you then back out of.
+    input().inject(EV_SELECT); frame();
+    ok(gui::depth() > 2, "SELECT opens the output");
+    input().inject(EV_BACK); frame();
+    m = (ui::Menu *)gui::top();
+    streq_(gui::top()->title(), "Commands", "BACK returns to the list");
+    eq(m->selected(), 3, "and the cursor is where it was, not back at the top");
+    gui::go_home();
+}
+
+static void test_list_keeps_its_place(void) {
+    using namespace nova;
+    open_by_key("diag");
+    streq_(gui::top()->title(), "Hardware", "the module list opens");
+
+    // Its cursor is private, so the question is asked the way a person would:
+    // the detail screen titles itself with the module that was chosen.
+    for (int i = 0; i < 3; i++) { input().inject(EV_ROT_CW); frame(); }
+    input().inject(EV_SELECT); frame();
+    char first[24];
+    nova::copy(first, sizeof(first), gui::top()->title());
+    ok(strcmp(first, "Hardware") != 0, "SELECT opens a module");
+
+    input().inject(EV_BACK); frame();
+    input().inject(EV_SELECT); frame();
+    streq_(gui::top()->title(), first,
+           "and coming back leaves the cursor on the same module");
+    gui::go_home();
+}
+
+// --- the sweep: a request that was refused has to be re-asked ----------------------
+//
+// rf_run refuses while a previous screen's worker is winding down, and the
+// status request was dropped when it did — leaving "CC1101: checking..." on the
+// panel for ever, with no spinner, on a device whose radio was fine.
+static void test_radio_status_is_re_asked(void) {
+    using namespace nova;
+    gui::go_home();
+
+    screens::g_rf_busy = 1;              // as if a previous screen's worker is out
+    open_by_key("cc1101");
+    streq_(gui::top()->title(), "Sub-GHz", "the Sub-GHz screen opens");
+    g_last_shell[0] = 0;
+
+    ui::Screen *s = gui::top();
+    s->tick(50);
+    ok(g_last_shell[0] == 0, "nothing is asked while the worker is still out");
+
+    screens::g_rf_busy = 0;              // it finished, disowned, and set nothing
+    g_run_spawned = 1;
+    s->tick(50);
+    g_run_spawned = 0;
+    ok(strstr(g_last_shell, "subghz status") != nullptr,
+       "the status request is made once the bus is free");
+
+    screens::g_rf_busy = 0;
+    screens::g_rf_ready = 0;
+    gui::go_home();
+}
+
+// --- the sweep: a command that failed must not report success ---------------------
+static void test_set_time_reports_the_truth(void) {
+    using namespace nova;
+    gui::go_home();
+
+    // Settings -> Clock -> Set Time.
+    open_by_key("set_system");
+    input().inject(EV_SELECT); frame();                 // row 0 is Clock
+    streq_(gui::top()->title(), "Clock", "the clock group opens");
+    input().inject(EV_SELECT); frame();                 // row 0 is Set Time
+    streq_(gui::top()->title(), "Set Time", "and Set Time with it");
+
+    // A refusal with nothing captured, which is exactly what `date set` looks
+    // like when something else holds the OS's single output buffer.
+    shell_says("date set", "", 1);
+    g_run_spawned = 1;
+    for (int i = 0; i < 5; i++) { input().inject(EV_SELECT); frame(); }
+    g_run_spawned = 0;
+    ok(strstr(g_last_shell, "date set") != nullptr, "the command was run");
+    ok(strstr(ui::last_notice(), "Clock set") == nullptr,
+       "a refused `date set` does NOT report the clock as set");
+    ok(strstr(ui::last_notice(), "Refused") != nullptr, "it says it was refused");
+
+    shell_says(nullptr, nullptr);
+    gui::go_home();
+}
+
 int main(void) {
     STAGE(test_single_instance);
     STAGE(test_one_detent_animates);
@@ -1672,9 +1881,15 @@ int main(void) {
     STAGE(test_lan_reprobe_keeps_the_cursor);
     STAGE(test_lock_needs_a_code);
     STAGE(test_lock_screen);
+    STAGE(test_password_lock_is_not_escapable);
     STAGE(test_lock_idle);
     STAGE(test_lock_yields_to_a_modal);
     STAGE(test_device_naming);
+    STAGE(test_pool_slots_arrive_zeroed);
+    STAGE(test_menu_keeps_its_place);
+    STAGE(test_list_keeps_its_place);
+    STAGE(test_radio_status_is_re_asked);
+    STAGE(test_set_time_reports_the_truth);
     STAGE(test_no_panel);
 
     printf("  %d checks", checks);

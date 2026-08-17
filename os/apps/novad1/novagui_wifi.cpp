@@ -350,8 +350,10 @@ static void padlock(Canvas &c, int x, int y, int colour) {
 //
 // enter() runs again every time a child screen pops — the keyboard, a notice —
 // so anything reset there would be lost between typing a password and using it.
-// A pool slot is also reused, and a re-used slot holds the last screen's bytes
-// rather than zeroes, so the alternative was not "leave the members alone".
+// A pool slot is reused, and while it does arrive zeroed — push<T> value-
+// initialises, which novagui_test checks — zeroed is exactly as wrong here as
+// stale would be: the password typed on the way in must survive the keyboard
+// popping, and a member cannot.
 struct WifiState {
     int  view;
     int  sel, top;
@@ -368,8 +370,8 @@ public:
         if (max < 4) return 0;
         out[0] = "SELECT scans.";
         out[1] = "On a network: SELECT joins,";
-        out[2] = "hold SELECT forgets it.";
-        out[3] = "BACK returns to the status.";
+        out[2] = "hold SELECT forgets a SAVED";
+        out[3] = "one. BACK returns to status.";
         return 4;
     }
 
@@ -567,9 +569,19 @@ private:
         }
 
         if (e == EV_SELECT_HOLD) {
-            if (g_w.sel == 0) return ui::ACT_STAY;
+            // The help says holding SELECT forgets a network, and on the two
+            // rows where there is nothing to forget it used to do nothing and
+            // say nothing — on a fresh scan that is nearly every row, so the
+            // gesture read as broken rather than as inapplicable.
+            if (g_w.sel == 0) {
+                nova::copy(g_w.msg, sizeof(g_w.msg), "Hold on a network");
+                return ui::ACT_STAY;
+            }
             const FwNetAp &ap = g_aps[g_w.sel - 1];
-            if (!is_saved(ap.ssid)) return ui::ACT_STAY;
+            if (!is_saved(ap.ssid)) {
+                nova::copy(g_w.msg, sizeof(g_w.msg), "Not saved");
+                return ui::ACT_STAY;
+            }
             ask_forget(ap.ssid);
             return ui::ACT_STAY;
         }
@@ -897,7 +909,11 @@ static int wardrive_worker(void *) {
         for (int i = 0; i < WD_INTERVAL_MS / 100 && g_wd_run && !fw_task_should_stop(); i++)
             fw_task_sleep_ms(100);
     }
-    wd_flush();
+    // The CLOSING flush, carrying everything logged since the last new
+    // network. Its result was the one of four that went unchecked, so a card
+    // that filled up at the end lost the tail of the survey with the screen
+    // still reading "idle".
+    if (!wd_flush()) nova::copy(g_wd_msg, sizeof(g_wd_msg), "Write failed");
     g_wd_run  = false;
     g_wd_live = false;
     gui::invalidate();
@@ -1275,12 +1291,19 @@ public:
     // message. begin() does the resetting, once, on the way in.
     void enter(void) override { poll_ = 0; clamp(); }
 
-    // Leaving ends the sweep. The survey next door deliberately runs on because
-    // it is a logger and its whole point is to keep collecting; this is a
-    // question somebody asked, and the answer stops mattering when they walk
-    // away from it. It also frees the radio, which op_busy() holds for the
-    // length of a sweep.
-    void leave(void) override { g_lan_stop = true; }
+    // NO leave(). It had one — "leaving ends the sweep" — and that was wrong for
+    // a reason worth writing down: gui::push_slot() calls leave() on the screen
+    // it is about to COVER, not only on the one being popped. So every notice
+    // and every sub-screen this screen raises would have killed the sweep
+    // underneath it, including the one on the "me" row, which is a press that
+    // reads as a press and quietly cancels a minute of work.
+    //
+    // There is no clean "am I being popped" test to write there, so the sweep is
+    // not stopped by navigation at all — the same choice the survey next door
+    // makes. It is stopped by the Stop row, by the task being asked to end, and
+    // by finishing, which takes under a minute. op_busy() keeps the radio to
+    // itself until then, and the WiFi screen says "Radio busy" rather than
+    // failing quietly.
 
     void begin(void) { sel_ = 0; top_ = 0; poll_ = 0; }
 
@@ -1394,6 +1417,13 @@ private:
             return;
         }
         if (sel_ - 1 >= g_lan_n) return;                 // the list shrank under it
+        // A row during a sweep. start() would refuse it — one worker, one radio
+        // — and refusing in silence is the thing this whole screen is being
+        // careful about, so it is said here where the reason is known.
+        if (g_lan_run) {
+            nova::copy(g_lan_msg, sizeof(g_lan_msg), "Still sweeping");
+            return;
+        }
         if (g_lan[sel_ - 1].flag == LAN_ME) {
             ui::notice("LAN", "That is this device. Its own address is listed so "
                               "the sweep reads as a complete range.");

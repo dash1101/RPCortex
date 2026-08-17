@@ -234,6 +234,31 @@ static bool rf_run(const char *line) {
     return true;
 }
 
+// Ask again for something that was refused rather than answered.
+//
+// THE BUG THIS CLOSES. Both screens ask for `status` from enter(), and rf_run
+// refuses while a worker is still winding down — rf_disown() bumps the
+// generation and clears g_rf_ready but leaves g_rf_busy set, so the previous
+// screen's reply lands nowhere and clears the flag without ever setting
+// g_rf_ready. Nothing then arrives, nothing retried, and the panel read
+// "CC1101: checking..." for ever, with no spinner and no way to make it ask
+// again short of leaving and coming back — on a device whose radio was fine.
+// It happened on any second visit that came fast enough, and on opening LoRa
+// while a Sub-GHz capture was still out.
+//
+// So the request is re-asked until it is actually made, and gives up out loud
+// rather than silently. Three tries at a frame apiece is a few hundred
+// milliseconds, which is longer than a disowned worker takes to finish and
+// short enough that nobody waits on a bus that is genuinely stuck.
+#define RF_TRIES 3
+
+static bool rf_retry(uint8_t *tries, const char *line) {
+    if (g_rf_busy || g_rf_ready) return false;      // still in flight; wait
+    if (*tries >= RF_TRIES) return false;
+    (*tries)++;
+    return rf_run(line);
+}
+
 // A finished reply is waiting; consume it. False when nothing is ready.
 static bool rf_reap(void) {
     if (!g_rf_ready) return false;
@@ -286,7 +311,8 @@ public:
         have_status_ = false; st_.present = false; st_.detail[0] = 0;
         have_capture_ = false; pulses_ = 0; note_[0] = 0;
         pending_ = P_STATUS;
-        rf_run("subghz status");
+        tries_ = 0;
+        if (rf_run("subghz status")) tries_ = 1;
     }
 
     void leave(void) override { rf_disown(); }
@@ -296,6 +322,14 @@ public:
     bool tick(uint32_t dt) override {
         phase_ += dt;
         bool changed = false;
+        // The status request, until it has actually been made — see rf_retry.
+        if (pending_ == P_STATUS && !tries_) {
+            if (!rf_retry(&tries_, "subghz status") && tries_ >= RF_TRIES) {
+                pending_ = P_IDLE;
+                nova::copy(note_, sizeof(note_), "radio busy - reopen");
+                changed = true;
+            }
+        }
         if (rf_reap()) {
             changed = true;
             if (pending_ == P_STATUS) {
@@ -326,9 +360,13 @@ public:
         int y = ui::TOP;
         char line[40];
 
-        if (!have_status_)      nova::copy(line, sizeof(line), "CC1101: checking...");
-        else if (st_.present)   snprintf(line, sizeof(line), "CC1101 %s", st_.detail);
-        else                    nova::copy(line, sizeof(line), "CC1101: absent");
+        // Three states, not two. "checking" is only honest while something is
+        // actually being asked; a screen that gave up has to say it does not
+        // know rather than go on claiming to be busy.
+        if (st_.present && have_status_) snprintf(line, sizeof(line), "CC1101 %s", st_.detail);
+        else if (have_status_)           nova::copy(line, sizeof(line), "CC1101: absent");
+        else if (pending_ == P_STATUS)   nova::copy(line, sizeof(line), "CC1101: checking...");
+        else                             nova::copy(line, sizeof(line), "CC1101: unknown");
         c.text_fit(2, y, line, 1, c.width() - 12, false);
         if (g_rf_busy) c.spinner(c.width() - 9, y, phase_ / RF_SPIN_MS, 1);
         y += ui::ROWH;
@@ -379,6 +417,7 @@ private:
     int          pulses_;
     char         note_[24];
     int          pending_;
+    uint8_t      tries_;          // status requests actually made, for rf_retry
 };
 
 // --- LoRa ---------------------------------------------------------------------
@@ -408,7 +447,8 @@ public:
         have_status_ = false; st_.present = false; st_.detail[0] = 0;
         note_[0] = 0;
         pending_ = P_STATUS;
-        rf_run("lora status");
+        tries_ = 0;
+        if (rf_run("lora status")) tries_ = 1;
     }
 
     void leave(void) override { rf_disown(); }
@@ -418,6 +458,13 @@ public:
     bool tick(uint32_t dt) override {
         phase_ += dt;
         bool changed = false;
+        if (pending_ == P_STATUS && !tries_) {
+            if (!rf_retry(&tries_, "lora status") && tries_ >= RF_TRIES) {
+                pending_ = P_IDLE;
+                nova::copy(note_, sizeof(note_), "radio busy - reopen");
+                changed = true;
+            }
+        }
         if (rf_reap()) {
             changed = true;
             if (pending_ == P_STATUS) {
@@ -445,9 +492,10 @@ public:
         int y = ui::TOP;
         char line[40];
 
-        if (!have_status_)    nova::copy(line, sizeof(line), "SX1276: checking...");
-        else if (st_.present) nova::copy(line, sizeof(line), "SX1276: present");
-        else                  nova::copy(line, sizeof(line), "SX1276: absent");
+        if (have_status_ && st_.present) nova::copy(line, sizeof(line), "SX1276: present");
+        else if (have_status_)           nova::copy(line, sizeof(line), "SX1276: absent");
+        else if (pending_ == P_STATUS)   nova::copy(line, sizeof(line), "SX1276: checking...");
+        else                             nova::copy(line, sizeof(line), "SX1276: unknown");
         c.text_fit(2, y, line, 1, c.width() - 12, false);
         if (g_rf_busy) c.spinner(c.width() - 9, y, phase_ / RF_SPIN_MS, 1);
         y += ui::ROWH;
@@ -496,6 +544,7 @@ private:
     bool         have_status_;
     char         note_[40];
     int          pending_;
+    uint8_t      tries_;
 };
 
 // --- the App table's entry points ---------------------------------------------
