@@ -390,6 +390,12 @@ device's filesystem. Moving a file between them is `usb get` or `usb put`.
 
 ## Off by default, and the inbox
 
+*Superseded, and kept because the reasoning survived the mechanism. The setting
+and the `usb` command described here are gone — the section after this one says
+what replaced them — and `/usb` stopped being an inbox the drive imported into
+and became the drive's own contents. What did not change is why the drive is not
+simply left on, and why an import has to be idempotent.*
+
 Two changes after the first working version, both from using it.
 
 **The drive is off unless asked for.** `usb on` offers it, `usb off` withholds
@@ -442,10 +448,17 @@ Formatted on the way IN, not out. A session that ended in a reset or a pulled
 cable cannot leave yesterday's files on a drive somebody else plugs in, and
 every session starts from the same state. It costs three flash blocks.
 
-Both directions, one command:
+**And `/usb` is what the drive shows.** Opening it empty and making the person
+name a file on the command line was backwards for a folder whose whole purpose
+is transfer, so everything in `/usb` goes out when the mode opens, whatever the
+host leaves comes back, and a file the host deleted is removed. The round trip
+is a folder rather than a one-way dump, and "put it in `/usb`" is the whole
+instruction.
 
-    download                 open it empty, take what lands
-    download report.txt      put that on it first, to be dragged off
+    download                 open the drive on /usb, and take back what lands
 
-Which is why there is no `usb put` any more: naming a file was the only thing
-the second command did that this one does not.
+One qualification, because the two cases are indistinguishable at the end and
+must not be treated alike: **deletions are only honoured when the whole folder
+made it out.** If the drive filled up part way, a file missing from it means
+"never arrived", not "the host removed it", and acting on that would delete
+something nobody touched.
