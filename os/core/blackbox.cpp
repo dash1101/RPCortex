@@ -8,7 +8,7 @@
 // the magic alone across a layout change means those bytes are reinterpreted
 // under the new field offsets and reported as a crash that never happened.
 // A mismatch costs one boot's worth of history, which is the right price.
-#define BB_MAGIC 0x42425832u   // 'BBX2'
+#define BB_MAGIC 0x42425833u   // 'BBX3'
 
 #if defined(PICO_ON_DEVICE) && PICO_ON_DEVICE
   #define BB_NOINIT __attribute__((section(".uninitialized_data.rpcbb")))
@@ -37,9 +37,17 @@ static void copy_into(char *dst, unsigned cap, const char *src) {
     dst[n] = 0;
 }
 
-// Clearing the task name is what marks it: the reporters all key off that
-// field, so a run that ends on purpose leaves nothing for them to find.
+// `clean` is what actually marks it. The three strings are cleared as well,
+// because a report that does slip out should not carry the last thing the
+// device happened to be doing — but they are housekeeping, not the signal.
+//
+// They used to BE the signal, and that is the bug this field exists for. A
+// deliberate restart clears them here and then spends 120 ms flushing the
+// console with core 1 still scheduling; the first task it picks calls
+// bb_note_task and the name is back. So the mark has to be somewhere the
+// running system never writes, which is what "exactly one writer" buys.
 void bb_note_clean_exit(void) {
+    g_bb.clean   = 1;
     g_bb.task[0] = 0;
     g_bb.cmd[0]  = 0;
     g_bb.phase[0] = 0;
@@ -56,6 +64,15 @@ void bb_init(void) {
 }
 
 const BlackBox *bb_previous(void) { return g_have_prev ? &g_prev : nullptr; }
+
+// The shared answer to "did the last run end badly". See the header for why
+// there is one of these rather than a test at each reader.
+const BlackBox *bb_previous_crash(void) {
+    if (!g_have_prev)   return nullptr;
+    if (g_prev.clean)   return nullptr;      // it said it was going down
+    if (!g_prev.task[0]) return nullptr;     // nothing to name, so nothing to say
+    return &g_prev;
+}
 
 void bb_note_task(int pid, uint8_t core, const char *name,
                   uint32_t stack_used, uint32_t stack_size) {

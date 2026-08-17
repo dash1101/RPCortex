@@ -68,6 +68,14 @@ bool apps_resident(const char *name);
 // return into.
 int apps_busy_pid(const char *name);
 
+// The image a resident package was loaded at, or null if it is not loaded.
+//
+// This is the token a Command carries in its `owner` field, so it is what
+// answers "does this command belong to that package" — which is how `pkg
+// install` works out that the service keeping a package busy is one of its own,
+// rather than something it has no business stopping.
+const void *apps_owner_of(const char *name);
+
 // Load an app file, run its app_main, and either keep it resident (if it
 // registered commands) or unload it. The one place the load-run-resident flow
 // lives, shared by `run`, `pkg install`, and boot-time package loading. Returns

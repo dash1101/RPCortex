@@ -56,7 +56,25 @@ extern "C" {
 #define FAULT_STACK_WORDS  1024                 // 4 KB per core
 #define FAULT_PAINT        0xA5A5A5A5u
 
-static uint32_t g_fault_stack[2][FAULT_STACK_WORDS] __attribute__((aligned(8)));
+// A dead band UNDER each of them, and it is not decoration.
+//
+// The two stacks are one array, so core 1's grows down into core 0's and core
+// 0's grows down into whatever the linker put before the array. A handler that
+// outgrew its 4 KB would therefore corrupt the other core's crash stack — the
+// exact failure this whole arrangement exists to stop a package doing — and
+// nothing would say so afterwards, because "used the whole stack" and "used more
+// than the stack" read identically from the paint.
+//
+// The band is what makes them different. Thirty-two bytes below each stack that
+// nothing is supposed to touch: an overflow lands there first, and it is still
+// there to be read at the next `mpu`. It cannot be MSPLIM — the handler runs
+// with the limit released, because releasing it is how the handler is reachable
+// at all after a stack overflow — so this is evidence rather than prevention,
+// which is the right trade for a path that must never fault twice.
+#define FAULT_GUARD_WORDS  8                    // 32 bytes below each stack
+#define FAULT_ROW_WORDS    (FAULT_GUARD_WORDS + FAULT_STACK_WORDS)
+
+static uint32_t g_fault_stack[2][FAULT_ROW_WORDS] __attribute__((aligned(8)));
 
 // Read by the assembly below. Pointers rather than integers so each is a
 // link-time constant in .rodata and needs no startup code to be correct — a
@@ -74,25 +92,42 @@ static uint32_t g_fault_stack[2][FAULT_STACK_WORDS] __attribute__((aligned(8)));
 // symbol that is plainly right there in the same file.
 extern uint32_t * const g_fault_stack_top0;
 extern uint32_t * const g_fault_stack_top1;
-extern uint32_t * const g_fault_stack_top0 = &g_fault_stack[0][FAULT_STACK_WORDS];
-extern uint32_t * const g_fault_stack_top1 = &g_fault_stack[1][FAULT_STACK_WORDS];
+extern uint32_t * const g_fault_stack_top0 = &g_fault_stack[0][FAULT_ROW_WORDS];
+extern uint32_t * const g_fault_stack_top1 = &g_fault_stack[1][FAULT_ROW_WORDS];
 
 // Painted at boot so the high-water mark can be read afterwards. Deliberately
 // not a static initialiser: 8 KB of 0xA5 in .data is 8 KB of flash, and this
 // firmware is watching its flash.
 void fault_stack_init(void) {
     for (int c = 0; c < 2; c++)
-        for (uint32_t i = 0; i < FAULT_STACK_WORDS; i++)
+        for (uint32_t i = 0; i < FAULT_ROW_WORDS; i++)
             g_fault_stack[c][i] = FAULT_PAINT;
 }
 
 // How deep any fault report has ever gone, in bytes. Zero before the first one.
+//
+// Counted from the top of the guard band, so the answer is depth into the STACK
+// and never includes anything written below it. A report that went past the
+// bottom reads as the full size here and is named by fault_stack_overflowed.
 uint32_t fault_stack_used(int core) {
     if (core < 0 || core > 1) return 0;
     uint32_t untouched = 0;
     while (untouched < FAULT_STACK_WORDS &&
-           g_fault_stack[core][untouched] == FAULT_PAINT) untouched++;
+           g_fault_stack[core][FAULT_GUARD_WORDS + untouched] == FAULT_PAINT) untouched++;
     return (FAULT_STACK_WORDS - untouched) * 4;
+}
+
+// Did a crash report run off the bottom of the stack it was given?
+//
+// The distinction fault_stack_used cannot make on its own: 4096 of 4096 means
+// either "it fitted exactly" or "it did not fit and wrote into the other core's
+// crash stack", and those are a measurement and a serious bug. Any word of the
+// band below the stack being gone is the second one.
+bool fault_stack_overflowed(int core) {
+    if (core < 0 || core > 1) return false;
+    for (uint32_t i = 0; i < FAULT_GUARD_WORDS; i++)
+        if (g_fault_stack[core][i] != FAULT_PAINT) return true;
+    return false;
 }
 
 uint32_t fault_stack_size(void) { return FAULT_STACK_WORDS * 4; }

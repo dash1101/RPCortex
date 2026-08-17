@@ -266,6 +266,32 @@ void jobs_start_services(void) {
     out_okp("Services", "Started %u.", (unsigned)n);
 }
 
+// Read the service list, and start one entry from it.
+//
+// Both exist for `pkg install`, which has to work out whether the package it is
+// replacing is busy because a SERVICE is running it — and, if so, put that
+// service back afterwards. The path to the file stays here, where the rest of
+// the list lives, rather than being spelt out a second time somewhere else.
+//
+// jobs_service_start takes a whole line rather than an index, because between
+// the stop and the restart an install has rewritten the package and could in
+// principle have rewritten the list too. The line the caller stopped is the
+// line it puts back.
+void jobs_services_walk(JobWalkFn cb, void *ctx) {
+    static char buf[CFG_BUF];
+    uint32_t len = cfg_read(SERVICE_CFG, buf, sizeof(buf));
+    joblist_walk(buf, len, cb, ctx);
+}
+
+int jobs_service_start(const char *line) {
+    if (!line || !line[0]) return 1;
+    char copy[160];
+    // Exactly what jobs_start_services does at boot, so a service restarted
+    // here is indistinguishable from one that was never stopped.
+    snprintf(copy, sizeof(copy), "bg %s", line);
+    return shell_run_line_now(copy);
+}
+
 static int cmd_service(int argc, char **argv) {
     if (argc >= 2 && !strcmp(argv[1], "start")) { jobs_start_services(); return 0; }
     int rc = list_command(SERVICE_CFG, "Services", false, argc, argv,

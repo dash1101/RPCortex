@@ -116,3 +116,17 @@ bool joblist_split_interval(const char *line, uint32_t *secs, const char **cmd) 
     if (cmd)  *cmd  = line;
     return true;
 }
+
+bool joblist_first_word(const char *line, char *out, uint32_t cap) {
+    if (!out || !cap) return false;
+    out[0] = 0;
+    if (!line) return false;
+    while (*line == ' ' || *line == '\t') line++;
+    uint32_t n = 0;
+    while (line[n] && line[n] != ' ' && line[n] != '\t') n++;
+    if (!n) return false;                // blank, or nothing but whitespace
+    if (n >= cap) return false;          // see the header: never a short answer
+    for (uint32_t i = 0; i < n; i++) out[i] = line[i];
+    out[n] = 0;
+    return true;
+}

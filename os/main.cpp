@@ -163,8 +163,12 @@ int main(void) {
     // What the previous run was doing when it stopped. A hang writes no log
     // lines — logging is something running code does — so this is the only
     // record of it, and it is the first thing worth seeing.
-    const BlackBox *bb = bb_previous();
-    if (bb && bb->task[0]) {
+    //
+    // bb_previous_crash, not bb_previous and a test of its own: `diag` asks the
+    // same question a few hundred lines away and the two answers had already
+    // drifted apart. One predicate is the only arrangement where they cannot.
+    const BlackBox *bb = bb_previous_crash();
+    if (bb) {
         out_errp("Crash", "Last run stopped while running '%s' (pid %d, core %u).",
                  bb->task, bb->pid, (unsigned)bb->core);
         if (bb->cmd[0])   out_multi("   Command   : %s", bb->cmd);

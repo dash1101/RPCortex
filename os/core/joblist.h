@@ -37,4 +37,19 @@ bool joblist_get(const char *buf, uint32_t len, uint32_t index, char *out, uint3
 // than run at the wrong interval.
 bool joblist_split_interval(const char *line, uint32_t *secs, const char **cmd);
 
+// The first word of an entry — the command the line runs.
+//
+// For `pkg install`, which has to decide whether a service belongs to the
+// package it is replacing, and stops the service if it does. So the answer
+// selects a task to end, and a wrong one ends the wrong thing.
+//
+// It REFUSES rather than truncates when the word does not fit, and that is the
+// whole reason this is a function rather than three lines at the caller: a
+// truncated name resolves to a DIFFERENT command. "novad1-legacy" cut to
+// "novad1" is a service belonging to somebody else, reported as belonging to
+// this package and stopped on its behalf.
+//
+// False for a blank or whitespace-only entry too. `out` is always terminated.
+bool joblist_first_word(const char *line, char *out, uint32_t cap);
+
 #endif  // RPC_JOBLIST_H

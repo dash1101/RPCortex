@@ -8,11 +8,17 @@
 #include "pkgindex.h"
 #include "pkgslot.h"
 #include "task.h"
+#include "joblist.h"
 
 // Declared where it is used rather than in apps.h, matching sys.cpp: the pool is
 // an implementation detail of apps.cpp and only two callers have any business
 // asking for it back.
 uint32_t apps_pool_reclaim(void);
+
+// The service list (jobs.cpp). Declared here for the same reason: /etc/services.cfg
+// is jobs.cpp's business and this is the only other caller.
+void jobs_services_walk(JobWalkFn cb, void *ctx);
+int  jobs_service_start(const char *line);
 
 #include <stdio.h>
 #include <string.h>
@@ -248,6 +254,165 @@ static LoadResult slot_write(const AppSource &src, uint32_t i,
     return rc;
 }
 
+// --- standing a service aside for an install --------------------------------
+//
+// `pkg install` refuses while something is executing the package, and it is
+// right to: the install relocates over the code that task would return into.
+// But a package whose whole job is to run — a screen, a server — is started as
+// a SERVICE at boot and is therefore always running, so the everyday upgrade
+// path was four commands with a stop and a start hand-written around it. Miss
+// the stop and the install refuses; miss the start and the device comes back
+// without the thing it exists to do.
+//
+// So the stop and the start move in here, for the one case where the OS can see
+// that they are safe: the package is busy because a service in /etc/services.cfg
+// is running it, and that service's command belongs to this package. Anything
+// else busy — somebody's foreground command, a `bg` job, another package — is
+// refused exactly as before. Being able to name the reason is the whole licence
+// for stopping it; without a service entry there is nothing to put back and no
+// evidence the person wanted it running at all.
+//
+// The stop is BLUNT compared with what a package would do itself: it asks the
+// task to end, where `novad1 service stop` would also tell the screen to blank.
+// That is the package's business and not something the OS can do for it.
+
+#define SVC_HOLD_MAX   2       // more than one service per package is unusual
+#define SVC_LINE_MAX   160     // joblist's own line length
+
+// Static, not on the stack. Same reason slot_write's writer is: this runs on
+// the shell's 8 KB stack with the loader underneath it, and 320 bytes of line
+// buffers is not what that stack should be spending. It also means one install
+// at a time, which was already true.
+static char     g_held[SVC_HOLD_MAX][SVC_LINE_MAX];
+static uint32_t g_held_n;
+
+struct SvcMatch { const void *owner; };
+
+// Does this service line start a command that belongs to `owner`?
+//
+// The first word is the command; cmd_resolve follows an alias, so `d1 gui --bg`
+// finds the same package `novad1 gui --bg` does. The owner token IS the
+// package's image, which is what makes the test exact rather than a guess from
+// the name.
+static void svc_match_cb(void *v, uint32_t, const char *line) {
+    SvcMatch *m = (SvcMatch *)v;
+    if (g_held_n >= SVC_HOLD_MAX) return;
+
+    char word[32];
+    if (!joblist_first_word(line, word, sizeof(word))) return;
+
+    const Command *c = cmd_resolve(word);
+    if (!c || c->owner != m->owner) return;
+
+    snprintf(g_held[g_held_n], SVC_LINE_MAX, "%s", line);
+    g_held_n++;
+}
+
+// Ask every task inside `name` to end, and wait for them to. Returns true once
+// nothing is executing the package.
+//
+// task_kill is COOPERATIVE — a task stops at its next yield point, which is
+// where it is by definition not holding a lock or half way through a flash
+// write. So this has to wait, and it has to be willing to give up: a package
+// that will not stop is a genuinely busy package, and going ahead anyway is
+// precisely the thing the refusal exists to prevent.
+//
+// Six seconds because that is what the preemption alarm allows a task before it
+// takes a package call back, so anything that was going to end has by then.
+// task_sleep_ms yields, so the watchdog is fed throughout.
+#define SVC_STOP_MS    6000
+#define SVC_STOP_STEP  50
+
+static bool stop_tasks_in(const char *name) {
+    for (uint32_t waited = 0; waited <= SVC_STOP_MS; waited += SVC_STOP_STEP) {
+        int pid = apps_busy_pid(name);
+        if (pid < 0) return true;
+        // Asked again on every pass. One kill request per task, and there may
+        // be more than one task inside the package — a screen and its input
+        // reader — so this walks them as they come into view.
+        if (!task_kill(pid)) {
+            // It may simply have finished between the two calls.
+            if (apps_busy_pid(name) < 0) return true;
+            // Otherwise this is a task that CANNOT be asked to stop: the shell,
+            // running somebody's foreground command in the package. Waiting six
+            // seconds for an answer already known would be six seconds of
+            // nothing, and the install has to be refused either way.
+            return false;
+        }
+        task_sleep_ms(SVC_STOP_STEP);
+    }
+    return apps_busy_pid(name) < 0;
+}
+
+// Stop the services running `name`, if that is why it is busy. False means the
+// caller must refuse the install, exactly as it did before this existed.
+static bool services_stand_aside(const char *name, bool quiet) {
+    g_held_n = 0;
+    const void *owner = apps_owner_of(name);
+    if (!owner) return false;          // not resident: nothing here to explain it
+
+    SvcMatch m{owner};
+    jobs_services_walk(svc_match_cb, &m);
+    if (!g_held_n) return false;       // busy, but not because of a service
+
+    if (!quiet) {
+        out_infop("pkg", "'%s' is running as a service. Stopping it for the "
+                         "install.", name);
+        for (uint32_t i = 0; i < g_held_n; i++)
+            out_multi("  %s", g_held[i]);
+    }
+
+    if (stop_tasks_in(name)) return true;
+
+    // Something in the package would not stop, and going ahead is exactly what
+    // the refusal exists to prevent. The held list is deliberately NOT cleared:
+    // whatever did stop before this gave up has to be put back, and the hold's
+    // destructor is what does that. A failed stop must not cost the device the
+    // service it was running.
+    out_warnp("pkg", "'%s' is still running and could not be stopped.", name);
+    out_multi("  Something other than its service is inside it — a command at a");
+    out_multi("  prompt, most likely. The install has not touched anything.");
+    return false;
+}
+
+// Put back every service this install stood aside. Called however the install
+// ended, including the paths that failed.
+static void services_resume(bool quiet) {
+    for (uint32_t i = 0; i < g_held_n; i++) {
+        // The command has to exist again. After a failed install it may not —
+        // the old copy could not be reloaded either — and `bg` would report
+        // "unknown command" from inside a background task, where nobody is
+        // looking. Said here instead.
+        char word[32];
+        if (!joblist_first_word(g_held[i], word, sizeof(word)) ||
+            !cmd_resolve(word)) {
+            out_warnp("pkg", "The service '%s' could not be restarted — its "
+                             "command is not registered any more.", g_held[i]);
+            out_multi("  The install did not leave the package loaded. A reboot");
+            out_multi("  starts the services again from /etc/services.cfg.");
+            continue;
+        }
+        if (jobs_service_start(g_held[i]) != 0)
+            out_warnp("pkg", "The service '%s' did not start again.", g_held[i]);
+        else if (!quiet)
+            out_okp("pkg", "Started '%s' again.", g_held[i]);
+    }
+    g_held_n = 0;
+}
+
+// Restart on the way out, whichever way that is.
+//
+// A destructor rather than a call at each return, because pkg_install_file has
+// eight of them and they are not all obvious — the two flash-slot failures, the
+// three OOM paths, the copy that could not be made. A service left stopped
+// because a new early return forgot about it is a device that comes back
+// without its screen, and it would be found by somebody upgrading rather than
+// by anybody reading this file.
+struct ServiceHold {
+    bool quiet;
+    ~ServiceHold() { services_resume(quiet); }
+};
+
 // --- operations ------------------------------------------------------------
 
 // Put the package file where it belongs, record it, and load it. Shared by both
@@ -372,8 +537,21 @@ bool pkg_install_file(const char *file, bool quiet, bool consume) {
     // Nothing may be executing it. The file on flash is only half of a resident
     // package, and replacing it under a task parked inside the copy in RAM
     // leaves the two permanently disagreeing.
+    //
+    // A service is the one exception, and it is not a weakening of the rule: it
+    // is stopped FIRST, so by the time the install runs nothing is executing the
+    // package after all. See services_stand_aside for what qualifies and what
+    // still gets refused. The hold puts it back on the way out, however this
+    // ends — so it is declared here, before the first return that could happen
+    // with a service already stopped.
+    ServiceHold hold{quiet};
     int busy = apps_busy_pid(name);
-    if (busy >= 0) {
+    if (busy >= 0 && !services_stand_aside(name, quiet)) {
+        // Re-read it: the stop may have ended one task and been refused by
+        // another, and naming the pid somebody can no longer `kill` is worse
+        // than naming none.
+        int still = apps_busy_pid(name);
+        if (still >= 0) busy = still;
         storage_close_source(h);
         out_errp("pkg", "'%s' is running right now (task %d).", name, busy);
         out_multi("  Let it finish, or stop it with 'kill %d', then try again.", busy);
