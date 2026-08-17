@@ -23,7 +23,7 @@ extern "C" {
 // MINOR: a symbol added — older-minor apps still run (everything they want is
 //        present); newer-minor apps refused (they may want something absent).
 #define RPC_API_MAJOR 1
-#define RPC_API_MINOR 21
+#define RPC_API_MINOR 22
 
 typedef struct {
     uint32_t magic;          // RPC_APP_MAGIC
@@ -188,7 +188,78 @@ int      fw_board(char *out, unsigned cap);
 //
 // Returns the command's exit status, or -1 if the line was refused (too long,
 // or a pointer that is not the package's).
+//
+// IT CANNOT RUN ANOTHER PACKAGE'S COMMAND. The shell will refuse that, by name,
+// and the refusal is not a limitation of this call — a package call records one
+// way back out per task and a second one on the same task would overwrite it.
+// fw_shell_run_detached is the answer; see below.
 int      fw_shell_run(const char *line, char *out, uint32_t cap);
+
+// --- running a command on a task of its own (API 1.22) ----------------------
+//
+// The same shell, on a task that is not this one, coming back immediately with a
+// handle to ask about later.
+//
+// TWO SEPARATE REASONS TO WANT IT, and the second is the one it was built for.
+//
+// The obvious one is time. fw_shell_run is synchronous, and a real command takes
+// tens of milliseconds at best and several seconds at worst — a network join, a
+// flash write. Called from a screen's event handler it blocks the redraw with
+// the previous frame still on the panel, so the device looks dead for exactly as
+// long as the work takes.
+//
+// The one that matters is that A PACKAGE COMMAND CANNOT BE RUN ANY OTHER WAY.
+// Entering package code records, on the running task, the single way back out of
+// it; entering again on that same task overwrites the record and the outer call
+// returns into nothing. So the shell refuses a package command dispatched from
+// inside a package, and it refuses it on every task the package has — including
+// one from fw_task_spawn, which deliberately puts the new task in the same
+// sandbox. Everything the firmware itself provides was reachable; everything
+// that happens to be shipped as a package — calc, gpio, i2cscan, dht, ws2812,
+// probe — was not, and only because of how it is packaged.
+//
+// This task is different in the one way that matters: it starts in FIRMWARE
+// code, not the package's, with no package state on it at all. A package the
+// shell then dispatches into gets a fresh entry at depth zero, which is the
+// invariant honoured rather than dodged — the same reason two packages can
+// already run at once on two tasks.
+//
+// The line is copied before the call returns, so the caller's buffer is free
+// immediately. `out` is NOT: it must stay valid until fw_shell_done collects the
+// run, and it is written at that moment, on the calling task, rather than by the
+// detached one. That is deliberate — nothing the detached task does ever touches
+// package memory, so a package that is unloaded while its command is still
+// running cannot be written into.
+//
+// Returns a handle >= 0, or -1 when the line is too long, a pointer is not the
+// package's, both slots are busy with runs that have not finished, or `out` was
+// asked for while another detached run is still capturing. There is ONE output
+// capture in this OS, so only one detached run can be collecting output at a
+// time; the second is refused up front rather than handed a silently empty
+// buffer. Pass a null `out` for a command run purely for its effect, and any
+// number of those can be refused only by the slot count.
+//
+// While a detached run is capturing, a redirect or a pipe typed at the prompt
+// gets nothing — same single capture. Keep detached runs short.
+int      fw_shell_run_detached(const char *line, char *out, uint32_t cap);
+
+// Has it finished?
+//
+//   1   yes. `status` holds what the command returned, `out` now holds what it
+//       printed, and the handle is released — asking again returns -1.
+//   0   still going.
+//  -1   not a handle this package has: never was, already collected, or the run
+//       was reclaimed to make room.
+//
+// `status` may be null.
+//
+// POLL FROM A TASK THAT CAN SEE THE `out` BUFFER. A buffer in the package's own
+// data — a static — is visible from every task it has, and is what a screen
+// should use. One on a task's stack, or from fw_malloc, belongs to THAT task:
+// each of a package's tasks gets its own stack and its own heap, so a buffer
+// from one is not writable from another, and polling from the wrong task
+// collects the run and quietly writes nothing. The status is still correct.
+int      fw_shell_done(int handle, int *status);
 
 // How busy the machine is, 0-100, sampled since anything last asked. Per CORE,
 // so two cores each fully busy reads 100 rather than 200. Call it periodically

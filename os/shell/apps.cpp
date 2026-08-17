@@ -9,6 +9,7 @@
 #include "sandbox.h"
 #include "lock.h"
 #include "logring.h"
+#include "detach.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -907,6 +908,10 @@ bool apps_unload(const char *name) {
     // still mapped), then free the image. The reverse would leave the registry
     // holding function pointers into freed memory for the moment between.
     cmd_remove_owner(a->image);
+    // And any detached shell run this package started. The run itself is the
+    // firmware's and carries on; what goes is the package's claim on it, so
+    // nothing can be collected into memory that is about to be handed back.
+    detach_forget_owner(a->image);
     app_unload(a);
     for (int i = 0; i < APPS_MAX; i++) if (&g_apps[i] == a) { g_used[i] = false; break; }
     return true;

@@ -108,6 +108,7 @@ declare -A SRC=(
     [interrupt_test]="$CORE/interrupt.cpp $CORE/task.cpp $CORE/blackbox.cpp host_task_stub.cpp"
     [pkgindex_test]="$CORE/pkgindex.cpp"
     [joblist_test]="$CORE/joblist.cpp"
+    [detach_test]="$CORE/detach.cpp"
     [textcore_test]="$CORE/textcore.cpp $CORE/interrupt.cpp $CORE/task.cpp $CORE/blackbox.cpp host_task_stub.cpp"
     [history_test]="$CORE/history.cpp"
     [core_test]="$CORE/sha256.cpp $CORE/registry.cpp $CORE/users.cpp $CORE/lock.cpp $CORE/task.cpp $CORE/blackbox.cpp host_task_stub.cpp"
@@ -118,7 +119,7 @@ declare -A SRC=(
     # interesting cases all involve losing power at a chosen moment.
     [pkgslot_test]="$SPIKE/pkgslot.cpp $SPIKE/loader.cpp"
     [os_test]="$SHELL_DIR/command.cpp $CORE/lock.cpp $CORE/task.cpp $CORE/blackbox.cpp host_task_stub.cpp $SPIKE/loader.cpp"
-    [apps_test]="$CORE/mpu.cpp $CORE/arena.cpp host_sandbox_stub.cpp $SHELL_DIR/command.cpp $SHELL_DIR/apps.cpp $CORE/out.cpp $CORE/lock.cpp $CORE/task.cpp $CORE/blackbox.cpp $CORE/logring.cpp host_task_stub.cpp $SPIKE/loader.cpp"
+    [apps_test]="$CORE/mpu.cpp $CORE/arena.cpp $CORE/detach.cpp host_sandbox_stub.cpp $SHELL_DIR/command.cpp $SHELL_DIR/apps.cpp $CORE/out.cpp $CORE/lock.cpp $CORE/task.cpp $CORE/blackbox.cpp $CORE/logring.cpp host_task_stub.cpp $SPIKE/loader.cpp"
 )
 
 # Extra flags for tests that need them. smp_test runs two real threads.

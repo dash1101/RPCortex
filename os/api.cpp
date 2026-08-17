@@ -387,6 +387,138 @@ extern "C" int fw_shell_run(const char *line, char *out, uint32_t cap) {
     return rc;
 }
 
+// --- running a command on a task of its own (API 1.22) ----------------------
+//
+// WHY THIS IS NOT fw_task_spawn WITH A SHELL COMMAND IN IT.
+//
+// fw_task_spawn puts the new task in the CALLING PACKAGE'S SANDBOX, deliberately
+// and for a good reason: the function it is given is package code, and a task
+// started any other way would run it privileged with no regions registered —
+// which is how a package used to escape simply by asking for a thread.
+//
+// The function here is not package code. It is detach_entry, in the firmware,
+// and it runs the firmware's own shell dispatcher. So the sandbox has nothing to
+// contain, and task_spawn is the correct call rather than a way round
+// apps_spawn_in_sandbox.
+//
+// That difference is the whole point. A package command dispatched from inside a
+// package is refused, on every task the package owns, because entering package
+// code records one way back out per task and a second entry overwrites it. This
+// task carries no package state at all — it begins in firmware, at depth zero —
+// so when the shell dispatches into a package from here it is a first entry, and
+// the invariant is honoured rather than bypassed. It is the same reasoning that
+// already lets two packages run at once on two different tasks.
+//
+// The output is captured into a buffer THE FIRMWARE OWNS, and copied into the
+// package's only when the package collects the run. So the detached task never
+// dereferences a package pointer — which is the lifetime answer: a package can
+// be unloaded while its command is still running, and there is nothing left
+// pointing into it to write through.
+#include "detach.h"
+#include "joblist.h"    // the first word of the line, for the task name
+
+static int detach_entry(void *arg) {
+    int handle = (int)(intptr_t)arg;
+    DetachRun *r = detach_of(handle);
+    if (!r) return -1;                 // reclaimed before this task got a turn
+
+    // The runner splits its buffer in place, so the slot's copy is consumed
+    // here. Nothing reads it afterwards — `ps` shows the line from the task's
+    // own path, which task_spawn copied at spawn time.
+    char *cap = detach_capture_buffer(handle);
+    int rc;
+    if (cap && out_capture_begin_all(cap, DETACH_OUT_MAX)) {
+        rc = shell_run_line_now(r->line);
+        out_capture_end();
+    } else {
+        // No buffer wanted, or the one capture was taken after all. The command
+        // still runs — that is what was asked for — and the output goes to the
+        // console, which is where it would have gone anyway.
+        rc = shell_run_line_now(r->line);
+    }
+    detach_finish(handle, rc);
+    return rc;
+}
+
+// Which package is asking.
+//
+// task_app_mem_get rather than task_app_mem_current: the latter answers "is
+// there a sandbox to range-check pointers against" and returns null for a
+// package running with the OS's own privileges, which is every package on an
+// RP2040. This question is "whose code is this", and it has an answer on both.
+static const void *calling_package(void) {
+    TaskAppMem m;
+    if (!task_app_mem_get(&m)) return nullptr;
+    return m.text;
+}
+
+extern "C" int fw_shell_run_detached(const char *line, char *out, uint32_t cap) {
+    if (!ok_s(line)) return -1;
+    if (out && cap && !ok_w(out, cap)) return -1;
+    task_alive();
+
+    // Only a package can start one. A run belongs to whoever asked for it, and
+    // that ownership is the whole of what stops one package collecting another's
+    // answer — so a caller with no identity is refused rather than given a
+    // handle nobody can be checked against.
+    const void *owner = calling_package();
+    if (!owner) return -1;
+
+    int handle = detach_claim(owner, line, out, cap);
+    if (handle < 0) return -1;
+    DetachRun *r = detach_of(handle);
+
+    // TASK_STACK_SHELL, and the size is not caution. On a part with no sandbox
+    // the package this dispatches into runs on THIS stack rather than on a
+    // sandbox stack of its own, so it has to be the size the shell task itself
+    // needed — which was found by overflowing 3 KB in exactly that shape. On
+    // RP2350 the task carries only the firmware frames and the size is slack.
+    //
+    // Named after the command and carrying the whole line as its path, so `ps`
+    // reads the way it does for `bg`. Twelve tasks called "detached" would tell
+    // whoever is looking at the list nothing at all.
+    //
+    // The handle travels as the argument rather than a pointer to anything: the
+    // slot is the firmware's and outlives the caller either way, and an integer
+    // cannot dangle.
+    char tname[TASK_NAME_MAX];
+    if (!joblist_first_word(r->line, tname, sizeof(tname)))
+        snprintf(tname, sizeof(tname), "detached");
+    int pid = task_spawn(tname, r->line, detach_entry,
+                         (void *)(intptr_t)handle, TASK_STACK_SHELL, AFFINITY_ANY);
+    if (pid < 0) {
+        detach_release(handle);
+        return -1;
+    }
+    r->pid = pid;
+    return handle;
+}
+
+extern "C" int fw_shell_done(int handle, int *status) {
+    task_alive();
+    if (status && !ok_w(status, sizeof(int))) return -1;
+
+    const void *owner = calling_package();
+    if (!owner) return -1;
+    DetachRun *r = detach_find(handle, owner);
+    if (!r) return -1;
+    if (!r->done) return 0;
+
+    // Finished, so the answer is handed over HERE — on the package's own task,
+    // where the package is alive by construction and its buffer can be checked
+    // against the regions it actually holds.
+    if (r->pkg_out && r->pkg_cap && ok_w(r->pkg_out, r->pkg_cap)) {
+        const char *src = detach_capture_buffer(handle);
+        uint32_t n = 0;
+        if (src) while (src[n] && n + 1 < r->pkg_cap) n++;
+        if (src) memcpy(r->pkg_out, src, n);
+        r->pkg_out[n] = 0;
+    }
+    if (status) *status = r->status;
+    detach_release(handle);
+    return 1;
+}
+
 // --- hardware ---------------------------------------------------------------
 //
 // Thin wrappers over the SDK, with the pin checked first. On RP2 an out of
@@ -1649,6 +1781,9 @@ static const ApiSymbol kSymbols[] = {
     SYM(fw_tui_present),
     SYM(fw_tui_poll),
     SYM(fw_tui_refresh),
+    // API 1.22 — a shell command on a task of its own.
+    SYM(fw_shell_run_detached),
+    SYM(fw_shell_done),
 
     // The compiler's runtime. See above: emitted, not written.
     SYM(__aeabi_idiv),
