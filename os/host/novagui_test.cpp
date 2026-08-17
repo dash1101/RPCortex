@@ -1584,6 +1584,65 @@ static void test_lock_yields_to_a_modal(void) {
     clear_lock();
 }
 
+// --- naming the device from the panel ------------------------------------------------
+//
+// System.Device_ID and System.Owner are the OS's keys — the shell prompt, fetch
+// and sysinfo all read them — and until now the only way to set either was a
+// serial cable, on a device whose whole point is not needing one.
+static void open_by_key(const char *key) {
+    using namespace nova;
+    gui::go_home();
+    for (unsigned i = 0; i < gui::app_total(); i++) {
+        const gui::App *a = gui::app_at(i);
+        if (strcmp(a->key, key)) continue;
+        gui::chose(a);
+        a->open();
+        return;
+    }
+    ok(false, key);
+}
+
+static void test_device_naming(void) {
+    using namespace nova;
+    char buf[40];
+
+    fw_reg_set("System.Device_ID", "vela");
+    // An empty name is a mistake, not an edit: the shell prompt is built from
+    // this and a device named "" reads as broken rather than as renamed.
+    screens::devid_typed(nullptr, "");
+    fw_reg_get("System.Device_ID", buf, sizeof(buf));
+    streq_(buf, "vela", "an empty device ID is refused, not stored");
+
+    screens::devid_typed(nullptr, "workbench");
+    fw_reg_get("System.Device_ID", buf, sizeof(buf));
+    streq_(buf, "workbench", "and a real one is kept");
+
+    // An owner CAN be emptied — "nobody has claimed this" is a real answer, and
+    // that is the deliberate difference from the name above.
+    screens::owner_typed(nullptr, "dash");
+    fw_reg_get("System.Owner", buf, sizeof(buf));
+    streq_(buf, "dash", "an owner is stored");
+    screens::owner_typed(nullptr, "");
+    fw_reg_get("System.Owner", buf, sizeof(buf));
+    ok(buf[0] == 0, "and can be cleared again");
+
+    // And the rows reach the right editors, which is the half a callback test
+    // cannot cover: a row wired to the wrong index edits the wrong key.
+    open_by_key("set_system");
+    input().inject(EV_ROT_CW); frame();
+    input().inject(EV_ROT_CW); frame();
+    input().inject(EV_SELECT); frame();
+    streq_(gui::top() ? gui::top()->title() : "", "Device ID",
+           "the third row opens the device ID editor");
+    gui::pop();
+    input().inject(EV_ROT_CW); frame();
+    input().inject(EV_SELECT); frame();
+    streq_(gui::top() ? gui::top()->title() : "", "Owner",
+           "and the fourth opens the owner editor");
+    gui::go_home();
+    fw_reg_set("System.Device_ID", "vela");
+}
+
 int main(void) {
     STAGE(test_single_instance);
     STAGE(test_one_detent_animates);
@@ -1615,6 +1674,7 @@ int main(void) {
     STAGE(test_lock_screen);
     STAGE(test_lock_idle);
     STAGE(test_lock_yields_to_a_modal);
+    STAGE(test_device_naming);
     STAGE(test_no_panel);
 
     printf("  %d checks", checks);

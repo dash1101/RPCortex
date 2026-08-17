@@ -1016,6 +1016,36 @@ static void open_clock_settings(void) {
     if (s) s->begin();
 }
 
+// --- who this device is ------------------------------------------------------------
+//
+// System.Device_ID and System.Owner are the OS's OWN keys, not this suite's.
+// The shell prompt is built from the first, `fetch` prints it as the hostname
+// and `sysinfo` prints both — so a panel that could not set them left a handheld
+// whose only way to be named was a serial cable, which is the one thing a
+// handheld is meant not to need.
+//
+// The MicroPython suite had both, under a Device group with Rename and Set
+// owner as separate rows. Two rows here, each showing what it is set to, because
+// a row that reads "Owner  dash" answers the question without being pressed and
+// a row that reads "Set owner" does not.
+
+static void devid_typed(void *, const char *text) {
+    // An empty name is a mistake rather than an edit — the shell prompt is built
+    // from this, and a device named "" has a prompt that looks broken rather
+    // than one that looks renamed. Same rule as the Home name.
+    if (!text || !text[0]) return;
+    nova::reg_set("System.Device_ID", text);
+    nova::reg_save();
+}
+
+static void owner_typed(void *, const char *text) {
+    // An owner CAN be emptied, and that is the difference from the name above:
+    // "nobody has claimed this" is a real answer, and sysinfo prints the field
+    // only when it is set.
+    nova::reg_set("System.Owner", text ? text : "");
+    nova::reg_save();
+}
+
 class SystemSettings : public SettingsList {
 public:
     // Matches its row, which is "Settings" now — see the catalogue. novashots
@@ -1023,11 +1053,13 @@ public:
     const char *title(void) const override { return "Settings"; }
 
     int help(const char **out, int max) const override {
-        if (max < 3) return 0;
+        if (max < 5) return 0;
         out[0] = "Clock holds the time, the zone";
         out[1] = "and the CPU speed. Versions is";
         out[2] = "what this device is.";
-        return 3;
+        out[3] = "Device ID is what the shell";
+        out[4] = "calls it; Home > Name is the bar.";
+        return 5;
     }
 
     bool tick(uint32_t dt) override {
@@ -1039,7 +1071,7 @@ public:
     }
 
 protected:
-    enum { R_CLOCK = 0, R_VERSIONS, R_REBOOT, R_RESET, R_COUNT };
+    enum { R_CLOCK = 0, R_VERSIONS, R_ID, R_OWNER, R_REBOOT, R_RESET, R_COUNT };
 
     int count(void) const override { return R_COUNT; }
     const char *label(int i) const override { return kLabels[i]; }
@@ -1048,14 +1080,38 @@ protected:
     void store(void) override {}
 
     void value(int i, char *out, unsigned cap) const override {
-        (void)i;
-        nova::copy(out, cap, ">");
+        // Read live rather than cached in load(). The keyboard pops back to this
+        // screen and enter() re-runs, so a cache would be correct too — but
+        // these are the OS's keys and the shell can move them under a screen
+        // that is still up, which a cache cannot notice.
+        switch (i) {
+            case R_ID:
+                nova::ellipsize(out, cap, nova::reg("System.Device_ID", "vela"), 9);
+                break;
+            case R_OWNER: {
+                const char *o = nova::reg("System.Owner", "");
+                if (!o[0]) nova::copy(out, cap, "not set");
+                else       nova::ellipsize(out, cap, o, 9);
+                break;
+            }
+            default: nova::copy(out, cap, ">"); break;
+        }
     }
 
     Action activate(int i) override {
         switch (i) {
             case R_CLOCK:    open_clock_settings(); break;
             case R_VERSIONS: open_set_device(); break;
+            case R_ID:
+                // Pre-filled, so changing one character does not mean typing the
+                // whole thing again on a keyboard driven by one knob.
+                ui::keyboard("Device ID", nova::reg("System.Device_ID", "vela"),
+                             false, devid_typed, nullptr, nullptr);
+                break;
+            case R_OWNER:
+                ui::keyboard("Owner", nova::reg("System.Owner", ""),
+                             false, owner_typed, nullptr, nullptr);
+                break;
             case R_REBOOT:
                 ui::confirm("Restart the device now?", "Reboot", do_reboot, nullptr);
                 break;
@@ -1069,22 +1125,23 @@ protected:
 
 private:
     static const char *const kLabels[R_COUNT];
-
-    bool h24_;
-
 };
 
 // v1's shape: Clock and Versions are their own screens under System rather than
 // rows beside Reboot. Its reasoning was that nothing at the top level should
 // scroll, and it holds here — the clock rows are three settings about one thing
-// and belong together.
+// and belong together. Six rows is exactly what one panel shows, which is why
+// Device ID and Owner went here rather than into a Device group of their own.
+//
+// Reboot and Reset stay LAST. The two rows that stop the machine should not move
+// up under somebody's thumb when a row is added above them.
 //
 // Verbose and SD Card are NOT carried over. Nothing in this build reads either;
 // Settings.Verbose_Boot is declared by the OS itself and has no reader there
 // either, which is an OS gap rather than a port gap. A row that changes nothing
 // is worse than an absent one, because it teaches somebody the device is broken.
 const char *const SystemSettings::kLabels[SystemSettings::R_COUNT] = {
-    "Clock", "Versions", "Reboot", "Reset settings",
+    "Clock", "Versions", "Device ID", "Owner", "Reboot", "Reset settings",
 };
 
 void open_set_system(void) {
