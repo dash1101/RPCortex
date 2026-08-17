@@ -144,13 +144,18 @@ Apps call the firmware only through exported symbols, resolved by name at load
 time. Anything not exported is an unresolved symbol and the app is **refused at
 load time**, named in the error — it never becomes a null call at runtime.
 
-Currently exported (API 1.0):
+The spike exported four symbols, which was API 1.0 and enough to measure:
 
 | Symbol | |
 |---|---|
 | `fw_printf(fmt, ...)` | formatted output |
 | `fw_millis()` | milliseconds since boot |
 | `fw_malloc(n)` / `fw_free(p)` | heap |
+
+The table the OS ships is `os/api.cpp` and it is a couple of hundred entries
+now — tasks, the filesystem, the registry, the buses, the screen layer and the
+compiler's own arithmetic helpers. The contract below is unchanged; only the
+surface grew.
 
 Everything is `extern "C"`. C++ name mangling is a compiler-version detail, and
 an ABI that changes when the toolchain is upgraded is not an ABI.
@@ -240,23 +245,26 @@ the device's job.
 
 ---
 
-## Status of the acceptance tests
+## The acceptance tests, and how they were answered
+
+The four conditions the spike had to meet before the rewrite was worth starting:
 
 | | |
 |---|---|
-| (a) `run hello` loads from littlefs, relocates, prints via firmware `printf` | **built, not yet run on hardware** |
-| (b) runs twice with no leaked heap | **verified on host** (50 cycles, zero outstanding); device accounting is wired into `run` |
-| (c) bumped API version refused with a clear message | **verified on host** |
-| (d) a faulting app does not take the firmware down | **implemented, not yet run on hardware** |
+| (a) `run hello` loads from littlefs, relocates, prints via firmware `printf` | verified on host, then on a Pico 2 W once the OS was built on it |
+| (b) runs twice with no leaked heap | verified on host — 50 cycles, zero outstanding |
+| (c) bumped API version refused with a clear message | verified on host |
+| (d) a faulting app does not take the firmware down | verified on host, and since superseded — a package on RP2350 is contained by the memory protection unit rather than merely reported |
 
-Flashing this `.uf2` **erases the device filesystem**, which is why (a) and (d)
-have not been run: the only board available is currently running RPCortex v1.0
-with a working Nova D1 install on it. The firmware builds for both targets, and
-everything that can be verified without erasing that board has been.
+(a) and (d) went unanswered on hardware for as long as the spike was a spike,
+because flashing this `.uf2` **erases the device filesystem** and the only board
+in the room was running RPCortex v1.0. They were answered by the OS that grew out
+of it: `realapp_test` covers the loader on the host every run, and `devsmoke.py`
+installs and runs a package on a real board.
 
 ## What this spike deliberately does not do
 
 No shell, no filesystem commands, no networking, no registry, no package
-manager. The loader and the minimum needed to demonstrate and measure it. See
-`tools/PLAN-v2.0-cpp.md` in the main workspace for what gets built on top, and
-in what order.
+manager. The loader and the minimum needed to demonstrate and measure it.
+Everything built on top of it lives in `os/`; [`ARCHITECTURE.md`](../ARCHITECTURE.md)
+is the order it went in and why.

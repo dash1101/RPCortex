@@ -126,6 +126,14 @@ commands, which go live immediately and are swept when it unloads. `pkg install`
 `pkg remove` `pkg list` `apps` `unload` `run`. The published set is listed in
 [`repo-v2/index.json`](https://github.com/dash1101/RPCortex-repo/blob/main/repo-v2/index.json).
 
+A position-independent package can go further and **run from flash instead of
+from RAM**. Its read-only half — code, constants and the veneers into the
+firmware — holds no absolute address, so it is written to a flash slot once and
+executed where it lies; only the writable half stays resident. For Nova D1 that
+took the RAM cost from 174 KB down to 62 KB, which is the difference between a
+suite that only ever loaded at boot with the heap still whole and one that
+installs on a running device.
+
 **Parts on the buses.** `nfc`, `ibutton`, `subghz` (CC1101) and `lora` (SX1276)
 are in the firmware rather than in packages, because those buses are shared and
 arbitration is not something a package can do for the rest of the system.

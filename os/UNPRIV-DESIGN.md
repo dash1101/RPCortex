@@ -77,7 +77,8 @@ stashed the package's own return address per task. `CONTROL.nPRIV = 0`. The
 exception return lands in the ABI function, privileged, with r0-r3 untouched.
 
 The index goes in a register rather than in the SVC immediate because the
-immediate is 8 bits and the ABI is already 156 symbols.
+immediate is 8 bits — a ceiling of 256 — and the ABI passed 150 symbols long
+before the mechanism was written.
 
 **Out — no exception.** The ABI function returns to `syscall_return` in flash,
 still privileged, which loads the package's return address and jumps to a second
@@ -116,15 +117,20 @@ grouping stops being an optimization and becomes a prerequisite.
 
 ## Open, and deliberately not in this pass
 
+*Written before the mechanism existed. The first of these was built afterwards —
+"Pointer checking at the ABI boundary" below is what it became, and it did not
+use the `TT` instruction in the end. The second is still open.*
+
 - **Pointer checking at the ABI boundary.** Without it a package can say
   `fw_file_read(fd, <an OS address>, n)` and the privileged OS will do it. That
   is a *deliberate* attack, not a bug, and the stated worry is somebody else's
   package having a bug. ARMv8-M has the `TT` instruction for exactly this check;
   it needs a per-symbol table of which arguments are pointers.
 - **Grouping the soft-float helpers into an unprivileged-executable flash
-  region.** 41 of the 156 symbols are `__aeabi_*`, which are pure arithmetic and
-  touch nothing. One more region and a linker fragment would take them off the
-  syscall path entirely. Worth doing; not needed for correctness.
+  region.** Around a quarter of the ABI table is `__aeabi_*`, which is pure
+  arithmetic and touches nothing. One more region and a linker fragment would
+  take those off the syscall path entirely. Worth doing; not needed for
+  correctness.
 
 ## Things that break and have to be fixed with it
 
@@ -155,9 +161,9 @@ hard-stop, and `gpio list` now does it every time. Worth measuring with
 `meminfo` after a few dozen package commands, and worth holding the pair per
 task rather than per call if it shows.
 
-**Pointer checking at the ABI boundary,** still. Without it a package can hand
-the privileged OS an address of its choosing and have it written to. `TT` is the
-instruction for it, and the table of which arguments are pointers is the work.
+**Pointer checking at the ABI boundary.** Written here as the last hole and
+closed since — the section below is what went in, and what it still does not
+cover.
 
 ## Pointer checking at the ABI boundary
 
@@ -177,8 +183,9 @@ but the second is what the claim implied.
 
 **Every pointer is now range-checked against the five regions the package was
 given** — the same base and size figures the protection unit was programmed
-from, so the two cannot disagree about what a package owns. 40 of the 101 ABI
-entry points take a pointer; all of them check.
+from, so the two cannot disagree about what a package owns. Every ABI entry
+point that takes a pointer checks it; the count is not the claim, the absence of
+exceptions is.
 
 Not the `TT` instruction, which is what ARMv8-M provides for this. Three
 reasons, in order of weight: reaching it from C needs the security extension

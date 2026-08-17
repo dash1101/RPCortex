@@ -6,10 +6,10 @@ One command runs everything that can be run without hardware:
 cd os/host && ./run_all.sh
 ```
 
-Close to sixty suites, about half a minute, and the last line is the answer to
-one question. **It is not the question "does the OS work".** What that line
-covers and what it cannot is the last section of this file, and it is the part
-worth reading first.
+Around sixty suites, about half a minute, and the last line is the answer to one
+question. **It is not the question "does the OS work".** What that line covers
+and what it cannot is the last section of this file, and it is the part worth
+reading first.
 
 `realapp_test` loads the packages `build.sh` produces, so it fails in a tree
 that has not built yet. It says so by name — which file is missing and which
@@ -153,7 +153,7 @@ ws2812 proof <pin> <count>   a strip, quiet then under load - they must look ide
 
 ---
 
-## What "61 passed" does not mean
+## What a green run does not mean
 
 Once, every suite passed while **every position-independent package on the
 device was unable to execute a single instruction**. Not slow, not subtly
@@ -229,14 +229,17 @@ the loader handing out a span the hardware will not take. It would not notice
 `describe()` itself being changed to ask for the wrong permission, because it
 is not asking `describe()` anything.
 
-And **the whole slot path is proved by one 304-byte package.** A package
-reaches it only by being position-independent, `is_pic()` decides that on the
-presence of `R_ARM_GOT_BREL`, and `rpc_add_app(greet PIC)` is the only opt-in
-in `os/CMakeLists.txt` — so every slot-path assertion (r9 against the GOT base,
-the three gates being fetchable, each GOT slot landing in executable memory) is
-exercised by greet and nothing else. Nova D1 is in the list `realapp_test`
-loads but never reaches `check_pic`. The suite fails if that count ever drops
-to zero; it cannot tell that one is thin cover for the path #103 hid in.
+And **the slot path is proved by whatever happens to be opted into it.** A
+package reaches it only by being position-independent, `is_pic()` decides that
+on the presence of `R_ARM_GOT_BREL`, and the `PIC` argument to `rpc_add_app` in
+`os/CMakeLists.txt` is the only opt-in — so every slot-path assertion (r9
+against the GOT base, the three gates being fetchable, each GOT slot landing in
+executable memory) is exercised by exactly the packages carrying it, and by
+nothing else. That was `greet` for a while: 304 bytes, standing in for the whole
+path #103 hid in. It is Nova D1 now, which is the package the slot exists for
+and three orders of magnitude more code, so the cover is far better than it was.
+The suite fails if the count ever drops to zero. It cannot tell whether what is
+left is thin.
 
 **Flash timing and watchdog margin.** `pkgslot_test` proves the slot format and
 the write order against a fake chip that erases to 0xFF and refuses to turn a

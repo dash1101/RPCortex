@@ -89,7 +89,8 @@ Pico and Pico W keep more than the headline suggests:
 - **Packages run.** `main.cpp` picks `LOADER_VENEER_DIRECT` instead of
   `LOADER_VENEER_SVC`, so a veneer branches straight to the firmware's address
   rather than raising an exception that names a function by index. Same `.app`
-  files, same loader, same 156 ABI symbols, same commands registered at load.
+  files, same loader, the same ABI symbol table, same commands registered at
+  load.
   `pkgrepo` refuses an armv8m-only package up front, which is an instruction-set
   question rather than this one.
 - **Multitasking runs**, unchanged. The scheduler, both cores, affinity,

@@ -85,6 +85,23 @@ updates itself.
 - **A package can run a shell command** and read back what it printed
   (`fw_shell_run`) — but not from inside another package command, which used to
   overwrite the outer call's way home and is now refused.
+- **A package can run from flash rather than from RAM.** The read-only half of a
+  position-independent package — code, constants and the veneers into the
+  firmware — holds no absolute address, so it is written to a flash slot once and
+  executed where it lies. Only the writable half is resident. Nova D1 went from
+  174 KB to 62 KB, which is the difference between a suite that could only ever
+  be installed at boot with the heap still whole and one that installs on a
+  running device.
+- **A Nova D1 app is one text file.** A `.napp` in `/nova/apps` is a short header
+  and a dozen rows of `Label = shell command`. Nothing runs when one is
+  installed, and nothing is executed afterwards either — the file is read. That
+  is the whole security story, and it is also forced: one package call per task,
+  and a Nova D1 screen is already inside one, so a screen cannot call into
+  somebody else's package. What an app reaches instead is the firmware command
+  surface — the radios, the contact readers, the network, the filesystem. What
+  it cannot reach is the tools that happen to be packaged: `gpio`, `i2cscan`,
+  `dht`, `ws2812`. A faulty app is listed with the reason it will not open
+  rather than quietly dropped.
 - **Real background work.** v1's `task run` entered a foreground scheduler: it
   was scheduled tasks or an interactive shell, not both. Here the timer is just
   another task.
