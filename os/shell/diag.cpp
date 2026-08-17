@@ -33,6 +33,9 @@ void apps_stack_peak_reset(void);
 // The fault handler's own stack, one per core. See fault.cpp.
 extern "C" uint32_t fault_stack_used(int core);
 extern "C" uint32_t fault_stack_size(void);
+// Whether a report ever ran off the bottom of that stack. See fault.cpp: "used
+// all of it" and "used more than it" are otherwise the same number.
+extern "C" bool     fault_stack_overflowed(int core);
 #include "perms.h"
 #include "users.h"
 #include "session.h"
@@ -634,17 +637,29 @@ static int cmd_mpu(int argc, char **argv) {
     {
         uint32_t fsz = fault_stack_size();
         uint32_t deepest = 0;
+        bool over = false;
         for (unsigned c = 0; c < task_core_count() && c < 2; c++) {
             uint32_t u = fault_stack_used((int)c);
             if (u > deepest) deepest = u;
+            if (fault_stack_overflowed((int)c)) over = true;
         }
         if (fsz)
             out_multi("    Fault handler     : %lu of %lu bytes at its deepest%s",
                       (unsigned long)deepest, (unsigned long)fsz,
                       deepest ? "" : "   (nothing has faulted)");
-        if (deepest * 10 > fsz * 8)
+        // THE OVERFLOW FIRST, because it changes what the number above means.
+        // A report that ran past the bottom of its own stack wrote into the
+        // other core's — so the depth is a lower bound, and whatever else that
+        // report said about the crash was written on top of something.
+        if (over) {
+            out_err("  A crash report ran off the bottom of the handler's stack.");
+            out_multi("    It wrote below it, into the other core's. Raise "
+                      "FAULT_STACK_WORDS");
+            out_multi("    in fault.cpp; the depth above is only a lower bound.");
+        } else if (deepest * 10 > fsz * 8) {
             out_warn("  Over 80%% — a crash report is close to outgrowing the "
                      "stack reserved for it.");
+        }
     }
     out_blank();
 
