@@ -35,6 +35,7 @@ declare -A SRC=(
     # that answers about itself.
     [backup_test]=""
     [fileexp_test]=""
+    [sysmon_test]=""
     [arena_test]="$CORE/arena.cpp"
     [fatview_test]="$CORE/fatview.cpp"
     [fatimage_test]="$CORE/fatview.cpp"
