@@ -30,6 +30,10 @@ void storage_close_source(void *) {}
 extern "C" void api_set_current_app(void *) {}
 extern "C" { volatile const char *g_current_app = nullptr; }
 extern "C" int fault_report_contained(void) { return 0; }
+// Added when apps.cpp started releasing a detached run's claim on every image
+// free (see core/detach.cpp). Stubbed rather than linked because this suite is
+// about placement, and detach.cpp would drag the task table in behind it.
+void detach_forget_owner(const void *) {}
 
 #include "../shell/apps.cpp"
 
