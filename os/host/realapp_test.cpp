@@ -21,6 +21,9 @@
 #include "elf.h"
 #include "mpu.h"
 #include "pkgslot.h"
+// For TaskAppMem — the shape describe() fills, which the shadow map below is
+// compared against. See check_shadow_matches_describe and host_describe.cpp.
+#include "task.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -362,6 +365,56 @@ static Shadow shadow_of(const LoadedApp &app) {
         s.programmed = w.base && w.size && mpu_v8_encode(w.base, w.size, w.perm, &r);
     }
     return sm;
+}
+
+// --- and the same question asked of the real describe() ----------------------
+//
+// The map above is a COPY, on purpose, and that is worth keeping: a helper that
+// called the loader's own placement would agree with it whatever either of them
+// did. What a copy cannot do is notice the thing it is a copy OF changing. Edit
+// describe() to hand out a different span and every region check in this file
+// goes on checking the old one, in silence, exactly as it did before #103.
+//
+// So the two are compared. host_describe.cpp includes os/shell/apps.cpp and
+// hands back the real describe(), and the three spans it produces have to match
+// the three this file computed — base and size, per span. Everything else about
+// a ShadowSpan (the permission, and whether the hardware would accept it) stays
+// this file's own independent answer, so both tripwires exist: the loader moving
+// under the mirror, and describe() moving under the loader.
+//
+// What this does NOT cover: the PERMISSIONS. A TaskAppMem carries spans and
+// nothing else — MPU_RO_EXEC and MPU_RW_NOEXEC are chosen in task_app_mem_apply
+// in os/mpu_rp2.cpp, which has hardware headers and cannot be compiled here at
+// all. Nothing in this suite would notice one of those three being changed to
+// the other. That is on TESTING.md's honest list rather than papered over.
+void host_app_describe(const LoadedApp *a, TaskAppMem *m);
+
+static int check_shadow_matches_describe(const LoadedApp &app, const Shadow &sm,
+                                         const char *how) {
+    TaskAppMem m;
+    host_app_describe(&app, &m);
+    struct { const char *what; uint32_t base, size; } real[3] = {
+        { "code",    (uint32_t)(uintptr_t)m.text,   m.text_size },
+        { "data",    (uint32_t)(uintptr_t)m.data,   m.data_size },
+        { "veneers", (uint32_t)(uintptr_t)m.veneer, m.veneer_size },
+    };
+    int bad = 0;
+    if (sm.n != 3) {
+        printf("       FAIL %s: the shadow has %d span(s), describe() fills 3\n",
+               how, sm.n);
+        return 1;
+    }
+    for (int i = 0; i < 3; i++) {
+        if (sm.s[i].base == real[i].base && sm.s[i].size == real[i].size) continue;
+        printf("       FAIL %s: describe() in os/shell/apps.cpp gives the %s region "
+               "as %08x+%u; this file's shadow of it says %08x+%u.\n"
+               "       They have to agree or every region check here is checking "
+               "a map the device does not program.\n",
+               how, real[i].what, real[i].base, real[i].size,
+               sm.s[i].base, sm.s[i].size);
+        bad = 1;
+    }
+    return bad;
 }
 
 // Which span an address really lands in. Only ones the hardware will hold: a
@@ -905,6 +958,10 @@ static int check_got(const char *path, const LoadedApp &app, bool svc, const cha
 static int check_mpu_regions(const LoadedApp &app, const char *how) {
     int bad = 0;
     Shadow sm = shadow_of(app);
+    // Before anything is judged against the shadow: is the shadow still the map
+    // the device would program? Asked on every path, because describe() is what
+    // runs a package however it was loaded.
+    bad |= check_shadow_matches_describe(app, sm, how);
     for (int i = 0; i < sm.n; i++) {
         const ShadowSpan &s = sm.s[i];
         if (!s.size) continue;                    // legitimately absent

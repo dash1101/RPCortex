@@ -112,7 +112,11 @@ declare -A SRC=(
     [history_test]="$CORE/history.cpp"
     [core_test]="$CORE/sha256.cpp $CORE/registry.cpp $CORE/users.cpp $CORE/lock.cpp $CORE/task.cpp $CORE/blackbox.cpp host_task_stub.cpp"
     [out_test]="$CORE/out.cpp $CORE/lock.cpp $CORE/task.cpp $CORE/blackbox.cpp $CORE/logring.cpp host_task_stub.cpp"
-    [realapp_test]="$SPIKE/loader.cpp $CORE/mpu.cpp $SPIKE/pkgslot.cpp"
+    # host_describe.cpp is what makes the region checks bind to the real thing:
+    # it includes shell/apps.cpp so realapp_test can call describe() and compare
+    # its own shadow of the protection map against it. Everything after it is
+    # what apps.cpp needs to link, and nothing this test calls.
+    [realapp_test]="$SPIKE/loader.cpp $CORE/mpu.cpp $SPIKE/pkgslot.cpp host_describe.cpp $CORE/arena.cpp host_sandbox_stub.cpp $SHELL_DIR/command.cpp $CORE/out.cpp $CORE/lock.cpp $CORE/task.cpp $CORE/blackbox.cpp $CORE/logring.cpp host_task_stub.cpp"
     # The flash slot a package runs from: the format, and the write order that
     # makes an interrupted install safe. Proved against a fake chip, because the
     # interesting cases all involve losing power at a chosen moment.
