@@ -88,10 +88,11 @@ updates itself.
 - **A package can run from flash rather than from RAM.** The read-only half of a
   position-independent package — code, constants and the veneers into the
   firmware — holds no absolute address, so it is written to a flash slot once and
-  executed where it lies. Only the writable half is resident. Nova D1 went from
-  174 KB to 62 KB, which is the difference between a suite that could only ever
-  be installed at boot with the heap still whole and one that installs on a
-  running device.
+  executed where it lies. Only the writable half is resident: Nova D1 goes from
+  174 KB to 62 KB. RP2350 boards only, and the parts of it a host cannot reach —
+  the chip, fetching instructions out of XIP flash, and handing the memory
+  protection unit a flash base — are listed as unconfirmed in `pkgslot.h` and
+  have not been answered by a board.
 - **A Nova D1 app is one text file.** A `.napp` in `/nova/apps` is a short header
   and a dozen rows of `Label = shell command`. Nothing runs when one is
   installed, and nothing is executed afterwards either — the file is read. That

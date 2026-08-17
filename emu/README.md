@@ -15,8 +15,14 @@ The first run fetches the platform, builds its peripherals (needs
 
 The model is an RP2040, so there is **no CYW43** — no WiFi, no Bluetooth — and
 264 KB of RAM rather than the RP2350's 520. That leaves about 163 KB free at
-boot, against Nova D1's ~61 KB image: tight, and it may not load. There is no
-USB either.
+boot. There is no USB either.
+
+Nova D1 is the package that will not fit comfortably in that. The flash slot
+that lets a package execute in place, and keeps only its writable half resident,
+is an RP2350 feature — `RPC_PKG_SLOT_COUNT` is 0 for `pico` and `pico_w`, and an
+RP2040 runs direct veneers and could not use a slot if it had one. So here it
+takes the copy-to-RAM path and needs well over a hundred kilobytes in one
+unbroken block: tight against 163 KB, and it may not load.
 
 What it does cover is the scheduler on both cores, littlefs on real emulated
 flash, the loader, the package system and the shell — which is where three of

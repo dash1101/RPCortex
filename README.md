@@ -130,9 +130,9 @@ A position-independent package can go further and **run from flash instead of
 from RAM**. Its read-only half — code, constants and the veneers into the
 firmware — holds no absolute address, so it is written to a flash slot once and
 executed where it lies; only the writable half stays resident. For Nova D1 that
-took the RAM cost from 174 KB down to 62 KB, which is the difference between a
-suite that only ever loaded at boot with the heap still whole and one that
-installs on a running device.
+takes the RAM cost from 174 KB to 62 KB. The slot is an RP2350 feature: the
+RP2040 boards get no slot and keep the copy-to-RAM path, which is unchanged.
+What the slot path still owes a board is below.
 
 **Parts on the buses.** `nfc`, `ibutton`, `subghz` (CC1101) and `lora` (SX1276)
 are in the firmware rather than in packages, because those buses are shared and
@@ -229,6 +229,14 @@ Kept here rather than in a status file nobody outside this repository reads.
 - **The RP2040 images have never been booted.** They build, both image checks
   pass on them, and the flash layout was verified by reading the constant back
   out of the compiled firmware — but no Pico or Pico W has run one.
+- **Running a package out of a flash slot is not confirmed on a board.** The
+  format, the commit ordering and the relocations are host-tested against a fake
+  chip that erases to 0xFF and refuses to turn a bit back on, which covers what
+  is written and in what order. What that cannot cover is the chip itself, the
+  CPU fetching a package's instructions out of XIP flash rather than SRAM, and
+  the memory protection unit being handed a flash base as a package's executable
+  region — which it has never been given. `pkgslot.h` and `os/shell/pkg.cpp` list
+  it; a refusal there is a fault on the package's first instruction.
 - **The microSD driver has never seen a card.** The command sequence that brings
   a card up is host-tested against a fake card written from the specification,
   and the filesystem above it against volumes `fsck.fat` approves of. What is
