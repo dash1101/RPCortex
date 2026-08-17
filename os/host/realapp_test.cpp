@@ -97,6 +97,22 @@ static int g_branches;
 // thin cover for the path #103 hid in."
 static int      g_slot_got, g_slot_branch, g_slot_abs;
 static uint32_t g_slot_biggest_blob;
+// --- the architecture none of the region checks apply to ---------------------
+//
+// Everything this file says about protection regions is an ARMv8-M claim.
+// task_app_mem_apply COMPILES THE PACKAGE REGIONS OUT on ARMv6-M — see the
+// `#if MPU_V6` in os/mpu_rp2.cpp — so on a Pico or Pico W there is no code
+// region, no data region and no veneer region, and a package runs with the
+// default map and the OS's own privileges.
+//
+// That is a decision, not an oversight, and it is not this suite's to relitigate.
+// What IS this suite's business is that a reader of a green run does not come
+// away thinking the RP2040 build was checked. A check that does not apply has to
+// read as skipped; counted and named, never folded into the pass.
+static int      g_v6_skipped;        // region checks above that mean nothing there
+static uint32_t g_v6_would_cost;     // heap the same spans would cost if it did
+static uint32_t g_v6_real_bytes;     // what those spans actually occupy
+static int      g_v6_unencodable;    // spans ARMv6-M could not describe as they are
 // What the loader READ, as well as what it allocated. The page-at-a-time
 // installer buys its small footprint by re-reading the relocation table once per
 // page, and "that is cheap" is a claim rather than a fact until the number is on
@@ -972,6 +988,21 @@ static int check_mpu_regions(const LoadedApp &app, const char *how) {
             bad = 1;
         }
     }
+    // And the same three spans asked of the OTHER architecture, which is not a
+    // check but a ledger. Nothing above this line means anything on an RP2040:
+    // the regions are compiled out there, so what is recorded is how many checks
+    // were skipped and what the skip is buying.
+    for (int i = 0; i < sm.n; i++) {
+        const ShadowSpan &s = sm.s[i];
+        if (!s.size) continue;
+        g_v6_skipped++;
+        g_v6_real_bytes += s.size;
+        MpuV6Region r6;
+        MpuBlockPlan p6;
+        if (!mpu_v6_encode(s.base, s.size, 0, s.perm, &r6)) g_v6_unencodable++;
+        g_v6_would_cost += mpu_v6_plan_block(s.size, &p6) ? p6.region_bytes : s.size;
+    }
+
     uint32_t vsize = mpu_align_up(app.veneers_used, MPU_V8_GRAIN);
     if (vsize > app.veneer_size) vsize = app.veneer_size;
     if (app.veneers_used && !vsize) {
@@ -2681,6 +2712,43 @@ int main(int argc, char **argv) {
                "exercised it\n");
         fails++;
     }
+    // --- the skip ledger -----------------------------------------------------
+    //
+    // Printed on every run, in the same block as the pass, because the one thing
+    // a green line here must not be read as is "the packages are protected on
+    // every board". On an RP2040 they are protected on none of them, and no
+    // amount of work on a host changes that — the regions are not merely
+    // untested there, they are not compiled.
+    if (g_v6_skipped) {
+        printf("  ARMv6-M (Pico, Pico W): %d region check(s) above SKIPPED, not passed.\n"
+               "       task_app_mem_apply compiles the package regions out on that\n"
+               "       architecture, so a package there runs under the default map with\n"
+               "       no code, data or veneer region at all. Everything this file says\n"
+               "       about protection is an ARMv8-M claim.\n",
+               g_v6_skipped);
+        // The reason the skip exists, measured rather than asserted from the
+        // comment that explains it. ARMv6-M regions are power-of-two sized and
+        // aligned to their own size, so a span that is a whole number of 32-byte
+        // blocks is usually not describable at all and has to be rounded up to
+        // the next power of two — with the allocation moved to match.
+        printf("       The trade, measured: %u B of spans would need %u B of "
+               "power-of-two regions (%u of %d not describable as they stand).\n",
+               g_v6_real_bytes, g_v6_would_cost, g_v6_unencodable, g_v6_skipped);
+        // A TRIPWIRE ON THE SKIP ITSELF. If the loader's blocks ever became
+        // power-of-two sized and aligned, every span here would be describable
+        // on ARMv6-M, the reason for compiling the regions out would be gone,
+        // and this ledger would be quietly justifying a decision whose grounds
+        // had disappeared.
+        if (!g_v6_unencodable && g_v6_skipped) {
+            printf("  FAIL every package span is now describable on ARMv6-M as it "
+                   "stands, so the reason the regions are compiled out there — that\n"
+                   "       they would cost a power of two each — no longer holds. Either\n"
+                   "       turn them on in task_app_mem_apply or write down the new\n"
+                   "       reason; do not leave this note saying something untrue.\n");
+            fails++;
+        }
+    }
+
     // The copy path used to check no branch at all. Printed so a change that
     // stopped it walking them would show as a number falling to zero rather
     // than as one fewer silent line.

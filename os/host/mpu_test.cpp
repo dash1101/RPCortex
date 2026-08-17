@@ -151,6 +151,38 @@ int main(void) {
     ck(!mpu_v6_encode(0x20001000u, 32, 8, MPU_NO_ACCESS, &r6),
        "and a region number the hardware does not have");
 
+    // --- what a REAL package span costs on each architecture -----------------
+    //
+    // The reason `task_app_mem_apply` compiles the package regions out on
+    // ARMv6-M, in numbers rather than in prose. It is the one thing about the
+    // RP2040 build a host can actually assert: not that the protection works
+    // there — there is none — but that the grounds for leaving it out still
+    // hold.
+    //
+    // The loader hands out blocks that are a whole number of 32-byte protection
+    // blocks, starting on a 32-byte boundary (APP_BLOCK_ALIGN). ARMv8-M
+    // describes exactly that. ARMv6-M describes a power of two, aligned to its
+    // own size, and neither of those follows from the other — so a span the
+    // loader produces is usually not describable there at all, and making it so
+    // costs both the rounding and the alignment.
+    //
+    // These are the read-only half of `stress` as the loader really lays it out,
+    // 4800 bytes on a 32-byte boundary, and realapp_test carries the same
+    // arithmetic over every span of every built package.
+    MpuBlockPlan pk;
+    ck(mpu_v8_encode(0x20002020u, 4800, MPU_RO_EXEC, &r8),
+       "a package's code half is one ARMv8-M region exactly");
+    ck(!mpu_v6_encode(0x20002020u, 4800, 1, MPU_RO_EXEC, &r6),
+       "and is not describable on ARMv6-M at all: 4800 is no power of two");
+    ck(mpu_v6_plan_block(4800, &pk) && pk.region_bytes == 8192 && pk.align == 8192,
+       "it would take an 8 KB region on an 8 KB boundary there");
+    // The allocation, not just the region: a base aligned to its own size means
+    // asking the heap for nearly twice the block to be sure of finding one.
+    ck(pk.alloc_bytes == 8192 + 8191,
+       "and up to 16 KB of heap to place it, for 4800 bytes of package");
+    ck(mpu_v8_plan_block(4800, &pk) && pk.region_bytes == 4800 && pk.alloc_bytes == 4800 + 31,
+       "against 4800 bytes and 31 of slack on ARMv8-M");
+
     // --------------------------------------------------------------- planning
     //
     // The three numbers a caller needs have to agree: ask malloc for
