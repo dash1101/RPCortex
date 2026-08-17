@@ -1417,6 +1417,173 @@ static void test_lan_reprobe_keeps_the_cursor(void) {
     g_net_up = 0;
 }
 
+// --- the lock ---------------------------------------------------------------------
+//
+// It had four settings rows and no implementation: Lock_Kind, PIN, Pass and
+// LockSec were written by the Security screen and read by nothing. So these
+// checks are as much about the ARMING rule as about the screen — a lock that
+// engages with no code stored is a panel with no way back into it, and that is
+// the failure a host can and must catch.
+static void set_pin(const char *pin) {
+    fw_reg_set("Apps.NovaD1_Lock_Kind", pin && pin[0] ? "pin" : "none");
+    fw_reg_set("Apps.NovaD1_PIN", pin ? pin : "");
+    fw_reg_set("Apps.NovaD1_Pass", "");
+}
+
+static void clear_lock(void) {
+    set_pin("");
+    fw_reg_set("Apps.NovaD1_LockSec", "0");
+}
+
+// Turn the pad to `pin` and submit it, the way a person does: SELECT walks the
+// digits, the encoder sets each one, HOME enters it.
+static void type_pin(const char *pin) {
+    using namespace nova;
+    for (int i = 0; i < 6; i++) {
+        for (int d = 0; d < pin[i] - '0'; d++) { input().inject(EV_ROT_CW); frame(); }
+        input().inject(EV_SELECT); frame();
+    }
+    input().inject(EV_HOME); frame();
+}
+
+static void test_lock_needs_a_code(void) {
+    using namespace nova;
+    gui::go_home();
+    clear_lock();
+
+    // A preference with no code behind it. Lock_Kind alone used to be what the
+    // settings row believed, and arming on it would lock a device that has
+    // nothing to unlock with.
+    fw_reg_set("Apps.NovaD1_Lock_Kind", "pin");
+    fw_reg_set("Apps.NovaD1_PIN", "");
+    streq_(screens::lock_state(), "None", "a type with no code set is not a lock");
+    ok(!screens::lock_armed(), "and does not arm");
+    screens::lock_engage();
+    ok(!screens::lock_active(), "engaging it does nothing at all");
+    eq((int)gui::depth(), 1, "and nothing is pushed");
+
+    fw_reg_set("Apps.NovaD1_Lock_Kind", "password");
+    fw_reg_set("Apps.NovaD1_Pass", "");
+    streq_(screens::lock_state(), "None", "the same for a password with none stored");
+
+    // A code cleared while the type still says password is the case pass_typed
+    // exists for; the state has to follow the code, not the preference.
+    set_pin("246810");
+    streq_(screens::lock_state(), "PIN", "a stored code is what makes it a lock");
+    ok(screens::lock_armed(), "and it arms");
+    clear_lock();
+}
+
+static void test_lock_screen(void) {
+    using namespace nova;
+    gui::go_home();
+    set_pin("246810");
+
+    screens::lock_engage();
+    ok(screens::lock_active(), "the lock goes up");
+    ui::Screen *s = gui::top();
+    ok(s && s->fullscreen(), "it takes the whole panel, status bar included");
+    ok(s && s->modal(), "and HOME does not escape it");
+
+    // It is fullscreen, so novashots' two rules do not apply and novashots
+    // cannot reach it anyway — nothing in the catalogue opens it. What still
+    // has to hold is the one that matters on a device: a blank panel and a hung
+    // device look identical, and a lock is the worst place to find that out.
+    frame();
+    int lit = 0;
+    for (int y = 0; y < gui::canvas().height(); y++)
+        for (int x = 0; x < gui::canvas().width(); x++) if (gui::canvas().get(x, y)) lit++;
+    ok(lit > 40, "and it draws a panel rather than a blank one");
+
+    // The two gestures that get out of every other screen must not get out of
+    // this one. BACK first, because Screen::on_event's default would pop it.
+    const unsigned d = gui::depth();
+    input().inject(EV_BACK); frame();
+    eq((int)gui::depth(), (int)d, "BACK does not pop the lock");
+    ok(screens::lock_active(), "and it is still locked");
+    input().inject(EV_HOME); frame();
+    eq((int)gui::depth(), (int)d, "HOME does not drop through it");
+    ok(screens::lock_active(), "still locked");
+
+    // Holding HOME opens the power menu from every other screen on the device.
+    // Over the lock it must not, or Reboot and Screen off are two gestures away
+    // from anybody who picks it up. Asked of the runner's own rule rather than
+    // of the harness's copy of the loop, which does not have this branch in it.
+    ok(!gui::power_gesture_ok(), "holding HOME opens no power menu over the lock");
+
+    // A wrong code says so and stays put.
+    input().inject(EV_SELECT); frame();
+    ok(gui::depth() == d + 1, "SELECT opens the pad");
+    type_pin("111111");
+    frame();
+    ok(screens::lock_active(), "a wrong code leaves it locked");
+    ok(strstr(screens::g_lock_note, "Wrong") != nullptr, "and says so on the panel");
+
+    // And the right one gets out.
+    input().inject(EV_SELECT); frame();
+    type_pin("246810");
+    frame();
+    ok(!screens::lock_active(), "the right code unlocks it");
+    eq((int)gui::depth(), 1, "and leaves nothing of itself behind");
+    ok(gui::power_gesture_ok(), "and holding HOME reaches the power menu again");
+
+    clear_lock();
+}
+
+// The runner arms it off the idle clock, the same one that dims and blanks the
+// panel. Driven through gui::lock_due so the rule is the runner's own and not a
+// second copy written here.
+static void test_lock_idle(void) {
+    using namespace nova;
+    gui::go_home();
+    set_pin("246810");
+    fw_reg_set("Apps.NovaD1_LockSec", "30");
+
+    ok(!gui::lock_due(29), "29 seconds idle with a 30 second timeout is not due");
+    ok(gui::lock_due(30),  "30 is");
+    ok(gui::lock_due(600), "and so is anything past it");
+
+    fw_reg_set("Apps.NovaD1_LockSec", "0");
+    ok(!gui::lock_due(100000), "zero is never, not immediately");
+
+    // Never with no code, whatever the timeout says.
+    fw_reg_set("Apps.NovaD1_LockSec", "30");
+    set_pin("");
+    ok(!gui::lock_due(600), "and a timeout with no code set is still never");
+
+    clear_lock();
+}
+
+// A staged update owns the panel and must not be interrupted by the lock: it is
+// modal for exactly that reason, and the arming rule honours it.
+static void test_lock_yields_to_a_modal(void) {
+    using namespace nova;
+    gui::go_home();
+    set_pin("246810");
+
+    // Any modal will do; the update screen's own is scripted elsewhere, so this
+    // uses the one every screen can raise.
+    ui::confirm("Something that has to be answered?", "Yes", nullptr, nullptr);
+    ui::Screen *s = gui::top();
+    ok(s && s->modal(), "a confirmation is modal");
+    screens::lock_engage();
+    ok(!screens::lock_active(), "the lock does not go up over one");
+
+    gui::go_home();
+    screens::lock_engage();
+    ok(screens::lock_active(), "and does once it has been answered");
+
+    // Twice must not stack. Two lock screens is two things to unlock.
+    const unsigned d = gui::depth();
+    screens::lock_engage();
+    eq((int)gui::depth(), (int)d, "engaging it again pushes nothing");
+
+    screens::g_lock_pass = true;
+    frame();
+    ok(!screens::lock_active(), "unlocked again for whatever runs next");
+    clear_lock();
+}
+
 int main(void) {
     STAGE(test_single_instance);
     STAGE(test_one_detent_animates);
@@ -1444,6 +1611,10 @@ int main(void) {
     STAGE(test_lan_holds_the_radio);
     STAGE(test_lan_derive);
     STAGE(test_lan_reprobe_keeps_the_cursor);
+    STAGE(test_lock_needs_a_code);
+    STAGE(test_lock_screen);
+    STAGE(test_lock_idle);
+    STAGE(test_lock_yields_to_a_modal);
     STAGE(test_no_panel);
 
     printf("  %d checks", checks);

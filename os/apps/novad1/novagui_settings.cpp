@@ -2,6 +2,7 @@
 // File: novagui_settings.cpp
 #include "novagui_settings.h"
 #include "novagui_wifi.h"
+#include "novagui_ops.h"
 #include "novagui.h"
 #include "novakeys.h"
 #include "novacore.h"
@@ -500,19 +501,11 @@ constexpr int KIND_COUNT = 3;
 static const int kLockSteps[] = { 0, 30, 60, 300, 900 };
 constexpr int LOCK_STEPS = 5;
 
-// What the lock ACTUALLY is right now.
-//
-// Lock type stores a PREFERENCE and keeps its last value after the code is
-// cleared, so the row went on saying "PIN" for a device with no PIN on it. This
-// reports None when nothing is stored, because that is the fact that matters.
-static const char *lock_state(void) {
-    const char *kind = nova::reg(NOVA_KEY_PREFIX "Lock_Kind", "none");
-    if (nova::ieq(kind, "password"))
-        return nova::reg(NOVA_KEY_PREFIX "Pass", "")[0] ? "Password" : "None";
-    if (nova::ieq(kind, "pin"))
-        return nova::reg(NOVA_KEY_PREFIX "PIN", "")[0] ? "PIN" : "None";
-    return "None";
-}
+// lock_state() lives in novagui_ops.cpp with the lock screen itself. It was here
+// first, as a static, and it had to move the day something other than this
+// screen needed the answer: the runner arms the lock off the same predicate, and
+// two copies of "is there actually a code on this device" is how a settings row
+// ends up saying PIN while the runner refuses to ask for one.
 
 static void pin_typed(void *, const char *pin) {
     nova::reg_set(NOVA_KEY_PREFIX "PIN", pin);
@@ -534,11 +527,13 @@ public:
     const char *title(void) const override { return "Security"; }
 
     int help(const char **out, int max) const override {
-        if (max < 3) return 0;
+        if (max < 5) return 0;
         out[0] = "The lock guards the screen,";
         out[1] = "not the shell or the files.";
-        out[2] = "'novad1 pin clear' undoes it.";
-        return 3;
+        out[2] = "It engages on idle and from";
+        out[3] = "Power -> Lock, not at boot.";
+        out[4] = "'novad1 pin clear' undoes it.";
+        return 5;
     }
 
 protected:
@@ -573,7 +568,17 @@ protected:
     Action activate(int i) override {
         switch (i) {
             case R_STATE:
-                break;                              // a readout
+                // It reads as the state and it ACTS as the verb, which is what a
+                // row called Lock should do. It was a readout, and a readout
+                // that looks exactly like the four actionable rows under it is
+                // indistinguishable from a dead button — the whole reason this
+                // was worth a pass.
+                if (!lock_armed())
+                    ui::notice("Lock", "Nothing to lock with. Set the type below, "
+                                       "then choose a code.");
+                else
+                    lock_engage();
+                break;
             case R_KIND:
                 kind_ = (kind_ + 1) % KIND_COUNT;
                 dirty_ = true;
@@ -609,11 +614,18 @@ protected:
                 break;
             }
             default:
-                // A readout, deliberately. This is the same OS latch the Network
+                // A readout, deliberately: this is the same OS latch the Network
                 // screen's Radio row owns, and two rows driving one switch is how
                 // a settings tree ends up disagreeing with itself. What belongs
                 // here is the answer to "is anything transmitting", which is the
                 // question Security is being asked.
+                //
+                // But it SAYS so now. A row that looks like the four above it and
+                // does nothing when pressed teaches somebody the device is
+                // broken, whatever the reason behind it is — so it points at the
+                // two places that do own the switch.
+                ui::notice("Incognito", "Shown here, changed in Network -> Radio "
+                                        "or by holding HOME for Power.");
                 break;
         }
         return ui::ACT_STAY;

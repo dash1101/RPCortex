@@ -416,6 +416,146 @@ public:
     }
 };
 
+// --- the lock ------------------------------------------------------------------------
+//
+// The Security group has had four rows about a lock since the port started, and
+// until now nothing on the device ever read what they wrote. Apps.NovaD1_PIN,
+// Lock_Kind and LockSec were set by that screen and by `novad1 pin`, and no code
+// anywhere asked for them: the settings were real, the lock was not.
+//
+// Two hooks in the UI leaf were built for this and were unused, which is where
+// the shape below comes from rather than from taste. novaui.h on fullscreen():
+// "The splash and the lock screen." novagui.cpp on modal(): "a lock that HOME
+// escapes is not a lock."
+//
+// WHAT IT IS, said plainly, because the scope decides the design. It guards the
+// PANEL against somebody picking the device up — not the shell, not the files,
+// not a thief. The code is in the registry in the clear, `novad1 pin clear` over
+// a cable removes it, and it does NOT engage at boot. That last one is a
+// deliberate limit rather than an oversight: this runs as a boot service on
+// boards whose buttons are not always finished, and a device that comes up
+// demanding six digits it has no working switch to take is a device with no way
+// in at all. The help says so, so the promise matches the behaviour.
+
+// What the lock ACTUALLY is right now, as opposed to what is preferred.
+//
+// Lock type keeps its last value after the code is cleared, so a device with no
+// PIN on it still reads "pin" in Lock_Kind. Everything that asks whether this
+// device is locked has to ask THIS, or the settings row says PIN while nothing
+// ever asks for one — and, worse, the runner would arm a lock with nothing to
+// check against and brick the panel.
+const char *lock_state(void) {
+    const char *kind = nova::reg(NOVA_KEY_PREFIX "Lock_Kind", "none");
+    if (nova::ieq(kind, "password"))
+        return nova::reg(NOVA_KEY_PREFIX "Pass", "")[0] ? "Password" : "None";
+    if (nova::ieq(kind, "pin"))
+        return nova::reg(NOVA_KEY_PREFIX "PIN", "")[0] ? "PIN" : "None";
+    return "None";
+}
+
+bool lock_armed(void) { return !nova::ieq(lock_state(), "None"); }
+
+static bool g_locked;               // the screen is up
+static bool g_lock_pass;            // the code just entered was right
+static char g_lock_note[24];        // and what to say when it was not
+static int  g_lock_tries;
+
+bool lock_active(void) { return g_locked; }
+
+// The code, checked. Constant-time comparison would be theatre on a registry
+// value anyone with a cable can read; what matters is that a wrong answer says
+// so and a right one gets out.
+static void lock_typed(void *, const char *text) {
+    const bool pass = nova::ieq(lock_state(), "Password");
+    const char *want = nova::reg(pass ? NOVA_KEY_PREFIX "Pass" : NOVA_KEY_PREFIX "PIN", "");
+    if (text && want[0] && !strcmp(text, want)) {
+        g_lock_pass = true;
+        g_lock_note[0] = 0;
+        return;
+    }
+    g_lock_tries++;
+    // Counted and shown. Not enforced — there is nothing to lock somebody OUT
+    // of that a reboot would not undo, and a wrong count that pretends otherwise
+    // is worse than none. It is there so a device found with eleven failures on
+    // it has something to say about that.
+    snprintf(g_lock_note, sizeof(g_lock_note), "Wrong. %d tried", g_lock_tries);
+}
+
+class LockScreen : public Screen {
+public:
+    const char *title(void) const override { return "Locked"; }
+
+    // Both of these, and both for the reason the leaf gives. Fullscreen because
+    // the status bar is the runner's and a locked device should not be showing
+    // which screen it was left on; modal because HOME is otherwise a guaranteed
+    // way out of every screen, and a guaranteed way out of a lock is not a lock.
+    bool fullscreen(void) const override { return true; }
+    bool modal(void) const override { return true; }
+
+    void draw(Canvas &c) override {
+        char t[12];
+        nova::time_hhmm(t, sizeof(t));
+        c.text_centred(6, t, 1, 2, false);
+
+        char name[20];
+        nova::ellipsize(name, sizeof(name), nova::reg(NOVA_KEY_PREFIX "Name", "Nova D1"), 20);
+        c.text_centred(28, name, 1);
+
+        // The padlock, drawn rather than spelled: at this size a shackle over a
+        // body reads from across a room and the word does not.
+        const int cx = c.width() / 2;
+        c.rect(cx - 5, 42, 10, 8, 1);
+        c.line(cx - 3, 42, cx - 3, 39, 1);
+        c.line(cx + 3, 42, cx + 3, 39, 1);
+        c.hline(cx - 3, 38, 7, 1);
+
+        c.text_centred(c.height() - ui::FH - 1,
+                       g_lock_note[0] ? g_lock_note : "SELECT to unlock", 1);
+    }
+
+    // Popping itself from tick, which is how the splash gets off the stack too.
+    // It cannot be done from the callback: ui::pinpad's screen returns ACT_BACK
+    // after calling it, and the pop that follows takes the TOP screen — which
+    // would be this one if it had already popped itself, and then the pinpad
+    // would be left standing over an unlocked device.
+    bool tick(uint32_t) override {
+        if (!g_lock_pass) return false;
+        g_lock_pass = false;
+        g_locked    = false;
+        g_lock_tries = 0;
+        gui::pop();
+        return true;
+    }
+
+    Action on_event(Event e) override {
+        if (e == EV_SELECT || e == EV_SELECT_HOLD) {
+            if (nova::ieq(lock_state(), "Password"))
+                ui::keyboard("Password", nullptr, true, lock_typed, nullptr, nullptr);
+            else
+                ui::pinpad("PIN", lock_typed, nullptr, nullptr);
+            return ui::ACT_STAY;
+        }
+        // Everything else, including BACK and HOME, does nothing at all. Not
+        // Screen::on_event — its default is exactly the two ways out this
+        // screen exists to close.
+        return ui::ACT_STAY;
+    }
+};
+
+// Put it up. Safe to call from anywhere and every time: it refuses when there is
+// nothing to check against, when it is already up, and when the screen on top is
+// in the middle of something it may not be interrupted during — a staged update
+// holding the panel is the case that exists today.
+void lock_engage(void) {
+    if (g_locked || !lock_armed()) return;
+    ui::Screen *s = gui::top();
+    if (s && s->modal()) return;
+    g_lock_note[0] = 0;
+    g_lock_pass    = false;
+    if (!gui::push<LockScreen>()) return;    // a full stack; better unlocked than wedged
+    g_locked = true;
+}
+
 // --- Power ----------------------------------------------------------------------
 //
 // Holding HOME opens this from anywhere, which decides the whole shape of it.
@@ -444,6 +584,24 @@ static Action power_incognito(void *, int) {
     // down is more than a setting: the wireless chip's firmware is unloaded, and
     // `radio` is the one place that knows the order to do it in.
     push_output("Incognito", incognito_on() ? "radio on" : "radio off");
+    return ui::ACT_STAY;
+}
+
+// The runner's own comment above EV_HOME_HOLD says holding HOME puts "lock and
+// shutdown" one gesture away. Shutdown was here; lock was not, and had nothing
+// behind it to reach. This is that row.
+static Action power_lock(void *, int) {
+    if (!lock_armed()) {
+        ui::notice("Lock", "No code is set. Settings -> Security -> Lock type, "
+                           "then Change code.");
+        return ui::ACT_STAY;
+    }
+    // ACT_STAY, and the Power menu is left underneath on purpose. Going home
+    // first would mean popping the screen whose on_event is running this
+    // callback — pop() destroys it, and Menu::on_event carries on through `this`
+    // afterwards. So the lock goes on top and unlocking comes back here, which
+    // is where somebody was.
+    lock_engage();
     return ui::ACT_STAY;
 }
 
@@ -483,6 +641,7 @@ static Action power_shutdown(void *, int) {
 // The safest first, so the row the cursor lands on is one nobody minds pressing.
 static const ui::MenuItem kPowerItems[] = {
     { "Screen off",  power_screen_off, nullptr },
+    { "Lock",        power_lock,       nullptr },
     { g_incognito,   power_incognito,  nullptr },
     { "Sleep",       power_sleep,      nullptr },
     { "Reboot",      power_reboot,     nullptr },

@@ -768,6 +768,19 @@ static void open_category(void) {
 //
 // Zeroing the gap costs one frame of stillness at the very start of a movement,
 // which is not visible.
+// The lock's arming rule, in one place. THE LAST TEST IS THE ONE THAT MATTERS:
+// a timeout can be set on a device with no code stored — Lock_Kind keeps its
+// last value after `novad1 pin clear` — and arming on the clock alone would put
+// up a screen that asks for a PIN nothing will ever accept.
+bool lock_due(uint32_t idle_s) {
+    int s = nova::reg_int(NOVA_KEY_PREFIX "LockSec", 0);
+    if (s <= 0) return false;
+    if (idle_s < (uint32_t)s) return false;
+    return screens::lock_armed();
+}
+
+bool power_gesture_ok(void) { return !screens::lock_active(); }
+
 uint32_t frame_dt(uint32_t now, uint32_t *last, bool had_input) {
     if (!last) return 0;
     if (had_input) *last = now;
@@ -908,7 +921,9 @@ void run(void) {
             // Holding HOME opens the power menu from ANY screen, whatever state
             // it is in, so lock and shutdown are always one gesture away. It
             // does not stack a second copy on itself.
-            if (e == EV_HOME_HOLD) {
+            // ...with one exception, and power_gesture_ok() is where it is
+            // written down and where it is checked.
+            if (e == EV_HOME_HOLD && power_gesture_ok()) {
                 Screen *s = top();
                 if (!s || !nova::ieq(s->title(), "Power")) screens::open_power();
                 g_dirty = true;
@@ -964,6 +979,16 @@ void run(void) {
         int off_s = nova::reg_int(NOVA_KEY_PREFIX "OffSec", 120);
         if      (off_s > 0 && idle >= (uint32_t)off_s) set_level(LVL_OFF);
         else if (dim_s > 0 && idle >= (uint32_t)dim_s) set_level(LVL_DIM);
+
+        // And the lock, on the same clock and read the same way. It is a third
+        // tier rather than a thing hung off "screen off", because the two are
+        // set independently and somebody may well want the panel to stay lit
+        // and still want it locked — or the other way round.
+        //
+        // lock_engage refuses when it is already up and when the screen on top
+        // is modal, so this can be an unguarded call every frame and both
+        // reasons live in one place.
+        if (lock_due(idle)) screens::lock_engage();
 
         // Notification toast. Clear an expired or dismissed one FIRST (so a press
         // that lands on the same frame a new one arrives does not eat it), then
