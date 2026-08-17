@@ -82,6 +82,10 @@ static int g_pic_checked;
 // exercised. That something is check_movw_fixture.
 static int g_movw_real;
 static int g_movw_fixture;
+// Branch relocations judged by where they LAND, on the two copy paths. The slot
+// path has always decoded these; the copy path checked nothing but the parity of
+// a veneer's target word, which says nothing about whether any BL goes there.
+static int g_branches;
 // What the loader READ, as well as what it allocated. The page-at-a-time
 // installer buys its small footprint by re-reading the relocation table once per
 // page, and "that is cheap" is a claim rather than a fact until the number is on
@@ -599,6 +603,159 @@ static int check_movw_movt(const ElfMirror &m, const LoadedApp &app,
     return bad;
 }
 
+// The offset a Thumb-2 BL / B.W actually encodes, decoded from the ARMv7-M
+// definition rather than by calling the loader's own helper. A checker that used
+// the code under test would agree with it whatever either of them did, and the
+// encode/decode pair being self-consistently wrong is exactly the bug that
+// produces a package which links, loads, and branches into the wrong place.
+//
+// The CPU computes the target as (address of the instruction) + 4 + this.
+static int32_t thumb_branch_off(const uint8_t *p) {
+    uint32_t hw1 = (uint32_t)p[0] | ((uint32_t)p[1] << 8);
+    uint32_t hw2 = (uint32_t)p[2] | ((uint32_t)p[3] << 8);
+    uint32_t sgn = (hw1 >> 10) & 1u;
+    uint32_t j1  = (hw2 >> 13) & 1u, j2 = (hw2 >> 11) & 1u;
+    uint32_t i1  = 1u - (j1 ^ sgn), i2 = 1u - (j2 ^ sgn);
+    int32_t v = (int32_t)((i1 << 23) | (i2 << 22) |
+                          ((hw1 & 0x3ffu) << 12) | ((hw2 & 0x7ffu) << 1));
+    return sgn ? v - (1 << 24) : v;          // two's complement across 25 bits
+}
+
+// --- every branch, by where it actually lands --------------------------------
+//
+// THM_CALL and THM_JUMP24 are most of the relocations in a package — novad1 has
+// 3066 of them — and on the copy path nothing judged one. The slot path decoded
+// every branch and confirmed it reaches the symbol it names; here the strongest
+// claim made was that a veneer's target word was odd, which says nothing about
+// whether any BL in the image actually goes there.
+//
+// A wrong branch is the worst-behaved thing the loader can produce. It links, it
+// loads, every other check in this file passes, and the package jumps into the
+// middle of an unrelated instruction — the +4 note in loader.cpp is that exact
+// mistake, four bytes early, on every call.
+//
+// Two legitimate destinations, and both are checked rather than either being
+// assumed:
+//
+//   DIRECT — the target is in BL range, so the branch goes straight to it.
+//   VENEERED — it is not, which for a firmware call is the normal case rather
+//     than an edge one: firmware is in XIP flash 256 MB from SRAM. The branch
+//     then goes to a trampoline in the pool, and what has to be true is that the
+//     trampoline carries the right destination. In DIRECT veneer mode that is
+//     the firmware ADDRESS; in SVC mode the loader resolves an undefined symbol
+//     to its supervisor-call veneer before the branch is encoded at all, so the
+//     branch is in range and there is no second hop — a veneered branch in SVC
+//     mode means an out-of-range target the sandbox cannot express, which the
+//     loader is supposed to refuse outright.
+static int check_branches(const ElfMirror &m, const LoadedApp &app,
+                          const Shadow &sm, const char *how, bool svc,
+                          int *sites_out) {
+    int bad = 0, sites = 0, direct = 0, veneered = 0, relocs = 0;
+    const uint8_t *vbase = (const uint8_t *)app.veneers;
+
+    for (int s = 0; s < m.eh->e_shnum; s++) {
+        if (m.sh[s].sh_type != SHT_REL) continue;
+        uint32_t tgt = m.sh[s].sh_info;
+        Elf32_Rel *rel = (Elf32_Rel *)(m.b + m.sh[s].sh_offset);
+        uint32_t n = m.sh[s].sh_size / sizeof(Elf32_Rel);
+        for (uint32_t r = 0; r < n; r++) {
+            uint32_t type = ELF32_R_TYPE(rel[r].r_info);
+            if (type != R_ARM_THM_CALL && type != R_ARM_THM_JUMP24) continue;
+            relocs++;
+            // Branches live in the executable half. One in a section the loader
+            // did not place, or in the writable half, is not something this can
+            // read — and it is worth saying so rather than passing over it.
+            if (tgt >= (uint32_t)m.eh->e_shnum || !m.placed[tgt]) {
+                printf("       FAIL %s: a branch in section %u, which was never "
+                       "placed — it cannot have been relocated\n", how, tgt);
+                bad = 1; continue;
+            }
+            if (m.writ[tgt] || m.sh[tgt].sh_type == SHT_NOBITS) continue;
+
+            uint32_t sidx = ELF32_R_SYM(rel[r].r_info);
+            const char *nm = sidx < m.nsyms ? m.str + m.syms[sidx].st_name : "?";
+            uint32_t S = 0; bool is_func = false;
+            if (!mirror_resolve(m, app, sidx, svc, &S, &is_func)) {
+                printf("       FAIL %s: cannot work out where the branch to %s "
+                       "was meant to land\n", how, nm);
+                bad = 1; continue;
+            }
+            sites++;
+
+            // What the instruction meant before relocation is its addend, and the
+            // ARM convention folds the Thumb pipeline offset into it — an
+            // unresolved BL encodes -4, not 0. Both sides carry the same +4, so
+            // it is written out on both rather than cancelled quietly.
+            uint32_t site = m.addr[tgt] + rel[r].r_offset;
+            int32_t a_orig = thumb_branch_off(m.b + m.sh[tgt].sh_offset + rel[r].r_offset);
+            int32_t a_new  = thumb_branch_off((const uint8_t *)(uintptr_t)site);
+            uint32_t reached = site + 4u + (uint32_t)a_new;
+            uint32_t want    = (S & ~1u) + (uint32_t)a_orig + 4u;
+
+            if (reached == want) {
+                direct++;
+            } else if (vbase && reached >= (uint32_t)(uintptr_t)vbase &&
+                       reached <  (uint32_t)(uintptr_t)vbase + app.veneers_used) {
+                uint32_t voff = reached - (uint32_t)(uintptr_t)vbase;
+                veneered++;
+                if (voff % 16u) {
+                    printf("       FAIL %s: the branch to %s lands %u bytes into "
+                           "the veneer pool, which is not the start of a veneer\n",
+                           how, nm, voff);
+                    bad = 1; continue;
+                }
+                if (voff < app.veneer_gates) {
+                    printf("       FAIL %s: the branch to %s lands on a privilege "
+                           "GATE at +%u, not on a call veneer — calling it would "
+                           "drop privilege into nowhere\n", how, nm, voff);
+                    bad = 1; continue;
+                }
+                if (svc) {
+                    // resolve() has already turned an undefined symbol into its
+                    // own veneer, so nothing here can legitimately be out of
+                    // range. One that is means a target that is neither firmware
+                    // nor inside the image, and a trampoline holding a raw
+                    // address where the supervisor expects an index.
+                    printf("       FAIL %s: the branch to %s went through a veneer, "
+                           "which a sandboxed package has no way to reach\n", how, nm);
+                    bad = 1; continue;
+                }
+                uint32_t lit = *(const uint32_t *)(uintptr_t)(vbase + voff + 12);
+                if (lit != (want | 1u)) {
+                    printf("       FAIL %s: the branch to %s goes to the veneer at "
+                           "+%u, which targets %08x — %s is at %08x\n",
+                           how, nm, voff, lit, nm, want | 1u);
+                    bad = 1; continue;
+                }
+            } else {
+                printf("       FAIL %s: the branch at +0x%x reaches %08x, but %s is "
+                       "at %08x and there is no veneer there\n",
+                       how, rel[r].r_offset, reached, nm, want);
+                bad = 1; continue;
+            }
+            // And the same question every other code pointer is asked. The
+            // address is even by construction — a Thumb branch offset has no low
+            // bit — so the Thumb bit is supplied here rather than checked; what
+            // is being asked is whether the CPU will be allowed to fetch there.
+            char what[96];
+            snprintf(what, sizeof(what), "the branch to %s", nm);
+            bad |= check_code_addr(sm, how, what, reached | 1u);
+        }
+    }
+    // A package whose relocations say there are branches, and a walk that judged
+    // none of them, is the failure this file exists to be the opposite of.
+    if (relocs && !sites) {
+        printf("       FAIL %s: %d branch relocation(s) and not one was checked\n",
+               how, relocs);
+        bad = 1;
+    }
+    if (sites)
+        printf("       %d branch(es): %d direct, %d through a veneer, every one "
+               "reaches the symbol it names\n", sites, direct, veneered);
+    if (sites_out) *sites_out = sites;
+    return bad;
+}
+
 // --- the GOT, for a position-independent package -----------------------------
 //
 // The decisive stage-2 check. A PIC package reaches every global THROUGH a GOT
@@ -1038,6 +1195,11 @@ static int load_one(const char *path) {
             int mpairs = 0;
             bad |= check_movw_movt(pm, app, sm, "copy-to-RAM", false, &mpairs);
             g_movw_real += mpairs;
+            // And every branch, by where it lands rather than by whether some
+            // veneer word happened to be odd.
+            int brs = 0;
+            bad |= check_branches(pm, app, sm, "copy-to-RAM", false, &brs);
+            g_branches += brs;
             mirror_close(&pm);
         }
     }
@@ -1199,6 +1361,31 @@ static int load_svc(const char *path) {
         printf("       FAIL sandboxed: no call veneers at all — nothing was checked\n");
         bad = 1;
     }
+
+    // And where every branch in the image actually goes, which in this mode is a
+    // different question from the same walk on the privileged path: an undefined
+    // symbol has been resolved to its OWN supervisor-call veneer before the
+    // branch was encoded, so every call is in range and none of them should have
+    // needed a trampoline. A wrong index in the veneer is caught above; a branch
+    // that reaches the wrong veneer calls the wrong function just as thoroughly,
+    // and nothing asked about that.
+    {
+        const Shadow sm = shadow_of(app);
+        ElfMirror pm;
+        if (!mirror_open(path, app, &pm)) {
+            printf("       FAIL sandboxed: could not read %s back to walk its "
+                   "branches\n", path);
+            bad = 1;
+        } else {
+            int mpairs = 0, brs = 0;
+            bad |= check_movw_movt(pm, app, sm, "sandboxed", true, &mpairs);
+            g_movw_real += mpairs;
+            bad |= check_branches(pm, app, sm, "sandboxed", true, &brs);
+            g_branches += brs;
+            mirror_close(&pm);
+        }
+    }
+
     printf("  ok   %-12s sandboxed: %d gate(s) + %d supervisor call(s)\n",
            name, 3, calls);
     return bad;
@@ -1265,24 +1452,6 @@ static bool fake_slot_program(void *, uint32_t off, const void *data, uint32_t l
         g_fake_flash[off + i] &= s[i];
     }
     return true;
-}
-
-// The offset a Thumb-2 BL / B.W actually encodes, decoded from the ARMv7-M
-// definition rather than by calling the loader's own helper. A checker that used
-// the code under test would agree with it whatever either of them did, and the
-// encode/decode pair being self-consistently wrong is exactly the bug that
-// produces a package which links, loads, and branches into the wrong place.
-//
-// The CPU computes the target as (address of the instruction) + 4 + this.
-static int32_t thumb_branch_off(const uint8_t *p) {
-    uint32_t hw1 = (uint32_t)p[0] | ((uint32_t)p[1] << 8);
-    uint32_t hw2 = (uint32_t)p[2] | ((uint32_t)p[3] << 8);
-    uint32_t sgn = (hw1 >> 10) & 1u;
-    uint32_t j1  = (hw2 >> 13) & 1u, j2 = (hw2 >> 11) & 1u;
-    uint32_t i1  = 1u - (j1 ^ sgn), i2 = 1u - (j2 ^ sgn);
-    int32_t v = (int32_t)((i1 << 23) | (i2 << 22) |
-                          ((hw1 & 0x3ffu) << 12) | ((hw2 & 0x7ffu) << 1));
-    return sgn ? v - (1 << 24) : v;          // two's complement across 25 bits
 }
 
 // A package is position-independent iff it reaches its data through a GOT — i.e.
@@ -2334,7 +2503,15 @@ int main(int argc, char **argv) {
                "exercised it\n");
         fails++;
     }
-    printf("  realapp: %d loaded (%d through a flash slot), %d failed\n",
-           g_loaded, g_pic_checked, fails);
+    // The copy path used to check no branch at all. Printed so a change that
+    // stopped it walking them would show as a number falling to zero rather
+    // than as one fewer silent line.
+    if (argc == 1 && dir && g_branches == 0) {
+        printf("  FAIL not one branch was checked by value on the copy path\n");
+        fails++;
+    }
+    printf("  realapp: %d loaded (%d through a flash slot), %d branch(es) checked "
+           "by value on the copy paths, %d failed\n",
+           g_loaded, g_pic_checked, g_branches, fails);
     return fails ? 1 : 0;
 }
