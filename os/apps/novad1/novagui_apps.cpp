@@ -240,6 +240,18 @@ public:
 
     const char *title(void) const override { return title_; }
 
+    // It had none, and it is reached from four different screens — the Shell,
+    // the Store, a script, and an installed app's row. OutputScreen, which is
+    // the same idea in novagui_ops.cpp, has always had help; this was a plain
+    // inconsistency, and the '?' in the status bar was missing with it.
+    int help(const char **out, int max) const override {
+        if (max < 3) return 0;
+        out[0] = "Turn to scroll the output.";
+        out[1] = "BACK returns. It is kept";
+        out[2] = "until the next command.";
+        return 3;
+    }
+
     void draw(Canvas &c) override {
         if (g_lines <= 0) {
             c.text_centred(ui::TOP + ui::ROWH, "(nothing to show)", 1);
@@ -525,7 +537,7 @@ static Action hist_choose(void *ctx, int index) {
 
 class HistoryMenu : public ui::Menu {
 public:
-    void enter(void) override { set("Recent", g_hist_items, g_hist_n); }
+    void enter(void) override { refresh("Recent", g_hist_items, g_hist_n); }
 
     int help(const char **out, int max) const override {
         if (max < 2) return 0;
@@ -622,8 +634,7 @@ public:
         g_action_items[0].fn = act_run;
         g_action_items[1].fn = act_view;
         g_action_items[2].fn = act_delete;
-        set(g_script_name, g_action_items, 3);
-        waiting_ = false;
+        refresh(g_script_name, g_action_items, 3);
         phase_   = 0;
     }
 
@@ -636,6 +647,21 @@ public:
     }
 
     bool animating(void) const override { return waiting_; }
+
+    // The rows are DEAD while the script runs, the same way the Store's and the
+    // Updates screen's are. Menu::on_event fires the row under the cursor on
+    // every SELECT and knows nothing about waiting_, so without this the spinner
+    // is on the panel and all three rows are still live underneath it: View
+    // reads the script into the buffer the running job is writing, and Delete
+    // removes the file that is executing. Neither had a guard.
+    Action on_event(Event e) override {
+        if (waiting_ && e == EV_SELECT) {
+            ui::notice("Busy", "The script is still running. Its output will "
+                               "come up when it finishes.");
+            return ui::ACT_STAY;
+        }
+        return ui::Menu::on_event(e);
+    }
 
     bool tick(uint32_t dt) override {
         // The file is gone, so the menu of things to do to it is too. Popping
@@ -682,8 +708,11 @@ private:
     }
 
     static Action act_view(void *, int) {
-        // Straight into the shared buffer: nothing else can be using it, since
-        // a job would have this screen showing its spinner instead of a menu.
+        // Straight into the shared buffer, which is safe because on_event above
+        // refuses SELECT while a job holds it. That guard is the whole of the
+        // safety here — the comment that used to be in its place said a running
+        // job would have the menu replaced by a spinner, and the menu was still
+        // live underneath the spinner the entire time.
         // A script longer than the buffer is shown as far as it fitted.
         const uint32_t n = fw_file_read(g_script_path, g_apps_out, APPS_OUT_BYTES - 1);
         g_apps_out[n] = 0;
@@ -1736,7 +1765,10 @@ public:
         // The app's own name, and it has to MATCH the label on the home icon —
         // a screen that titles itself something else reads as having landed
         // somewhere unintended, and novashots refuses it for that reason.
-        set(g_user_app->label, g_user_items, n);
+        //
+        // refresh rather than set: every row opens an output pane, and set()
+        // would put the cursor back on the first row after each one.
+        refresh(g_user_app->label, g_user_items, n);
     }
 
     int help(const char **out, int max) const override {

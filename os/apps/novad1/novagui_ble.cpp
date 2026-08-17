@@ -821,7 +821,10 @@ public:
         return 2;
     }
 
-    void enter(void) override { scan_disown(); sel_ = 0; }
+    // The cursor stays. Naming a device comes back through here, and the row
+    // somebody just used is the one they are most likely to want next — the
+    // reset moved them off it.
+    void enter(void) override { scan_disown(); }
     void leave(void) override { scan_disown(); }
 
     void draw(Canvas &c) override {
@@ -1034,7 +1037,14 @@ private:
             adv_until_ = fw_millis() + PING_SECS * 1000;
             sent_ = true;
             note_[0] = 0;
+            return;
         }
+        // cmd_start refuses while the shared BLE worker is out, and it used to
+        // refuse in silence: note_ was left alone, so the panel went on reading
+        // "SELECT to ping." after a press that did nothing at all. Every other
+        // screen on this worker says "busy" — this one is the exception, and it
+        // was the exception by omission rather than on purpose.
+        nova::copy(note_, sizeof(note_), "busy");
     }
 };
 
@@ -1059,9 +1069,13 @@ public:
     }
 
     void enter(void) override {
+        // THE CURSOR IS NOT RESET. enter() runs again every time a screen
+        // above this one pops, and going back to the top of the room after
+        // looking at one device is the thing that makes a list feel like it
+        // forgot you. draw() clamps it against the count, which is the part
+        // that has to be right — the table changes under this screen on
+        // every scan whether anybody left it or not.
         scan_disown();
-        sel_ = 0;
-        top_ = 0;
         phase_ = 0;
         kicked_ = false;
         index_build(F_ALL);
@@ -1159,7 +1173,11 @@ private:
 // screens is open.
 class RadarSettings : public Screen {
 public:
-    const char *title(void) const override { return "Radar"; }
+    // NOT "Radar", which is what the screen underneath is called. The status
+    // bar is the only thing that says where you are, and a sub-screen that
+    // repeats its parent's name reads as a press that did not take — the same
+    // mismatch the Versions screen had when it titled itself Device.
+    const char *title(void) const override { return "Radar setup"; }
 
     int help(const char **out, int max) const override {
         if (max < 2) return 0;
@@ -1169,7 +1187,6 @@ public:
     }
 
     void enter(void) override {
-        sel_ = 0;
         period_ = nova::reg_int(NOVA_KEY_PREFIX "Watch_Period", 20000);
         tell_   = notify_on();
         fresh_  = notify_new();
@@ -1248,14 +1265,13 @@ public:
         if (max < 3) return 0;
         out[0] = "Hold SELECT to filter.";
         out[1] = "* is a device you named.";
-        out[2] = "Top row is Radar settings.";
+        out[2] = "Top row is Radar setup.";
         return 3;
     }
 
     void enter(void) override {
+        // Same as the BLE list: the cursor stays, draw() clamps it.
         scan_disown();
-        sel_ = 0;
-        top_ = 0;
         phase_ = 0;
         index_build(filter_);
     }
@@ -1280,7 +1296,11 @@ public:
         // pattern the rest of the suite uses, so it sits somewhere predictable
         // instead of behind a gesture nobody finds.
         const int total = g_nidx + 1;
+        // Both ends, like the BLE list. The cursor is not reset on the way in
+        // any more, so this clamp is the whole of what keeps it inside a table
+        // that changes size on every scan.
         if (sel_ >= total) sel_ = total - 1;
+        if (sel_ < 0)      sel_ = 0;
         if (sel_ < top_) top_ = sel_;
         else if (sel_ >= top_ + rows) top_ = sel_ - rows + 1;
 
@@ -1291,7 +1311,10 @@ public:
             const int y = ui::TOP + i * ui::ROWH;
             if (idx == 0) {
                 if (sel_ == 0) c.rounded_rect(0, y - 1, right, ui::ROWH, 1, true);
-                c.text_fit(2, y, "Radar settings", sel_ == 0 ? 0 : 1, right - 12, false);
+                // The same words as the screen it opens. "Radar settings" was
+                // longer than the status bar can show beside the clock, so the
+                // two could not agree until one of them got shorter.
+                c.text_fit(2, y, "Radar setup", sel_ == 0 ? 0 : 1, right - 12, false);
                 c.text(right - ui::ADV - 2, y, ">", sel_ == 0 ? 0 : 1);
                 continue;
             }
@@ -1308,7 +1331,7 @@ public:
         if (g_ble_busy || g_state != SC_OK) scan_status(line, sizeof(line), 5, true);
         else snprintf(line, sizeof(line), "%d %s", g_nidx, kFilterName[filter_]);
         c.text_fit(2, c.height() - ui::FH, line, 1, c.width() - 12, false);
-        if (g_ble_busy) c.spinner(c.width() - 9, c.height() - ui::FH, phase_, 1);
+        if (g_ble_busy) c.spinner(c.width() - 9, c.height() - ui::FH, phase_ / BLE_SPIN_MS, 1);
     }
 
     Action on_event(Event e) override {
@@ -1357,7 +1380,8 @@ public:
         return 3;
     }
 
-    void enter(void) override { scan_disown(); sel_ = 0; top_ = 0; phase_ = 0; }
+    // The cursor stays; draw() clamps it against the named-device count.
+    void enter(void) override { scan_disown(); phase_ = 0; }
     void leave(void) override { scan_disown(); }
 
     bool animating(void) const override { return g_ble_busy != 0; }
@@ -1382,6 +1406,7 @@ public:
 
         const int rows = list_rows(c);
         if (sel_ >= n) sel_ = n - 1;
+        if (sel_ < 0)  sel_ = 0;
         if (sel_ < top_) top_ = sel_;
         else if (sel_ >= top_ + rows) top_ = sel_ - rows + 1;
 
@@ -1410,7 +1435,7 @@ public:
         else
             snprintf(line, sizeof(line), "%d watched", n);
         c.text_fit(2, c.height() - ui::FH, line, 1, c.width() - 12, false);
-        if (g_ble_busy) c.spinner(c.width() - 9, c.height() - ui::FH, phase_, 1);
+        if (g_ble_busy) c.spinner(c.width() - 9, c.height() - ui::FH, phase_ / BLE_SPIN_MS, 1);
     }
 
     Action on_event(Event e) override {

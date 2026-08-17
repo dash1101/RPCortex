@@ -54,6 +54,12 @@ void confirm(const char *question, const char *yes_label, VoidFn yes, void *ctx)
 // on the screen underneath would be missed.
 void notice(const char *title, const char *body);
 
+// What the last notice said. The text lives outside the screen — a pool slot is
+// 384 bytes and a message read once is not worth a third of one — and being
+// outside it makes it readable, which is how a test asks whether the device
+// reported what actually happened.
+const char *last_notice(void);
+
 }  // namespace ui
 }  // namespace nova
 

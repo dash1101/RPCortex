@@ -806,6 +806,13 @@ public:
         action_bar(c, bar_label(r), stoppable(r));
     }
 
+    // Declared, not just done. While the stop is in flight this screen holds
+    // BACK — and it held HOME too, in practice, only because the runner rescues
+    // HOME for any screen that does not say it is modal. Saying it is modal
+    // makes the two agree: both gestures wait, on purpose, for the moment it
+    // takes. The Updates screen does exactly this for its staged steps.
+    bool modal(void) const override { return state_ == ST_WORK; }
+
     Action on_event(Event e) override {
         if (state_ == ST_WORK) return ui::ACT_STAY;      // it will not be long
         if (state_ == ST_DONE) {
@@ -877,8 +884,13 @@ public:
     }
 
     void enter(void) override {
-        sel_ = 0;
-        top_ = 0;
+        // THE CURSOR IS NOT RESET. enter() runs again when the detail screen
+        // pops, and putting somebody back on the first task every time they
+        // looked at one is the difference between a list that remembers where
+        // you were and one that makes you find your place again. draw() clamps
+        // it against the row count, which is the part that has to be right
+        // when a task has gone since the last sample.
+        //
         // A full interval, so the first tick samples straight away rather than
         // showing a second of nothing. Coming BACK from a detail or a stop lands
         // here too, and a list that took a second to notice a task had gone
@@ -993,8 +1005,11 @@ public:
     }
 
     void enter(void) override {
+        // top_ is NOT reset. This screen is mostly text to be read to the end,
+        // and enter() runs again when the confirmation it raises pops — so
+        // answering No used to throw somebody back to the top of what they had
+        // just scrolled through. draw() clamps it against the line count.
         state_ = ST_VIEW;
-        top_   = 0;
         acc_   = 0;
         spin_  = 0;
     }
@@ -1064,6 +1079,9 @@ public:
 
         action_bar(c, "Remove from boot", true);
     }
+
+    // As on the task screen: the wait is deliberate, so it is declared.
+    bool modal(void) const override { return state_ == ST_WORK; }
 
     Action on_event(Event e) override {
         if (state_ == ST_WORK) return ui::ACT_STAY;
@@ -1150,8 +1168,10 @@ public:
     }
 
     void enter(void) override {
-        sel_ = 0;
-        top_ = 0;
+        // The cursor stays where it was, for the reason the running list gives:
+        // this screen comes back through here every time the detail below it
+        // pops. draw() clamps it against the count the re-read produces.
+        //
         // Read once, here, rather than on a timer.
         //
         // A boot list is a file on flash. It does not change on its own, and the
@@ -1287,7 +1307,7 @@ public:
         return 3;
     }
 
-    void enter(void) override { set("Tasks", kTasksItems, TASKS_ROWS); }
+    void enter(void) override { refresh("Tasks", kTasksItems, TASKS_ROWS); }
 };
 
 void open_tasks(void) {

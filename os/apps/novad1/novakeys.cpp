@@ -313,6 +313,16 @@ public:
     // middle of something that needs an answer either way.
     bool modal(void) const override { return true; }
 
+    // Turning to move between two buttons is this screen's only gesture and it
+    // is nowhere else on the device — every other list moves a cursor down
+    // rows. It is worth one line of help, and the '?' that comes with it.
+    int help(const char **out, int max) const override {
+        if (max < 2) return 0;
+        out[0] = "Turn between No and Yes,";
+        out[1] = "SELECT answers. BACK is No.";
+        return 2;
+    }
+
     void draw(Canvas &c) override {
         static char store[96];
         const char *lines[4];
@@ -354,11 +364,26 @@ void confirm(const char *question, const char *yes_label, VoidFn yes, void *ctx)
     if (s) s->begin(question, yes_label, yes, ctx);
 }
 
+// The message, held OUTSIDE the screen.
+//
+// A pool slot is 384 bytes and this was a hundred and twenty-eight of them —
+// a third of a screen, spent on text that is read once and dismissed. There is
+// only ever one notice up, so a file static is the same bytes in a cheaper
+// place, and it is the same reasoning the app picker's buffer and the device
+// listing already sit outside their screens for.
+//
+// It also means what the device last said is readable, which is what lets a
+// host test check that a confirmation reported the right thing — a screen that
+// says "Clock set." for a clock it did not set is a bug no compiler can see.
+static char g_notice_body[128];
+
+const char *last_notice(void) { return g_notice_body; }
+
 class NoticeScreen : public Screen {
 public:
     void begin(const char *title, const char *body) {
         title_ = title;
-        copy(body_, sizeof(body_), body ? body : "");
+        copy(g_notice_body, sizeof(g_notice_body), body ? body : "");
     }
 
     const char *title(void) const override { return title_; }
@@ -366,7 +391,7 @@ public:
     void draw(Canvas &c) override {
         static char store[128];
         const char *lines[5];
-        int n = wrap(body_, c.cols() - 1, store, sizeof(store), lines, 5);
+        int n = wrap(g_notice_body, c.cols() - 1, store, sizeof(store), lines, 5);
         for (int i = 0; i < n; i++) c.text(2, TOP + i * ROWH, lines[i], 1);
     }
 
@@ -379,7 +404,6 @@ public:
 
 private:
     const char *title_;
-    char        body_[128];
 };
 
 void notice(const char *title, const char *body) {

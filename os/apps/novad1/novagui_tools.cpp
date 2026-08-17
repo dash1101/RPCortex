@@ -2,6 +2,7 @@
 // File: novagui_tools.cpp
 #include "novagui_tools.h"
 #include "novagui.h"
+#include "novakeys.h"
 #include "novacore.h"
 
 #include "rpc_app.h"
@@ -199,6 +200,15 @@ public:
         if (e == EV_ROT_CW || e == EV_ROT_CCW) {
             mode_ ^= 1;
             last_ = 99;
+            return ui::ACT_STAY;
+        }
+        // On the clock face there is nothing to start, and pressing used to do
+        // nothing and say nothing — on the default face, which is the one
+        // somebody opening the app is looking at. The help said "SELECT starts
+        // and stops it" without saying that "it" is one turn away.
+        if (e == EV_SELECT && mode_ == 0) {
+            ui::notice("Clock", "Turn the knob for the stopwatch. SELECT starts "
+                                "and stops it there.");
             return ui::ACT_STAY;
         }
         if (e == EV_SELECT && mode_ == 1) {

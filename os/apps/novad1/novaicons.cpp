@@ -335,6 +335,25 @@ static void ic_cmdlist(Canvas &c, int cx, int cy, int r) {      // Commands
 // Bars rather than a dial: a needle needs an arc, and every arc-based icon on
 // this panel already competes for the same silhouette. Three rising bars read as
 // "measurements" and survive losing a pixel.
+// A hub with two machines hanging off it. Filled blocks rather than outlines:
+// at neighbour size an outlined three-pixel box is a ring of dust, and what has
+// to survive the shrink is that there are THREE of them and a line joining them.
+static void ic_lan(Canvas &c, int cx, int cy, int r) {          // LAN
+    const int n   = imax(2, (2 * r) / 5);       // a node is n square
+    const int top = cy - r + 1;
+    const int bot = cy + r - 1 - n;
+    const int mid = (top + n + bot) / 2;        // the bus the drops hang off
+    const int x   = cx - r + 1;
+    const int w   = 2 * r - 2;
+    c.fill_rect(cx - n / 2, top, n, n, 1);      // the hub
+    c.vline(cx, top + n, mid - top - n + 1, 1);
+    c.hline(x, mid, w, 1);                      // the bus
+    c.vline(x, mid, bot - mid, 1);              // and its two drops
+    c.vline(x + w - 1, mid, bot - mid, 1);
+    c.fill_rect(x, bot, n, n, 1);
+    c.fill_rect(x + w - n, bot, n, n, 1);
+}
+
 static void ic_bars(Canvas &c, int cx, int cy, int r) {         // Resources
     int base = cy + r - 1;
     c.hline(cx - r, base, 2 * r, 1);            // the axis they stand on
@@ -630,6 +649,9 @@ static const Entry kMap[] = {
     { "vibration",   ic_vibe },
     { "led",         ic_led },
     { "wifi",        ic_wifi },
+    // Deliberately NOT the globe or the bars: the globe belongs to the network
+    // SETTINGS row and the bars to WiFi itself, and this sits beside both.
+    { "lan",         ic_lan },
     // 'ir' is the app; ir_rx and ir_tx are the two halves of the hardware.
     { "ir",          ic_ir_rx },
     { "ir_rx",       ic_ir_rx },

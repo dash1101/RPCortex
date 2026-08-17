@@ -60,6 +60,12 @@ static char          g_op_msg[24]; // what to show for it, already shortened to 
 // still be inside a scan for seconds after the screen that started it has gone.
 static bool survey_live(void);
 
+// And one link. The device sweep does not touch the scan table, but it does
+// spend a minute talking over an association a scan would break — so it counts
+// as busy from both sides: nothing starts a sweep while the radio is out, and a
+// scan started mid-sweep would be a scan that ruins the answer it interrupts.
+static bool lan_live(void);
+
 // The join the worker is to make. Written before it is started and not touched
 // again until it finishes.
 static char g_join_ssid[FW_NET_SSID_MAX];
@@ -89,7 +95,7 @@ static int radio_worker(void *) {
     return 0;
 }
 
-static bool op_busy(void) { return g_op != OP_IDLE || survey_live(); }
+static bool op_busy(void) { return g_op != OP_IDLE || survey_live() || lan_live(); }
 
 // Start one, or say why not. Never queues: a second request while the radio is
 // busy is somebody pressing again, not a second thing they want.
@@ -344,8 +350,10 @@ static void padlock(Canvas &c, int x, int y, int colour) {
 //
 // enter() runs again every time a child screen pops — the keyboard, a notice —
 // so anything reset there would be lost between typing a password and using it.
-// A pool slot is also reused, and a re-used slot holds the last screen's bytes
-// rather than zeroes, so the alternative was not "leave the members alone".
+// A pool slot is reused, and while it does arrive zeroed — push<T> value-
+// initialises, which novagui_test checks — zeroed is exactly as wrong here as
+// stale would be: the password typed on the way in must survive the keyboard
+// popping, and a member cannot.
 struct WifiState {
     int  view;
     int  sel, top;
@@ -362,8 +370,8 @@ public:
         if (max < 4) return 0;
         out[0] = "SELECT scans.";
         out[1] = "On a network: SELECT joins,";
-        out[2] = "hold SELECT forgets it.";
-        out[3] = "BACK returns to the status.";
+        out[2] = "hold SELECT forgets a SAVED";
+        out[3] = "one. BACK returns to status.";
         return 4;
     }
 
@@ -561,9 +569,19 @@ private:
         }
 
         if (e == EV_SELECT_HOLD) {
-            if (g_w.sel == 0) return ui::ACT_STAY;
+            // The help says holding SELECT forgets a network, and on the two
+            // rows where there is nothing to forget it used to do nothing and
+            // say nothing — on a fresh scan that is nearly every row, so the
+            // gesture read as broken rather than as inapplicable.
+            if (g_w.sel == 0) {
+                nova::copy(g_w.msg, sizeof(g_w.msg), "Hold on a network");
+                return ui::ACT_STAY;
+            }
             const FwNetAp &ap = g_aps[g_w.sel - 1];
-            if (!is_saved(ap.ssid)) return ui::ACT_STAY;
+            if (!is_saved(ap.ssid)) {
+                nova::copy(g_w.msg, sizeof(g_w.msg), "Not saved");
+                return ui::ACT_STAY;
+            }
             ask_forget(ap.ssid);
             return ui::ACT_STAY;
         }
@@ -891,7 +909,11 @@ static int wardrive_worker(void *) {
         for (int i = 0; i < WD_INTERVAL_MS / 100 && g_wd_run && !fw_task_should_stop(); i++)
             fw_task_sleep_ms(100);
     }
-    wd_flush();
+    // The CLOSING flush, carrying everything logged since the last new
+    // network. Its result was the one of four that went unchecked, so a card
+    // that filled up at the end lost the tail of the survey with the screen
+    // still reading "idle".
+    if (!wd_flush()) nova::copy(g_wd_msg, sizeof(g_wd_msg), "Write failed");
     g_wd_run  = false;
     g_wd_live = false;
     gui::invalidate();
@@ -999,6 +1021,459 @@ private:
 };
 
 void open_wardrive(void) { gui::push<WardriveScreen>(); }
+
+// --- LAN ---------------------------------------------------------------------------
+//
+// What else is on this network.
+//
+// An ICMP sweep of the /24 our own address sits in, one address at a time,
+// because that is the whole of what a package can do. There is no ARP table on
+// the ABI, no outbound TCP to knock on a port with, and no reverse DNS anywhere
+// in the firmware — `nettcp.cpp` says out loud why it has no connect. So the
+// only question this screen can ask a stranger is "are you there", and the only
+// interesting thing it gets back is how long the answer took.
+//
+// THE /24 IS THE SWEEP, NOT AN ASSUMPTION ABOUT THE NETMASK. A /16 is
+// sixty-five thousand addresses and cannot be swept from a handheld at all; a
+// /28 only means the last forty pings leave the subnet and are answered by
+// nobody. So the mask does not change what is done, and the screen says which
+// range it covered rather than implying it covered the network.
+//
+// A host that does not answer ICMP is not listed, and that is a real limitation
+// rather than a bug: a Windows machine with its firewall on is invisible here.
+// The help says so, because a scanner that quietly under-reports teaches
+// somebody the network is emptier than it is.
+
+#define LAN_MAX      32     // hosts kept; a /24 with more than this is rare
+#define LAN_PING_MS 200     // per address — see the note at lan_sweep
+#define LAN_FIRST     1
+#define LAN_LAST    254
+
+#define LAN_ME 1
+#define LAN_GW 2
+
+struct LanHost {
+    uint8_t  host;      // the last octet; the rest is g_lan_base
+    uint8_t  flag;      // LAN_ME, LAN_GW, or neither
+    uint16_t ms;        // round trip in milliseconds, 0 for this device
+};
+
+// Outside the screen, like everything else a worker writes here: BACK is one
+// press and a sweep is the best part of a minute.
+static LanHost       g_lan[LAN_MAX];
+static volatile int  g_lan_n;
+static volatile int  g_lan_at;      // the octet being probed now, for the progress
+static volatile bool g_lan_run;     // a worker is in the sweep
+static volatile bool g_lan_stop;    // ...and has been asked to come out of it
+static volatile int  g_lan_one;     // re-probe just this octet, 0 for a full sweep
+static char          g_lan_base[FW_NET_ADDR_MAX];   // "192.168.1."
+static int           g_lan_self;    // our own last octet, -1 when unknown
+static int           g_lan_gw;      // the gateway's, -1 when it could not be read
+static char          g_lan_msg[28];
+
+static bool lan_live(void) { return g_lan_run; }
+
+// "192.168.1.42" -> base "192.168.1." and self 42. False when there is no
+// address to work from, which is the offline case and the not-yet-DHCP case
+// both — 0.0.0.0 is a link that has joined and has nothing yet.
+static bool lan_derive(void) {
+    char ip[FW_NET_ADDR_MAX];
+    ip[0] = 0;
+    if (fw_net_ip(ip, sizeof(ip)) <= 0 || !ip[0]) return false;
+    if (!strcmp(ip, "0.0.0.0")) return false;
+
+    int dots = 0, cut = -1;
+    for (int i = 0; ip[i]; i++) if (ip[i] == '.') { dots++; cut = i; }
+    if (dots != 3 || cut <= 0) return false;
+
+    int last = 0;
+    for (const char *p = ip + cut + 1; *p; p++) {
+        if (*p < '0' || *p > '9') return false;
+        last = last * 10 + (*p - '0');
+    }
+    if (last < 0 || last > 255) return false;
+
+    // The base keeps its trailing dot so every address is one snprintf.
+    unsigned keep = (unsigned)cut + 1;
+    if (keep >= sizeof(g_lan_base)) return false;
+    memcpy(g_lan_base, ip, keep);
+    g_lan_base[keep] = 0;
+    g_lan_self = last;
+    return true;
+}
+
+// The gateway, out of `net`. OPTIONAL, and deliberately so.
+//
+// It is a tag on one row and nothing depends on it, which is what makes it safe
+// to read through the shell: the OS has ONE output capture, so a `pkg install`
+// still running from a screen somebody left two presses ago would leave this
+// with an empty buffer. That has to degrade to "no gateway tag", not to a wrong
+// sweep — which is why the range comes from fw_net_ip and only the tag comes
+// from here.
+static char g_lan_netout[256];
+
+static void lan_read_gateway(void) {
+    g_lan_gw = -1;
+    g_lan_netout[0] = 0;
+    if (fw_shell_run("net", g_lan_netout, sizeof(g_lan_netout)) != 0) return;
+
+    const char *p = strstr(g_lan_netout, "Gateway");
+    if (!p) return;
+    p += 7;
+    while (*p == ' ') p++;
+    // Only a gateway on OUR /24 can be tagged, because the tag is drawn against
+    // a row that is one of ours. A router reached over another interface is a
+    // true answer to a question this screen is not asking.
+    unsigned n = (unsigned)strlen(g_lan_base);
+    if (strncmp(p, g_lan_base, n)) return;
+    p += n;
+    int last = 0;
+    if (*p < '0' || *p > '9') return;
+    for (; *p >= '0' && *p <= '9'; p++) last = last * 10 + (*p - '0');
+    if (last >= LAN_FIRST && last <= LAN_LAST) g_lan_gw = last;
+}
+
+// Record a host. The entry is filled BEFORE the count moves, so a UI task that
+// sees the new count can already see everything in it — the same single-writer
+// order the job runner hands its output over with.
+static void lan_add(int host, int ms, int flag) {
+    int n = g_lan_n;
+    if (n >= LAN_MAX) return;
+    g_lan[n].host = (uint8_t)host;
+    g_lan[n].flag = (uint8_t)flag;
+    g_lan[n].ms   = (uint16_t)(ms < 0 ? 0 : (ms > 9999 ? 9999 : ms));
+    g_lan_n = n + 1;
+}
+
+// Microseconds to a whole millisecond, never rounding a real reply down to
+// nothing: a row reading "0ms" looks like a row that failed to measure.
+static int lan_ms(int us) { return us < 1000 ? 1 : us / 1000; }
+
+// The sweep.
+//
+// 200 ms an address. A LAN answers in single digits and the rest of it is for a
+// device in power-save, which can take a hundred milliseconds to come back --
+// and a host missed because the wait was too short is the one failure this
+// screen cannot show you. 254 addresses is therefore under a minute of wall
+// clock in the worst case, which is why the list fills as it goes and why BACK
+// gets out of it.
+static void lan_sweep(void) {
+    g_lan_n = 0;
+    g_lan_at = 0;
+    g_lan_msg[0] = 0;
+
+    if (!lan_derive()) {
+        nova::copy(g_lan_msg, sizeof(g_lan_msg),
+                   fw_net_connected() ? "No address yet" : "Not on a network");
+        return;
+    }
+    lan_read_gateway();
+
+    char addr[FW_NET_ADDR_MAX];
+    for (int h = LAN_FIRST; h <= LAN_LAST; h++) {
+        if (g_lan_stop || fw_task_should_stop()) break;
+        g_lan_at = h;
+
+        // Our own address is listed without being probed. Pinging ourselves
+        // proves nothing, and leaving the row out would make the one address
+        // somebody definitely wants to see the one address missing.
+        if (h == g_lan_self) { lan_add(h, 0, LAN_ME); gui::invalidate(); continue; }
+
+        snprintf(addr, sizeof(addr), "%s%d", g_lan_base, h);
+        int us = fw_net_ping(addr, LAN_PING_MS);
+        if (us >= 0) {
+            lan_add(h, lan_ms(us), h == g_lan_gw ? LAN_GW : 0);
+            gui::invalidate();
+            if (g_lan_n >= LAN_MAX) {
+                nova::copy(g_lan_msg, sizeof(g_lan_msg), "Full — first 32 shown");
+                break;
+            }
+        } else if ((h & 0x0f) == 0) {
+            // Progress, a few times a sweep rather than every address: the
+            // panel is asleep between frames and waking it 254 times to move a
+            // counter costs more than the counter is worth.
+            gui::invalidate();
+        }
+    }
+
+    if (!g_lan_msg[0]) {
+        if (g_lan_stop)         nova::copy(g_lan_msg, sizeof(g_lan_msg), "Stopped");
+        else if (g_lan_n <= 1)  nova::copy(g_lan_msg, sizeof(g_lan_msg), "Nothing else answered");
+        else                    g_lan_msg[0] = 0;
+    }
+    g_lan_at = 0;
+}
+
+// One address again, for a row somebody chose. The reading is replaced in place
+// rather than appended, so the list keeps its order and a device that has since
+// gone quiet says so on its own row instead of vanishing.
+static void lan_reprobe(int host) {
+    char addr[FW_NET_ADDR_MAX];
+    snprintf(addr, sizeof(addr), "%s%d", g_lan_base, host);
+    int us = fw_net_ping(addr, LAN_PING_MS);
+    for (int i = 0; i < g_lan_n; i++) {
+        if (g_lan[i].host != (uint8_t)host) continue;
+        if (us >= 0) {
+            g_lan[i].ms = (uint16_t)lan_ms(us);
+            g_lan_msg[0] = 0;
+        } else {
+            g_lan[i].ms = 0;
+            snprintf(g_lan_msg, sizeof(g_lan_msg), "%s%d: no answer", g_lan_base, host);
+        }
+        return;
+    }
+}
+
+// What a row says: a label on the left and its state on the right, the shape
+// every list in the suite uses.
+//
+// Outside the screen so a test can ask it directly. It is the whole of what this
+// screen renders — a row that says the wrong thing is the failure a host CAN
+// see, and the alternative is asserting against pixels.
+//
+// The control row reads as a verb and its value as the state, so the row itself
+// answers "what will pressing this do" without needing the help overlay.
+static void lan_row(int idx, char *label, unsigned lcap, char *value, unsigned vcap) {
+    value[0] = 0;
+    if (idx == 0) {
+        if (g_lan_run) {
+            nova::copy(label, lcap, "Stop");
+            if (g_lan_at) snprintf(value, vcap, "%d/%d", g_lan_at, LAN_LAST);
+            return;
+        }
+        if (!fw_net_connected()) {
+            nova::copy(label, lcap, "Join a network");
+            nova::copy(value, vcap, ">");
+            return;
+        }
+        nova::copy(label, lcap, g_lan_n ? "Scan again" : "Scan");
+        if (g_lan_n) snprintf(value, vcap, "%d", g_lan_n);
+        return;
+    }
+    if (idx - 1 >= g_lan_n) { nova::copy(label, lcap, ""); return; }
+    const LanHost &h = g_lan[idx - 1];
+    snprintf(label, lcap, "%s%u", g_lan_base, (unsigned)h.host);
+    if (h.flag == LAN_ME)      nova::copy(value, vcap, "me");
+    else if (!h.ms)            nova::copy(value, vcap, "--");
+    else if (h.flag == LAN_GW) snprintf(value, vcap, "gw %ums", (unsigned)h.ms);
+    else                       snprintf(value, vcap, "%ums", (unsigned)h.ms);
+}
+
+static int lan_worker(void *) {
+    int one = g_lan_one;
+    if (one) lan_reprobe(one);
+    else     lan_sweep();
+    g_lan_one = 0;
+    g_lan_run = false;
+    gui::invalidate();
+    return 0;
+}
+
+// Row 0 is the control and the rest are hosts, exactly as the WiFi list puts
+// "add by hand" on the front of what a scan found. One list, one cursor, and the
+// thing you do most is the row the cursor starts on.
+class LanScreen : public Screen {
+public:
+    const char *title(void) const override { return "LAN"; }
+
+    int help(const char **out, int max) const override {
+        if (max < 5) return 0;
+        out[0] = "The top row starts and stops.";
+        out[1] = "SELECT on a host pings it again.";
+        out[2] = "It sweeps the 254 addresses";
+        out[3] = "beside this one. A host that";
+        out[4] = "ignores ping is not listed.";
+        return 5;
+    }
+
+    // Nothing is reset here. enter() runs again when a notice pops, and a list
+    // somebody waited a minute for must not be thrown away by an acknowledged
+    // message. begin() does the resetting, once, on the way in.
+    void enter(void) override { poll_ = 0; clamp(); }
+
+    // NO leave(). It had one — "leaving ends the sweep" — and that was wrong for
+    // a reason worth writing down: gui::push_slot() calls leave() on the screen
+    // it is about to COVER, not only on the one being popped. So every notice
+    // and every sub-screen this screen raises would have killed the sweep
+    // underneath it, including the one on the "me" row, which is a press that
+    // reads as a press and quietly cancels a minute of work.
+    //
+    // There is no clean "am I being popped" test to write there, so the sweep is
+    // not stopped by navigation at all — the same choice the survey next door
+    // makes. It is stopped by the Stop row, by the task being asked to end, and
+    // by finishing, which takes under a minute. op_busy() keeps the radio to
+    // itself until then, and the WiFi screen says "Radio busy" rather than
+    // failing quietly.
+
+    void begin(void) { sel_ = 0; top_ = 0; poll_ = 0; }
+
+    bool tick(uint32_t dt) override {
+        if (!g_lan_run) return false;
+        // A few times a second while the worker is out, for the spinner and the
+        // count. Not animating(): that would hold the loop at sixty frames for
+        // the length of a sweep to turn one glyph.
+        poll_ += dt;
+        if (poll_ < 250) return false;
+        poll_ = 0;
+        return true;
+    }
+
+    void draw(Canvas &c) override {
+        const int n    = rows();
+        const int rowsv = ui::rows_for(c);
+        if (sel_ < top_)               top_ = sel_;
+        else if (sel_ >= top_ + rowsv) top_ = sel_ - rowsv + 1;
+        const bool scrolls = n > rowsv;
+        const int  right   = scrolls ? c.width() - (ui::SB_W + 1) : c.width();
+
+        char label[24], value[12];
+        for (int i = 0; i < rowsv; i++) {
+            const int idx = top_ + i;
+            if (idx >= n) break;
+            const int y = ui::TOP + i * ui::ROWH;
+            const bool on = (idx == sel_);
+            if (on) c.rounded_rect(0, y - 1, right, ui::ROWH, 1, true);
+
+            lan_row(idx, label, sizeof(label), value, sizeof(value));
+            const int w = value[0] ? c.text_width(value, 1, false) : 0;
+            // CONDENSED, and this is the one screen where it decides whether the
+            // row works at all. On this panel the address IS the value — a
+            // truncated one is not a shorter answer, it is a different address —
+            // so the usual rule that the label gives way first inverts, and the
+            // label has to be made to fit instead.
+            //
+            // The numbers: "192.168.100.254" is 89 pixels at the normal advance
+            // and 68 condensed, against 69 left over once "gw 999ms" and the
+            // scrollbar have taken theirs. Dropping each glyph's blank column is
+            // exactly the difference between the longest row this screen can
+            // produce fitting and being cut. DeviceScreen does the same, for the
+            // same reason.
+            c.text_fit(3, y, label, on ? 0 : 1, right - w - 6, true);
+            if (value[0]) c.text(right - w - 2, y, value, on ? 0 : 1);
+        }
+
+        if (scrolls)
+            c.scrollbar(c.width() - ui::SB_W + 1, ui::TOP, c.height() - ui::TOP,
+                        top_, rowsv, n);
+        else if (!g_lan_n)
+            draw_empty(c, ui::TOP + ui::ROWH + 2);
+
+        // The last row of the panel is the status line, the same as the WiFi
+        // screen's. It is the only place a reason ever appears, so it is drawn
+        // over whatever the list had there rather than beside it.
+        if (g_lan_run) c.spinner(c.width() - 8, c.height() - ui::FH, fw_millis() / 120, 1);
+        if (g_lan_msg[0])
+            c.text_fit(0, c.height() - ui::FH, g_lan_msg, 1, c.width() - 10, false);
+    }
+
+    Action on_event(Event e) override {
+        const int n = rows();
+        if (e == EV_ROT_CW)  { sel_ = (sel_ + 1) % n; return ui::ACT_STAY; }
+        if (e == EV_ROT_CCW) { sel_ = (sel_ + n - 1) % n; return ui::ACT_STAY; }
+        if (e == EV_SELECT)  { activate(); return ui::ACT_STAY; }
+        return Screen::on_event(e);
+    }
+
+private:
+    int      sel_, top_;
+    uint32_t poll_;
+
+    static int rows(void) { return 1 + g_lan_n; }
+
+    // A panel with one row on it and nothing else says the screen is broken.
+    // Before the first sweep there is exactly one row, so the body has to answer
+    // the question somebody opened this to ask — either what it is about to
+    // sweep, or why it cannot.
+    static void draw_empty(Canvas &c, int y) {
+        if (!fw_net_connected()) {
+            c.text(3, y, "Nothing to scan until", 1);
+            c.text(3, y + ui::ROWH, "this joins a network.", 1);
+            return;
+        }
+        char ip[FW_NET_ADDR_MAX], line[26];
+        ip[0] = 0;
+        if (fw_net_ip(ip, sizeof(ip)) <= 0 || !ip[0]) {
+            c.text(3, y, "Joined, no address yet.", 1);
+            return;
+        }
+        c.text(3, y, ip, 1);
+        // Built from the address on screen rather than from g_lan_base, which is
+        // only filled in once a sweep has started.
+        int cut = -1;
+        for (int i = 0; ip[i]; i++) if (ip[i] == '.') cut = i;
+        if (cut > 0) {
+            ip[cut + 1] = 0;
+            snprintf(line, sizeof(line), "%s%d-%d", ip, LAN_FIRST, LAN_LAST);
+            c.text(3, y + ui::ROWH, line, 1);
+        }
+    }
+
+    void clamp(void) {
+        const int n = rows();
+        if (sel_ < 0 || sel_ >= n) sel_ = 0;
+        if (top_ < 0 || top_ >= n) top_ = 0;
+    }
+
+    void activate(void) {
+        if (sel_ == 0) {
+            if (g_lan_run) {
+                g_lan_stop = true;
+                nova::copy(g_lan_msg, sizeof(g_lan_msg), "Stopping...");
+                return;
+            }
+            // Offline is a row that goes somewhere rather than a row that
+            // explains itself and stops: the thing to do about no network is
+            // one screen away and this is the way to it.
+            if (!fw_net_connected()) { open_wifi(); return; }
+            start(0);
+            return;
+        }
+        if (sel_ - 1 >= g_lan_n) return;                 // the list shrank under it
+        // A row during a sweep. start() would refuse it — one worker, one radio
+        // — and refusing in silence is the thing this whole screen is being
+        // careful about, so it is said here where the reason is known.
+        if (g_lan_run) {
+            nova::copy(g_lan_msg, sizeof(g_lan_msg), "Still sweeping");
+            return;
+        }
+        if (g_lan[sel_ - 1].flag == LAN_ME) {
+            ui::notice("LAN", "That is this device. Its own address is listed so "
+                              "the sweep reads as a complete range.");
+            return;
+        }
+        start(g_lan[sel_ - 1].host);
+    }
+
+    // One spawn point for both jobs, so the refusals are written once.
+    void start(int one) {
+        if (g_lan_run) return;
+        if (op_busy()) { nova::copy(g_lan_msg, sizeof(g_lan_msg), "Radio busy"); return; }
+        if (one == 0 && !fw_net_connected()) {
+            nova::copy(g_lan_msg, sizeof(g_lan_msg), "Not on a network");
+            return;
+        }
+        g_lan_msg[0] = 0;
+        g_lan_stop   = false;
+        g_lan_one    = one;
+        g_lan_run    = true;
+        // A full sweep empties the list, so the cursor has nowhere to be but the
+        // top. A re-probe changes one reading on one row and MUST leave the
+        // cursor on it — jumping to the control row would take somebody off the
+        // row whose answer they just asked for.
+        if (!one) { sel_ = 0; top_ = 0; }
+        // 3072, matching the radio worker: fw_shell_run puts a whole shell
+        // command on the calling task's stack, and this one runs `net`.
+        if (fw_task_spawn("novalan", lan_worker, nullptr, 3072) >= 0) return;
+        g_lan_run = false;
+        g_lan_one = 0;
+        nova::copy(g_lan_msg, sizeof(g_lan_msg), "No task free");
+    }
+};
+
+void open_lan(void) {
+    LanScreen *s = gui::push<LanScreen>();
+    if (s) s->begin();
+}
 
 }  // namespace screens
 }  // namespace nova

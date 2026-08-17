@@ -126,7 +126,18 @@ void pop(void) {
 }
 
 void go_home(void) {
-    while (g_depth > 1) pop();
+    // "Home" means the bottom of the stack — unless the lock is up, in which
+    // case it means the lock, because the lock IS the floor. See lock_floor():
+    // the on-screen keyboard returns ACT_HOME from EV_HOME and it is the
+    // password lock's entry screen, so without this a locked device is one
+    // press away from being unlocked for good.
+    //
+    // Here rather than in run(), so it holds for every caller — including the
+    // harness, which drives the loop with its own copy and would otherwise be
+    // testing a rule that is not the one the device follows.
+    unsigned floor = screens::lock_floor();
+    if (floor < 1) floor = 1;
+    while (g_depth > floor) pop();
     g_dirty = true;
 }
 
@@ -143,6 +154,9 @@ void go_home(void) {
 static const App kApps[] = {
     // key          label         category      open      module
     { "wifi",       "WiFi",       CAT_WIRELESS, screens::open_wifi,      nullptr },
+    // Next to WiFi rather than in Tools: it is a question about the network the
+    // row above it joined, and it is useless until that one has.
+    { "lan",        "LAN",        CAT_WIRELESS, screens::open_lan,       nullptr },
     { "bt",         "BLE",        CAT_WIRELESS, screens::open_ble,       "bt" },
     { "radar",      "Radar",      CAT_WIRELESS, screens::open_radar,     nullptr },
     { "presence",   "Presence",   CAT_WIRELESS, screens::open_presence,  nullptr },
@@ -450,6 +464,22 @@ const App *chosen(void)  { return g_chosen; }
 
 class Gallery : public Screen {
 public:
+    // The home screen and every folder had NO help at all, which also meant no
+    // '?' in the status bar — so the first screen anybody sees was the one with
+    // no way to ask what its two conventions mean. Both are non-obvious and
+    // neither is spelled out anywhere else on the device: a struck-through icon
+    // is an app whose hardware is missing (pressing it says which), and the pips
+    // along the bottom are where you are in the ring.
+    int help(const char **out, int max) const override {
+        if (max < 5) return 0;
+        out[0] = "Turn to move, SELECT opens.";
+        out[1] = "A crossed-out icon needs";
+        out[2] = "hardware — press it to see";
+        out[3] = "which. The pips below are";
+        out[4] = "your place in the ring.";
+        return 5;
+    }
+
     void set(const char *title, const App *const *items, int count) {
         // KEEP THE SELECTION when the same list comes back.
         //
@@ -765,6 +795,19 @@ static void open_category(void) {
 //
 // Zeroing the gap costs one frame of stillness at the very start of a movement,
 // which is not visible.
+// The lock's arming rule, in one place. THE LAST TEST IS THE ONE THAT MATTERS:
+// a timeout can be set on a device with no code stored — Lock_Kind keeps its
+// last value after `novad1 pin clear` — and arming on the clock alone would put
+// up a screen that asks for a PIN nothing will ever accept.
+bool lock_due(uint32_t idle_s) {
+    int s = nova::reg_int(NOVA_KEY_PREFIX "LockSec", 0);
+    if (s <= 0) return false;
+    if (idle_s < (uint32_t)s) return false;
+    return screens::lock_armed();
+}
+
+bool power_gesture_ok(void) { return !screens::lock_active(); }
+
 uint32_t frame_dt(uint32_t now, uint32_t *last, bool had_input) {
     if (!last) return 0;
     if (had_input) *last = now;
@@ -824,6 +867,9 @@ bool begin(void) {
     modules_scan();
 
     g_depth = 0;
+    // The stack is gone, so anything that remembers a position in it has to go
+    // with it. The lock is the only such thing today, and it remembers two.
+    screens::lock_forget();
     push<Home>();
     // On TOP of home, so it pops back to a screen that is already built rather
     // than building one after the animation. That is what stops the splash
@@ -905,9 +951,29 @@ void run(void) {
             // Holding HOME opens the power menu from ANY screen, whatever state
             // it is in, so lock and shutdown are always one gesture away. It
             // does not stack a second copy on itself.
-            if (e == EV_HOME_HOLD) {
+            // ...with one exception, and power_gesture_ok() is where it is
+            // written down and where it is checked.
+            if (e == EV_HOME_HOLD && power_gesture_ok()) {
                 Screen *s = top();
-                if (!s || !nova::ieq(s->title(), "Power")) screens::open_power();
+                if (!s || !nova::ieq(s->title(), "Power")) {
+                    // Make room first. This is the one push reached by a gesture
+                    // from ANY screen, and it is the one that can find the pool
+                    // already full — home, the roots, five levels of files and a
+                    // viewer is eight. A silent nothing there is the guarantee
+                    // quietly not being kept, and from the outside it is
+                    // indistinguishable from a button that did not register.
+                    //
+                    // Safe HERE and nowhere else: nothing on this line is inside
+                    // a screen's own method, whereas open_power() is also an
+                    // OpenFn called from inside Gallery::on_event.
+                    // STACK_MAX - 1, not STACK_MAX: the menu's own first row
+                    // is Controls, which is a second push. Making room for one
+                    // and not for two left Controls dead at exactly depth seven
+                    // — the menu fitted, the screen it offers did not, and it
+                    // said nothing about it.
+                    if (depth() >= STACK_MAX - 1) go_home();
+                    screens::open_power();
+                }
                 g_dirty = true;
                 continue;
             }
@@ -961,6 +1027,16 @@ void run(void) {
         int off_s = nova::reg_int(NOVA_KEY_PREFIX "OffSec", 120);
         if      (off_s > 0 && idle >= (uint32_t)off_s) set_level(LVL_OFF);
         else if (dim_s > 0 && idle >= (uint32_t)dim_s) set_level(LVL_DIM);
+
+        // And the lock, on the same clock and read the same way. It is a third
+        // tier rather than a thing hung off "screen off", because the two are
+        // set independently and somebody may well want the panel to stay lit
+        // and still want it locked — or the other way round.
+        //
+        // lock_engage refuses when it is already up and when the screen on top
+        // is modal, so this can be an unguarded call every frame and both
+        // reasons live in one place.
+        if (lock_due(idle)) screens::lock_engage();
 
         // Notification toast. Clear an expired or dismissed one FIRST (so a press
         // that lands on the same frame a new one arrives does not eat it), then

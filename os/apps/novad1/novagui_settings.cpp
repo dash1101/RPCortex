@@ -2,6 +2,7 @@
 // File: novagui_settings.cpp
 #include "novagui_settings.h"
 #include "novagui_wifi.h"
+#include "novagui_ops.h"
 #include "novagui.h"
 #include "novakeys.h"
 #include "novacore.h"
@@ -79,8 +80,10 @@ public:
     void enter(void) override {
         dirty_ = false;
         load();
-        // The pool slot arrives holding whatever the last screen left in it, so
-        // the cursor is clamped rather than trusted. It is NOT reset: enter()
+        // Clamped rather than trusted. A pool slot does in fact arrive zeroed —
+        // push<T> value-initialises, and novagui_test checks it — but the count
+        // changes under this screen, so the clamp is what has to be right. It is
+        // NOT a reset: enter()
         // also runs when a sub-screen pops back to here, and putting somebody
         // back on row zero every time they set a PIN or picked an app is the
         // difference between a tree that remembers where you were and one that
@@ -500,19 +503,11 @@ constexpr int KIND_COUNT = 3;
 static const int kLockSteps[] = { 0, 30, 60, 300, 900 };
 constexpr int LOCK_STEPS = 5;
 
-// What the lock ACTUALLY is right now.
-//
-// Lock type stores a PREFERENCE and keeps its last value after the code is
-// cleared, so the row went on saying "PIN" for a device with no PIN on it. This
-// reports None when nothing is stored, because that is the fact that matters.
-static const char *lock_state(void) {
-    const char *kind = nova::reg(NOVA_KEY_PREFIX "Lock_Kind", "none");
-    if (nova::ieq(kind, "password"))
-        return nova::reg(NOVA_KEY_PREFIX "Pass", "")[0] ? "Password" : "None";
-    if (nova::ieq(kind, "pin"))
-        return nova::reg(NOVA_KEY_PREFIX "PIN", "")[0] ? "PIN" : "None";
-    return "None";
-}
+// lock_state() lives in novagui_ops.cpp with the lock screen itself. It was here
+// first, as a static, and it had to move the day something other than this
+// screen needed the answer: the runner arms the lock off the same predicate, and
+// two copies of "is there actually a code on this device" is how a settings row
+// ends up saying PIN while the runner refuses to ask for one.
 
 static void pin_typed(void *, const char *pin) {
     nova::reg_set(NOVA_KEY_PREFIX "PIN", pin);
@@ -534,11 +529,13 @@ public:
     const char *title(void) const override { return "Security"; }
 
     int help(const char **out, int max) const override {
-        if (max < 3) return 0;
+        if (max < 5) return 0;
         out[0] = "The lock guards the screen,";
         out[1] = "not the shell or the files.";
-        out[2] = "'novad1 pin clear' undoes it.";
-        return 3;
+        out[2] = "It engages on idle and from";
+        out[3] = "Power -> Lock, not at boot.";
+        out[4] = "'novad1 pin clear' undoes it.";
+        return 5;
     }
 
 protected:
@@ -573,7 +570,17 @@ protected:
     Action activate(int i) override {
         switch (i) {
             case R_STATE:
-                break;                              // a readout
+                // It reads as the state and it ACTS as the verb, which is what a
+                // row called Lock should do. It was a readout, and a readout
+                // that looks exactly like the four actionable rows under it is
+                // indistinguishable from a dead button — the whole reason this
+                // was worth a pass.
+                if (!lock_armed())
+                    ui::notice("Lock", "Nothing to lock with. Set the type below, "
+                                       "then choose a code.");
+                else
+                    lock_engage();
+                break;
             case R_KIND:
                 kind_ = (kind_ + 1) % KIND_COUNT;
                 dirty_ = true;
@@ -609,11 +616,18 @@ protected:
                 break;
             }
             default:
-                // A readout, deliberately. This is the same OS latch the Network
+                // A readout, deliberately: this is the same OS latch the Network
                 // screen's Radio row owns, and two rows driving one switch is how
                 // a settings tree ends up disagreeing with itself. What belongs
                 // here is the answer to "is anything transmitting", which is the
                 // question Security is being asked.
+                //
+                // But it SAYS so now. A row that looks like the four above it and
+                // does nothing when pressed teaches somebody the device is
+                // broken, whatever the reason behind it is — so it points at the
+                // two places that do own the switch.
+                ui::notice("Incognito", "Shown here, changed in Network -> Radio "
+                                        "or by holding HOME for Power.");
                 break;
         }
         return ui::ACT_STAY;
@@ -784,9 +798,14 @@ static void bump_cpu_clock(void) {
     }
     // And keep it after a restart. Setting the clock without setting the boot
     // clock is a setting that undoes itself overnight, which reads as the row
-    // never having worked.
+    // never having worked — so the second half is checked as carefully as the
+    // first. It used to be fired with a null capture and its status dropped,
+    // which is a promise nobody would find out was broken until the morning.
     snprintf(line, sizeof(line), "pulse boot %d", want);
-    fw_shell_run(line, nullptr, 0);
+    if (fw_shell_run(line, out, sizeof(out)) != 0)
+        ui::notice("CPU clock", out[0] ? out
+                   : "Running at the new speed, but it will go back to the old "
+                     "one at the next restart.");
 }
 
 // --- Clock --------------------------------------------------------------------------
@@ -917,8 +936,21 @@ private:
         char line[40], out[80];
         snprintf(line, sizeof(line), "date set %04d-%02d-%02d %02d:%02d:00",
                  v_[F_Y], v_[F_MO], v_[F_D], v_[F_H], v_[F_MI]);
-        fw_shell_run(line, out, sizeof(out));
-        ui::notice("Set Time", out[0] ? out : "Clock set.");
+        // Zeroed first, and the STATUS is what decides the wording.
+        //
+        // It used to report whatever was in the buffer, and "Clock set." when
+        // the buffer was empty — which is exactly what a refusal with the
+        // output capture held by something else looks like. So a clock that had
+        // not been set said it had, which is the worst answer a confirmation
+        // can give.
+        out[0] = 0;
+        const int rc = fw_shell_run(line, out, sizeof(out));
+        if (rc != 0 && !out[0])
+            nova::copy(out, sizeof(out), "Refused, and it did not say why. "
+                                         "Setting the clock needs an admin session.");
+        else if (rc == 0 && !out[0])
+            nova::copy(out, sizeof(out), "Clock set.");
+        ui::notice("Set Time", out);
         return ui::ACT_BACK;
     }
 };
@@ -1004,6 +1036,36 @@ static void open_clock_settings(void) {
     if (s) s->begin();
 }
 
+// --- who this device is ------------------------------------------------------------
+//
+// System.Device_ID and System.Owner are the OS's OWN keys, not this suite's.
+// The shell prompt is built from the first, `fetch` prints it as the hostname
+// and `sysinfo` prints both — so a panel that could not set them left a handheld
+// whose only way to be named was a serial cable, which is the one thing a
+// handheld is meant not to need.
+//
+// The MicroPython suite had both, under a Device group with Rename and Set
+// owner as separate rows. Two rows here, each showing what it is set to, because
+// a row that reads "Owner  dash" answers the question without being pressed and
+// a row that reads "Set owner" does not.
+
+static void devid_typed(void *, const char *text) {
+    // An empty name is a mistake rather than an edit — the shell prompt is built
+    // from this, and a device named "" has a prompt that looks broken rather
+    // than one that looks renamed. Same rule as the Home name.
+    if (!text || !text[0]) return;
+    nova::reg_set("System.Device_ID", text);
+    nova::reg_save();
+}
+
+static void owner_typed(void *, const char *text) {
+    // An owner CAN be emptied, and that is the difference from the name above:
+    // "nobody has claimed this" is a real answer, and sysinfo prints the field
+    // only when it is set.
+    nova::reg_set("System.Owner", text ? text : "");
+    nova::reg_save();
+}
+
 class SystemSettings : public SettingsList {
 public:
     // Matches its row, which is "Settings" now — see the catalogue. novashots
@@ -1011,11 +1073,13 @@ public:
     const char *title(void) const override { return "Settings"; }
 
     int help(const char **out, int max) const override {
-        if (max < 3) return 0;
+        if (max < 5) return 0;
         out[0] = "Clock holds the time, the zone";
         out[1] = "and the CPU speed. Versions is";
         out[2] = "what this device is.";
-        return 3;
+        out[3] = "Device ID is what the shell";
+        out[4] = "calls it; Home > Name is the bar.";
+        return 5;
     }
 
     bool tick(uint32_t dt) override {
@@ -1027,7 +1091,7 @@ public:
     }
 
 protected:
-    enum { R_CLOCK = 0, R_VERSIONS, R_REBOOT, R_RESET, R_COUNT };
+    enum { R_CLOCK = 0, R_VERSIONS, R_ID, R_OWNER, R_REBOOT, R_RESET, R_COUNT };
 
     int count(void) const override { return R_COUNT; }
     const char *label(int i) const override { return kLabels[i]; }
@@ -1036,14 +1100,38 @@ protected:
     void store(void) override {}
 
     void value(int i, char *out, unsigned cap) const override {
-        (void)i;
-        nova::copy(out, cap, ">");
+        // Read live rather than cached in load(). The keyboard pops back to this
+        // screen and enter() re-runs, so a cache would be correct too — but
+        // these are the OS's keys and the shell can move them under a screen
+        // that is still up, which a cache cannot notice.
+        switch (i) {
+            case R_ID:
+                nova::ellipsize(out, cap, nova::reg("System.Device_ID", "vela"), 9);
+                break;
+            case R_OWNER: {
+                const char *o = nova::reg("System.Owner", "");
+                if (!o[0]) nova::copy(out, cap, "not set");
+                else       nova::ellipsize(out, cap, o, 9);
+                break;
+            }
+            default: nova::copy(out, cap, ">"); break;
+        }
     }
 
     Action activate(int i) override {
         switch (i) {
             case R_CLOCK:    open_clock_settings(); break;
             case R_VERSIONS: open_set_device(); break;
+            case R_ID:
+                // Pre-filled, so changing one character does not mean typing the
+                // whole thing again on a keyboard driven by one knob.
+                ui::keyboard("Device ID", nova::reg("System.Device_ID", "vela"),
+                             false, devid_typed, nullptr, nullptr);
+                break;
+            case R_OWNER:
+                ui::keyboard("Owner", nova::reg("System.Owner", ""),
+                             false, owner_typed, nullptr, nullptr);
+                break;
             case R_REBOOT:
                 ui::confirm("Restart the device now?", "Reboot", do_reboot, nullptr);
                 break;
@@ -1057,22 +1145,23 @@ protected:
 
 private:
     static const char *const kLabels[R_COUNT];
-
-    bool h24_;
-
 };
 
 // v1's shape: Clock and Versions are their own screens under System rather than
 // rows beside Reboot. Its reasoning was that nothing at the top level should
 // scroll, and it holds here — the clock rows are three settings about one thing
-// and belong together.
+// and belong together. Six rows is exactly what one panel shows, which is why
+// Device ID and Owner went here rather than into a Device group of their own.
+//
+// Reboot and Reset stay LAST. The two rows that stop the machine should not move
+// up under somebody's thumb when a row is added above them.
 //
 // Verbose and SD Card are NOT carried over. Nothing in this build reads either;
 // Settings.Verbose_Boot is declared by the OS itself and has no reader there
 // either, which is an OS gap rather than a port gap. A row that changes nothing
 // is worse than an absent one, because it teaches somebody the device is broken.
 const char *const SystemSettings::kLabels[SystemSettings::R_COUNT] = {
-    "Clock", "Versions", "Reboot", "Reset settings",
+    "Clock", "Versions", "Device ID", "Owner", "Reboot", "Reset settings",
 };
 
 void open_set_system(void) {

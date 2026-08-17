@@ -772,7 +772,12 @@ public:
             if (top_ > 0) { top_--; stale(); }
             return ui::ACT_STAY;
         }
-        if (e == EV_SELECT && count_) {
+        if (e == EV_SELECT) {
+            // Both helps promise SELECT clears the list. On an empty one it used
+            // to fall through to the default, so the promise did nothing — the
+            // body says "(no log yet)", but a press that produces no response at
+            // all is still a press somebody reads as broken.
+            if (!count_) { ui::notice("Nothing to clear", nothing()); return ui::ACT_STAY; }
             ui::confirm(question(), "Clear", wipe_cb, this);
             return ui::ACT_STAY;
         }

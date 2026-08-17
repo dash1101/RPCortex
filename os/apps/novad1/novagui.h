@@ -155,6 +155,27 @@ Canvas &canvas(void);
 // detent always arrived as a jump.
 uint32_t frame_dt(uint32_t now, uint32_t *last, bool had_input);
 
+// Is the screen lock due, `idle_s` seconds after the last gesture?
+//
+// A FUNCTION for the same reason frame_dt is one: the rule belongs to the runner
+// and a harness that reimplements it is a harness testing its own copy. Three
+// things have to be true and only one of them is a clock — the timeout is set,
+// it has elapsed, and there is actually a code to unlock with. Arming without
+// the last of those leaves a panel nothing can get back into.
+bool lock_due(uint32_t idle_s);
+
+// May holding HOME open the power menu right now?
+//
+// It is meant to work from ANY screen — that is the guarantee, and it is why
+// lock and shutdown are one gesture from anywhere. The lock is the one
+// exception, and it has to be one: Screen off, Reboot and Incognito are all on
+// that menu, so a power menu over the lock is a way round it.
+//
+// A function, not an `if` inside the loop, so the exception can be checked. The
+// harness drives the runner with its own copy of the loop and a rule that only
+// exists there is a rule nothing tests.
+bool power_gesture_ok(void);
+
 }  // namespace gui
 }  // namespace nova
 

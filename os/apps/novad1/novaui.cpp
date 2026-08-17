@@ -18,6 +18,12 @@ void Menu::set(const char *title, const MenuItem *items, int count) {
     top_   = 0;
 }
 
+void Menu::refresh(const char *title, const MenuItem *items, int count) {
+    const int keep = sel_;
+    set(title, items, count);
+    select(keep);
+}
+
 void Menu::select(int i) {
     if (count_ <= 0) { sel_ = 0; return; }
     if (i < 0) i = 0;
