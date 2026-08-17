@@ -575,10 +575,19 @@ static bool mirror_resolve(const ElfMirror &m, const LoadedApp &app, uint32_t si
 // instructions, and judge it exactly as any other code pointer is judged.
 //
 // PAIRED BY THE RELOCATIONS, not by scanning for instruction encodings: the two
-// halves are two separate relocations naming the same symbol, and the MOVT sits
-// four bytes past its MOVW writing the same register. All three of those have to
-// agree before a pair is judged, so a stray MOVT belonging to some other MOVW
-// cannot be silently combined with the wrong low half.
+// halves are two separate relocations naming the same symbol and writing the
+// same register, so a stray MOVT belonging to some other MOVW cannot be
+// combined with the wrong low half.
+//
+// THEY ARE NOT ADJACENT, and assuming they were is a mistake this check made
+// until it was run against real compiler output. The pair is written as
+// `movw rX, #:lower16:sym` / `movt rX, #:upper16:sym` and GCC then schedules
+// other instructions between them — in `greet` built for Cortex-M33 with
+// -mpure-code, the MOVW at +0x14 has its MOVT at +0x22, with two unrelated
+// MOVWs in between. So a MOVW is paired with the NEAREST FOLLOWING MOVT that
+// names the same symbol and writes the same register, and each MOVT is claimed
+// once. The register is read from the file's own bytes rather than from the
+// patched image, so the pairing does not depend on the thing being checked.
 static int check_movw_movt(const ElfMirror &m, const LoadedApp &app,
                            const Shadow &sm, const char *how, bool svc,
                            int *pairs_out) {
@@ -589,33 +598,53 @@ static int check_movw_movt(const ElfMirror &m, const LoadedApp &app,
         if (tgt >= (uint32_t)m.eh->e_shnum || !m.placed[tgt]) continue;
         Elf32_Rel *rel = (Elf32_Rel *)(m.b + m.sh[s].sh_offset);
         uint32_t n = m.sh[s].sh_size / sizeof(Elf32_Rel);
+        uint8_t *claimed = (uint8_t *)calloc((n + 7) / 8, 1);
+        if (!claimed) { printf("       FAIL %s: out of memory\n", how); return 1; }
         for (uint32_t r = 0; r < n; r++) {
             if (ELF32_R_TYPE(rel[r].r_info) != R_ARM_THM_MOVW_ABS_NC) continue;
             uint32_t sidx = ELF32_R_SYM(rel[r].r_info);
-            // Its MOVT: same symbol, four bytes on. Anywhere in this section's
-            // relocations, since nothing promises they are adjacent in the table.
+            const char *nm = sidx < m.nsyms ? m.str + m.syms[sidx].st_name : "?";
+            if (m.sh[tgt].sh_type == SHT_NOBITS) {
+                printf("       FAIL %s: a MOVW/MOVT in a section with no contents\n", how);
+                bad = 1; continue;
+            }
+            // The register this MOVW builds into, from the file's own bytes.
+            uint32_t rd_want = 0, a_probe = 0;
+            if (!mov_imm16_decode(m.b + m.sh[tgt].sh_offset + rel[r].r_offset,
+                                  false, &a_probe, &rd_want)) {
+                printf("       FAIL %s: the site for %s does not hold a MOVW "
+                       "before relocation\n", how, nm);
+                bad = 1; continue;
+            }
+            // Its MOVT: the nearest one AFTER it naming the same symbol and
+            // building into the same register, claimed once so two pairs for one
+            // symbol cannot both take the first.
             const Elf32_Rel *hi = nullptr;
+            uint32_t hi_q = 0;
             for (uint32_t q = 0; q < n; q++) {
                 if (ELF32_R_TYPE(rel[q].r_info) != R_ARM_THM_MOVT_ABS) continue;
                 if (ELF32_R_SYM(rel[q].r_info) != sidx) continue;
-                if (rel[q].r_offset != rel[r].r_offset + 4) continue;
-                hi = &rel[q]; break;
+                if (rel[q].r_offset <= rel[r].r_offset) continue;
+                if (claimed[q >> 3] & (1u << (q & 7))) continue;
+                uint32_t rd_q = 0, a_q = 0;
+                if (!mov_imm16_decode(m.b + m.sh[tgt].sh_offset + rel[q].r_offset,
+                                      true, &a_q, &rd_q)) continue;
+                if (rd_q != rd_want) continue;
+                if (hi && rel[q].r_offset >= hi->r_offset) continue;
+                hi = &rel[q]; hi_q = q;
             }
-            const char *nm = sidx < m.nsyms ? m.str + m.syms[sidx].st_name : "?";
+            if (hi) claimed[hi_q >> 3] |= (uint8_t)(1u << (hi_q & 7));
             if (!hi) {
-                printf("       FAIL %s: the MOVW for %s at +0x%x has no MOVT four "
-                       "bytes on — half an address was built and nothing here can "
-                       "say what the other half is\n", how, nm, rel[r].r_offset);
+                printf("       FAIL %s: the MOVW for %s at +0x%x has no MOVT after "
+                       "it building into r%u — half an address was built and "
+                       "nothing here can say what the other half is\n",
+                       how, nm, rel[r].r_offset, rd_want);
                 bad = 1; continue;
             }
             pairs++;
 
             // What the instructions held BEFORE relocation is the addend, and the
             // loader overwrites rather than adds. Read from the file image.
-            if (m.sh[tgt].sh_type == SHT_NOBITS) {
-                printf("       FAIL %s: a MOVW/MOVT in a section with no contents\n", how);
-                bad = 1; continue;
-            }
             const uint8_t *orig_lo = m.b + m.sh[tgt].sh_offset + rel[r].r_offset;
             const uint8_t *orig_hi = m.b + m.sh[tgt].sh_offset + hi->r_offset;
             uint32_t a_lo = 0, a_hi = 0, rd_o_lo = 0, rd_o_hi = 0;
@@ -683,6 +712,16 @@ static int check_movw_movt(const ElfMirror &m, const LoadedApp &app,
                 bad |= check_code_addr(sm, how, what, built);
             }
         }
+        // Every MOVT has to belong to some MOVW. One left over is half a pair
+        // pointing the other way, and it would otherwise go unmentioned.
+        for (uint32_t q = 0; q < n; q++) {
+            if (ELF32_R_TYPE(rel[q].r_info) != R_ARM_THM_MOVT_ABS) continue;
+            if (claimed[q >> 3] & (1u << (q & 7))) continue;
+            printf("       FAIL %s: the MOVT at +0x%x was not claimed by any MOVW "
+                   "before it\n", how, rel[q].r_offset);
+            bad = 1;
+        }
+        free(claimed);
     }
     if (pairs_out) *pairs_out = pairs;
     return bad;
@@ -2199,16 +2238,31 @@ static int check_pic(const char *path) {
 //
 // Everything else in this file loads what the compiler actually produced, on
 // purpose. This does not, and the reason is the whole of why the MOVW/MOVT check
-// was missing in the first place: GCC 14.2 at -Os for Cortex-M33 materialises
-// addresses through literal pools, so not one of the six packages carries a
-// single R_ARM_THM_MOVW_ABS_NC. A check that walks them would have run over zero
-// sites in every package, printed nothing, and passed for ever.
+// was missing in the first place: MOVW and MOVT are Thumb-2 instructions and
+// every package here is built for cortex-m0plus, which is ARMv6-M and has
+// neither. Not one of the six carries a single R_ARM_THM_MOVW_ABS_NC. A check
+// that walks them runs over zero sites, prints nothing, and passes for ever.
 //
-// The loader supports the pair anyway — it turns up with -mword-relocations, with
-// other GCC versions, and from hand-written assembly — so the arithmetic is live
-// code that nothing exercised. This builds the smallest object that does exercise
-// it: three MOVW/MOVT pairs naming the three kinds of symbol whose treatment
-// differs.
+// The loader supports the pair anyway, and has to: an ARMv8-M build of a package
+// emits them the moment constants cannot live in the code section, and hand
+// written assembly emits them at any time. So the arithmetic is live code that
+// nothing exercised. This builds the smallest object that does exercise it:
+// three MOVW/MOVT pairs naming the three kinds of symbol whose treatment differs.
+//
+// THE WALK ITSELF IS ALSO CHECKED AGAINST A REAL COMPILER, because a fixture
+// only ever contains what its author thought to put in it — and the first
+// version of this check was wrong in exactly that way, pairing each MOVW with a
+// MOVT four bytes on, which is true of hand-written pairs and false of scheduled
+// ones. To reproduce that, build any package for the architecture that has the
+// instructions and hand the result to this test directly:
+//
+//   arm-none-eabi-g++ -mthumb -mcpu=cortex-m33 -Os -std=c++17 -fno-exceptions \
+//       -fno-rtti -fno-common -fno-jump-tables -fno-use-cxa-atexit \
+//       -I../include -mpure-code -c ../apps/greet/greet.cpp -o /tmp/greet_m33.app
+//   ./realapp_test /tmp/greet_m33.app
+//
+// greet built that way holds five pairs, one of them the address of a registered
+// command — and with the Thumb bit added twice it fails on that one by name.
 //
 //   target_fn      a defined THUMB FUNCTION. st_value carries the Thumb bit
 //                  already, so the answer is the symbol's address with the bit
@@ -2701,9 +2755,9 @@ int main(int argc, char **argv) {
     fails += check_movw_fixture();
     printf("       %d pair(s) in the real packages, %d in the fixture%s\n",
            g_movw_real, g_movw_fixture,
-           g_movw_real ? "" : " — GCC at -Os builds addresses through literal "
-                              "pools, so the packages carry none and the fixture "
-                              "is the only thing exercising this");
+           g_movw_real ? "" : " — MOVW/MOVT are Thumb-2 and the packages are "
+                              "built for ARMv6-M, which has neither, so the "
+                              "fixture is the only thing exercising this");
     // A fixture that stopped producing sites would leave the check reading
     // nothing while still printing a pass, which is the exact instrument this
     // file exists to be the opposite of.

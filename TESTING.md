@@ -203,10 +203,12 @@ so `S + T` added it a second time and built `function+2` with the bit **clear** 
 the same value the `ABS32` case once produced, and the same INVSTATE fault at
 the first call.
 
-It survived because GCC at `-Os` materialises addresses through literal pools.
-Not one of the six packages contains a single one of these relocations, so a
-check that walked the real packages would have read zero sites, printed nothing,
-and passed for ever. That is the shape worth taking away: **a check with nothing
+It survived because MOVW and MOVT are Thumb-2 instructions and every package
+here is built for `cortex-m0plus`, which is ARMv6-M and has neither. Not one of
+the six contains a single one of these relocations, so a check that walked the
+real packages would have read zero sites, printed nothing, and passed for ever —
+while the loader went on carrying the code for a pair an ARMv8-M build of a
+package emits the moment its constants cannot live in the code section. That is the shape worth taking away: **a check with nothing
 to check is not a check.** `realapp_test` therefore builds the smallest object
 that does contain them — three pairs naming a Thumb function, a data object and
 an undefined firmware symbol — loads it in both veneer modes, and prints how
@@ -214,6 +216,17 @@ many pairs it read from real packages (zero) beside how many from the fixture
 (six). The data case is the control: `T` is 0 there, so it stayed correct
 throughout, which is how the failure was known to be the Thumb bit and not the
 field packing.
+
+A fixture only ever contains what its author thought to put in it, so the walk
+was checked against a real compiler too — and the first version of it was wrong
+in exactly that way, pairing each MOVW with the MOVT four bytes on. That is true
+of a hand-written pair and false of a scheduled one: in `greet` built for
+Cortex-M33, the MOVW at `+0x14` has its MOVT at `+0x22` with two unrelated MOVWs
+in between. It pairs by symbol and destination register now, nearest following
+MOVT wins, each claimed once. The recipe for building that object is in
+`realapp_test.cpp` beside the fixture; it holds five pairs, one of them the
+address of a registered command, and the doubled Thumb bit fails on that one by
+name.
 
 ### The four things a host cannot answer
 
@@ -261,9 +274,9 @@ package regions out on ARMv6-M, so on a Pico or a Pico W a package runs under
 the default map with no code, no data and no veneer region — not untested,
 *absent*. `realapp_test` counts the region checks that mean nothing there and
 prints them as **skipped, not passed**, with the reason measured beside them:
-844 KB of spans would need 1630 KB of power-of-two regions, and 33 of the 38
-are not describable on that architecture as they stand. If they ever all become
-describable — because the loader's blocks changed, or because the encoder
+how many bytes of spans there are, what they would cost as power-of-two regions
+— about twice as much, on the current packages — and how many are not
+describable on that architecture at all. If they ever all become describable — because the loader's blocks changed, or because the encoder
 started rounding — the grounds for compiling the regions out have gone and the
 suite fails rather than going on quoting a reason that stopped being true.
 `mpu_test` carries the same arithmetic for one real span: the read-only half of
@@ -293,9 +306,10 @@ being fetchable, each GOT slot landing in executable memory) was exercised by
 greet's 15 GOT sites and nine branches, while the package the path exists for
 sat on the copy path. The opt-in is Nova D1 now, and the counts are asserted
 rather than the number of packages: the slot path must resolve at least 500 GOT
-and 500 branch sites in a blob of at least 32 KB, and it prints what it got
-(6984 / 9198 / 133 KB). Putting the opt-in back on greet reproduces the old
-cover exactly and the suite says so.
+and 500 branch sites in a blob of at least 32 KB, and it prints what it actually
+got — comfortably past all three today. Putting the opt-in back on greet
+reproduces the old cover exactly and the suite says so instead of printing a
+pass.
 
 **Flash timing and watchdog margin.** `pkgslot_test` proves the slot format and
 the write order against a fake chip that erases to 0xFF and refuses to turn a
@@ -343,6 +357,15 @@ package the size of Nova D1.
 Put the file in `host/`, add one line to the `SRC` map in `run_all.sh` naming
 the extra sources it needs, and that is all — there is no build system here on
 purpose, because a test that runs from one script is a test that gets run.
+
+One suite is coupled more widely than the rest and it is worth knowing which.
+`realapp_test` links `host_describe.cpp`, which includes `os/shell/apps.cpp` so
+the real `describe()` can be compared against the shadow of it — and that drags
+in what `apps.cpp` refers to. If a change there reaches for something new, the
+loader suite fails to link with `undefined reference to <name>`, which reads as
+nothing at all. The fix is one line in the stub list at the top of
+`host_describe.cpp`. They are written out rather than collected away with a
+linker flag precisely so the failure names what is missing.
 
 **Prove a new test can fail.** Every check in this suite was verified by
 breaking the thing it covers and confirming it goes red. A test written against
