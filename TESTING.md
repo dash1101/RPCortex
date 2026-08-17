@@ -27,8 +27,8 @@ package ABI, so packages — which only ever call `fw_*` — are testable too.
 |---|---|
 | `smp_test` | The scheduler on two real threads. Double-scheduling, sleep handover, affinity gating. |
 | `task_test` | Spawn, exit, kill, slot reclamation, stack guards, and that the hardware guard follows the running task rather than the core. |
-| `mpu_test` | Encoding a protection region on both architectures, and every request that has to be refused rather than rounded. |
-| `realapp_test` | Every real built package through the real loader, three ways: copied to RAM, copied to RAM sandboxed, and installed to a flash slot and loaded from it. Relocations, the GOT, the veneers, and — since #103 — whether every code pointer it produced lands somewhere the hardware would let the CPU fetch from. |
+| `mpu_test` | Encoding a protection region on both architectures, every request that has to be refused rather than rounded, and what a real package span costs on each — the arithmetic behind leaving the package regions out of the RP2040 build. |
+| `realapp_test` | Every real built package through the real loader, three ways: copied to RAM, copied to RAM sandboxed, and installed to a flash slot and loaded from it. Relocations, the GOT, the veneers, every branch by where it lands, and — since #103 — whether every code pointer it produced lands somewhere the hardware would let the CPU fetch from. Plus one synthetic object, for the relocation no compiler here emits. |
 | `lock_test` | Recursion, hand-off, and that "busy" is per task rather than per core. |
 | `packages_test` | dht, i2cscan, gpio and ws2812 against a fake device. |
 | `calc_test` | The expression parser: precedence, associativity, errors. |
@@ -84,6 +84,8 @@ This is the honest list, and it is what `probe` exists for.
 | Flash writes, OTA | Needs the real flash controller | `update check` / `update install` |
 | USB CDC console | The whole console; a host test writes to a buffer | any interactive use |
 | Memory protection actually protecting | The host has no MPU. The encoding and the placement are tested; whether the silicon refuses the access is not | `mpu`, then `stress` — an overflow should now name the task instead of corrupting something |
+| Which permission each package region gets | `TaskAppMem` carries spans and nothing else. `MPU_RO_EXEC` and `MPU_RW_NOEXEC` are chosen in `task_app_mem_apply` in `os/mpu_rp2.cpp`, which has hardware headers and does not compile on a host — so nothing here would notice one becoming the other | `mpu` on the board, which prints what each core really holds |
+| Package regions on an RP2040 | There are none: `task_app_mem_apply` compiles them out on ARMv6-M. `realapp_test` reports its region checks as skipped there rather than passed | nothing to check — a package on a Pico runs under the default map by design |
 | A microSD card | The protocol and the filesystem are covered; the electrical and timing layer is not, and nothing has been run with a card attached | `sd status` with no card, then `sd mount` — `sdcard_rp2.cpp` lists the order and what each failure means |
 | Bluetooth beyond the payload builders | btstack needs the CYW43 | `bt scan`, `bt advertise`, `btaudio play` |
 
@@ -186,6 +188,46 @@ GOT was right, every relocation resolved to the address it should have. The
 suites checked all of that and had nothing to say about whether the CPU would
 be allowed to fetch from it.
 
+### The second worked example: the Thumb bit, again
+
+#103 was found on a board. This one was found by writing the check that had
+been missing, which is the better half of the same story.
+
+`R_ARM_THM_MOVW_ABS_NC` and `THM_MOVT_ABS` build a 32-bit address in a register
+out of two instruction halfwords, and it is the one relocation where the loader
+supplies the Thumb bit **itself** rather than taking it from `st_value`. AAELF32
+gives the result as `(S + A) | T` with `S` carrying no Thumb bit, and GNU ld
+agrees: `movw`/`movt` against a Thumb function at `0x20001000` links to
+`0x20001001`, the bit present exactly once. The loader's `S` already carried it,
+so `S + T` added it a second time and built `function+2` with the bit **clear** —
+the same value the `ABS32` case once produced, and the same INVSTATE fault at
+the first call.
+
+It survived because MOVW and MOVT are Thumb-2 instructions and every package
+here is built for `cortex-m0plus`, which is ARMv6-M and has neither. Not one of
+the six contains a single one of these relocations, so a check that walked the
+real packages would have read zero sites, printed nothing, and passed for ever —
+while the loader went on carrying the code for a pair an ARMv8-M build of a
+package emits the moment its constants cannot live in the code section. That is the shape worth taking away: **a check with nothing
+to check is not a check.** `realapp_test` therefore builds the smallest object
+that does contain them — three pairs naming a Thumb function, a data object and
+an undefined firmware symbol — loads it in both veneer modes, and prints how
+many pairs it read from real packages (zero) beside how many from the fixture
+(six). The data case is the control: `T` is 0 there, so it stayed correct
+throughout, which is how the failure was known to be the Thumb bit and not the
+field packing.
+
+A fixture only ever contains what its author thought to put in it, so the walk
+was checked against a real compiler too — and the first version of it was wrong
+in exactly that way, pairing each MOVW with the MOVT four bytes on. That is true
+of a hand-written pair and false of a scheduled one: in `greet` built for
+Cortex-M33, the MOVW at `+0x14` has its MOVT at `+0x22` with two unrelated MOVWs
+in between. It pairs by symbol and destination register now, nearest following
+MOVT wins, each claimed once. The recipe for building that object is in
+`realapp_test.cpp` beside the fixture; it holds five pairs, one of them the
+address of a registered command, and the doubled Thumb bit fails on that one by
+name.
+
 ### The four things a host cannot answer
 
 The tables above list what individual features need a board for. This is the
@@ -202,44 +244,72 @@ requires each to carry the Thumb bit and to land inside a span that will be
 executable — but "would be allowed to fetch" is still a model, and a model of
 a device is not the device.
 
-Two code pointers that walk cannot reach, both worth knowing about.
-`R_ARM_THM_MOVW_ABS_NC` / `THM_MOVT_ABS` build an address in a register out of
-two instruction halfwords, and it is the one relocation where the loader adds
-the Thumb bit **itself** rather than taking it from `st_value` — which is
-exactly the arithmetic that once produced `function+2` with the bit clear.
-Nothing here reads it back. And on the copy path, branch targets are unchecked
-by value: the slot path decodes every `THM_CALL`/`THM_JUMP24` and confirms it
-reaches the symbol it names, while the copy path only asks that veneer target
-words carry a Thumb bit.
+Every kind of code pointer the loader produces is now read back, which took
+three additions. Branch targets on the copy paths are checked by value, which is
+what the slot path always did and the copy path never did — 6606 of them across
+the six packages, in both veneer modes, each required either to reach the symbol
+it names or to reach a veneer carrying the right destination. The sandboxed load
+gets its GOT checked, which nothing did before. And the `MOVW`/`MOVT` pair is
+decoded back out of the two halfwords it is built from, which found a real bug —
+the second worked example below.
+
+What is left is the limit itself, and no amount of this changes it: the
+addresses are right and the map says the CPU would be allowed to fetch them.
+Whether it does is the board's answer.
 
 **Memory protection and W^X.** There is no MPU here. `mpu_test` proves the
-encoding and `realapp_test` proves the loader's spans are encodable and that
-its shadow of them keeps code and data apart. Four things stay out of reach,
-and the last two are the ones that would let another #103 through.
+encoding and `realapp_test` proves the loader's spans are encodable, that its
+shadow of them keeps code and data apart, and that the shadow still matches the
+`describe()` it is a shadow of. What stays out of reach is below; the last of it
+is what a green line here does not cover on a board.
 
 Whether the silicon actually refuses the access is the obvious one — an
 unprogrammed region behaves exactly like a working one until the moment it was
-supposed to catch something. None of it applies on an RP2040 at all, where
-`task_app_mem_apply` compiles the regions out: ARMv6-M regions are power-of-two
-sized and aligned to their own size, which costs more heap than the protection
-is worth on a 264 KB part. `mpu` on the board prints what each core really has.
+supposed to catch something. `mpu` on the board prints what each core really
+has.
 
-The shadow map is a **copy** of `describe()` in `os/shell/apps.cpp`. It catches
-the loader handing out a span the hardware will not take. It would not notice
-`describe()` itself being changed to ask for the wrong permission, because it
-is not asking `describe()` anything.
+**None of it applies on an RP2040 at all**, and that is now said out loud on
+every run rather than left to this file. `task_app_mem_apply` compiles the
+package regions out on ARMv6-M, so on a Pico or a Pico W a package runs under
+the default map with no code, no data and no veneer region — not untested,
+*absent*. `realapp_test` counts the region checks that mean nothing there and
+prints them as **skipped, not passed**, with the reason measured beside them:
+how many bytes of spans there are, what they would cost as power-of-two regions
+— about twice as much, on the current packages — and how many are not
+describable on that architecture at all. If they ever all become describable — because the loader's blocks changed, or because the encoder
+started rounding — the grounds for compiling the regions out have gone and the
+suite fails rather than going on quoting a reason that stopped being true.
+`mpu_test` carries the same arithmetic for one real span: the read-only half of
+`stress` is 4800 bytes and one exact ARMv8-M region; on ARMv6-M it is no region
+at all, and giving it one costs an 8 KB region on an 8 KB boundary and up to
+16 KB of heap to place it.
 
-And **the slot path is proved by whatever happens to be opted into it.** A
-package reaches it only by being position-independent, `is_pic()` decides that
-on the presence of `R_ARM_GOT_BREL`, and the `PIC` argument to `rpc_add_app` in
-`os/CMakeLists.txt` is the only opt-in — so every slot-path assertion (r9
-against the GOT base, the three gates being fetchable, each GOT slot landing in
-executable memory) is exercised by exactly the packages carrying it, and by
-nothing else. That was `greet` for a while: 304 bytes, standing in for the whole
-path #103 hid in. It is Nova D1 now, which is the package the slot exists for
-and three orders of magnitude more code, so the cover is far better than it was.
-The suite fails if the count ever drops to zero. It cannot tell whether what is
-left is thin.
+The shadow map is still a **copy** of `describe()` in `os/shell/apps.cpp`, on
+purpose — a helper that called the loader's own placement would agree with it
+whatever either of them did — but the two are now compared. `host_describe.cpp`
+includes `apps.cpp` so the real `describe()` can be called, and its three spans
+must match the shadow's on every path a package is loaded by. Editing
+`describe()` to hand out a different span fails here instead of on a board;
+dropping its round-up to a whole protection block reproduces #103 exactly, and
+is caught by the spans disagreeing before the encodability check gets to it.
+
+What that does **not** reach is the permissions. A `TaskAppMem` carries spans
+and nothing else: `MPU_RO_EXEC` and `MPU_RW_NOEXEC` are chosen in
+`task_app_mem_apply` in `os/mpu_rp2.cpp`, which has hardware headers and cannot
+be compiled on a host at all. Nothing here would notice one of those three being
+changed to the other.
+
+The slot path used to be proved by one 304-byte package. A package reaches it
+only by being position-independent, and `rpc_add_app(greet PIC)` was the only
+opt-in — so every slot-path assertion (r9 against the GOT base, the three gates
+being fetchable, each GOT slot landing in executable memory) was exercised by
+greet's 15 GOT sites and nine branches, while the package the path exists for
+sat on the copy path. The opt-in is Nova D1 now, and the counts are asserted
+rather than the number of packages: the slot path must resolve at least 500 GOT
+and 500 branch sites in a blob of at least 32 KB, and it prints what it actually
+got — comfortably past all three today. Putting the opt-in back on greet
+reproduces the old cover exactly and the suite says so instead of printing a
+pass.
 
 **Flash timing and watchdog margin.** `pkgslot_test` proves the slot format and
 the write order against a fake chip that erases to 0xFF and refuses to turn a
@@ -287,6 +357,15 @@ package the size of Nova D1.
 Put the file in `host/`, add one line to the `SRC` map in `run_all.sh` naming
 the extra sources it needs, and that is all — there is no build system here on
 purpose, because a test that runs from one script is a test that gets run.
+
+One suite is coupled more widely than the rest and it is worth knowing which.
+`realapp_test` links `host_describe.cpp`, which includes `os/shell/apps.cpp` so
+the real `describe()` can be compared against the shadow of it — and that drags
+in what `apps.cpp` refers to. If a change there reaches for something new, the
+loader suite fails to link with `undefined reference to <name>`, which reads as
+nothing at all. The fix is one line in the stub list at the top of
+`host_describe.cpp`. They are written out rather than collected away with a
+linker flag precisely so the failure names what is missing.
 
 **Prove a new test can fail.** Every check in this suite was verified by
 breaking the thing it covers and confirming it goes red. A test written against

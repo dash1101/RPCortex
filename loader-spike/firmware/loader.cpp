@@ -936,7 +936,22 @@ LoadResult app_load(const AppSource &src, LoadedApp *out) {
             case R_ARM_THM_MOVW_ABS_NC:
             case R_ARM_THM_MOVT_ABS: {
                 uint16_t *p = (uint16_t *)(uintptr_t)P;
-                uint32_t val = S + (is_func ? 1u : 0u);
+                // AAELF32: the result is (S + A) | T, where S is the symbol
+                // address with bit 0 CLEAR and T is 1 for a Thumb function.
+                //
+                // S as resolve() returns it ALREADY carries that bit — it is
+                // map[shndx].addr + st_value, and st_value is odd for a Thumb
+                // function, exactly as with R_ARM_ABS32 above. So the bit has to
+                // be masked off before it is put back on. `S + T` instead adds
+                // it a SECOND time, and the result is the symbol plus two with
+                // the Thumb bit clear: the same value that, produced by the
+                // ABS32 case, made every registered command fault with INVSTATE
+                // the instant it was invoked. Nothing found it here because GCC
+                // at -Os materialises addresses through literal pools, so no
+                // package built by this tree contains one of these at all —
+                // realapp_test's movw fixture exists to keep that from being the
+                // reason it goes unnoticed again.
+                uint32_t val = (S & ~1u) | (is_func ? 1u : 0u);
                 if (type == R_ARM_THM_MOVT_ABS) val >>= 16;
                 val &= 0xffffu;
                 uint32_t imm4 = (val >> 12) & 0xf, i = (val >> 11) & 1;

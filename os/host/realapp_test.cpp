@@ -21,6 +21,9 @@
 #include "elf.h"
 #include "mpu.h"
 #include "pkgslot.h"
+// For TaskAppMem — the shape describe() fills, which the shadow map below is
+// compared against. See check_shadow_matches_describe and host_describe.cpp.
+#include "task.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -75,6 +78,41 @@ static int g_loaded;   // how many apps actually got checked
 // stops running and nothing else here would notice — which is precisely how
 // #103 survived sixty-one green suites.
 static int g_pic_checked;
+// MOVW/MOVT pairs actually read back, split by where they came from. GCC at -Os
+// materialises addresses through literal pools, so the real packages currently
+// hold NONE — which would make the check that reads them back pure decoration
+// unless the number is on the screen and something else guarantees the path is
+// exercised. That something is check_movw_fixture.
+static int g_movw_real;
+static int g_movw_fixture;
+// Branch relocations judged by where they LAND, on the two copy paths. The slot
+// path has always decoded these; the copy path checked nothing but the parity of
+// a veneer's target word, which says nothing about whether any BL goes there.
+static int g_branches;
+// How much the flash-slot path was really exercised, and by the biggest package
+// that went through it. The count of PIC packages says only that the path RAN;
+// it cannot say the run was worth anything. TESTING.md's own words about the
+// state before this: "the whole slot path is proved by one 304-byte package...
+// the suite fails if that count ever drops to zero; it cannot tell that one is
+// thin cover for the path #103 hid in."
+static int      g_slot_got, g_slot_branch, g_slot_abs;
+static uint32_t g_slot_biggest_blob;
+// --- the architecture none of the region checks apply to ---------------------
+//
+// Everything this file says about protection regions is an ARMv8-M claim.
+// task_app_mem_apply COMPILES THE PACKAGE REGIONS OUT on ARMv6-M — see the
+// `#if MPU_V6` in os/mpu_rp2.cpp — so on a Pico or Pico W there is no code
+// region, no data region and no veneer region, and a package runs with the
+// default map and the OS's own privileges.
+//
+// That is a decision, not an oversight, and it is not this suite's to relitigate.
+// What IS this suite's business is that a reader of a green run does not come
+// away thinking the RP2040 build was checked. A check that does not apply has to
+// read as skipped; counted and named, never folded into the pass.
+static int      g_v6_skipped;        // region checks above that mean nothing there
+static uint32_t g_v6_would_cost;     // heap the same spans would cost if it did
+static uint32_t g_v6_real_bytes;     // what those spans actually occupy
+static int      g_v6_unencodable;    // spans ARMv6-M could not describe as they are
 // What the loader READ, as well as what it allocated. The page-at-a-time
 // installer buys its small footprint by re-reading the relocation table once per
 // page, and "that is cheap" is a claim rather than a fact until the number is on
@@ -159,13 +197,21 @@ static int missing_artifact(const char *path) {
 //
 // `want_off` is the offset being asked about. Returns the flags of the section
 // containing it, or 0 if none does.
+static bool g_section_read_failed;
 static uint32_t section_flags_at(const char *path, uint32_t want_off,
                                  uint32_t *text_end_out) {
+    // A failure to read is NOT "no section covers this offset". Both answers are
+    // zero, and the caller treats zero as padding — so an unreadable file would
+    // have every offset skipped and the whole placement check would pass without
+    // examining a byte. It is recorded rather than returned, because the caller
+    // asks this once per word and wants one complaint, not thousands.
     FILE *f = fopen(path, "rb");
-    if (!f) return 0;
+    if (!f) { g_section_read_failed = true; return 0; }
     fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET);
-    uint8_t *b = (uint8_t *)malloc(sz);
-    if (fread(b, 1, sz, f) != (size_t)sz) { fclose(f); free(b); return 0; }
+    uint8_t *b = (uint8_t *)malloc(sz > 0 ? sz : 1);
+    if (!b || sz <= 0 || fread(b, 1, sz, f) != (size_t)sz) {
+        fclose(f); free(b); g_section_read_failed = true; return 0;
+    }
     fclose(f);
     Elf32_Ehdr *eh = (Elf32_Ehdr *)b;
     Elf32_Shdr *sh = (Elf32_Shdr *)(b + eh->e_shoff);
@@ -215,16 +261,15 @@ struct ElfMirror {
     uint32_t     text_end;                    // where the halves divide
 };
 
-static bool mirror_open(const char *path, const LoadedApp &app, ElfMirror *m) {
+// The layout half, over bytes already in memory. Split out so a synthetic
+// object — one built by this file rather than read off disk — goes through the
+// same mirror as a real package and is judged by exactly the same code.
+// Takes ownership of `bytes`, which must have come from malloc.
+static bool mirror_from_bytes(uint8_t *bytes, long sz, const LoadedApp &app,
+                              ElfMirror *m) {
     memset(m, 0, sizeof(*m));
-    FILE *f = fopen(path, "rb");
-    if (!f) return false;
-    fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET);
-    m->b = (uint8_t *)malloc(sz);
-    if (!m->b || sz <= 0 || fread(m->b, 1, sz, f) != (size_t)sz) {
-        fclose(f); free(m->b); m->b = nullptr; return false;
-    }
-    fclose(f);
+    if (!bytes || sz <= 0) { free(bytes); return false; }
+    m->b = bytes;
     m->eh = (Elf32_Ehdr *)m->b;
     m->sh = (Elf32_Shdr *)(m->b + m->eh->e_shoff);
     if (m->eh->e_shnum > LOADER_MAX_SECTIONS) { free(m->b); m->b = nullptr; return false; }
@@ -264,6 +309,19 @@ static bool mirror_open(const char *path, const LoadedApp &app, ElfMirror *m) {
     m->str   = (const char *)(m->b + m->sh[m->sh[symtab_i].sh_link].sh_offset);
     m->nsyms = m->sh[symtab_i].sh_size / sizeof(Elf32_Sym);
     return true;
+}
+
+static bool mirror_open(const char *path, const LoadedApp &app, ElfMirror *m) {
+    memset(m, 0, sizeof(*m));
+    FILE *f = fopen(path, "rb");
+    if (!f) return false;
+    fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET);
+    uint8_t *bytes = (uint8_t *)malloc(sz > 0 ? sz : 1);
+    if (!bytes || sz <= 0 || fread(bytes, 1, sz, f) != (size_t)sz) {
+        fclose(f); free(bytes); return false;
+    }
+    fclose(f);
+    return mirror_from_bytes(bytes, sz, app, m);
 }
 static void mirror_close(ElfMirror *m) { free(m->b); m->b = nullptr; }
 
@@ -323,6 +381,56 @@ static Shadow shadow_of(const LoadedApp &app) {
         s.programmed = w.base && w.size && mpu_v8_encode(w.base, w.size, w.perm, &r);
     }
     return sm;
+}
+
+// --- and the same question asked of the real describe() ----------------------
+//
+// The map above is a COPY, on purpose, and that is worth keeping: a helper that
+// called the loader's own placement would agree with it whatever either of them
+// did. What a copy cannot do is notice the thing it is a copy OF changing. Edit
+// describe() to hand out a different span and every region check in this file
+// goes on checking the old one, in silence, exactly as it did before #103.
+//
+// So the two are compared. host_describe.cpp includes os/shell/apps.cpp and
+// hands back the real describe(), and the three spans it produces have to match
+// the three this file computed — base and size, per span. Everything else about
+// a ShadowSpan (the permission, and whether the hardware would accept it) stays
+// this file's own independent answer, so both tripwires exist: the loader moving
+// under the mirror, and describe() moving under the loader.
+//
+// What this does NOT cover: the PERMISSIONS. A TaskAppMem carries spans and
+// nothing else — MPU_RO_EXEC and MPU_RW_NOEXEC are chosen in task_app_mem_apply
+// in os/mpu_rp2.cpp, which has hardware headers and cannot be compiled here at
+// all. Nothing in this suite would notice one of those three being changed to
+// the other. That is on TESTING.md's honest list rather than papered over.
+void host_app_describe(const LoadedApp *a, TaskAppMem *m);
+
+static int check_shadow_matches_describe(const LoadedApp &app, const Shadow &sm,
+                                         const char *how) {
+    TaskAppMem m;
+    host_app_describe(&app, &m);
+    struct { const char *what; uint32_t base, size; } real[3] = {
+        { "code",    (uint32_t)(uintptr_t)m.text,   m.text_size },
+        { "data",    (uint32_t)(uintptr_t)m.data,   m.data_size },
+        { "veneers", (uint32_t)(uintptr_t)m.veneer, m.veneer_size },
+    };
+    int bad = 0;
+    if (sm.n != 3) {
+        printf("       FAIL %s: the shadow has %d span(s), describe() fills 3\n",
+               how, sm.n);
+        return 1;
+    }
+    for (int i = 0; i < 3; i++) {
+        if (sm.s[i].base == real[i].base && sm.s[i].size == real[i].size) continue;
+        printf("       FAIL %s: describe() in os/shell/apps.cpp gives the %s region "
+               "as %08x+%u; this file's shadow of it says %08x+%u.\n"
+               "       They have to agree or every region check here is checking "
+               "a map the device does not program.\n",
+               how, real[i].what, real[i].base, real[i].size,
+               sm.s[i].base, sm.s[i].size);
+        bad = 1;
+    }
+    return bad;
 }
 
 // Which span an address really lands in. Only ones the hardware will hold: a
@@ -390,6 +498,388 @@ static int check_code_addr(const Shadow &sm, const char *how,
     return bad;
 }
 
+// --- the address built out of two instructions -------------------------------
+//
+// R_ARM_THM_MOVW_ABS_NC and R_ARM_THM_MOVT_ABS materialise a 32-bit address in a
+// register out of two instruction halfwords: the MOVW carries the low sixteen
+// bits and the MOVT the high sixteen. Nothing else in this file reads one back,
+// and it is the ONE relocation where the loader supplies the Thumb bit ITSELF
+// rather than taking it from st_value — which is precisely the arithmetic that,
+// on R_ARM_ABS32, once produced `function+2` with the bit clear: a pointer that
+// links, loads, and faults with INVSTATE the moment it is called.
+//
+// AAELF32 defines the result as ((S + A) | T), where S is the symbol's address
+// with bit 0 CLEAR and T is 1 for a Thumb function. Confirmed against the
+// reference implementation rather than from memory: `movw r0, #:lower16:fn` /
+// `movt r0, #:upper16:fn` against a Thumb `fn` at 0x20001000, linked by GNU ld,
+// comes out as 0x20001001 — the Thumb bit present exactly ONCE. The loader's S
+// already carries that bit (resolve() returns map[shndx].addr + st_value, and
+// st_value is odd for a Thumb function), so the correct value is S itself.
+//
+// A is the addend, which for a REL relocation lives in the instruction's own
+// immediate field. GCC and GAS emit zero there — `f240 0000` / `f2c0 0000`,
+// measured — and the loader OVERWRITES the field rather than adding to it, so a
+// nonzero addend is a case it does not implement. That is reported as a failure
+// naming what it is, rather than being quietly compared against the wrong
+// expectation.
+
+// The T3 encodings. MOVW is 11110 i 10 0100 imm4 / 0 imm3 Rd imm8; MOVT is the
+// same with bit 7 of the first halfword's low byte set (0100 -> 1100).
+#define MOVW_OP_MASK 0xFBF0u
+#define MOVW_OP      0xF240u
+#define MOVT_OP      0xF2C0u
+
+static bool mov_imm16_decode(const uint8_t *p, bool want_movt,
+                             uint32_t *imm, uint32_t *rd) {
+    uint32_t hw1 = (uint32_t)p[0] | ((uint32_t)p[1] << 8);
+    uint32_t hw2 = (uint32_t)p[2] | ((uint32_t)p[3] << 8);
+    if ((hw1 & MOVW_OP_MASK) != (want_movt ? MOVT_OP : MOVW_OP)) return false;
+    if (hw2 & 0x8000u) return false;                 // bit 15 is zero in T3
+    uint32_t imm4 = hw1 & 0xfu, i = (hw1 >> 10) & 1u;
+    uint32_t imm3 = (hw2 >> 12) & 0x7u, imm8 = hw2 & 0xffu;
+    *imm = (imm4 << 12) | (i << 11) | (imm3 << 8) | imm8;
+    *rd  = (hw2 >> 8) & 0xfu;
+    return true;
+}
+
+// How the loader resolved a symbol, recomputed from the ELF. Mirrors resolve()
+// in loader.cpp: an undefined symbol comes from the firmware — as an address in
+// DIRECT mode and as the veneer carrying its ABI index in SVC mode, which is the
+// only form a sandboxed package ever sees.
+static bool mirror_resolve(const ElfMirror &m, const LoadedApp &app, uint32_t sidx,
+                           bool svc, uint32_t *S, bool *is_func) {
+    if (sidx >= m.nsyms) return false;
+    const Elf32_Sym &sy = m.syms[sidx];
+    *is_func = ELF32_ST_TYPE(sy.st_info) == STT_FUNC;
+    if (sy.st_shndx == SHN_UNDEF) {
+        *is_func = true;                 // everything the firmware exports is callable
+        const char *nm = m.str + sy.st_name;
+        if (!svc) { *S = api_lookup(nm); return *S != 0; }
+        int ix = api_index_of(nm);
+        if (ix < 0) return false;
+        const uint8_t *v = (const uint8_t *)app.veneers;
+        for (uint32_t off = app.veneer_gates; off + 16 <= app.veneers_used; off += 16)
+            if (*(const uint32_t *)(v + off + 12) == (uint32_t)ix) {
+                *S = ((uint32_t)(uintptr_t)(v + off)) | 1u;
+                return true;
+            }
+        return false;
+    }
+    if (sy.st_shndx == SHN_ABS) { *S = sy.st_value; return true; }
+    if (sy.st_shndx >= (uint32_t)m.eh->e_shnum || !m.placed[sy.st_shndx]) return false;
+    *S = m.addr[sy.st_shndx] + sy.st_value;
+    return true;
+}
+
+// Walk every MOVW/MOVT pair, decode the address back out of the patched
+// instructions, and judge it exactly as any other code pointer is judged.
+//
+// PAIRED BY THE RELOCATIONS, not by scanning for instruction encodings: the two
+// halves are two separate relocations naming the same symbol and writing the
+// same register, so a stray MOVT belonging to some other MOVW cannot be
+// combined with the wrong low half.
+//
+// THEY ARE NOT ADJACENT, and assuming they were is a mistake this check made
+// until it was run against real compiler output. The pair is written as
+// `movw rX, #:lower16:sym` / `movt rX, #:upper16:sym` and GCC then schedules
+// other instructions between them — in `greet` built for Cortex-M33 with
+// -mpure-code, the MOVW at +0x14 has its MOVT at +0x22, with two unrelated
+// MOVWs in between. So a MOVW is paired with the NEAREST FOLLOWING MOVT that
+// names the same symbol and writes the same register, and each MOVT is claimed
+// once. The register is read from the file's own bytes rather than from the
+// patched image, so the pairing does not depend on the thing being checked.
+static int check_movw_movt(const ElfMirror &m, const LoadedApp &app,
+                           const Shadow &sm, const char *how, bool svc,
+                           int *pairs_out) {
+    int bad = 0, pairs = 0;
+    for (int s = 0; s < m.eh->e_shnum; s++) {
+        if (m.sh[s].sh_type != SHT_REL) continue;
+        uint32_t tgt = m.sh[s].sh_info;
+        if (tgt >= (uint32_t)m.eh->e_shnum || !m.placed[tgt]) continue;
+        Elf32_Rel *rel = (Elf32_Rel *)(m.b + m.sh[s].sh_offset);
+        uint32_t n = m.sh[s].sh_size / sizeof(Elf32_Rel);
+        uint8_t *claimed = (uint8_t *)calloc((n + 7) / 8, 1);
+        if (!claimed) { printf("       FAIL %s: out of memory\n", how); return 1; }
+        for (uint32_t r = 0; r < n; r++) {
+            if (ELF32_R_TYPE(rel[r].r_info) != R_ARM_THM_MOVW_ABS_NC) continue;
+            uint32_t sidx = ELF32_R_SYM(rel[r].r_info);
+            const char *nm = sidx < m.nsyms ? m.str + m.syms[sidx].st_name : "?";
+            if (m.sh[tgt].sh_type == SHT_NOBITS) {
+                printf("       FAIL %s: a MOVW/MOVT in a section with no contents\n", how);
+                bad = 1; continue;
+            }
+            // The register this MOVW builds into, from the file's own bytes.
+            uint32_t rd_want = 0, a_probe = 0;
+            if (!mov_imm16_decode(m.b + m.sh[tgt].sh_offset + rel[r].r_offset,
+                                  false, &a_probe, &rd_want)) {
+                printf("       FAIL %s: the site for %s does not hold a MOVW "
+                       "before relocation\n", how, nm);
+                bad = 1; continue;
+            }
+            // Its MOVT: the nearest one AFTER it naming the same symbol and
+            // building into the same register, claimed once so two pairs for one
+            // symbol cannot both take the first.
+            const Elf32_Rel *hi = nullptr;
+            uint32_t hi_q = 0;
+            for (uint32_t q = 0; q < n; q++) {
+                if (ELF32_R_TYPE(rel[q].r_info) != R_ARM_THM_MOVT_ABS) continue;
+                if (ELF32_R_SYM(rel[q].r_info) != sidx) continue;
+                if (rel[q].r_offset <= rel[r].r_offset) continue;
+                if (claimed[q >> 3] & (1u << (q & 7))) continue;
+                uint32_t rd_q = 0, a_q = 0;
+                if (!mov_imm16_decode(m.b + m.sh[tgt].sh_offset + rel[q].r_offset,
+                                      true, &a_q, &rd_q)) continue;
+                if (rd_q != rd_want) continue;
+                if (hi && rel[q].r_offset >= hi->r_offset) continue;
+                hi = &rel[q]; hi_q = q;
+            }
+            if (hi) claimed[hi_q >> 3] |= (uint8_t)(1u << (hi_q & 7));
+            if (!hi) {
+                printf("       FAIL %s: the MOVW for %s at +0x%x has no MOVT after "
+                       "it building into r%u — half an address was built and "
+                       "nothing here can say what the other half is\n",
+                       how, nm, rel[r].r_offset, rd_want);
+                bad = 1; continue;
+            }
+            pairs++;
+
+            // What the instructions held BEFORE relocation is the addend, and the
+            // loader overwrites rather than adds. Read from the file image.
+            const uint8_t *orig_lo = m.b + m.sh[tgt].sh_offset + rel[r].r_offset;
+            const uint8_t *orig_hi = m.b + m.sh[tgt].sh_offset + hi->r_offset;
+            uint32_t a_lo = 0, a_hi = 0, rd_o_lo = 0, rd_o_hi = 0;
+            if (!mov_imm16_decode(orig_lo, false, &a_lo, &rd_o_lo) ||
+                !mov_imm16_decode(orig_hi, true,  &a_hi, &rd_o_hi)) {
+                printf("       FAIL %s: the site for %s does not hold a MOVW/MOVT "
+                       "pair before relocation\n", how, nm);
+                bad = 1; continue;
+            }
+            if (a_lo || a_hi) {
+                printf("       FAIL %s: %s is referenced with a nonzero addend "
+                       "(%u/%u), which the loader overwrites rather than adds\n",
+                       how, nm, a_lo, a_hi);
+                bad = 1; continue;
+            }
+
+            // And what they hold now.
+            const uint8_t *lo = (const uint8_t *)(uintptr_t)(m.addr[tgt] + rel[r].r_offset);
+            const uint8_t *up = (const uint8_t *)(uintptr_t)(m.addr[tgt] + hi->r_offset);
+            uint32_t v_lo = 0, v_hi = 0, rd_lo = 0, rd_hi = 0;
+            if (!mov_imm16_decode(lo, false, &v_lo, &rd_lo) ||
+                !mov_imm16_decode(up, true,  &v_hi, &rd_hi)) {
+                printf("       FAIL %s: patching %s destroyed the MOVW/MOVT opcode "
+                       "— the instruction is no longer a move\n", how, nm);
+                bad = 1; continue;
+            }
+            // The register is not the loader's to change. A mask that reached one
+            // bit too far would move the address into a register the code never
+            // reads, which faults nowhere near here.
+            if (rd_lo != rd_o_lo || rd_hi != rd_o_hi) {
+                printf("       FAIL %s: patching %s changed the destination "
+                       "register (r%u->r%u / r%u->r%u)\n",
+                       how, nm, rd_o_lo, rd_lo, rd_o_hi, rd_hi);
+                bad = 1; continue;
+            }
+            if (rd_lo != rd_hi) {
+                printf("       FAIL %s: the MOVW and MOVT for %s build into "
+                       "different registers (r%u and r%u)\n", how, nm, rd_lo, rd_hi);
+                bad = 1; continue;
+            }
+
+            uint32_t built = (v_hi << 16) | v_lo;
+            uint32_t S = 0; bool is_func = false;
+            if (!mirror_resolve(m, app, sidx, svc, &S, &is_func)) {
+                printf("       FAIL %s: cannot work out where %s ended up, so the "
+                       "address these two instructions build cannot be judged\n",
+                       how, nm);
+                bad = 1; continue;
+            }
+            // ((S + A) | T), with A zero and S already carrying T for a function.
+            uint32_t want = (S & ~1u) | (is_func ? 1u : 0u);
+            if (built != want) {
+                printf("       FAIL %s: MOVW/MOVT at +0x%x builds %08x for %s, "
+                       "which is at %08x%s\n", how, rel[r].r_offset, built, nm, want,
+                       (built == want + 1u)
+                           ? " — the Thumb bit was added twice, so this is the "
+                             "symbol plus two with the bit CLEAR"
+                           : "");
+                bad = 1; continue;
+            }
+            // Right value is not the same claim as reachable.
+            if (is_func) {
+                char what[96];
+                snprintf(what, sizeof(what), "the MOVW/MOVT address of %s", nm);
+                bad |= check_code_addr(sm, how, what, built);
+            }
+        }
+        // Every MOVT has to belong to some MOVW. One left over is half a pair
+        // pointing the other way, and it would otherwise go unmentioned.
+        for (uint32_t q = 0; q < n; q++) {
+            if (ELF32_R_TYPE(rel[q].r_info) != R_ARM_THM_MOVT_ABS) continue;
+            if (claimed[q >> 3] & (1u << (q & 7))) continue;
+            printf("       FAIL %s: the MOVT at +0x%x was not claimed by any MOVW "
+                   "before it\n", how, rel[q].r_offset);
+            bad = 1;
+        }
+        free(claimed);
+    }
+    if (pairs_out) *pairs_out = pairs;
+    return bad;
+}
+
+// The offset a Thumb-2 BL / B.W actually encodes, decoded from the ARMv7-M
+// definition rather than by calling the loader's own helper. A checker that used
+// the code under test would agree with it whatever either of them did, and the
+// encode/decode pair being self-consistently wrong is exactly the bug that
+// produces a package which links, loads, and branches into the wrong place.
+//
+// The CPU computes the target as (address of the instruction) + 4 + this.
+static int32_t thumb_branch_off(const uint8_t *p) {
+    uint32_t hw1 = (uint32_t)p[0] | ((uint32_t)p[1] << 8);
+    uint32_t hw2 = (uint32_t)p[2] | ((uint32_t)p[3] << 8);
+    uint32_t sgn = (hw1 >> 10) & 1u;
+    uint32_t j1  = (hw2 >> 13) & 1u, j2 = (hw2 >> 11) & 1u;
+    uint32_t i1  = 1u - (j1 ^ sgn), i2 = 1u - (j2 ^ sgn);
+    int32_t v = (int32_t)((i1 << 23) | (i2 << 22) |
+                          ((hw1 & 0x3ffu) << 12) | ((hw2 & 0x7ffu) << 1));
+    return sgn ? v - (1 << 24) : v;          // two's complement across 25 bits
+}
+
+// --- every branch, by where it actually lands --------------------------------
+//
+// THM_CALL and THM_JUMP24 are most of the relocations in a package — novad1 has
+// 3066 of them — and on the copy path nothing judged one. The slot path decoded
+// every branch and confirmed it reaches the symbol it names; here the strongest
+// claim made was that a veneer's target word was odd, which says nothing about
+// whether any BL in the image actually goes there.
+//
+// A wrong branch is the worst-behaved thing the loader can produce. It links, it
+// loads, every other check in this file passes, and the package jumps into the
+// middle of an unrelated instruction — the +4 note in loader.cpp is that exact
+// mistake, four bytes early, on every call.
+//
+// Two legitimate destinations, and both are checked rather than either being
+// assumed:
+//
+//   DIRECT — the target is in BL range, so the branch goes straight to it.
+//   VENEERED — it is not, which for a firmware call is the normal case rather
+//     than an edge one: firmware is in XIP flash 256 MB from SRAM. The branch
+//     then goes to a trampoline in the pool, and what has to be true is that the
+//     trampoline carries the right destination. In DIRECT veneer mode that is
+//     the firmware ADDRESS; in SVC mode the loader resolves an undefined symbol
+//     to its supervisor-call veneer before the branch is encoded at all, so the
+//     branch is in range and there is no second hop — a veneered branch in SVC
+//     mode means an out-of-range target the sandbox cannot express, which the
+//     loader is supposed to refuse outright.
+static int check_branches(const ElfMirror &m, const LoadedApp &app,
+                          const Shadow &sm, const char *how, bool svc,
+                          int *sites_out) {
+    int bad = 0, sites = 0, direct = 0, veneered = 0, relocs = 0;
+    const uint8_t *vbase = (const uint8_t *)app.veneers;
+
+    for (int s = 0; s < m.eh->e_shnum; s++) {
+        if (m.sh[s].sh_type != SHT_REL) continue;
+        uint32_t tgt = m.sh[s].sh_info;
+        Elf32_Rel *rel = (Elf32_Rel *)(m.b + m.sh[s].sh_offset);
+        uint32_t n = m.sh[s].sh_size / sizeof(Elf32_Rel);
+        for (uint32_t r = 0; r < n; r++) {
+            uint32_t type = ELF32_R_TYPE(rel[r].r_info);
+            if (type != R_ARM_THM_CALL && type != R_ARM_THM_JUMP24) continue;
+            relocs++;
+            // Branches live in the executable half. One in a section the loader
+            // did not place, or in the writable half, is not something this can
+            // read — and it is worth saying so rather than passing over it.
+            if (tgt >= (uint32_t)m.eh->e_shnum || !m.placed[tgt]) {
+                printf("       FAIL %s: a branch in section %u, which was never "
+                       "placed — it cannot have been relocated\n", how, tgt);
+                bad = 1; continue;
+            }
+            if (m.writ[tgt] || m.sh[tgt].sh_type == SHT_NOBITS) continue;
+
+            uint32_t sidx = ELF32_R_SYM(rel[r].r_info);
+            const char *nm = sidx < m.nsyms ? m.str + m.syms[sidx].st_name : "?";
+            uint32_t S = 0; bool is_func = false;
+            if (!mirror_resolve(m, app, sidx, svc, &S, &is_func)) {
+                printf("       FAIL %s: cannot work out where the branch to %s "
+                       "was meant to land\n", how, nm);
+                bad = 1; continue;
+            }
+            sites++;
+
+            // What the instruction meant before relocation is its addend, and the
+            // ARM convention folds the Thumb pipeline offset into it — an
+            // unresolved BL encodes -4, not 0. Both sides carry the same +4, so
+            // it is written out on both rather than cancelled quietly.
+            uint32_t site = m.addr[tgt] + rel[r].r_offset;
+            int32_t a_orig = thumb_branch_off(m.b + m.sh[tgt].sh_offset + rel[r].r_offset);
+            int32_t a_new  = thumb_branch_off((const uint8_t *)(uintptr_t)site);
+            uint32_t reached = site + 4u + (uint32_t)a_new;
+            uint32_t want    = (S & ~1u) + (uint32_t)a_orig + 4u;
+
+            if (reached == want) {
+                direct++;
+            } else if (vbase && reached >= (uint32_t)(uintptr_t)vbase &&
+                       reached <  (uint32_t)(uintptr_t)vbase + app.veneers_used) {
+                uint32_t voff = reached - (uint32_t)(uintptr_t)vbase;
+                veneered++;
+                if (voff % 16u) {
+                    printf("       FAIL %s: the branch to %s lands %u bytes into "
+                           "the veneer pool, which is not the start of a veneer\n",
+                           how, nm, voff);
+                    bad = 1; continue;
+                }
+                if (voff < app.veneer_gates) {
+                    printf("       FAIL %s: the branch to %s lands on a privilege "
+                           "GATE at +%u, not on a call veneer — calling it would "
+                           "drop privilege into nowhere\n", how, nm, voff);
+                    bad = 1; continue;
+                }
+                if (svc) {
+                    // resolve() has already turned an undefined symbol into its
+                    // own veneer, so nothing here can legitimately be out of
+                    // range. One that is means a target that is neither firmware
+                    // nor inside the image, and a trampoline holding a raw
+                    // address where the supervisor expects an index.
+                    printf("       FAIL %s: the branch to %s went through a veneer, "
+                           "which a sandboxed package has no way to reach\n", how, nm);
+                    bad = 1; continue;
+                }
+                uint32_t lit = *(const uint32_t *)(uintptr_t)(vbase + voff + 12);
+                if (lit != (want | 1u)) {
+                    printf("       FAIL %s: the branch to %s goes to the veneer at "
+                           "+%u, which targets %08x — %s is at %08x\n",
+                           how, nm, voff, lit, nm, want | 1u);
+                    bad = 1; continue;
+                }
+            } else {
+                printf("       FAIL %s: the branch at +0x%x reaches %08x, but %s is "
+                       "at %08x and there is no veneer there\n",
+                       how, rel[r].r_offset, reached, nm, want);
+                bad = 1; continue;
+            }
+            // And the same question every other code pointer is asked. The
+            // address is even by construction — a Thumb branch offset has no low
+            // bit — so the Thumb bit is supplied here rather than checked; what
+            // is being asked is whether the CPU will be allowed to fetch there.
+            char what[96];
+            snprintf(what, sizeof(what), "the branch to %s", nm);
+            bad |= check_code_addr(sm, how, what, reached | 1u);
+        }
+    }
+    // A package whose relocations say there are branches, and a walk that judged
+    // none of them, is the failure this file exists to be the opposite of.
+    if (relocs && !sites) {
+        printf("       FAIL %s: %d branch relocation(s) and not one was checked\n",
+               how, relocs);
+        bad = 1;
+    }
+    if (sites)
+        printf("       %d branch(es): %d direct, %d through a veneer, every one "
+               "reaches the symbol it names\n", sites, direct, veneered);
+    if (sites_out) *sites_out = sites;
+    return bad;
+}
+
 // --- the GOT, for a position-independent package -----------------------------
 //
 // The decisive stage-2 check. A PIC package reaches every global THROUGH a GOT
@@ -403,7 +893,7 @@ static int check_code_addr(const Shadow &sm, const char *how,
 //
 // Runs only for a PIC package (got_size != 0); a non-PIC one skips it entirely,
 // so the default path is neither changed nor judged by a rule that is not its.
-static int check_got(const char *path, const LoadedApp &app) {
+static int check_got(const char *path, const LoadedApp &app, bool svc, const char *how) {
     int bad = 0;
     ElfMirror mm;
     // A failure to mirror used to `return 0`, which reads as "the GOT is fine".
@@ -454,25 +944,34 @@ static int check_got(const char *path, const LoadedApp &app) {
             }
             uint32_t slot = got[off / 4];
             const Elf32_Sym &sy = syms[sidx];
-            uint32_t expect;
-            if (sy.st_shndx == SHN_UNDEF)      expect = api_lookup(str + sy.st_name);
-            else if (sy.st_shndx == SHN_ABS)   expect = sy.st_value;
-            else if (sy.st_shndx < eh->e_shnum && placed[sy.st_shndx])
-                                               expect = base[sy.st_shndx] + sy.st_value;
-            else continue;                     // a section the loader did not place
+            // Resolved through the SAME mirror the branch and MOVW checks use,
+            // and told which veneer mode it is in. That is not tidying: in SVC
+            // mode an undefined symbol does not resolve to a firmware address at
+            // all, it resolves to the package's own supervisor-call veneer — so
+            // a GOT checked with the privileged answer would be checked against
+            // a number the sandboxed loader never produces.
+            uint32_t expect = 0; bool is_func = false;
+            if (!mirror_resolve(mm, app, sidx, svc, &expect, &is_func)) {
+                // Not a skip. A slot whose expected value cannot be worked out
+                // is a slot nothing checked, and the whole subject of this file
+                // is checks that did not happen quietly.
+                printf("       FAIL %s GOT: cannot work out where %s ended up, so "
+                       "its slot went unchecked\n", how, str + sy.st_name);
+                bad = 1; continue;
+            }
             if (slot != expect) {
-                printf("       FAIL GOT: slot for %s holds %08x, the symbol is at %08x\n",
-                       str + sy.st_name, slot, expect);
+                printf("       FAIL %s GOT: slot for %s holds %08x, the symbol is at %08x\n",
+                       how, str + sy.st_name, slot, expect);
                 bad = 1;
             }
             // A GOT slot naming a FUNCTION is a code pointer the package will
             // load and branch to. Right value is not the same claim as
             // reachable: it has to land somewhere the hardware will let the
             // CPU fetch from.
-            if (ELF32_ST_TYPE(sy.st_info) == STT_FUNC) {
+            if (is_func || ELF32_ST_TYPE(sy.st_info) == STT_FUNC) {
                 char what[80];
                 snprintf(what, sizeof(what), "the GOT slot for %s", str + sy.st_name);
-                bad |= check_code_addr(sm, "copy-to-RAM", what, slot);
+                bad |= check_code_addr(sm, how, what, slot);
             }
         }
     }
@@ -482,9 +981,16 @@ static int check_got(const char *path, const LoadedApp &app) {
     for (uint32_t k = 0; k < app.got_count; k++)
         if (got[k] == 0) { printf("       FAIL GOT: slot %u was never filled\n", k); bad = 1; }
 
+    // A GOT with slots and no sites, or sites and no slots, is a walk that read
+    // nothing — which reads exactly like a pass.
+    if (app.got_count && !sites) {
+        printf("       FAIL %s GOT: %u slot(s) and not one GOT_BREL site was "
+               "walked\n", how, app.got_count);
+        bad = 1;
+    }
     if (sites && !bad)
-        printf("       GOT ok: %d GOT_BREL site(s) through %u slot(s), every one resolves right\n",
-               sites, app.got_count);
+        printf("       %s GOT ok: %d GOT_BREL site(s) through %u slot(s), every one resolves right\n",
+               how, sites, app.got_count);
     mirror_close(&mm);
     return bad;
 }
@@ -507,6 +1013,10 @@ static int check_got(const char *path, const LoadedApp &app) {
 static int check_mpu_regions(const LoadedApp &app, const char *how) {
     int bad = 0;
     Shadow sm = shadow_of(app);
+    // Before anything is judged against the shadow: is the shadow still the map
+    // the device would program? Asked on every path, because describe() is what
+    // runs a package however it was loaded.
+    bad |= check_shadow_matches_describe(app, sm, how);
     for (int i = 0; i < sm.n; i++) {
         const ShadowSpan &s = sm.s[i];
         if (!s.size) continue;                    // legitimately absent
@@ -517,6 +1027,21 @@ static int check_mpu_regions(const LoadedApp &app, const char *how) {
             bad = 1;
         }
     }
+    // And the same three spans asked of the OTHER architecture, which is not a
+    // check but a ledger. Nothing above this line means anything on an RP2040:
+    // the regions are compiled out there, so what is recorded is how many checks
+    // were skipped and what the skip is buying.
+    for (int i = 0; i < sm.n; i++) {
+        const ShadowSpan &s = sm.s[i];
+        if (!s.size) continue;
+        g_v6_skipped++;
+        g_v6_real_bytes += s.size;
+        MpuV6Region r6;
+        MpuBlockPlan p6;
+        if (!mpu_v6_encode(s.base, s.size, 0, s.perm, &r6)) g_v6_unencodable++;
+        g_v6_would_cost += mpu_v6_plan_block(s.size, &p6) ? p6.region_bytes : s.size;
+    }
+
     uint32_t vsize = mpu_align_up(app.veneers_used, MPU_V8_GRAIN);
     if (vsize > app.veneer_size) vsize = app.veneer_size;
     if (app.veneers_used && !vsize) {
@@ -720,6 +1245,7 @@ static int load_one(const char *path) {
     // writable ended up before text_end and nothing read-only after it.
     {
         uint32_t text_end = 0, misplaced = 0;
+        g_section_read_failed = false;
         for (uint32_t off = 0; off < app.image_size; off += 4) {
             uint32_t fl = section_flags_at(path, off, &text_end);
             if (!(fl & 0x80000000u)) continue;             // padding between sections
@@ -733,6 +1259,11 @@ static int load_one(const char *path) {
         if (text_end != app.text_size) {
             printf("       FAIL the loader and this test disagree on where the "
                    "halves divide (%u vs %u)\n", app.text_size, text_end);
+            bad = 1;
+        }
+        if (g_section_read_failed) {
+            printf("       FAIL %s could not be read back, so no byte of it was "
+                   "checked against the half it landed in\n", path);
             bad = 1;
         }
     }
@@ -821,11 +1352,24 @@ static int load_one(const char *path) {
                     exec_bad += check_code_addr(sm, "copy-to-RAM", what, v);
                 }
             }
+            // The other kind of stored address: the pair of instructions that
+            // builds one in a register. Zero of these in anything GCC emits at
+            // -Os, which is why the count is PRINTED rather than assumed — see
+            // check_movw_fixture, which exists because a check with nothing to
+            // check is not a check.
+            int mpairs = 0;
+            bad |= check_movw_movt(pm, app, sm, "copy-to-RAM", false, &mpairs);
+            g_movw_real += mpairs;
+            // And every branch, by where it lands rather than by whether some
+            // veneer word happened to be odd.
+            int brs = 0;
+            bad |= check_branches(pm, app, sm, "copy-to-RAM", false, &brs);
+            g_branches += brs;
             mirror_close(&pm);
         }
     }
-    if (checked) printf("       %d stored function pointer(s), %d missing the Thumb bit, "
-                        "%d not executable\n", checked, even_ptrs, exec_bad);
+    printf("       %d stored function pointer(s), %d missing the Thumb bit, "
+           "%d not executable\n", checked, even_ptrs, exec_bad);
     if (even_ptrs || exec_bad) bad = 1;
 
     // And every veneer's target word, which the scan above structurally cannot
@@ -845,12 +1389,20 @@ static int load_one(const char *path) {
             veven++;
         }
     }
-    if (vtargets) printf("       %d veneer target(s), %d missing the Thumb bit\n",
-                         vtargets, veven);
+    printf("       %d veneer target(s), %d missing the Thumb bit\n", vtargets, veven);
     if (veven) bad = 1;
+    // Every package here calls the firmware, and firmware is 256 MB away in XIP
+    // flash, so every one of them MUST have gone through a trampoline. A pool
+    // with bytes in it and no target words in range is a pool full of something
+    // else, and it used to print nothing at all.
+    if (app.veneers_used && !vtargets) {
+        printf("       FAIL %u B of veneers and not one target address among them\n",
+               app.veneers_used);
+        bad = 1;
+    }
 
     // A position-independent package: verify the whole r9/GOT indirection.
-    if (app.got_size) bad += check_got(path, app);
+    if (app.got_size) bad += check_got(path, app, false, "copy-to-RAM");
 
     fclose(g_f);
     return bad;
@@ -982,6 +1534,39 @@ static int load_svc(const char *path) {
         printf("       FAIL sandboxed: no call veneers at all — nothing was checked\n");
         bad = 1;
     }
+
+    // And where every branch in the image actually goes, which in this mode is a
+    // different question from the same walk on the privileged path: an undefined
+    // symbol has been resolved to its OWN supervisor-call veneer before the
+    // branch was encoded, so every call is in range and none of them should have
+    // needed a trampoline. A wrong index in the veneer is caught above; a branch
+    // that reaches the wrong veneer calls the wrong function just as thoroughly,
+    // and nothing asked about that.
+    {
+        const Shadow sm = shadow_of(app);
+        ElfMirror pm;
+        if (!mirror_open(path, app, &pm)) {
+            printf("       FAIL sandboxed: could not read %s back to walk its "
+                   "branches\n", path);
+            bad = 1;
+        } else {
+            int mpairs = 0, brs = 0;
+            bad |= check_movw_movt(pm, app, sm, "sandboxed", true, &mpairs);
+            g_movw_real += mpairs;
+            bad |= check_branches(pm, app, sm, "sandboxed", true, &brs);
+            g_branches += brs;
+            mirror_close(&pm);
+        }
+    }
+
+    // And the GOT this mode produces, which is a DIFFERENT GOT. Nothing checked
+    // it: check_got ran on the privileged load only, where an undefined symbol
+    // resolves to a firmware address. Sandboxed it resolves to the package's own
+    // supervisor-call veneer instead, so every slot naming firmware holds a
+    // different number — the numbers a device actually runs on, and the ones
+    // that were never read back.
+    if (app.got_size) bad += check_got(path, app, true, "sandboxed");
+
     printf("  ok   %-12s sandboxed: %d gate(s) + %d supervisor call(s)\n",
            name, 3, calls);
     return bad;
@@ -1048,24 +1633,6 @@ static bool fake_slot_program(void *, uint32_t off, const void *data, uint32_t l
         g_fake_flash[off + i] &= s[i];
     }
     return true;
-}
-
-// The offset a Thumb-2 BL / B.W actually encodes, decoded from the ARMv7-M
-// definition rather than by calling the loader's own helper. A checker that used
-// the code under test would agree with it whatever either of them did, and the
-// encode/decode pair being self-consistently wrong is exactly the bug that
-// produces a package which links, loads, and branches into the wrong place.
-//
-// The CPU computes the target as (address of the instruction) + 4 + this.
-static int32_t thumb_branch_off(const uint8_t *p) {
-    uint32_t hw1 = (uint32_t)p[0] | ((uint32_t)p[1] << 8);
-    uint32_t hw2 = (uint32_t)p[2] | ((uint32_t)p[3] << 8);
-    uint32_t sgn = (hw1 >> 10) & 1u;
-    uint32_t j1  = (hw2 >> 13) & 1u, j2 = (hw2 >> 11) & 1u;
-    uint32_t i1  = 1u - (j1 ^ sgn), i2 = 1u - (j2 ^ sgn);
-    int32_t v = (int32_t)((i1 << 23) | (i2 << 22) |
-                          ((hw1 & 0x3ffu) << 12) | ((hw2 & 0x7ffu) << 1));
-    return sgn ? v - (1 << 24) : v;          // two's complement across 25 bits
 }
 
 // A package is position-independent iff it reaches its data through a GOT — i.e.
@@ -1227,6 +1794,7 @@ static int check_pic(const char *path) {
 
     g_loaded++;
     g_pic_checked++;
+    if (mA.ro_size > g_slot_biggest_blob) g_slot_biggest_blob = mA.ro_size;
     printf("  ok   %-12s slot %u B (text %u + rodata %u + veneers %u), RAM %u B\n",
            name, mA.ro_size, mA.text_size, mA.rodata_size, mA.veneer_size, mA.ram_size);
 
@@ -1350,6 +1918,18 @@ static int check_pic(const char *path) {
         uint32_t slotbase = (uint32_t)(uintptr_t)blob;
         if (s.st_shndx == SHN_UNDEF) {
             int ix = api_index_of(str + s.st_name);
+            // -1 is not an index. Left to become (uint32_t)-1 it is
+            // VENEER_NOT_AN_INDEX, the literal the gates carry — so a fake
+            // symbol table that filled up would go looking for a veneer holding
+            // the gate's own marker, and the failure would name the symbol
+            // rather than the table. That has happened once already, at
+            // FAKE_SYMS 64, and it read exactly like a loader bug.
+            if (ix < 0) {
+                printf("       FAIL the fake firmware symbol table filled up at %u "
+                       "entries — raise FAKE_SYMS; nothing below this point was "
+                       "checked for %s\n", api_symbol_count(), str + s.st_name);
+                *ok = false; return 0;
+            }
             for (uint32_t off = mA.veneer_off; off + 16 <= mA.veneer_off + mA.veneer_size; off += 16)
                 if (*(uint32_t *)(blob + off + 12) == (uint32_t)ix) return (slotbase + off) | 1u;
             *ok = false; return 0;
@@ -1473,9 +2053,23 @@ static int check_pic(const char *path) {
         // three gates, and r9. The gates are what #103 faulted on and this path
         // is where it hid.
         bad |= check_executable(app, tag);
-        if (!bad) printf("       %s: %d GOT + %d branch + %d ABS32 site(s) resolve against the slot at %p, "
-                         "every code pointer executable\n",
-                         tag, got_sites, br_sites, abs_sites, (void *)app.data);
+        // A WALK THAT FOUND NOTHING IS NOT A PASS. Every line above is inside a
+        // loop over relocation sections, so a mirror that placed nothing, a
+        // section index that stopped matching, or an ELF read back wrong would
+        // run all of it zero times and fall out here with `bad` untouched —
+        // which is the shape of #103 exactly, one level up.
+        if (!got_sites && !br_sites && !abs_sites) {
+            printf("       FAIL %s: not one relocation site was resolved — this "
+                   "instance was not checked at all\n", tag);
+            bad = 1;
+        }
+        g_slot_got += got_sites; g_slot_branch += br_sites; g_slot_abs += abs_sites;
+        // Reported whether or not something else already failed: the counts are
+        // how a reader sees how much cover this path really has, and suppressing
+        // them on the first failure hides exactly that.
+        printf("       %s: %d GOT + %d branch + %d ABS32 site(s) resolve against the slot at %p%s\n",
+               tag, got_sites, br_sites, abs_sites, (void *)app.data,
+               bad ? "" : ", every code pointer executable");
     };
     verify(appA, slotA, "load A");
     verify(appB, slotA, "load B");
@@ -1640,6 +2234,255 @@ static int check_pic(const char *path) {
     return bad;
 }
 
+// --- the one relocation no real package contains ------------------------------
+//
+// Everything else in this file loads what the compiler actually produced, on
+// purpose. This does not, and the reason is the whole of why the MOVW/MOVT check
+// was missing in the first place: MOVW and MOVT are Thumb-2 instructions and
+// every package here is built for cortex-m0plus, which is ARMv6-M and has
+// neither. Not one of the six carries a single R_ARM_THM_MOVW_ABS_NC. A check
+// that walks them runs over zero sites, prints nothing, and passes for ever.
+//
+// The loader supports the pair anyway, and has to: an ARMv8-M build of a package
+// emits them the moment constants cannot live in the code section, and hand
+// written assembly emits them at any time. So the arithmetic is live code that
+// nothing exercised. This builds the smallest object that does exercise it:
+// three MOVW/MOVT pairs naming the three kinds of symbol whose treatment differs.
+//
+// THE WALK ITSELF IS ALSO CHECKED AGAINST A REAL COMPILER, because a fixture
+// only ever contains what its author thought to put in it — and the first
+// version of this check was wrong in exactly that way, pairing each MOVW with a
+// MOVT four bytes on, which is true of hand-written pairs and false of scheduled
+// ones. To reproduce that, build any package for the architecture that has the
+// instructions and hand the result to this test directly:
+//
+//   arm-none-eabi-g++ -mthumb -mcpu=cortex-m33 -Os -std=c++17 -fno-exceptions \
+//       -fno-rtti -fno-common -fno-jump-tables -fno-use-cxa-atexit \
+//       -I../include -mpure-code -c ../apps/greet/greet.cpp -o /tmp/greet_m33.app
+//   ./realapp_test /tmp/greet_m33.app
+//
+// greet built that way holds five pairs, one of them the address of a registered
+// command — and with the Thumb bit added twice it fails on that one by name.
+//
+//   target_fn      a defined THUMB FUNCTION. st_value carries the Thumb bit
+//                  already, so the answer is the symbol's address with the bit
+//                  set ONCE. Adding it again gives function+2 with the bit
+//                  CLEAR, which is the defect this whole check exists for.
+//   fixture_datum  a defined DATA object. T is 0 and the address must stay even
+//                  — the control, and the case that stays correct under the
+//                  defect, which is what makes it worth having.
+//   fw_millis      an UNDEFINED firmware symbol. Resolves to a firmware address
+//                  in DIRECT mode and to a supervisor-call veneer in SVC mode,
+//                  and both of those already carry the Thumb bit too.
+//
+// The bytes are what GAS really emits, checked against it rather than recalled:
+// `movw r0, #:lower16:fn` assembles to f240 0000 and `movt r0, #:upper16:fn` to
+// f2c0 0000, with the addend field zero in both.
+
+static const uint8_t *g_membuf;
+static uint32_t g_memlen;
+static int mem_read(void *, uint32_t off, void *dst, uint32_t len) {
+    if (off > g_memlen) return -1;
+    uint32_t n = g_memlen - off;
+    if (n > len) n = len;
+    memcpy(dst, g_membuf + off, n);
+    return (int)n;
+}
+
+// Little-endian writers, so the object is byte-identical on any host.
+static void put16(uint8_t *p, uint32_t v) { p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); }
+static void put32(uint8_t *p, uint32_t v) {
+    p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8);
+    p[2] = (uint8_t)(v >> 16); p[3] = (uint8_t)(v >> 24);
+}
+
+#define FIX_TEXT_BYTES 32u
+#define FIX_DATA_BYTES 4u
+#define FIX_NSECT      8
+#define FIX_NSYM       5
+
+// Returns a malloc'd object and its length.
+static uint8_t *build_movw_object(uint32_t *len_out) {
+    // .text: target_fn, then app_main with three MOVW/MOVT pairs and a return.
+    static const uint16_t text[FIX_TEXT_BYTES / 2] = {
+        0x4770, 0xbf00,                 // +0  target_fn: bx lr ; nop
+        0xf240, 0x0000,                 // +4  movw r0, #0   -> target_fn
+        0xf2c0, 0x0000,                 // +8  movt r0, #0
+        0xf240, 0x0100,                 // +12 movw r1, #0   -> fixture_datum
+        0xf2c0, 0x0100,                 // +16 movt r1, #0
+        0xf240, 0x0200,                 // +20 movw r2, #0   -> fw_millis
+        0xf2c0, 0x0200,                 // +24 movt r2, #0
+        0x4770, 0xbf00,                 // +28 bx lr ; nop
+    };
+    static const char shstr[] =
+        "\0.text\0.rel.text\0.data\0.rpc_app_header\0.symtab\0.strtab\0.shstrtab";
+    // Offsets into shstr, in the order the names appear above.
+    const uint32_t n_text = 1, n_rel = 7, n_data = 17, n_hdr = 23,
+                   n_sym = 39, n_str = 47, n_shstr = 55;
+    static const char strtab[] = "\0target_fn\0fixture_datum\0app_main\0fw_millis";
+    const uint32_t s_target = 1, s_datum = 11, s_main = 25, s_millis = 34;
+
+    // Six relocations: a MOVW and a MOVT for each of the three symbols.
+    struct { uint32_t off, sym, type; } rels[6] = {
+        { 4,  1, R_ARM_THM_MOVW_ABS_NC }, { 8,  1, R_ARM_THM_MOVT_ABS },
+        { 12, 2, R_ARM_THM_MOVW_ABS_NC }, { 16, 2, R_ARM_THM_MOVT_ABS },
+        { 20, 4, R_ARM_THM_MOVW_ABS_NC }, { 24, 4, R_ARM_THM_MOVT_ABS },
+    };
+
+    RpcAppHeader hdr{};
+    hdr.magic = RPC_APP_MAGIC;
+    hdr.api_major = RPC_API_MAJOR;
+    hdr.api_minor = RPC_API_MINOR;
+    snprintf(hdr.name, sizeof(hdr.name), "movwfixture");
+
+    const uint32_t eh_sz = sizeof(Elf32_Ehdr), sh_sz = sizeof(Elf32_Shdr);
+    uint32_t off = eh_sz;
+    const uint32_t o_text = off;  off += FIX_TEXT_BYTES;
+    const uint32_t o_rel  = off;  off += 6 * (uint32_t)sizeof(Elf32_Rel);
+    const uint32_t o_data = off;  off += FIX_DATA_BYTES;
+    const uint32_t o_hdr  = off;  off += (uint32_t)sizeof(RpcAppHeader);
+    const uint32_t o_sym  = off;  off += FIX_NSYM * (uint32_t)sizeof(Elf32_Sym);
+    const uint32_t o_str  = off;  off += (uint32_t)sizeof(strtab);
+    const uint32_t o_shs  = off;  off += (uint32_t)sizeof(shstr);
+    off = (off + 3u) & ~3u;
+    const uint32_t o_shdr = off;  off += FIX_NSECT * sh_sz;
+
+    uint8_t *b = (uint8_t *)calloc(off, 1);
+    if (!b) return nullptr;
+
+    memcpy(b, "\x7f" "ELF", 4);
+    b[4] = 1;                       // ELFCLASS32
+    b[5] = 1;                       // little-endian
+    b[6] = 1;                       // EV_CURRENT
+    put16(b + 16, ET_REL);
+    put16(b + 18, EM_ARM);
+    put32(b + 20, 1);               // e_version
+    put32(b + 32, o_shdr);          // e_shoff
+    put16(b + 40, (uint32_t)eh_sz); // e_ehsize
+    put16(b + 46, (uint32_t)sh_sz); // e_shentsize
+    put16(b + 48, FIX_NSECT);       // e_shnum
+    put16(b + 50, 7);               // e_shstrndx
+
+    for (uint32_t i = 0; i < FIX_TEXT_BYTES / 2; i++) put16(b + o_text + i * 2, text[i]);
+    put32(b + o_data, 0xDEADBEEFu);
+    memcpy(b + o_hdr, &hdr, sizeof(hdr));
+    memcpy(b + o_str, strtab, sizeof(strtab));
+    memcpy(b + o_shs, shstr, sizeof(shstr));
+    for (int i = 0; i < 6; i++) {
+        put32(b + o_rel + i * 8, rels[i].off);
+        put32(b + o_rel + i * 8 + 4, (rels[i].sym << 8) | rels[i].type);
+    }
+
+    // The symbols. Locals first, which ELF requires and sh_info records.
+    // st_value carries the Thumb bit for a function, exactly as GAS emits it —
+    // that is the whole point of the fixture.
+    struct { uint32_t name, value, size, info, shndx; } sy[FIX_NSYM] = {
+        { 0,        0, 0, 0x00, 0 },                    // the reserved entry
+        { s_target, 1, 2, 0x02, 1 },                    // LOCAL FUNC, .text+0 | T
+        { s_datum,  0, 4, 0x01, 3 },                    // LOCAL OBJECT, .data+0
+        { s_main,   5, 28, 0x12, 1 },                   // GLOBAL FUNC, .text+4 | T
+        { s_millis, 0, 0, 0x10, SHN_UNDEF },            // GLOBAL NOTYPE, undefined
+    };
+    for (int i = 0; i < FIX_NSYM; i++) {
+        uint8_t *p = b + o_sym + i * sizeof(Elf32_Sym);
+        put32(p, sy[i].name);
+        put32(p + 4, sy[i].value);
+        put32(p + 8, sy[i].size);
+        p[12] = (uint8_t)sy[i].info;
+        p[13] = 0;
+        put16(p + 14, sy[i].shndx);
+    }
+
+    struct { uint32_t name, type, flags, off, size, link, info, align, entsz; } sc[FIX_NSECT] = {
+        { 0,       0 /*SHT_NULL*/, 0,                        0,      0,               0, 0, 0, 0 },
+        { n_text,  SHT_PROGBITS, SHF_ALLOC | SHF_EXECINSTR,  o_text, FIX_TEXT_BYTES,  0, 0, 4, 0 },
+        { n_rel,   SHT_REL,      0,                          o_rel,  6 * 8,           5, 1, 4, 8 },
+        { n_data,  SHT_PROGBITS, SHF_ALLOC | SHF_WRITE,      o_data, FIX_DATA_BYTES,  0, 0, 4, 0 },
+        { n_hdr,   SHT_PROGBITS, SHF_ALLOC,                  o_hdr,  (uint32_t)sizeof(RpcAppHeader), 0, 0, 4, 0 },
+        { n_sym,   SHT_SYMTAB,   0,                          o_sym,  FIX_NSYM * (uint32_t)sizeof(Elf32_Sym), 6, 3, 4, (uint32_t)sizeof(Elf32_Sym) },
+        { n_str,   SHT_STRTAB,   0,                          o_str,  (uint32_t)sizeof(strtab), 0, 0, 1, 0 },
+        { n_shstr, SHT_STRTAB,   0,                          o_shs,  (uint32_t)sizeof(shstr),  0, 0, 1, 0 },
+    };
+    for (int i = 0; i < FIX_NSECT; i++) {
+        uint8_t *p = b + o_shdr + i * sh_sz;
+        put32(p,      sc[i].name);
+        put32(p + 4,  sc[i].type);
+        put32(p + 8,  sc[i].flags);
+        put32(p + 12, 0);                 // sh_addr
+        put32(p + 16, sc[i].off);
+        put32(p + 20, sc[i].size);
+        put32(p + 24, sc[i].link);
+        put32(p + 28, sc[i].info);
+        put32(p + 32, sc[i].align);
+        put32(p + 36, sc[i].entsz);
+    }
+
+    *len_out = off;
+    return b;
+}
+
+// Load the fixture and read the addresses back. Run in both veneer modes,
+// because the two resolve an undefined symbol completely differently and the
+// Thumb bit has to survive either route.
+static int check_movw_fixture(void) {
+    int bad = 0;
+    for (int svc = 0; svc < 2; svc++) {
+        const char *how = svc ? "movw fixture (sandboxed)" : "movw fixture";
+        uint32_t len = 0;
+        uint8_t *obj = build_movw_object(&len);
+        if (!obj) { printf("  FAIL %s: could not build the object\n", how); return 1; }
+
+        g_arena = nullptr; g_used_bytes = 0; g_arena_cap = 0;
+        loader_set_allocator(alloc32, free32);
+        loader_set_veneer_mode(svc ? LOADER_VENEER_SVC : LOADER_VENEER_DIRECT);
+        g_membuf = obj; g_memlen = len;
+        AppSource src{}; src.read = mem_read; src.ctx = nullptr; src.size = len;
+        LoadedApp app{};
+        LoadResult rc = app_load(src, &app);
+        loader_set_veneer_mode(LOADER_VENEER_DIRECT);
+        if (rc != LOAD_OK) {
+            printf("  FAIL %s: the object did not load: %s%s%s\n", how,
+                   load_result_str(rc), app.detail[0] ? " - " : "", app.detail);
+            free(obj); g_membuf = nullptr;
+            g_arena = nullptr; g_used_bytes = 0;
+            return 1;
+        }
+
+        // Its own copy of the bytes, since the mirror takes ownership.
+        uint8_t *copy = (uint8_t *)malloc(len);
+        ElfMirror m;
+        if (!copy) { printf("  FAIL %s: out of memory\n", how); free(obj); return 1; }
+        memcpy(copy, obj, len);
+        if (!mirror_from_bytes(copy, (long)len, app, &m)) {
+            printf("  FAIL %s: the object could not be mirrored back\n", how);
+            free(obj); g_membuf = nullptr;
+            g_arena = nullptr; g_used_bytes = 0;
+            return 1;
+        }
+        const Shadow sm = shadow_of(app);
+        int pairs = 0;
+        bad |= check_movw_movt(m, app, sm, how, svc != 0, &pairs);
+        // THREE, and not "at least one". This object is built right here, so the
+        // number is known exactly — and a walk that quietly found fewer sites
+        // than the object contains is the failure this whole file is about.
+        if (pairs != 3) {
+            printf("  FAIL %s: read back %d MOVW/MOVT pair(s), the object has 3\n",
+                   how, pairs);
+            bad = 1;
+        }
+        g_movw_fixture += pairs;
+        if (!bad)
+            printf("  ok   %-12s %d MOVW/MOVT pair(s): a function, a datum and a "
+                   "firmware call, every address rebuilt from the two halfwords\n",
+                   svc ? "movw/svc" : "movw", pairs);
+        mirror_close(&m);
+        free(obj);
+        g_membuf = nullptr;
+        g_arena = nullptr; g_used_bytes = 0;
+    }
+    return bad;
+}
+
 // Where build.sh actually puts the apps. It builds per BOARD, so there is no
 // single "build" directory — and there WAS a stale one left from an older
 // layout that this test happily read for hours while reporting success. The
@@ -1746,7 +2589,13 @@ int main(int argc, char **argv) {
         char path[80];
         snprintf(path, sizeof(path), "%s/novad1.app", dir);
         FILE *probe_f = fopen(path, "rb");
-        if (probe_f) {
+        // `dir` was chosen because it holds EVERY package, so this file is there
+        // by construction. It used to be an `if` with no else, which meant the
+        // whole install-order regression below could stop running because of a
+        // missing file and say nothing at all.
+        if (!probe_f) {
+            fails += missing_artifact(path);
+        } else {
             fclose(probe_f);
             printf("  two-at-once on a one-image heap\n");
 
@@ -1823,7 +2672,14 @@ int main(int argc, char **argv) {
                 }
                 g_arena_cap = 0;
             } else {
+                // The measurement this whole block is built on. It used to fall
+                // through here in silence, so a package that stopped loading
+                // took the install-order regression with it and the run still
+                // printed a pass.
                 fclose(g_f);
+                printf("     FAIL the reference image did not load, so nothing "
+                       "about the install order was checked\n");
+                fails++;
             }
             g_arena = nullptr; g_used_bytes = 0;
         }
@@ -1863,7 +2719,99 @@ int main(int argc, char **argv) {
                "       opted in — see rpc_add_app(... PIC) in os/CMakeLists.txt.\n");
         fails++;
     }
-    printf("  realapp: %d loaded (%d through a flash slot), %d failed\n",
-           g_loaded, g_pic_checked, fails);
+    // And that what it ran on was worth running on.
+    //
+    // "At least one PIC package" was the old bar, and it was cleared for months
+    // by greet: 304 bytes, three branches, no GOT worth the name. Every slot-path
+    // assertion — r9 against the GOT base, the three gates being fetchable, each
+    // slot landing in executable memory — was exercised by that and nothing else,
+    // while the package the path exists FOR is 123 KB with two thousand GOT slots.
+    // A count of one cannot tell those apart; these numbers can.
+    //
+    // The floors are far below what novad1 actually produces (2328 / 3066 / 133 KB)
+    // and far above anything a stub can reach, so they say "a real package went
+    // through here" without being a figure that has to be revised whenever one
+    // changes size.
+    if (argc == 1 && dir) {
+        printf("  slot-path cover: %d GOT + %d branch + %d ABS32 site(s), biggest "
+               "blob %u B\n", g_slot_got, g_slot_branch, g_slot_abs, g_slot_biggest_blob);
+        if (g_slot_got < 500 || g_slot_branch < 500 || g_slot_biggest_blob < 32u * 1024u) {
+            printf("  FAIL the flash-slot path ran, but only over something small: "
+                   "%d GOT and %d branch site(s) in a %u B blob.\n"
+                   "       That is the cover greet gave it while every real package\n"
+                   "       took the copy path — enough to say the code ran, not enough\n"
+                   "       to say it works. Keep a substantial package opted in with\n"
+                   "       rpc_add_app(... PIC) in os/CMakeLists.txt.\n",
+                   g_slot_got, g_slot_branch, g_slot_biggest_blob);
+            fails++;
+        }
+    }
+
+    // The relocation no package currently contains. Run whatever else did or did
+    // not happen above, and unconditionally — it needs no build directory, and
+    // the whole reason it exists is that the check reading MOVW/MOVT back would
+    // otherwise walk zero sites and pass.
+    printf("  the MOVW/MOVT pair\n");
+    fails += check_movw_fixture();
+    printf("       %d pair(s) in the real packages, %d in the fixture%s\n",
+           g_movw_real, g_movw_fixture,
+           g_movw_real ? "" : " — MOVW/MOVT are Thumb-2 and the packages are "
+                              "built for ARMv6-M, which has neither, so the "
+                              "fixture is the only thing exercising this");
+    // A fixture that stopped producing sites would leave the check reading
+    // nothing while still printing a pass, which is the exact instrument this
+    // file exists to be the opposite of.
+    if (g_movw_fixture == 0) {
+        printf("  FAIL the MOVW/MOVT check read back no pairs at all — nothing "
+               "exercised it\n");
+        fails++;
+    }
+    // --- the skip ledger -----------------------------------------------------
+    //
+    // Printed on every run, in the same block as the pass, because the one thing
+    // a green line here must not be read as is "the packages are protected on
+    // every board". On an RP2040 they are protected on none of them, and no
+    // amount of work on a host changes that — the regions are not merely
+    // untested there, they are not compiled.
+    if (g_v6_skipped) {
+        printf("  ARMv6-M (Pico, Pico W): %d region check(s) above SKIPPED, not passed.\n"
+               "       task_app_mem_apply compiles the package regions out on that\n"
+               "       architecture, so a package there runs under the default map with\n"
+               "       no code, data or veneer region at all. Everything this file says\n"
+               "       about protection is an ARMv8-M claim.\n",
+               g_v6_skipped);
+        // The reason the skip exists, measured rather than asserted from the
+        // comment that explains it. ARMv6-M regions are power-of-two sized and
+        // aligned to their own size, so a span that is a whole number of 32-byte
+        // blocks is usually not describable at all and has to be rounded up to
+        // the next power of two — with the allocation moved to match.
+        printf("       The trade, measured: %u B of spans would need %u B of "
+               "power-of-two regions (%u of %d not describable as they stand).\n",
+               g_v6_real_bytes, g_v6_would_cost, g_v6_unencodable, g_v6_skipped);
+        // A TRIPWIRE ON THE SKIP ITSELF. If the loader's blocks ever became
+        // power-of-two sized and aligned, every span here would be describable
+        // on ARMv6-M, the reason for compiling the regions out would be gone,
+        // and this ledger would be quietly justifying a decision whose grounds
+        // had disappeared.
+        if (!g_v6_unencodable && g_v6_skipped) {
+            printf("  FAIL every package span is now describable on ARMv6-M as it "
+                   "stands, so the reason the regions are compiled out there — that\n"
+                   "       they would cost a power of two each — no longer holds. Either\n"
+                   "       turn them on in task_app_mem_apply or write down the new\n"
+                   "       reason; do not leave this note saying something untrue.\n");
+            fails++;
+        }
+    }
+
+    // The copy path used to check no branch at all. Printed so a change that
+    // stopped it walking them would show as a number falling to zero rather
+    // than as one fewer silent line.
+    if (argc == 1 && dir && g_branches == 0) {
+        printf("  FAIL not one branch was checked by value on the copy path\n");
+        fails++;
+    }
+    printf("  realapp: %d loaded (%d through a flash slot), %d branch(es) checked "
+           "by value on the copy paths, %d failed\n",
+           g_loaded, g_pic_checked, g_branches, fails);
     return fails ? 1 : 0;
 }
