@@ -143,6 +143,9 @@ void go_home(void) {
 static const App kApps[] = {
     // key          label         category      open      module
     { "wifi",       "WiFi",       CAT_WIRELESS, screens::open_wifi,      nullptr },
+    // Next to WiFi rather than in Tools: it is a question about the network the
+    // row above it joined, and it is useless until that one has.
+    { "lan",        "LAN",        CAT_WIRELESS, screens::open_lan,       nullptr },
     { "bt",         "BLE",        CAT_WIRELESS, screens::open_ble,       "bt" },
     { "radar",      "Radar",      CAT_WIRELESS, screens::open_radar,     nullptr },
     { "presence",   "Presence",   CAT_WIRELESS, screens::open_presence,  nullptr },

@@ -1226,6 +1226,197 @@ static void test_update_report(void) {
        "and one that did not is said out loud rather than passed over");
 }
 
+// --- LAN: the device sweep -------------------------------------------------------
+//
+// Everything the host CAN answer about it, which is more than it looks: the
+// sweep is arithmetic over addresses and a set of replies, and the fake supplies
+// both. What it cannot answer is whether fw_net_ping yields — see the
+// DEVICE-UNCONFIRMED note beside lan_sweep.
+//
+// g_run_spawned makes fw_task_spawn run the worker inline, so a whole sweep
+// completes inside one call. That loses the progressive fill (which is the
+// runner's business, not the sweep's) and buys every other question.
+static void open_lan_screen(void) {
+    using namespace nova;
+    gui::go_home();
+    for (unsigned i = 0; i < gui::app_total(); i++) {
+        const gui::App *a = gui::app_at(i);
+        if (strcmp(a->key, "lan")) continue;
+        gui::chose(a);
+        a->open();
+        return;
+    }
+    ok(false, "the catalogue has a LAN row");
+}
+
+static void test_lan_offline(void) {
+    using namespace nova;
+    g_net_up = 0;
+    ping_clear();
+
+    open_lan_screen();
+    ui::Screen *s = gui::top();
+    ok(s != nullptr, "the LAN screen opens");
+    streq_(s ? s->title() : "", "LAN", "and titles itself LAN");
+
+    // The one row offline is a way OUT, not an apology. Pressing it has to reach
+    // the screen that fixes the problem.
+    const unsigned before = gui::depth();
+    input().inject(EV_SELECT);
+    frame();
+    ok(gui::depth() == before + 1, "SELECT offline opens something");
+    streq_(gui::top() ? gui::top()->title() : "", "WiFi",
+           "and what it opens is the WiFi screen");
+    eq(g_ping_calls, 0, "nothing was pinged with no network");
+    gui::go_home();
+}
+
+static void test_lan_sweep(void) {
+    using namespace nova;
+    g_net_up = 1;
+    g_net_ip = "192.168.1.42";
+    ping_clear();
+    ping_add(1,  2400);          // the gateway, 2.4 ms
+    ping_add(57, 9100);
+    ping_add(200,   400);        // under a millisecond: must not read as zero
+    // The gateway tag comes from `net`, and only from `net`.
+    shell_says("net", "  Address   192.168.1.42\n  Gateway   192.168.1.1\n");
+
+    open_lan_screen();
+    g_run_spawned = 1;
+    input().inject(EV_SELECT);   // row 0 is Scan
+    frame();
+    g_run_spawned = 0;
+
+    eq(g_ping_calls, 253, "253 addresses are probed — 254 less our own");
+    eq(screens::g_lan_n, 4, "our own address and the three that answered are listed");
+
+    char label[24], value[12];
+    screens::lan_row(1, label, sizeof(label), value, sizeof(value));
+    streq_(label, "192.168.1.1", "the first row is the lowest address that answered");
+    streq_(value, "gw 2ms", "and it is tagged as the gateway, with its time");
+
+    screens::lan_row(2, label, sizeof(label), value, sizeof(value));
+    streq_(label, "192.168.1.42", "our own address keeps its place in the range");
+    streq_(value, "me", "and says so rather than showing a time it never measured");
+
+    screens::lan_row(3, label, sizeof(label), value, sizeof(value));
+    streq_(value, "9ms", "a reading is milliseconds");
+
+    screens::lan_row(4, label, sizeof(label), value, sizeof(value));
+    streq_(value, "1ms", "and a sub-millisecond reply rounds UP, never to 0ms");
+
+    screens::lan_row(0, label, sizeof(label), value, sizeof(value));
+    streq_(label, "Scan again", "the control row offers a second sweep");
+    streq_(value, "4", "and says how many it found");
+
+    shell_says(nullptr, nullptr);
+}
+
+// A sweep is nearly a minute long, so every way out of it has to work.
+static void test_lan_interrupts(void) {
+    using namespace nova;
+    g_net_up = 1;
+    g_net_ip = "192.168.1.42";
+
+    // 1. The stop flag. Set before the worker runs, the loop must come straight
+    //    back out rather than probing anything.
+    ping_clear();
+    screens::g_lan_stop = true;
+    screens::lan_sweep();
+    eq(g_ping_calls, 0, "a sweep asked to stop before it starts probes nothing");
+    streq_(screens::g_lan_msg, "Stopped", "and says why the list is short");
+
+    // 2. The task being killed under it, which sets no flag of ours.
+    ping_clear();
+    screens::g_lan_stop = false;
+    g_should_stop = 1;
+    screens::lan_sweep();
+    g_should_stop = 0;
+    eq(g_ping_calls, 0, "a worker asked to end stops sweeping");
+
+    // 3. Leaving the screen ends it. The survey next door deliberately runs on;
+    //    this one is a question, and the answer stops mattering when you walk
+    //    away from it.
+    ping_clear();
+    open_lan_screen();
+    // Cleared with the screen already up, because go_home() on the way in pops
+    // whatever was there and that is itself a leave().
+    screens::g_lan_stop = false;
+    frame();
+    ok(!screens::g_lan_stop, "a frame with the screen up stops nothing");
+    gui::pop();
+    ok(screens::g_lan_stop, "leaving the screen ends the sweep");
+    gui::go_home();
+}
+
+// One radio, one user of it. A wifi scan started during a sweep would break the
+// association the sweep is talking over.
+static void test_lan_holds_the_radio(void) {
+    using namespace nova;
+    ok(!screens::op_busy(), "nothing is busy to begin with");
+    screens::g_lan_run = true;
+    ok(screens::op_busy(), "a sweep counts as the radio being busy");
+    ok(!screens::op_start(OP_SCAN), "so a scan started during one is refused");
+    screens::g_lan_run = false;
+    ok(!screens::op_busy(), "and the radio is free again when it ends");
+}
+
+// The range comes from our own address and nothing else, so the two ways of not
+// having one have to be told apart.
+static void test_lan_derive(void) {
+    using namespace nova;
+    g_net_up = 0;
+    ok(!screens::lan_derive(), "no network means no range");
+
+    g_net_up = 1;
+    g_net_ip = "0.0.0.0";
+    ok(!screens::lan_derive(), "joined with no address yet is not a range either");
+
+    g_net_ip = "10.0.0.7";
+    ok(screens::lan_derive(), "a real address gives one");
+    streq_(screens::g_lan_base, "10.0.0.", "the base keeps its trailing dot");
+    eq(screens::g_lan_self, 7, "and our own last octet is remembered");
+    g_net_ip = "192.168.1.42";
+}
+
+// Re-probing one row must leave the cursor on that row: it is the row whose
+// answer was just asked for. enter() runs again when the notice it may raise
+// pops, so this is the same class of bug SettingsList has a comment about.
+static void test_lan_reprobe_keeps_the_cursor(void) {
+    using namespace nova;
+    g_net_up = 1;
+    g_net_ip = "192.168.1.42";
+    ping_clear();
+    ping_add(1, 2000);
+    ping_add(57, 9000);
+
+    open_lan_screen();
+    g_run_spawned = 1;
+    input().inject(EV_SELECT);
+    frame();
+    eq(screens::g_lan_n, 3, "three rows to move between");
+
+    // Row 3 is the last host, 192.168.1.57.
+    input().inject(EV_ROT_CW); frame();
+    input().inject(EV_ROT_CW); frame();
+    input().inject(EV_ROT_CW); frame();
+    ping_clear();
+    input().inject(EV_SELECT); frame();
+    streq_(g_ping_last, "192.168.1.57", "SELECT on a host re-pings that host");
+
+    // And again, with an enter() in between — which is what a popped notice does.
+    ui::Screen *s = gui::top();
+    if (s) s->enter();
+    ping_clear();
+    input().inject(EV_SELECT); frame();
+    streq_(g_ping_last, "192.168.1.57", "and the cursor is still on it afterwards");
+
+    g_run_spawned = 0;
+    gui::go_home();
+    g_net_up = 0;
+}
+
 int main(void) {
     STAGE(test_single_instance);
     STAGE(test_one_detent_animates);
@@ -1247,6 +1438,12 @@ int main(void) {
     STAGE(test_update_script);
     STAGE(test_update_screen);
     STAGE(test_update_report);
+    STAGE(test_lan_offline);
+    STAGE(test_lan_sweep);
+    STAGE(test_lan_interrupts);
+    STAGE(test_lan_holds_the_radio);
+    STAGE(test_lan_derive);
+    STAGE(test_lan_reprobe_keeps_the_cursor);
     STAGE(test_no_panel);
 
     printf("  %d checks", checks);

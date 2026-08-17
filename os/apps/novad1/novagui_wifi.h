@@ -2,10 +2,12 @@
 // File: novagui_wifi.h
 //
 // A flat sibling of novagui, the same shape as novagui_tools. Everything the
-// radio needs is in one file because the three screens share one worker task and
-// one scan table: two of them scanning at once is two writers on one array, and
+// radio needs is in one file because the screens share one worker task and one
+// scan table: two of them scanning at once is two writers on one array, and
 // keeping that in a single translation unit is what makes the rule enforceable
-// rather than remembered.
+// rather than remembered. The device sweep is here for the second half of that
+// rule — it holds the link for the best part of a minute, so op_busy() has to
+// know about it, and op_busy() lives here.
 #ifndef NOVA_GUI_WIFI_H
 #define NOVA_GUI_WIFI_H
 
@@ -16,6 +18,7 @@ namespace screens {
 void open_wifi(void);
 void open_networks(void);
 void open_wardrive(void);
+void open_lan(void);      // what else is on the network we joined
 
 }  // namespace screens
 }  // namespace nova

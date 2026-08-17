@@ -48,7 +48,10 @@ uint32_t fw_millis(void) { return g_ms; }
 uint32_t fw_micros(void) { return g_ms * 1000u; }
 void     fw_task_sleep_ms(uint32_t ms) { g_ms += ms; }
 void     fw_task_yield(void) {}
-int      fw_task_should_stop(void) { return 0; }
+// Scriptable, because a worker loop that does not check it is a worker that
+// cannot be shut down and nothing else can see the difference.
+static int g_should_stop;
+int      fw_task_should_stop(void) { return g_should_stop; }
 int      fw_task_self(void) { return 1; }
 uint32_t fw_cores(void) { return 2; }
 uint32_t fw_core_id(void) { return 0; }
@@ -351,10 +354,65 @@ int fw_pwm_duty(unsigned, unsigned) { return 0; }
 int fw_pwm_stop(unsigned) { return 0; }
 void fw_busy_wait_us(uint32_t) {}
 
-int fw_net_connected(void) { return 0; }
-int fw_net_ssid(char *out, unsigned cap) { if (cap) out[0] = 0; return 0; }
-int fw_net_ip(char *out, unsigned cap) { if (cap) out[0] = 0; return 0; }
-int fw_net_rssi(void) { return 0; }
+// --- the network, faked ------------------------------------------------------------
+//
+// OFFLINE BY DEFAULT, and that is the important half: a board out of the box has
+// no network, so every screenshot novashots takes is of the state a device is
+// actually in when somebody first opens the app. A test that wants the other
+// state sets these and puts them back.
+static int         g_net_up;                    // 0 -> not joined
+static const char *g_net_ip = "192.168.1.42";
+static const char *g_net_ssid_s = "Nova";
+
+// Which addresses answer a ping, as a set of last octets, and how long each
+// takes. A LIST rather than a predicate because the interesting cases are all
+// "these three out of 254" and a predicate would have to be rewritten for each.
+static uint8_t  g_ping_hosts[8];
+static uint16_t g_ping_us[8];
+static int      g_ping_n;
+static int      g_ping_calls;                   // how many addresses were probed
+static char     g_ping_last[FW_NET_ADDR_MAX];   // and the last one asked for
+
+static void ping_add(int last_octet, int us) {
+    if (g_ping_n >= 8) return;
+    g_ping_hosts[g_ping_n] = (uint8_t)last_octet;
+    g_ping_us[g_ping_n]    = (uint16_t)us;
+    g_ping_n++;
+}
+
+static void ping_clear(void) { g_ping_n = 0; g_ping_calls = 0; g_ping_last[0] = 0; }
+
+int fw_net_connected(void) { return g_net_up; }
+int fw_net_ssid(char *out, unsigned cap) {
+    return (int)snprintf(out, cap, "%s", g_net_up ? g_net_ssid_s : "");
+}
+int fw_net_ip(char *out, unsigned cap) {
+    if (!g_net_up) { if (cap) out[0] = 0; return 0; }
+    return (int)snprintf(out, cap, "%s", g_net_ip);
+}
+int fw_net_rssi(void) { return g_net_up ? -52 : 0; }
+
+// Real ICMP on the device; here, a lookup on the last octet. Returns
+// microseconds or -2 for "no reply in time", which is what an empty address
+// gives on a real network too.
+int fw_net_ping(const char *host, uint32_t timeout_ms) {
+    (void)timeout_ms;
+    if (!g_net_up || !host) return -1;
+    const char *p = host, *last = host;
+    for (; *p; p++) if (*p == '.') last = p + 1;
+    int n = 0;
+    for (p = last; *p >= '0' && *p <= '9'; p++) n = n * 10 + (*p - '0');
+    g_ping_calls++;
+    snprintf(g_ping_last, sizeof(g_ping_last), "%s", host);
+    for (int i = 0; i < g_ping_n; i++)
+        if (g_ping_hosts[i] == (uint8_t)n) return g_ping_us[i];
+    return -2;
+}
+
+int fw_net_resolve(const char *host, char *ip_out, unsigned cap) {
+    if (!g_net_up || !host) return -1;
+    return (int)snprintf(ip_out, cap, "93.184.216.34");
+}
 
 int fw_time_get(struct FwTime *out) { (void)out; return 0; }
 
