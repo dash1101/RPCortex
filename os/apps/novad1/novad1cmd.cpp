@@ -214,6 +214,16 @@ int tap(int argc, char **argv) {
         if (n < 1) n = 1;
     }
     if (n > 64) n = 64;
+
+    // Wake the panel first, or the whole drive stops at the lock. A gesture that
+    // lands on a dimmed or dark panel is spent on waking it and never reaches the
+    // screen — right for a thumb picking the device up, fatal for a headless
+    // driver, and the reason the on-device unlock could not be verified: the lock
+    // is dark precisely because the device idled into it, so the first `tap sel`
+    // only woke it and the pinpad never opened. The runner does the wake itself,
+    // on its own task; this only asks. See gui::request_wake.
+    gui::request_wake();
+
     for (int i = 0; i < n; i++) {
         input().inject(e);
         // A detent at a time, with a frame between, because the runner takes at
@@ -221,9 +231,15 @@ int tap(int argc, char **argv) {
         // would queue them and arrive as a spin rather than as sixteen steps.
         fw_task_sleep_ms(40);
     }
-    // Long enough for the frame after the last gesture to have been drawn, so
-    // what is reported below is what is on the glass.
-    fw_task_sleep_ms(120);
+
+    // Wait for the runner to actually drain what was injected before reporting,
+    // rather than trust a fixed sleep to outlast whatever nap it was in: a dark
+    // panel naps 300 ms, and a blind 120 ms would read the screen from before the
+    // gesture landed. Bounded, so a wedged runner cannot wedge the shell with it.
+    for (int i = 0; i < 200 && input().pending(); i++) fw_task_sleep_ms(5);
+    // And a moment more for the frame the gesture produced to have been drawn, so
+    // a `shot` straight after this photographs what the gesture did.
+    fw_task_sleep_ms(80);
 
     ui::Screen *s = gui::top();
     fw_printf("%-9s x%-2d  ->  depth %u, showing '%s'\n", what, n,

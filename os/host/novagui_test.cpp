@@ -72,23 +72,15 @@ static void streq_(const char *got, const char *want, const char *what) {
 
 // Drive the runner the way the loop does, without entering run() — one frame,
 // with whatever gestures were injected.
+//
+// The dispatch is gui::drain_input(), the runner's OWN, not a copy of it. A copy
+// is what this used to be, and the one branch the copy left out — the wake that
+// eats a gesture on a dark panel — is exactly the branch a headless driver falls
+// down. A rule the harness reimplements is a rule the harness cannot test.
 static void frame(uint32_t dt = 33) {
     using namespace nova;
     g_ms += dt;
-    Event e;
-    bool turned = false;
-    while ((e = input().next()) != EV_NONE) {
-        if (e == EV_ROT_CW || e == EV_ROT_CCW) {
-            if (turned) { input().unget(e); break; }
-            turned = true;
-        }
-        ui::Screen *s = gui::top();
-        if (!s) continue;
-        ui::Action a = s->on_event(e);
-        if (a == ui::ACT_STAY && e == EV_HOME && !s->modal()) a = ui::ACT_HOME;
-        if      (a == ui::ACT_BACK) gui::pop();
-        else if (a == ui::ACT_HOME) gui::go_home();
-    }
+    gui::drain_input();
     ui::Screen *s = gui::top();
     if (s) s->tick(dt);
     s = gui::top();                       // it may have popped itself
@@ -1713,6 +1705,122 @@ static void test_lock_yields_to_a_modal(void) {
     clear_lock();
 }
 
+// --- a headless driver has to reach the lock, and the lock is always dark --------------
+//
+// A hardware pass found `novad1 tap` reaching ordinary screens but not the
+// on-device unlock, which is the one that matters — the lock is a security
+// feature. Every other lock test here drives the pad through the same inject path
+// and it unlocks, so the screen is fine. What none of them did was lock the panel
+// while it was DARK, and dark is the only state the device ever auto-locks in: the
+// lock arms off the idle clock, the same clock that blanked the panel long
+// before. On a dark panel the runner spends the first gesture waking it — right
+// for a thumb, which then presses again, but a headless driver has no second
+// instinct and cannot see that its `tap sel` only lit the screen. So the pad never
+// opened and the unlock could not be verified on the glass.
+//
+// The fix is that tap asks the runner to wake, so the gesture arrives on a lit
+// panel and is delivered. This drives the whole thing through drain_input — the
+// runner's own dispatch, wake-consume and all, which the harness used to omit —
+// exactly as tap injects into it.
+//
+// Reintroduce: drop the g_wake_req grant at the top of drain_input and the "with
+// wake" assert goes red — the SELECT is eaten and the pad never opens.
+static void test_tap_drives_the_lock_on_a_dark_panel(void) {
+    using namespace nova;
+    gui::go_home();
+    set_pin("246810");
+    fw_reg_set("Apps.NovaD1_DimSec", "30");    // the defaults, said out loud so
+    fw_reg_set("Apps.NovaD1_OffSec", "120");   // the timing below is not a guess
+
+    // A known-lit baseline, then let it go dark the runner's own way — through
+    // update_level on the idle clock, not by reaching into the level directly.
+    gui::request_wake(); gui::drain_input();
+    ok(gui::screen_active(), "the panel starts lit");
+    g_ms += 200000;                            // 200 s of stillness, past the off timeout
+    gui::update_level(g_ms);
+    ok(!gui::screen_active(), "and blanks after the off timeout");
+
+    // Lock it while dark — exactly the auto-lock case. lock_engage does not touch
+    // the level, so the lock comes up over a blank panel.
+    screens::lock_engage();
+    ok(screens::lock_active(), "the lock arms over the dark panel");
+    const unsigned d = gui::depth();
+    streq_(gui::top() ? gui::top()->title() : "", "Locked", "and is on top");
+
+    // WITHOUT a wake — a bare injected SELECT, the way tap used to work — the
+    // gesture is spent waking the panel and the pad never opens. This is the bug
+    // on the glass, and it doubles as proof the panel really was dark: a lit one
+    // would have opened the pad right here.
+    input().inject(EV_SELECT); gui::drain_input();
+    eq((int)gui::depth(), (int)d, "a bare SELECT on a dark panel is eaten by the wake");
+    streq_(gui::top() ? gui::top()->title() : "", "Locked", "so the pad does not open");
+
+    // Dark again, then the way tap actually drives it: ask for the wake, then the
+    // gesture. Now it lands on a lit panel and reaches the screen.
+    g_ms += 200000;
+    gui::update_level(g_ms);
+    ok(!gui::screen_active(), "dark once more");
+    gui::request_wake();
+    input().inject(EV_SELECT); gui::drain_input();
+    ok(gui::screen_active(), "the wake request lit the panel, on the runner's task");
+    streq_(gui::top() ? gui::top()->title() : "", "PIN",
+           "and the SELECT reached the lock, so the pad opened");
+
+    // And the whole unlock drives through, pad and all, on the now-lit panel.
+    type_pin("246810");
+    frame();
+    ok(!screens::lock_active(), "the injected code unlocks it");
+    eq((int)gui::depth(), 1, "leaving nothing of itself behind");
+
+    clear_lock();
+    fw_reg_set("Apps.NovaD1_DimSec", "30");
+    fw_reg_set("Apps.NovaD1_OffSec", "120");
+}
+
+// The other screen the pass could not reach was Controls, the help behind the
+// Power menu's first row — and the question was whether that was a second bug or
+// the same one. It is the same one. On a lit panel the whole drive works through
+// the inject path: homehold opens Power, SELECT opens Controls. What fails is a
+// homehold onto a DARK panel, eaten by the wake exactly as the lock's SELECT was,
+// and tap's wake is the same cure. Holding HOME is meant to reach the power menu
+// from ANY screen and ANY state; a dark panel was quietly an exception.
+static void test_tap_reaches_power_and_controls(void) {
+    using namespace nova;
+    gui::go_home();
+    clear_lock();                              // no lock, so the power gesture is allowed
+    fw_reg_set("Apps.NovaD1_OffSec", "120");
+
+    // Lit panel: the from-anywhere gesture and the row under it both drive.
+    gui::request_wake(); gui::drain_input();
+    input().inject(EV_HOME_HOLD); gui::drain_input();
+    streq_(gui::top() ? gui::top()->title() : "", "Power",
+           "homehold opens the power menu through the path tap injects into");
+    input().inject(EV_SELECT); gui::drain_input();
+    streq_(gui::top() ? gui::top()->title() : "", "Controls",
+           "and its first row opens Controls — reachable, never a second bug");
+    gui::go_home();
+
+    // Dark panel: a bare homehold is eaten, so Power never opens — which is why it
+    // could not be reached on the glass.
+    g_ms += 200000; gui::update_level(g_ms);
+    ok(!gui::screen_active(), "the panel is dark");
+    const unsigned d = gui::depth();
+    input().inject(EV_HOME_HOLD); gui::drain_input();
+    eq((int)gui::depth(), (int)d, "a bare homehold on a dark panel is eaten, Power does not open");
+
+    // With tap's wake it opens, keeping the from-anywhere guarantee even from dark.
+    g_ms += 200000; gui::update_level(g_ms);
+    ok(!gui::screen_active(), "dark again");
+    gui::request_wake();
+    input().inject(EV_HOME_HOLD); gui::drain_input();
+    streq_(gui::top() ? gui::top()->title() : "", "Power",
+           "tap's wake lets homehold reach Power from a dark panel too");
+
+    gui::go_home();
+    clear_lock();
+    fw_reg_set("Apps.NovaD1_OffSec", "120");
+}
+
 // --- naming the device from the panel ------------------------------------------------
 //
 // System.Device_ID and System.Owner are the OS's keys — the shell prompt, fetch
@@ -2015,6 +2123,8 @@ int main(void) {
     STAGE(test_list_keeps_its_place);
     STAGE(test_radio_status_is_re_asked);
     STAGE(test_set_time_reports_the_truth);
+    STAGE(test_tap_drives_the_lock_on_a_dark_panel);
+    STAGE(test_tap_reaches_power_and_controls);
     STAGE(test_no_panel);
 
     printf("  %d checks", checks);

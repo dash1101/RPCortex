@@ -130,6 +130,36 @@ void run(void);
 void stop(void);
 bool running(void);
 
+// One pass over the input queue: the whole of what the loop's inner while does —
+// the wake-consume, the from-anywhere power gesture, one rotation per frame, and
+// the dispatch to the top screen. Returns whether anything was in the queue.
+//
+// A FUNCTION for the reason frame_dt and lock_due are: the harness drives the
+// runner with its own copy of the loop, and the one branch its copy left out was
+// the wake-consume — which is exactly the branch that ate a headless driver's
+// first gesture on the lock. A rule that lived only in run() was a rule no host
+// test could reach. Now both call this.
+bool drain_input(void);
+
+// Move the panel between active, dim and off on the idle clock. Also the runner's
+// rule rather than a copy, and pulled out for the same reason: a test that has to
+// put the panel to sleep to prove a driver can still wake it needs the real
+// transition, not an imitation of it.
+void update_level(uint32_t now);
+
+// Ask the runner to bring the panel to full brightness at the top of its next
+// drain. For a headless driver — `novad1 tap` — whose injected gesture would
+// otherwise be spent waking a dimmed or dark panel instead of reaching the
+// screen. Safe to call from another task: it only sets a flag, and the wake
+// itself (an I2C write and the level state) happens on the runner's own task
+// where all the other level writes already are. See g_wake_req in the .cpp.
+void request_wake(void);
+
+// Is the panel at full brightness? For the driver's tests, which have to prove
+// they actually dimmed it before asserting a gesture woke it — a wake test on a
+// panel that never slept is a check with nothing to check.
+bool screen_active(void);
+
 // What the last second of frames cost, for the Resources screen and for `d1
 // perf`. A frame rate nobody can read on the device is not a claim.
 struct Perf {
