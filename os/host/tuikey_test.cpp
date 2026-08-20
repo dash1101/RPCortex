@@ -4,6 +4,7 @@
 // between, because that is what a 115200 baud line does and a decoder that only
 // works on whole sequences works only in tests.
 #include "tuikey.h"
+#include "rpc_app.h"    // the ABI's FW_KEY_* must agree with the TuiKey values here
 
 #include <stdio.h>
 #include <string.h>
@@ -132,6 +133,27 @@ int main(void) {
         e = tuikey_timeout(&p, 1000 + TUIKEY_ESC_MS);
         ok(e.kind == TUI_EV_KEY && e.key == TUI_KEY_ESCAPE, "then becomes Escape");
     }
+
+    // --- the ABI names these same numbers -----------------------------------
+    //
+    // fw_tui_poll hands a package e.key with no translation, so the ABI's
+    // FW_KEY_* have to BE the TuiKey values a package will actually receive. The
+    // test above just proved a lone Escape arrives as TUI_KEY_ESCAPE; this is
+    // where the door's name for it is checked against that, rather than against
+    // itself. FW_KEY_ESC read 279 while a real Escape came in as 282 for exactly
+    // as long as nothing compared the two — so this is the comparison, and the
+    // static_asserts in api.cpp are the same check on the board build.
+    ok(FW_KEY_UP     == TUI_KEY_UP,     "FW_KEY_UP matches the terminal layer");
+    ok(FW_KEY_DOWN   == TUI_KEY_DOWN,   "FW_KEY_DOWN matches");
+    ok(FW_KEY_LEFT   == TUI_KEY_LEFT,   "FW_KEY_LEFT matches");
+    ok(FW_KEY_RIGHT  == TUI_KEY_RIGHT,  "FW_KEY_RIGHT matches");
+    ok(FW_KEY_HOME   == TUI_KEY_HOME,   "FW_KEY_HOME matches");
+    ok(FW_KEY_END    == TUI_KEY_END,    "FW_KEY_END matches");
+    ok(FW_KEY_PGUP   == TUI_KEY_PGUP,   "FW_KEY_PGUP matches");
+    ok(FW_KEY_PGDN   == TUI_KEY_PGDN,   "FW_KEY_PGDN matches");
+    ok(FW_KEY_INSERT == TUI_KEY_INSERT, "FW_KEY_INSERT matches");
+    ok(FW_KEY_DELETE == TUI_KEY_DELETE, "FW_KEY_DELETE matches");
+    ok(FW_KEY_ESC    == TUI_KEY_ESCAPE, "FW_KEY_ESC matches a real Escape (was 279, is 282)");
     {
         // The timeout must NOT fire for a real sequence still arriving.
         TuiKeyParser p; tuikey_init(&p);

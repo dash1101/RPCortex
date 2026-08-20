@@ -243,6 +243,34 @@ extern "C" int fw_mkdir(const char *path) {
     return storage_mkdir(path) ? 1 : 0;
 }
 
+// --- streamed file operations (API 1.23) ------------------------------------
+//
+// Doors onto three things storage already did for the shell. Each streams in
+// the firmware, so none of them holds a whole file in RAM — which is the whole
+// point: fw_file_write plus fw_file_read could only copy a file by landing it
+// in one buffer, and a file larger than a single allocation was refused rather
+// than copied. See rpc_app.h for the return convention and the copy caveat.
+//
+// The copy and rename take TWO paths, and BOTH are checked before either is
+// used. A package that could get one of the two followed unchecked would be
+// handing the firmware a pointer into memory it does not own, which is the one
+// thing this boundary exists to stop.
+extern "C" int fw_file_append(const char *path, const void *data, uint32_t len) {
+    if (!ok_s(path) || !ok_r(data, len)) return 0;
+    task_alive();
+    return storage_append_file(path, (const uint8_t *)data, len) ? 1 : 0;
+}
+extern "C" int fw_file_copy(const char *from, const char *to) {
+    if (!ok_s(from) || !ok_s(to)) return 0;
+    task_alive();
+    return storage_copy(from, to) ? 1 : 0;
+}
+extern "C" int fw_file_rename(const char *from, const char *to) {
+    if (!ok_s(from) || !ok_s(to)) return 0;
+    task_alive();
+    return storage_rename(from, to) ? 1 : 0;
+}
+
 // --- the registry (API 1.19) ------------------------------------------------
 //
 // A package's configuration, in the same store the OS keeps its own in, so
@@ -1839,6 +1867,17 @@ static const ApiSymbol kSymbols[] = {
     SYM(strchr),
     SYM(strstr),
     SYM(snprintf),
+
+    // API 1.23 — streamed file operations. THE END OF THE TABLE, not beside the
+    // 1.3 file calls, because a package names a firmware function by its INDEX
+    // here: that index is baked into the veneers in a package's flash slot at
+    // install, so anything but a true append repoints already-installed slot
+    // packages — the libc entries above included — at the wrong function. Placed
+    // after the whole run, the existing indices do not move and a package built
+    // before 1.23 keeps working without a reinstall. Every addition goes here.
+    SYM(fw_file_append),
+    SYM(fw_file_copy),
+    SYM(fw_file_rename),
 };
 static const uint32_t kSymbolCount = sizeof(kSymbols) / sizeof(kSymbols[0]);
 
@@ -1884,6 +1923,27 @@ uint32_t api_addr_at(uint32_t index) {
 
 #include "tui.h"
 #include "tuiterm.h"
+
+// The ABI's FW_KEY_* values are the terminal layer's TuiKey values — fw_tui_poll
+// (below) copies e.key across with no translation, so a package receives exactly
+// the number tuikey.h produced. That makes these two enums one shared numbering,
+// and the header's constants a frozen copy of it. If the TuiKey enum ever grows
+// a new key BEFORE one of these, its value shifts and the header goes silently
+// wrong — which is precisely how FW_KEY_ESC came to read 279 while a real Escape
+// arrived as 282, so nothing quitting on Escape ever quit. These asserts turn
+// that back into a build error the day it happens rather than a key that does
+// nothing on a device nobody can debug.
+static_assert(FW_KEY_UP     == TUI_KEY_UP,     "FW_KEY_UP drifted from TuiKey");
+static_assert(FW_KEY_DOWN   == TUI_KEY_DOWN,   "FW_KEY_DOWN drifted from TuiKey");
+static_assert(FW_KEY_LEFT   == TUI_KEY_LEFT,   "FW_KEY_LEFT drifted from TuiKey");
+static_assert(FW_KEY_RIGHT  == TUI_KEY_RIGHT,  "FW_KEY_RIGHT drifted from TuiKey");
+static_assert(FW_KEY_HOME   == TUI_KEY_HOME,   "FW_KEY_HOME drifted from TuiKey");
+static_assert(FW_KEY_END    == TUI_KEY_END,    "FW_KEY_END drifted from TuiKey");
+static_assert(FW_KEY_PGUP   == TUI_KEY_PGUP,   "FW_KEY_PGUP drifted from TuiKey");
+static_assert(FW_KEY_PGDN   == TUI_KEY_PGDN,   "FW_KEY_PGDN drifted from TuiKey");
+static_assert(FW_KEY_INSERT == TUI_KEY_INSERT, "FW_KEY_INSERT drifted from TuiKey");
+static_assert(FW_KEY_DELETE == TUI_KEY_DELETE, "FW_KEY_DELETE drifted from TuiKey");
+static_assert(FW_KEY_ESC    == TUI_KEY_ESCAPE, "FW_KEY_ESC drifted from TuiKey");
 
 // Allocated while a full-screen app runs, not for the whole uptime. ~12 KB is
 // worth having back on a device with 374 KB of usable heap, and a session that

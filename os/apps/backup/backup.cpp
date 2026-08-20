@@ -11,12 +11,13 @@
 // v1 had six files because WiFi credentials and aliases had their own; in v2
 // both live in the registry, so five files hold the lot.
 //
-// The one thing this cannot do that v1 did is stream. v1 copied in 512-byte
-// chunks; the package ABI has whole-file read and whole-file write and nothing
-// in between, so a file is copied through a buffer and one too large for the
-// heap is refused by name rather than half-copied. Config files are small by
-// construction — the largest here is the registry, at a few KB — so the cap is
-// generous enough that hitting it means something is wrong rather than big.
+// This streams, the way v1 did. fw_file_copy (API 1.23) hands the whole job to
+// the firmware, which copies a few hundred bytes at a time and never lands the
+// file in RAM. That is what removed the old 32 KB ceiling: the package used to
+// read a file into one buffer and write it back out, so anything larger than a
+// single allocation on a fragmented heap was refused by name rather than copied.
+// The config files here are small by construction, but a snapshot of something
+// large is now a copy rather than a "past the size this can do" message.
 #include "rpc_app.h"
 #include <stdio.h>       // snprintf - one of the handful of libc calls api.cpp exports
 
@@ -25,11 +26,6 @@ RPC_APP_VER("backup", "2.1");
 #define BK_DIR      "/etc/backups"
 #define BK_NAME_MAX 32
 #define BK_PATH_MAX 96
-
-// Big enough for a registry with several hundred keys in it, small enough that
-// the allocation still succeeds on a fragmented heap. A file over this is
-// reported, not truncated.
-#define BK_FILE_MAX 32768u
 
 // Every decision a person has made about this device, and where v2 keeps it.
 // The registry is the big one: settings, WiFi networks, aliases and each
@@ -119,46 +115,23 @@ static void bk_size_str(char *out, unsigned cap, unsigned long bytes) {
 
 // --- copying ----------------------------------------------------------------
 
-// Returns bytes copied, or -1 having already said what went wrong. An empty
-// source is a real answer: it copies as an empty file rather than as nothing,
-// because a config file somebody has emptied on purpose must restore empty.
+// Returns bytes copied, or -1 having already said what went wrong. Streamed
+// through fw_file_copy, so there is no ceiling on the size and no buffer to run
+// the heap out of. An empty source is a real answer: fw_file_copy makes it an
+// empty file, because a config somebody has emptied on purpose must restore
+// empty.
 static long bk_copy(const char *src, const char *dst) {
     unsigned size = fw_file_size(src);
-    if (size == 0) {
-        if (!fw_file_write(dst, "", 0)) {
-            fw_printf("Could not write %s.\n", dst);
-            return -1;
-        }
-        return 0;
-    }
-    if (size > BK_FILE_MAX) {
-        fw_printf("%s is %u bytes, past the %u this can copy in one piece.\n",
-                  src, size, (unsigned)BK_FILE_MAX);
+    if (!fw_file_copy(src, dst)) {
+        // A streamed copy finds a full filesystem only when a write fails
+        // partway, and it leaves the half it wrote behind. Take it out, so a
+        // snapshot never holds a truncated config that a later restore would
+        // then write over the good one.
+        fw_file_remove(dst);
+        fw_printf("Could not copy %s.\n", src);
         return -1;
     }
-    if (fw_heap_largest() < size + 64) {
-        fw_printf("The heap has no free block big enough for %s (%u bytes).\n",
-                  src, size);
-        return -1;
-    }
-    void *buf = fw_malloc(size);
-    if (!buf) {
-        fw_printf("Out of memory copying %s.\n", src);
-        return -1;
-    }
-    unsigned got = fw_file_read(src, buf, size);
-    if (got != size) {
-        fw_free(buf);
-        fw_printf("Read %u of %u bytes from %s.\n", got, size, src);
-        return -1;
-    }
-    int ok = fw_file_write(dst, buf, got);
-    fw_free(buf);
-    if (!ok) {
-        fw_printf("Could not write %s.\n", dst);
-        return -1;
-    }
-    return (long)got;
+    return (long)size;
 }
 
 // Make a directory that may already be there. fw_mkdir reports failure for

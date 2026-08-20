@@ -5,11 +5,11 @@
 // different: v1 wrote its own escape sequences and called uos directly, and this
 // draws into the firmware's grid and asks the shell to do the file work.
 //
-// ASKING THE SHELL IS THE INTERESTING DECISION. Copy, move, rename and package
-// install have no door in the package ABI, and all four are commands the shell
-// already has — streamed, so a copy never lands in RAM whole, and run with the
-// SESSION's rights rather than the package's, so this cannot touch anything the
-// person at the keyboard could not have touched by typing it themselves.
+// ASKING THE SHELL IS THE INTERESTING DECISION. Copy, move and package install
+// are commands the shell already has — streamed, so a copy never lands in RAM
+// whole, and run with the SESSION's rights rather than the package's, so this
+// cannot touch anything the person at the keyboard could not have touched by
+// typing it themselves.
 //
 // It costs nothing on screen, either, because fw_shell_run with a buffer
 // CAPTURES the output instead of printing it. The browser stays up, and what
@@ -22,11 +22,18 @@
 // quote or a control character is REFUSED rather than pasted in. A file called
 //     x" ; rm -r /home
 // is otherwise a command, and nothing about running it would look like an error.
+//
+// RENAME NO LONGER PAYS THAT COST. It has a door of its own now — fw_file_rename
+// (API 1.23) — so it hands the two paths across as data and a quote in a name is
+// just a quote. It is the one verb here that is a pure filesystem operation with
+// nothing the shell adds; copy, move and install still go through the quoting
+// above, because installing a package and moving across mounts are the shell's
+// to do and there is no door that would replace them.
 #include "rpc_app.h"
 #include <stdio.h>
 #include <string.h>
 
-RPC_APP_VER("fileexp", "2.0");
+RPC_APP_VER("fileexp", "2.1");
 
 #define FX_PATH_MAX   160
 #define FX_LINE_MAX   RPC_SHELL_LINE_MAX
@@ -34,10 +41,10 @@ RPC_APP_VER("fileexp", "2.0");
 #define FX_STATUS_MAX 96
 #define FX_COLS_MAX   104           // one screen row, with room for the widest terminal
 
-// The TUI layer sends Insert, Delete and the function keys; rpc_app.h names the
-// run only as far as Escape. Delete is the tenth of the same run that starts at
-// FW_KEY_UP, so it is derived from that rather than written as a bare number.
-#define FX_KEY_DELETE (FW_KEY_UP + 9)
+// The TUI layer sends Insert and Delete; rpc_app.h names them now (API 1.23), so
+// this no longer derives Delete as FW_KEY_UP + 9 — an offset that read correctly
+// only until the key run grew and would then have pointed a keystroke somewhere
+// else with nothing to say it had.
 
 #define FX_C_DIR  2      // green
 #define FX_C_HEAD 6      // cyan
@@ -547,10 +554,26 @@ static void fx_act_rename(void) {
     if (!fx_prompt(label, to, sizeof(to))) return;
     if (!to[0] || fx_streq(to, e->name)) return;
 
-    char from[FX_PATH_MAX], line[FX_LINE_MAX];
+    // A rename is IN PLACE: the new name carries no path of its own. That is the
+    // shell `rename` rule too — a name with a slash in it is a move, and `m` does
+    // that — and refusing it here is what keeps the destination in this folder.
+    for (const char *p = to; *p; p++)
+        if (*p == '/') { fx_note("A new name cannot contain '/' - use m to move.", 0); return; }
+
+    // Straight through the ABI (API 1.23), not a `rename "..."` line handed to
+    // the shell. THIS is the change that matters: the destination is built here
+    // and the two paths go to fw_file_rename as data, so a name carrying a quote
+    // or a semicolon is a name and never something the shell could read as a
+    // command. Copy, move and install still go through fx_build's quoting,
+    // because they have no door of their own — but rename no longer does.
+    char from[FX_PATH_MAX], dst[FX_PATH_MAX];
     if (!fx_join(from, sizeof(from), fx.cwd, e->name)) return;
-    if (!fx_build(line, sizeof(line), "rename", from, to)) return;
-    fx_run(line, "Renamed.");
+    if (!fx_join(dst, sizeof(dst), fx.cwd, to)) {
+        fx_note("That name makes too long a path.", 0);
+        return;
+    }
+    if (fw_file_rename(from, dst)) fx_note("Renamed to '%s'.", to);
+    else                          fx_note("Could not rename '%s'.", e->name);
     fx_load();
 }
 
@@ -755,7 +778,7 @@ static int fx_cmd(int argc, char **argv) {
             case 'c': fx_act_transfer("Copy", "cp", 0); break;
             case 'm': fx_act_transfer("Move", "mv", 1); break;
             case 'p': fx_act_install(); break;
-            case 'd': case FX_KEY_DELETE: fx_act_delete(); break;
+            case 'd': case FW_KEY_DELETE: fx_act_delete(); break;
             case 'r': fx_load(); fx_note("Refreshed.", 0); break;
 
             case 12:                                   // Ctrl+L, after a resize
