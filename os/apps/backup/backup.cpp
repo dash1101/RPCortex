@@ -21,7 +21,7 @@
 #include "rpc_app.h"
 #include <stdio.h>       // snprintf - one of the handful of libc calls api.cpp exports
 
-RPC_APP_VER("backup", "2.1");
+RPC_APP_VER("backup", "2.2");
 
 #define BK_DIR      "/etc/backups"
 #define BK_NAME_MAX 32
