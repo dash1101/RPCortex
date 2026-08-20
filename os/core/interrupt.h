@@ -47,6 +47,13 @@ void intr_stash_clear(void);
 typedef int (*IntrPollFn)(void);      // returns a byte, or -1 if none waiting
 void intr_set_poll(IntrPollFn fn);
 
+// The millisecond clock a timed console claim ages against. Defaults to the
+// real one; a host test overrides it to drive a deadline by hand. Passing null
+// restores the default rather than disabling expiry — a claim that could never
+// expire is the failure this exists to remove.
+typedef uint32_t (*IntrClockFn)(void);
+void intr_set_clock(IntrClockFn fn);
+
 // --- when the console is carrying data rather than typing --------------------
 //
 // intr_check reads up to 32 bytes off the console looking for a Ctrl+C, and
@@ -71,20 +78,49 @@ void intr_set_poll(IntrPollFn fn);
 bool intr_input_claim(void);       // false when somebody else already has it
 void intr_input_release(void);
 
+// The same claim, with a deadline. This is the door a package's line read goes
+// through, and the deadline is what makes that safe: if the claim is never
+// released — the reader faulted, was killed, or was contained mid-call — it
+// stops being anyone's once the deadline passes, so the console recovers without
+// a reboot. A long, legitimate read pushes the deadline out by calling renew (or
+// simply re-claiming) as it makes progress. Plain intr_input_claim above has no
+// deadline and never expires; only this door can time out, so nothing that uses
+// the plain claim — `put` above all — is touched.
+bool intr_input_claim_for(uint32_t ms);
+void intr_input_renew(uint32_t ms);
+
+// Release the claim if the task whose SLOT this is held it. Called from
+// task_slot_recycled — the one hook that runs whenever a task's slot is reused,
+// on every path a task can end by — so a console left claimed by a task that has
+// gone is reclaimed the same way the sandbox pool and the network slots are,
+// rather than waiting for a reboot. Keyed on the slot, not the pid, because by
+// the time the hook runs the task is already dismantled; the slot was recorded
+// when the claim was taken, while it still meant something.
+void intr_input_task_ended(int slot);
+
 // Would a poll by `pid` be allowed right now? This is the predicate intr_check
 // asks, exposed so a host test can put a pid other than its own to it — there
 // is one thread there, so the case that matters cannot be reached any other
-// way.
+// way. Answers yes for everyone once a timed claim has expired.
 bool intr_input_may_read(int pid);
 
 // Scoped, so no early return can leave the console claimed by a command that
-// has finished.
+// has finished. The timed variant is for a reader that must not keep the console
+// past a deadline even if its own unwinding is skipped — a package line read.
 struct InputClaim {
     bool ok;
     InputClaim()  { ok = intr_input_claim(); }
     ~InputClaim() { if (ok) intr_input_release(); }
     InputClaim(const InputClaim &) = delete;
     InputClaim &operator=(const InputClaim &) = delete;
+};
+
+struct InputClaimFor {
+    bool ok;
+    explicit InputClaimFor(uint32_t ms) { ok = intr_input_claim_for(ms); }
+    ~InputClaimFor() { if (ok) intr_input_release(); }
+    InputClaimFor(const InputClaimFor &) = delete;
+    InputClaimFor &operator=(const InputClaimFor &) = delete;
 };
 
 #endif  // RPC_INTERRUPT_H

@@ -29,6 +29,11 @@ static int fake_poll(void) {
 
 static void feed(const char *s) { g_stream = s; g_at = 0; }
 
+// A clock the deadline tests drive by hand. The host's task_now_ms is frozen at
+// zero, so a claim's deadline can only be reached by moving this on purpose.
+static uint32_t g_now;
+static uint32_t fake_clock(void) { return g_now; }
+
 static char flood[4096];
 
 int main(void) {
@@ -182,6 +187,103 @@ int main(void) {
     ck(!intr_check(), "a non-owner does not turn a claimed stream into an interrupt");
     ck(g_polls == 0, "a non-owner does not read the claimed stream at all");
     ck(intr_stashed() < 0, "and nothing of the payload lands in the stash");
+    intr_stash_clear();
+
+    // --- releasing a claim when its owner goes -------------------------------
+    //
+    // The claim protocol stopped a second reader stealing bytes, but it had no
+    // answer for a reader that never comes back. A task that claimed the console
+    // and then faulted, was killed, or was contained mid-call owned it until the
+    // next reboot — and that dead claim is exactly why a package could not be
+    // trusted to read a line. Two mechanisms fix it, and both are exercised here.
+    //
+    // The first is task_slot_recycled, the hook that fires whenever a task's slot
+    // is reused — the same seam the sandbox pool and the network slots are swept
+    // by. It is stubbed out on the host, so it is called directly, exactly as the
+    // wiring will call it. The second is a deadline, for the one case the hook
+    // cannot see: a claim held on a task that survives.
+    intr_set_clock(fake_clock);
+    g_now = 10000;
+
+    // The previous section took a claim before task_init, so its owner slot is
+    // -1. Recycling that slot clears it — and is itself the first showing that a
+    // claim whose owner is gone does not stay stuck for ever.
+    intr_input_task_ended(-1);
+    ck(intr_input_may_read(OTHER), "a claim whose owner has gone is reclaimed by its slot");
+
+    // NORMAL EXIT. A task claims, returns, and is reaped; its slot recycles and
+    // the claim goes with it.
+    ck(intr_input_claim(), "a task claims the console");
+    int slot = task_slot_index();
+    ck(!intr_input_may_read(OTHER), "while it is held, a second claimant is refused (may not read)");
+    intr_input_task_ended(slot);
+    ck(intr_input_may_read(OTHER), "on a clean exit, the recycled slot releases the claim");
+
+    // TASK_KILL reaches the same hook — and it must let go even of a TIMED claim
+    // that has not yet expired, because the whole point of a kill is that it does
+    // not wait for a deadline.
+    g_now = 10000;
+    ck(intr_input_claim_for(60000), "a task takes a timed claim");
+    slot = task_slot_index();
+    ck(!intr_input_may_read(OTHER), "the timed claim is live and exclusive");
+    intr_input_task_ended(slot);
+    ck(intr_input_may_read(OTHER), "a killed owner's slot recycles and even a live timed claim is dropped");
+
+    // SELECTIVITY. Some OTHER task ending must not free a claim it never held.
+    // This is the check that goes red if the hook is ever simplified to release
+    // unconditionally.
+    ck(intr_input_claim(), "the console is claimed again");
+    slot = task_slot_index();
+    intr_input_task_ended(slot + 1);
+    ck(!intr_input_may_read(OTHER), "a different task's slot recycling leaves the claim alone");
+    intr_input_task_ended(slot);
+    ck(intr_input_may_read(OTHER), "and the owner's own slot still releases it");
+
+    // CONTAINED FAULT on a task that SURVIVES. A package command runs on the
+    // shell task; when the watchdog takes the call back the shell does not end,
+    // so no slot is ever recycled. The deadline is what recovers the console
+    // here — the reason a package can be allowed to read a line at all.
+    g_now = 10000;
+    ck(intr_input_claim_for(500), "a package takes a timed claim to read a line");
+    ck(!intr_input_may_read(OTHER), "while the read is in progress the claim holds");
+    g_now = 10499;
+    ck(!intr_input_may_read(OTHER), "a moment before the deadline it still holds");
+    g_now = 10500;
+    ck(intr_input_may_read(OTHER), "past the deadline the console is anyone's again, with no reboot");
+    ck(intr_input_claim(), "and a new reader can take it");
+    intr_input_release();
+
+    // A PLAIN claim has no deadline, so `put` — which holds the console across a
+    // whole transfer — can never lose it to a clock, however long it runs.
+    g_now = 20000;
+    ck(intr_input_claim(), "a plain claim (what put takes)");
+    g_now = 20000u + 10u * 60u * 1000u;      // ten minutes later
+    ck(!intr_input_may_read(OTHER), "a plain claim never expires, however long it is held");
+    intr_input_release();
+
+    // A long but legitimate read keeps its timed claim by renewing as bytes
+    // arrive: the deadline moves, so it never trips while there is progress, but
+    // it still expires once the renewals stop.
+    g_now = 30000;
+    ck(intr_input_claim_for(500), "a timed claim");
+    g_now = 30400;
+    intr_input_renew(500);                   // a byte arrived: push the deadline to 30900
+    g_now = 30600;                           // past the ORIGINAL deadline of 30500
+    ck(!intr_input_may_read(OTHER), "renewing carried the claim past its first deadline");
+    g_now = 30900;                           // and past the renewed one
+    ck(intr_input_may_read(OTHER), "but with renewals stopped it expires all the same");
+    intr_input_release();
+
+    // The owner still sees its OWN Ctrl+C: a transfer or a line read has to stay
+    // stoppable while it holds the console.
+    intr_clear(); intr_stash_clear();
+    ck(intr_input_claim(), "the owner claims the console");
+    feed("\x03");
+    ck(intr_check(), "the owner's own Ctrl+C is still seen while it holds the console");
+    intr_clear();
+    intr_input_release();
+
+    intr_set_clock(nullptr);                 // back to the real clock for anything after
     intr_stash_clear();
 
     // --- no poll installed ---------------------------------------------------
