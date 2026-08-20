@@ -542,7 +542,15 @@ public:
     // would be this one if it had already popped itself, and then the pinpad
     // would be left standing over an unlocked device.
     bool tick(uint32_t) override {
-        if (!g_lock_pass) return false;
+        // Two ways off this screen, and the second one was missing. The ordinary
+        // way is a correct code (g_lock_pass). The other is the lock being cleared
+        // from under it: `novad1 pin clear` over serial sets Lock_Kind to none
+        // while this screen is up, and it leaves lock_armed() false. Without the
+        // second half of this test the screen stayed, and with the code now empty
+        // nothing entered on the pad could ever match it — a device locked out of
+        // itself with a reboot the only way back in, which is the exact failure a
+        // lock exists to not be. So a lock that is no longer armed lets go here.
+        if (!g_lock_pass && lock_armed()) return false;
         g_lock_pass  = false;
         g_locked     = false;      // before the pop: go_home's floor reads it
         g_lock_depth = 1;

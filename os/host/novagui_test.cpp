@@ -1601,6 +1601,20 @@ static void test_lock_screen(void) {
     eq((int)gui::depth(), 1, "and leaves nothing of itself behind");
     ok(gui::power_gesture_ok(), "and holding HOME reaches the power menu again");
 
+    // Cleared from under it. `novad1 pin clear` over serial empties the code while
+    // the screen is up, and with nothing left to match, a lock that did not let go
+    // here would be a device locked out of itself — the reboot-only trap a lock
+    // exists to not be. On a real board it was found exactly this way: clear said
+    // "Lock removed" and the panel stayed 'Locked'.
+    set_pin("246810");
+    screens::lock_engage();
+    ok(screens::lock_active(), "re-armed and up, for the cleared-from-under-it case");
+    set_pin("");                          // what `novad1 pin clear` does to the code
+    ok(!screens::lock_armed(), "an empty code disarms the lock");
+    frame();
+    ok(!screens::lock_active(), "and the lock lets go rather than trapping the user");
+    eq((int)gui::depth(), 1, "leaving nothing of itself behind");
+
     clear_lock();
 }
 
