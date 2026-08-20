@@ -92,7 +92,14 @@ updates itself.
   174 KB to 62 KB. RP2350 boards only, and the parts of it a host cannot reach —
   the chip, fetching instructions out of XIP flash, and handing the memory
   protection unit a flash base — are listed as unconfirmed in `pkgslot.h` and
-  have not been answered by a board.
+  have not been answered by a board. A slot reaches the firmware by index, so a
+  firmware update that reordered or dropped an ABI symbol would leave those
+  indices naming the wrong functions — the one corruption that does not fault, it
+  just makes a package's own subcommands stop matching. The slot now records a
+  fingerprint of the ABI table it was built against; a boot whose table no longer
+  matches refuses the slot and loads that package from its `.app` instead, so an
+  over-the-air update can never quietly break a slot-resident package. Append-only
+  additions leave the fingerprint intact, so an ordinary update keeps the slot.
 - **A Nova D1 app is one text file.** A `.napp` in `/nova/apps` is a short header
   and a dozen rows of `Label = shell command`. Nothing runs when one is
   installed, and nothing is executed afterwards either — the file is read. That

@@ -92,8 +92,12 @@ enum PkgSlotStatus {
     PKGSLOT_EMPTY,          // no magic: never written, or erased at the start of one
     PKGSLOT_BAD_FORMAT,     // a slot from a firmware whose slot layout differs
     PKGSLOT_BAD_CRC,        // magic present, contents do not add up
-    PKGSLOT_BAD_ABI,        // built against an ABI this firmware cannot honour
+    PKGSLOT_BAD_ABI,        // built against an ABI major/minor this firmware cannot honour
     PKGSLOT_BAD_SIZE,       // the recorded extents do not fit the slot
+    PKGSLOT_BAD_FW,         // same ABI major/minor, but the dispatch table the veneers
+                            // were resolved against has since been reordered or had a
+                            // symbol removed, so a baked index now names a different
+                            // function. The OTHER failure that does not fault.
 };
 
 // The commit record. Its own program page, and the last thing written.
@@ -125,6 +129,16 @@ struct PkgSlotMeta {
     // Where each piece sits, measured from the start of the BODY.
     uint32_t blob_off, got_off, abs_off, data_init_off;
     uint32_t body_bytes;
+    // The firmware identity the veneers were resolved against: how many symbols
+    // the ABI table had at install, and api_abi_prefix_crc over that many names.
+    // APPENDED to the struct on purpose, so a slot written before this field
+    // existed still reads back correctly: the metadata CRC covers a FIXED window
+    // (PKGSLOT_META_BYTES) that old firmware padded with 0xFF, so these two words
+    // read 0xFFFFFFFF from such a slot and pkgslot_open grandfathers it rather
+    // than mistaking the padding for an identity. A new field here does NOT need
+    // a PKGSLOT_FORMAT bump for that reason — the reader tolerates its absence.
+    uint32_t abi_sym_count;
+    uint32_t abi_prefix_crc;
 };
 
 // Streaming writer. One slot, forward only.
