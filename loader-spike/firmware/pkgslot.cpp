@@ -1,4 +1,6 @@
 #include "pkgslot.h"
+#include "api.h"     // api_symbol_count / api_abi_prefix_crc: the running firmware's
+                     // ABI-table identity, recorded at commit and checked at open
 
 #include <string.h>
 
@@ -32,6 +34,7 @@ const char *pkgslot_status_str(PkgSlotStatus s) {
     case PKGSLOT_BAD_CRC:    return "contents do not add up";
     case PKGSLOT_BAD_ABI:    return "built against an ABI this firmware cannot honour";
     case PKGSLOT_BAD_SIZE:   return "recorded extents do not fit the slot";
+    case PKGSLOT_BAD_FW:     return "built against a different firmware build";
     }
     return "?";
 }
@@ -182,6 +185,12 @@ bool pkgslot_commit(PkgSlotWriter *w, const PicManifest *m) {
     meta.header    = m->header;
     meta.api_major = m->api_major;
     meta.api_minor = m->api_minor;
+    // The firmware this slot's indices were resolved against, so a later boot on
+    // a firmware whose ABI table has drifted refuses the slot instead of running
+    // it against shifted indices. Recorded from the SAME table pkgslot_open will
+    // recheck, so the two agree by construction.
+    meta.abi_sym_count  = api_symbol_count();
+    meta.abi_prefix_crc = api_abi_prefix_crc(meta.abi_sym_count);
     meta.got_entry_size = (uint16_t)sizeof(PicGotEntry);
     meta.abs_entry_size = (uint16_t)sizeof(PicAbs32);
     meta.ro_size   = m->ro_size;
@@ -302,6 +311,28 @@ PkgSlotStatus pkgslot_open(const void *base, uint32_t slot_bytes, PicManifest *m
     // Every other check here is belt and braces next to this one.
     if (meta.api_major != RPC_API_MAJOR || meta.api_minor > RPC_API_MINOR)
         return PKGSLOT_BAD_ABI;
+
+    // THE SAME FAILURE ONE STEP FINER. Matching major/minor is not enough: the
+    // veneers bake INDICES into this firmware's dispatch table, and a table that
+    // was reordered or had a symbol removed — without a MINOR bump, which the
+    // append-only rule in api.cpp is supposed to prevent but a mistake would not —
+    // leaves those indices naming different functions. No fault; strcmp against a
+    // package's own .rodata simply starts failing. So the running firmware
+    // recomputes the identity over the SAME prefix the slot recorded and refuses
+    // any slot whose indices no longer mean what they did.
+    //
+    // A slot written before this field existed records the erased value in both
+    // words (the fixed metadata window is padded with 0xFF). Such a slot is
+    // grandfathered — accepted — because the only firmware that could have written
+    // it evolved the table append-only, so its indices are still valid here, and
+    // its .app is on the filesystem to reinstall from if a device ever proves
+    // otherwise. Every slot written by THIS firmware onward carries a real
+    // identity and is checked.
+    if (meta.abi_sym_count != 0xFFFFFFFFu) {
+        if (meta.abi_sym_count > api_symbol_count()) return PKGSLOT_BAD_FW;
+        if (api_abi_prefix_crc(meta.abi_sym_count) != meta.abi_prefix_crc)
+            return PKGSLOT_BAD_FW;
+    }
 
     memset(m, 0, sizeof(*m));
     m->header    = meta.header;

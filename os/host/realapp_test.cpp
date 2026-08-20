@@ -165,6 +165,16 @@ uint32_t api_addr_at(uint32_t i) { return i < (uint32_t)g_ns ? g_addr[i] : 0; }
 // anything, to bound the veneer pool, and an answer that grew as symbols were
 // met would size the pool from whichever app ran first.
 uint32_t api_symbol_count(void) { return FAKE_SYMS; }
+// The ABI-table identity a slot records and pkgslot_open rechecks. This suite
+// does not exercise table drift (pkgslot_test does); it only needs commit and
+// open to AGREE so a freshly written slot opens and the aged-minor slot below
+// still reaches its BAD_ABI. A function of the count alone is deterministic and
+// cannot be perturbed by which symbols a given app happened to resolve.
+uint32_t api_abi_prefix_crc(uint32_t count) {
+    uint32_t crc = 0;
+    for (uint32_t i = 0; i < count; i++) crc = pkgslot_crc32(crc, &i, sizeof(i));
+    return crc;
+}
 
 // What to say when an artifact this suite needs is not on disk.
 //

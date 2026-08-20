@@ -31,10 +31,31 @@ static void ok(bool cond, const char *what) {
 // The loader is linked for app_pic_manifest_free (the borrowed case below). It
 // resolves firmware symbols through these; nothing here loads an ELF, so a
 // plausible table is enough.
+//
+// api_symbol_count and api_abi_prefix_crc are what the slot identity guard reads,
+// on BOTH sides — pkgslot_commit records them and pkgslot_open rechecks them. The
+// real ones hash os/api.cpp's kSymbols; here the test OWNS the list of names and
+// swaps it between cases, which is how the guard is driven through the append it
+// must survive and the reorder/removal it must catch. A plain default keeps the
+// install/open pairs in the sections below hashing a consistent identity, so the
+// guard is transparent to them.
+static const char *const kDefaultAbi[] = {
+    "a0","a1","a2","a3","a4","a5","a6","a7","a8","a9","a10","a11",
+};
+static const char *const *g_abi_names = kDefaultAbi;
+static uint32_t           g_abi_count = sizeof(kDefaultAbi) / sizeof(kDefaultAbi[0]);
+
 uint32_t api_lookup(const char *)        { return 0; }
-uint32_t api_symbol_count(void)          { return 156; }
+uint32_t api_symbol_count(void)          { return g_abi_count; }
 int      api_index_of(const char *)      { return -1; }
 uint32_t api_addr_at(uint32_t)           { return 0; }
+uint32_t api_abi_prefix_crc(uint32_t count) {
+    if (count > g_abi_count) count = g_abi_count;
+    uint32_t crc = 0;
+    for (uint32_t i = 0; i < count; i++)
+        crc = pkgslot_crc32(crc, g_abi_names[i], (uint32_t)strlen(g_abi_names[i]) + 1u);
+    return crc;
+}
 
 // --- a fake flash chip -------------------------------------------------------
 
@@ -261,6 +282,85 @@ int main(void) {
         fake_reset(); install(SLOT, &major, 512);
         ok(pkgslot_open(g_f.mem, SLOT, &tmp) == PKGSLOT_BAD_ABI,
            "a slot from another ABI major is refused");
+    }
+
+    // --- 5b. the SAME failure with the ABI major/minor unchanged -------------
+    //
+    // The bug this whole guard exists for: a firmware whose table was reordered
+    // or had a symbol removed WITHOUT a minor bump. major/minor still match, so
+    // the checks above wave it through, and the baked indices now name different
+    // functions. These four cases are also the only ones that tell a prefix hash
+    // apart from a whole-table hash — the append case in particular passes here
+    // and would FAIL a whole-table hash, which is the whole reason for the prefix.
+    {
+        static const char *const T[] = { "a","b","c","d","e" };   // install-time table
+        g_abi_names = T; g_abi_count = 5;
+        fake_reset(); install(SLOT, &m, 512);                     // records (5, crc(a..e))
+        PicManifest tmp;
+
+        ok(pkgslot_open(g_f.mem, SLOT, &tmp) == PKGSLOT_OK,
+           "a slot opens against the very table it was installed on");
+
+        // APPENDED past the recorded count: the prefix is untouched, so it opens.
+        // This is exactly a novad1 slot surviving an append-only firmware bump.
+        static const char *const T_APPEND[] = { "a","b","c","d","e","f","g" };
+        g_abi_names = T_APPEND; g_abi_count = 7;
+        ok(pkgslot_open(g_f.mem, SLOT, &tmp) == PKGSLOT_OK,
+           "an append-only ABI bump leaves the slot valid (prefix, not whole-table)");
+
+        // REORDERED within the recorded prefix: two indices now swapped.
+        static const char *const T_REORDER[] = { "a","b","d","c","e","f","g" };
+        g_abi_names = T_REORDER; g_abi_count = 7;
+        ok(pkgslot_open(g_f.mem, SLOT, &tmp) == PKGSLOT_BAD_FW,
+           "a reordered ABI table is refused, not run against shifted indices");
+
+        // A symbol REMOVED so the running table is shorter than the slot recorded.
+        static const char *const T_SHORT[] = { "a","b","c","d" };
+        g_abi_names = T_SHORT; g_abi_count = 4;
+        ok(pkgslot_open(g_f.mem, SLOT, &tmp) == PKGSLOT_BAD_FW,
+           "a table shorter than the slot recorded is refused");
+
+        // A removal that keeps the LENGTH (drop 'b', shift up, a new tail symbol):
+        // same count, different prefix — the case a count-only check would miss.
+        static const char *const T_DROP[] = { "a","c","d","e","z" };
+        g_abi_names = T_DROP; g_abi_count = 5;
+        ok(pkgslot_open(g_f.mem, SLOT, &tmp) == PKGSLOT_BAD_FW,
+           "a same-length reorder from a removal is refused (count alone is not enough)");
+    }
+
+    // --- 5c. a slot from before the identity field is grandfathered ----------
+    //
+    // Firmware that predates these two words left them at the erased 0xFF the
+    // fixed metadata window is padded with. Such a slot has to still open: it was
+    // written by append-only firmware, its .app is on the filesystem regardless,
+    // and refusing it would be the very silent-revert this change is removing. So
+    // a wildly different running table must NOT matter for it.
+    {
+        static const char *const T[] = { "a","b","c","d","e" };
+        g_abi_names = T; g_abi_count = 5;
+        fake_reset(); install(SLOT, &m, 512);
+
+        // Force the erased value and refix the metadata CRC, exactly what an old
+        // install left behind: everything else about the slot is valid.
+        PkgSlotMeta meta;
+        memcpy(&meta, g_f.mem + PKGSLOT_META_OFF, sizeof(meta));
+        meta.abi_sym_count = 0xFFFFFFFFu; meta.abi_prefix_crc = 0xFFFFFFFFu;
+        uint8_t metabuf[PKGSLOT_META_BYTES];
+        memcpy(metabuf, g_f.mem + PKGSLOT_META_OFF, PKGSLOT_META_BYTES);
+        memcpy(metabuf, &meta, sizeof(meta));
+        memcpy(g_f.mem + PKGSLOT_META_OFF, metabuf, PKGSLOT_META_BYTES);
+        PkgSlotCommit c; memcpy(&c, g_f.mem, sizeof(c));
+        c.meta_crc = pkgslot_crc32(0, metabuf, PKGSLOT_META_BYTES);
+        memcpy(g_f.mem, &c, sizeof(c));
+
+        static const char *const T_DIFFERENT[] = { "z","y","x" };
+        g_abi_names = T_DIFFERENT; g_abi_count = 3;
+        PicManifest tmp;
+        ok(pkgslot_open(g_f.mem, SLOT, &tmp) == PKGSLOT_OK,
+           "a slot with no recorded ABI identity is grandfathered, whatever the table");
+
+        g_abi_names = kDefaultAbi;                       // hygiene for anything below
+        g_abi_count = sizeof(kDefaultAbi) / sizeof(kDefaultAbi[0]);
     }
 
     // --- 6. refusals rather than wrong writes --------------------------------

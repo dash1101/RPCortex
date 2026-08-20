@@ -7,6 +7,7 @@
 
 #include "api.h"
 #include "rpc_app.h"
+#include "pkgslot.h"   // pkgslot_crc32, for the ABI-table identity a slot records
 #include "kernel.h"
 #include "command.h"
 #include "task.h"
@@ -1936,6 +1937,20 @@ uint32_t api_lookup(const char *name) {
     return 0;
 }
 uint32_t api_symbol_count(void) { return kSymbolCount; }
+
+// The identity a flash slot records so a later firmware whose table has drifted
+// can refuse it. Over the first `count` names, in order, each including its NUL —
+// so a reorder or a removal changes the hash while an append past `count` leaves
+// it untouched. Reuses pkgslot's CRC-32 so there is one hash in the tree, and the
+// commit and open sides call THIS one function, so they cannot disagree.
+uint32_t api_abi_prefix_crc(uint32_t count) {
+    if (count > kSymbolCount) count = kSymbolCount;
+    uint32_t crc = 0;
+    for (uint32_t i = 0; i < count; i++)
+        crc = pkgslot_crc32(crc, kSymbols[i].name,
+                            (uint32_t)strlen(kSymbols[i].name) + 1u);
+    return crc;
+}
 
 // The same lookup, by INDEX rather than address.
 //
