@@ -21,6 +21,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <stdarg.h>
 
 #include "../include/rpc_app.h"
 
@@ -78,7 +79,27 @@ int fw_task_spawn(const char *, int (*fn)(void *), void *arg, uint32_t) {
 }
 int fw_task_kill(int) { return 1; }
 
-int fw_printf(const char *, ...) { return 0; }
+// A command prints with fw_printf, and on a host that would just vanish to
+// stdout — so a test of what `novad1 setup` or `service status` SAYS has nothing
+// to read. This keeps the last few kilobytes of it, with a reset a test calls
+// before the command it is about to inspect. Off nobody's path but the tests that
+// ask: a command that does not print writes nothing here either.
+static char g_printf_buf[4096];
+static int  g_printf_n;
+static void printf_reset(void) { g_printf_n = 0; g_printf_buf[0] = 0; }
+
+int fw_printf(const char *fmt, ...) {
+    char tmp[512];
+    va_list ap; va_start(ap, fmt);
+    int k = vsnprintf(tmp, sizeof(tmp), fmt, ap);
+    va_end(ap);
+    int room = (int)sizeof(g_printf_buf) - 1 - g_printf_n;
+    if (room > 0) {
+        int c = snprintf(g_printf_buf + g_printf_n, room + 1, "%s", tmp);
+        g_printf_n += (c < room ? c : room);
+    }
+    return k;
+}
 void fw_log(int, const char *) {}
 void fw_progress(const char *) {}
 int  rpc_register_command(const char *, const char *, int (*)(int, char **)) { return 1; }
@@ -264,7 +285,88 @@ static const char *fake_shell(const char *line) {
     return "";
 }
 
+// --- a mutable startup / service model, OFF by default -----------------------
+//
+// The scripted answers above are fixed strings, which is right for a screen that
+// reads one listing back — and wrong for `novad1 setup`, which lists a joblist,
+// removes an entry, and lists again expecting it gone. Proving that migration
+// needs the list to actually change between calls, so this models the two
+// joblists just enough — list, add, remove — and stays off until a test asks for
+// it, so every screen test above still sees the one real device's output.
+static bool g_jobs_live;
+static char g_startup_jobs[8][160];  static int g_startup_n;
+static char g_service_jobs[8][160];  static int g_service_n;
+
+static void jobs_reset(void) {
+    g_jobs_live = true;
+    g_startup_n = g_service_n = 0;
+}
+static void jobs_seed(bool startup, const char *cmd) {
+    char (*j)[160] = startup ? g_startup_jobs : g_service_jobs;
+    int  *n        = startup ? &g_startup_n   : &g_service_n;
+    if (*n < 8) snprintf(j[(*n)++], 160, "%s", cmd);
+}
+static int jobs_count(bool startup) { return startup ? g_startup_n : g_service_n; }
+static bool jobs_has(bool startup, const char *needle) {
+    char (*j)[160] = startup ? g_startup_jobs : g_service_jobs;
+    int    n       = startup ? g_startup_n     : g_service_n;
+    for (int i = 0; i < n; i++) if (strstr(j[i], needle)) return true;
+    return false;
+}
+
+// The real joblist format, colour stripped: a header, then "  <1-based idx>
+// <cmd>", then "(none)" when empty. 1-based because joblist_walk pre-increments,
+// which is exactly what listing_index_of and `remove <n>` both count on. Mutates
+// the model even when out is null, because the real shell runs the command
+// whether or not its output is captured — and setup's remove passes null.
+static int jobs_shell(const char *line, char *out, uint32_t cap) {
+    bool startup   = !strncmp(line, "startup", 7);
+    char (*j)[160] = startup ? g_startup_jobs : g_service_jobs;
+    int  *n        = startup ? &g_startup_n   : &g_service_n;
+    const char *label = startup ? "Startup commands" : "Services";
+
+    const char *sub = line + 7;
+    while (*sub == ' ') sub++;
+
+    if (!*sub || !strncmp(sub, "list", 4)) {
+        if (out && cap) {
+            int w = snprintf(out, cap, "%s:\n", label);
+            if (*n == 0 && w < (int)cap) snprintf(out + w, cap - w, "  (none)\n");
+            for (int i = 0; i < *n && w < (int)cap; i++)
+                w += snprintf(out + w, cap - w, "  %2d  %s\n", i + 1, j[i]);
+        }
+        return 0;
+    }
+    if (!strncmp(sub, "add", 3)) {
+        const char *cmd = sub + 3; while (*cmd == ' ') cmd++;
+        if (*cmd && *n < 8) snprintf(j[(*n)++], 160, "%s", cmd);
+        if (out && cap) out[0] = 0;
+        return 0;
+    }
+    if (!strncmp(sub, "remove", 6)) {
+        int idx = atoi(sub + 6);                       // 1-based, as printed
+        if (idx >= 1 && idx <= *n) {
+            for (int i = idx - 1; i < *n - 1; i++) snprintf(j[i], 160, "%s", j[i + 1]);
+            (*n)--;
+            if (out && cap) out[0] = 0;
+            return 0;
+        }
+        if (out && cap) snprintf(out, cap, "No entry %d.\n", idx);
+        return 1;                                       // real remove refuses a bad index
+    }
+    if (out && cap) out[0] = 0;
+    return 0;
+}
+
+// No network in the fake. novad1cmd.cpp reaches for this in `novad1 selfupdate`,
+// which no host test drives; it is here so the file links.
+int fw_http_download(const char *, const char *) { return -1; }
+
 int fw_shell_run(const char *line, char *out, uint32_t cap) {
+    snprintf(g_last_shell, sizeof(g_last_shell), "%s", line ? line : "");
+    if (g_jobs_live && line &&
+        (!strncmp(line, "startup", 7) || !strncmp(line, "service", 7)))
+        return jobs_shell(line, out, cap);
     if (!out || !cap) return 0;
     snprintf(out, cap, "%s", line ? fake_shell(line) : "");
     return g_shell_rc;

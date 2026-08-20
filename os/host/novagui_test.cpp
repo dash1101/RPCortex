@@ -52,6 +52,7 @@
 #include "../apps/novad1/novagui_radios.cpp"
 #include "../apps/novad1/novagui_tasks.cpp"
 #include "../apps/novad1/novagui.cpp"
+#include "../apps/novad1/novad1cmd.cpp"
 
 static int checks, failures;
 static void ok(bool c, const char *what) {
@@ -1821,6 +1822,78 @@ static void test_tap_reaches_power_and_controls(void) {
     fw_reg_set("Apps.NovaD1_OffSec", "120");
 }
 
+// --- an upgrade from an older Nova D1 must not hit a silent refusal --------------------
+//
+// `pkg install` stands a running SERVICE aside for an upgrade now, by walking
+// /etc/services.cfg. But a board an OLDER Nova D1 set up starts the screen from a
+// legacy STARTUP entry, not a service — so the stand-aside found nothing, the
+// package was busy, and the install refused with no hint that a migration was
+// needed. setup migrates it: the startup entry comes out, a service goes in, and
+// it does so only once however many times setup is run.
+//
+// Driven through the real cmd::setup() against a mutable stand-in for the two
+// joblists, so the list actually changes between the walk's calls the way it does
+// on a device. Reintroduce: delete the startup-migration loop in setup() and the
+// first assert goes red — the entry stays in the startup list and, worse, a
+// service is added beside it.
+static void test_setup_migrates_a_legacy_startup_entry(void) {
+    using namespace nova;
+
+    // The legacy state: the screen is a startup entry, and there is no service.
+    jobs_reset();
+    jobs_seed(true, "novad1 gui --bg");          // what an older setup wrote
+    jobs_seed(true, "ntpd --sync");              // somebody else's — leave it be
+    ok(jobs_has(true, "novad1"), "the board starts the screen from the startup list");
+    eq(jobs_count(false), 0, "and has no service for it");
+
+    cmd::setup();
+
+    ok(!jobs_has(true, "novad1"), "setup takes the screen out of the startup list");
+    ok(jobs_has(true, "ntpd"),    "and leaves other people's startup entries alone");
+    ok(jobs_has(false, "novad1"), "and registers it as a service instead");
+    eq(jobs_count(false), 1,      "exactly one service, not a pile of them");
+
+    // Idempotent — the whole reason the walk re-reads the list every time.
+    cmd::setup();
+    ok(!jobs_has(true, "novad1"), "a second run finds nothing left to migrate");
+    eq(jobs_count(false), 1,      "and still exactly one service");
+
+    // A board already on a service — the ordinary modern case — is left as it is.
+    jobs_reset();
+    jobs_seed(false, "novad1 gui --bg");
+    cmd::setup();
+    eq(jobs_count(false), 1, "a board already on a service keeps its one service");
+    eq(jobs_count(true),  0, "and grows no startup entry");
+
+    g_jobs_live = false;                          // hand the fake back to its scripted answers
+}
+
+// `service status` is where somebody puzzled by the refusal looks, so it names
+// the cause and the cure while the screen is still a startup entry.
+static void test_service_status_flags_a_legacy_startup_entry(void) {
+    using namespace nova;
+    char *argv[] = { (char *)"novad1", (char *)"service", (char *)"status" };
+
+    jobs_reset();
+    jobs_seed(true, "novad1 gui --bg");          // legacy: startup entry, no service
+    printf_reset();
+    cmd::service(3, argv);
+    ok(strstr(g_printf_buf, "old startup list") != nullptr,
+       "status says the board still starts the screen the old way");
+    ok(strstr(g_printf_buf, "novad1 setup") != nullptr,
+       "and names the command that fixes it");
+
+    // A migrated board says none of that.
+    jobs_reset();
+    jobs_seed(false, "novad1 gui --bg");
+    printf_reset();
+    cmd::service(3, argv);
+    ok(strstr(g_printf_buf, "old startup list") == nullptr,
+       "a board on a service gets no legacy warning");
+
+    g_jobs_live = false;
+}
+
 // --- naming the device from the panel ------------------------------------------------
 //
 // System.Device_ID and System.Owner are the OS's keys — the shell prompt, fetch
@@ -2125,6 +2198,8 @@ int main(void) {
     STAGE(test_set_time_reports_the_truth);
     STAGE(test_tap_drives_the_lock_on_a_dark_panel);
     STAGE(test_tap_reaches_power_and_controls);
+    STAGE(test_setup_migrates_a_legacy_startup_entry);
+    STAGE(test_service_status_flags_a_legacy_startup_entry);
     STAGE(test_no_panel);
 
     printf("  %d checks", checks);
