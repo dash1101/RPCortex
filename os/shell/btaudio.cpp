@@ -285,7 +285,12 @@ static bool source_ready(void) {
 
 static bool parse_addr(const char *s, bd_addr_t out) {
     unsigned v[6];
-    if (sscanf(s, "%x:%x:%x:%x:%x:%x", &v[0],&v[1],&v[2],&v[3],&v[4],&v[5]) != 6)
+    // siscanf, not sscanf: the integer-only scanf. Plain sscanf links newlib's
+    // float-capable engine (__ssvfscanf_r) and, through it, the multi-precision
+    // strtod/mprec cluster — about 12 KB of flash for a format that is all %x.
+    // The integer engine is already in the image (newlib's tzset uses it), so
+    // this costs nothing. Do NOT "simplify" back to sscanf.
+    if (siscanf(s, "%x:%x:%x:%x:%x:%x", &v[0],&v[1],&v[2],&v[3],&v[4],&v[5]) != 6)
         return false;
     for (int i = 0; i < 6; i++) {
         if (v[i] > 255) return false;

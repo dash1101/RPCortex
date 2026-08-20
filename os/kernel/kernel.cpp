@@ -301,7 +301,12 @@ bool kboot(void) {
         struct tm t; memset(&t, 0, sizeof(t));
         int Y, Mo, D, H, Mi, S;
         const char *last = reg_get("System.Clock_Last", "");
-        if (last[0] && sscanf(last, "%d-%d-%d %d:%d:%d", &Y, &Mo, &D, &H, &Mi, &S) == 6) {
+        // siscanf, not sscanf: the integer-only scanf. sscanf here was the one
+        // call that pulled newlib's float scanf engine and the strtod/mprec
+        // cluster (~12 KB) into every image; the format is all %d. The integer
+        // engine is already linked (tzset uses it), so this costs nothing. Keep
+        // it siscanf — reverting to sscanf silently re-adds the 12 KB.
+        if (last[0] && siscanf(last, "%d-%d-%d %d:%d:%d", &Y, &Mo, &D, &H, &Mi, &S) == 6) {
             t.tm_year = Y - 1900; t.tm_mon = Mo - 1; t.tm_mday = D;
             t.tm_hour = H; t.tm_min = Mi; t.tm_sec = S;
             reg_set("System.Clock_Set", "false");   // approximate — re-sync to trust it

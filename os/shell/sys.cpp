@@ -93,10 +93,14 @@ static int cmd_date(int argc, char **argv) {
         if (argc < 3) { out_warn("Usage: date set YYYY-MM-DD [HH:MM:SS]"); return 1; }
         struct tm t; memset(&t, 0, sizeof(t));
         int Y, Mo, D, H = 0, Mi = 0, S = 0;
-        if (sscanf(argv[2], "%d-%d-%d", &Y, &Mo, &D) != 3) {
+        // siscanf, not sscanf: the integer-only scanf. Plain sscanf drags in
+        // newlib's float-parsing engine and the mprec cluster (~12 KB of flash)
+        // for a format that is all %d. The integer engine is already linked
+        // (newlib's tzset uses it), so this is free. Do NOT revert to sscanf.
+        if (siscanf(argv[2], "%d-%d-%d", &Y, &Mo, &D) != 3) {
             out_err("Bad format. Use: date set YYYY-MM-DD HH:MM:SS"); return 1;
         }
-        if (argc >= 4) sscanf(argv[3], "%d:%d:%d", &H, &Mi, &S);
+        if (argc >= 4) siscanf(argv[3], "%d:%d:%d", &H, &Mi, &S);
         t.tm_year = Y - 1900; t.tm_mon = Mo - 1; t.tm_mday = D;
         t.tm_hour = H; t.tm_min = Mi; t.tm_sec = S;
         t.tm_isdst = 0;
@@ -287,14 +291,45 @@ static int cmd_history(int, char **) {
     return 0;
 }
 
+// Fractional seconds -> milliseconds, without strtod. Plain strtod pulls in
+// newlib's floating-point string parser and the whole multi-precision mprec
+// cluster — about 12 KB of flash — for one command that only needs millisecond
+// resolution. cc1101.cpp's frequency parser made exactly this call for exactly
+// this reason. Millisecond resolution, so digits past the third are ignored;
+// the whole part saturates and then clamps at an hour (a day-long sleep is a
+// hang, which is what the old `secs > 3600` guard was for). Returns false when
+// there is no leading digit — the same rejection strtod's end-pointer gave.
+static bool parse_secs_to_ms(const char *s, uint32_t *out_ms) {
+    while (*s == ' ') s++;
+    bool any = false;
+    uint32_t whole = 0;
+    while (*s >= '0' && *s <= '9') {
+        any = true;
+        if (whole < 100000u) whole = whole * 10u + (uint32_t)(*s - '0');  // saturate
+        s++;
+    }
+    uint32_t frac = 0, scale = 1;
+    if (*s == '.') {
+        s++;
+        for (int i = 0; i < 3 && *s >= '0' && *s <= '9'; i++) {
+            frac = frac * 10u + (uint32_t)(*s - '0');
+            scale *= 10u;
+            s++;
+            any = true;
+        }
+        while (*s >= '0' && *s <= '9') s++;   // sub-millisecond digits ignored
+    }
+    if (!any) return false;
+    if (whole > 3600u) { *out_ms = 3600u * 1000u; return true; }  // clamp at an hour
+    *out_ms = whole * 1000u + frac * (1000u / scale);
+    return true;
+}
+
 static int cmd_sleep(int argc, char **argv) {
     if (argc < 2) { out_warn("Usage: sleep <seconds>"); return 1; }
-    char *end = nullptr;
-    double secs = strtod(argv[1], &end);
-    if (end == argv[1] || secs < 0) { out_warn("Invalid number: '%s'", argv[1]); return 1; }
-    if (secs > 3600) secs = 3600;             // a shell that sleeps for a day is a hang
+    uint32_t left = 0;
+    if (!parse_secs_to_ms(argv[1], &left)) { out_warn("Invalid number: '%s'", argv[1]); return 1; }
     // Sliced so Ctrl+C interrupts a long sleep instead of waiting it out.
-    uint32_t left = (uint32_t)(secs * 1000.0);
     while (left && !intr_check()) {
         uint32_t slice = left > 50 ? 50 : left;
         sleep_ms(slice);
