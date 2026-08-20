@@ -190,6 +190,67 @@ static int check_all(void) {
     return bad ? 1 : 0;
 }
 
+// --- the screens no catalogue row opens ---------------------------------------
+//
+// The lock, the pad behind it, and the Controls help behind the power menu are
+// reached by a GESTURE, not by an open(), so the sweep above never saw them —
+// and a blank or wrong one there was the kind of thing found only by holding the
+// board. tap made these drivable headlessly; this drives them the same way, over
+// the runner's own drain, and holds them to the one rule that matters most on a
+// device: a screen that draws nothing looks exactly like a hung one.
+static int shot_here(const char *what, bool dump) {
+    settle();
+    compose();
+    nova::Canvas &c = nova::gui::canvas();
+    int lit = 0;
+    for (int y = 0; y < c.height(); y++)
+        for (int x = 0; x < c.width(); x++) if (c.get(x, y)) lit++;
+    int bad = 0;
+    if (lit < 12) { printf("    FAIL %s drew an empty panel\n", what); bad = 1; }
+    if (dump) {
+        Screen *s = nova::gui::top();
+        char label[64];
+        snprintf(label, sizeof(label), "%s  (%s)", what, s ? s->title() : "");
+        print_frame(label);
+    }
+    return bad;
+}
+
+static int gesture_screens(bool dump) {
+    using namespace nova;
+    int bad = 0;
+
+    // The lock needs a code to arm. Engage it over home — the panel is lit here,
+    // so a plain inject reaches it without the wake tap has to ask for on a device.
+    fw_reg_set("Apps.NovaD1_Lock_Kind", "pin");
+    fw_reg_set("Apps.NovaD1_PIN", "246810");
+    gui::go_home();
+    screens::lock_engage();
+    bad += shot_here("lock", dump);
+
+    input().inject(EV_SELECT);              // SELECT opens the pad
+    gui::drain_input();
+    bad += shot_here("lock pad", dump);
+
+    // Off the lock cleanly, so nothing after it inherits a modal floor: forget the
+    // code, drop the marker, and home can be reached again.
+    fw_reg_set("Apps.NovaD1_PIN", "");
+    fw_reg_set("Apps.NovaD1_Lock_Kind", "none");
+    screens::lock_forget();
+    gui::go_home();
+
+    // Controls, the first row of the power menu — the help for whatever is under
+    // it. open_power is what a homehold reaches; SELECT then opens the row.
+    gui::go_home();
+    screens::open_power();
+    input().inject(EV_SELECT);
+    gui::drain_input();
+    bad += shot_here("controls", dump);
+    gui::go_home();
+
+    return bad;
+}
+
 int main(int argc, char **argv) {
     // The catalogue is only complete after begin() has scanned /nova/apps, so
     // --list starts the runner too rather than printing the built-ins and
@@ -213,7 +274,11 @@ int main(int argc, char **argv) {
     settle(40, 60);
     nova::gui::go_home();
 
-    if (argc < 2) return check_all();
+    if (argc < 2) {
+        int bad = check_all();
+        bad += gesture_screens(false);
+        return bad ? 1 : 0;
+    }
 
     // The option BEFORE the key lookup, or "--dump" is searched for as though it
     // were the name of an app and reported missing.
@@ -242,5 +307,8 @@ int main(int argc, char **argv) {
     fw_reg_set("Apps.NovaD1_HomeStyle", "folders");
 
     for (unsigned i = 0; i < n; i++) shoot(*nova::gui::app_at(i));
+
+    // The gesture-only screens last, after the catalogue they sit outside of.
+    gesture_screens(true);
     return 0;
 }
