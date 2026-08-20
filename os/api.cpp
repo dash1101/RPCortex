@@ -1812,15 +1812,6 @@ static const ApiSymbol kSymbols[] = {
     // API 1.22 — a shell command on a task of its own.
     SYM(fw_shell_run_detached),
     SYM(fw_shell_done),
-    // API 1.23 — streamed file operations, appended here rather than beside the
-    // 1.3 file calls because a package names a firmware function by its INDEX in
-    // this table: the index is baked into the veneers written to a package's
-    // flash slot at install time, so moving an existing entry repoints an
-    // already-installed package at the wrong function. New entries go at the end
-    // of the API run, exactly as every addition since 1.3 has.
-    SYM(fw_file_append),
-    SYM(fw_file_copy),
-    SYM(fw_file_rename),
 
     // The compiler's runtime. See above: emitted, not written.
     SYM(__aeabi_idiv),
@@ -1876,6 +1867,17 @@ static const ApiSymbol kSymbols[] = {
     SYM(strchr),
     SYM(strstr),
     SYM(snprintf),
+
+    // API 1.23 — streamed file operations. THE END OF THE TABLE, not beside the
+    // 1.3 file calls, because a package names a firmware function by its INDEX
+    // here: that index is baked into the veneers in a package's flash slot at
+    // install, so anything but a true append repoints already-installed slot
+    // packages — the libc entries above included — at the wrong function. Placed
+    // after the whole run, the existing indices do not move and a package built
+    // before 1.23 keeps working without a reinstall. Every addition goes here.
+    SYM(fw_file_append),
+    SYM(fw_file_copy),
+    SYM(fw_file_rename),
 };
 static const uint32_t kSymbolCount = sizeof(kSymbols) / sizeof(kSymbols[0]);
 
