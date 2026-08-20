@@ -174,6 +174,17 @@ int fw_file_remove(const char *p) {
     g_fs.erase(it);
     return 1;
 }
+// The rename door the browser now uses instead of a `rename "..."` shell line.
+// A missing source fails; otherwise the node moves to its new name, contents
+// and all. Nothing is parsed, which is the whole point — the paths are data.
+int fw_file_rename(const char *from, const char *to) {
+    auto it = g_fs.find(from);
+    if (it == g_fs.end()) return 0;
+    FeNode node = it->second;
+    g_fs.erase(it);
+    g_fs[to] = node;
+    return 1;
+}
 int fw_mkdir(const char *p) {
     if (fs_has(p)) return 0;
     fs_dir(p);
@@ -506,13 +517,43 @@ int main(void) {
            "copying to a path that is not a folder uses it as the name");
     }
     {
+        // Rename goes straight through fw_file_rename now: no shell line at all,
+        // and the file actually moves in the filesystem.
         fs_populate();
-        key(FW_KEY_DOWN); key(FW_KEY_DOWN); key(FW_KEY_DOWN);
+        key(FW_KEY_DOWN); key(FW_KEY_DOWN); key(FW_KEY_DOWN);   // Alpha.cfg
         key('R'); type("Beta.cfg"); key(13);
         key('q');
         run();
-        ck(g_ran.size() && g_ran[0] == "rename \"/Alpha.cfg\" \"Beta.cfg\"",
-           "rename passes the bare new name, which is what the shell wants");
+        ck(g_ran.empty(), "rename runs no shell command at all");
+        ck(!fs_has("/Alpha.cfg") && fs_has("/Beta.cfg"),
+           "and the file is renamed in place through the door");
+    }
+    {
+        // A new name that carries a path of its own is not a rename. Refused
+        // here, the same as the shell's `rename` sends it to `mv`.
+        fs_populate();
+        key(FW_KEY_DOWN); key(FW_KEY_DOWN); key(FW_KEY_DOWN);   // Alpha.cfg
+        key('R'); type("/home/Beta.cfg"); key(13);
+        key('q');
+        run();
+        ck(fs_has("/Alpha.cfg") && !fs_has("/home/Beta.cfg"),
+           "a new name with a slash in it is refused, not treated as a move");
+        ck(screen_has("cannot contain"), "and the browser says why");
+    }
+    {
+        // THE ONE THAT MATTERS. A file whose name is a shell injection could not
+        // be renamed at all before — fx_build refused the quote. Through the door
+        // it is just a name: the rename succeeds, the file moves, and nothing
+        // reaches the shell. The whole class is gone for rename, not defended.
+        fs_populate();
+        fs_file("/x\" ; reboot", "gotcha");
+        key(FW_KEY_END); key(FW_KEY_UP);                        // onto the trap
+        key('R'); type("safe.cfg"); key(13);
+        key('q');
+        run();
+        ck(g_ran.empty(), "renaming a name full of shell metacharacters runs no shell");
+        ck(!fs_has("/x\" ; reboot") && fs_has("/safe.cfg"),
+           "and the file that used to be un-renamable is simply renamed");
     }
     {
         fs_populate();
