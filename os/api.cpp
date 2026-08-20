@@ -214,6 +214,52 @@ extern "C" int  fw_task_self(void)             { return task_self(); }
 // intr_check yields as well, which is the other half of what a long loop in a
 // package should be doing at the point it asks.
 extern "C" int  fw_task_should_stop(void)      { return intr_check() ? 1 : 0; }
+
+// How long a line read may hold the console without its loop running before the
+// claim is treated as abandoned. Renewed every pass below, so a read waiting on
+// a slow typist never trips it — only one whose task has STOPPED EXECUTING does,
+// which is exactly the claim that must not outlive its owner. The slot hook in
+// task_slot_recycled catches a task that ends; this catches the case it cannot
+// see, a contained fault that takes the call back but leaves the task alive.
+#define LINE_READ_IDLE_MS 4000
+
+// Read one line from the console.
+//
+// A package could not ask a question before this: it could only hold the whole
+// TUI, which is why backup's confirmation became a -y flag. The reason it took
+// this long is that the console is one stream with two readers — intr_check
+// polls it for Ctrl+C on behalf of every long-running task — and a second
+// reader taking bytes out from under the first is exactly what silently
+// corrupted large `put` transfers. So this claims the stream for the duration
+// and gives it back, rather than reading behind anyone's back.
+extern "C" int fw_line_read(char *buf, int cap) {
+    task_alive();
+    if (!ok_w(buf, (uint32_t)cap) || cap < 1) return -1;
+
+    // The stash is deliberately NOT drained. Those bytes were pulled off the
+    // wire before this call and belong to the shell's own line editor at its
+    // next prompt; taking them here is the put corruption in reverse.
+    InputClaimFor console(LINE_READ_IDLE_MS);
+    if (!console.ok) return -1;                     // someone else holds it
+
+    int n = 0;
+    for (;;) {
+        intr_input_renew(LINE_READ_IDLE_MS);        // still alive, still reading
+        if (task_should_stop()) return -1;          // this task is being killed
+        // Ctrl+C CLEARS as it cancels: leaving it pending makes every later
+        // call return -1 for ever, so one interrupted question would break
+        // asking anything again.
+        if (intr_pending()) { intr_clear(); return -1; }
+        int c = getchar_timeout_us(1000);
+        if (c == PICO_ERROR_TIMEOUT) { task_yield(); continue; }
+        if (c == 0x03) { intr_clear(); return -1; }
+        if (c == '\r' || c == '\n') break;
+        if (c == 8 || c == 0x7f) { if (n) n--; continue; }
+        if (n < cap - 1) buf[n++] = (char)c;
+    }
+    buf[n] = 0;
+    return n;
+}
 extern "C" int  fw_task_kill(int pid)          { return task_kill(pid) ? 1 : 0; }
 extern "C" uint32_t fw_cores(void)             { return task_core_count(); }
 
@@ -1878,6 +1924,9 @@ static const ApiSymbol kSymbols[] = {
     SYM(fw_file_append),
     SYM(fw_file_copy),
     SYM(fw_file_rename),
+
+    // API 1.24 — a package can ask a question. Same rule as above: the end.
+    SYM(fw_line_read),
 };
 static const uint32_t kSymbolCount = sizeof(kSymbols) / sizeof(kSymbols[0]);
 

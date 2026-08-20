@@ -23,7 +23,7 @@ extern "C" {
 // MINOR: a symbol added — older-minor apps still run (everything they want is
 //        present); newer-minor apps refused (they may want something absent).
 #define RPC_API_MAJOR 1
-#define RPC_API_MINOR 23
+#define RPC_API_MINOR 24
 
 typedef struct {
     uint32_t magic;          // RPC_APP_MAGIC
@@ -188,6 +188,23 @@ int      fw_file_copy(const char *from, const char *to);
 // carrying a quote or a semicolon is just a name here, never something the
 // shell could mistake for a command. Absolute paths, like everything else.
 int      fw_file_rename(const char *from, const char *to);
+
+// --- asking a question (API 1.24) -------------------------------------------
+
+// Read one line of console input into buf (up to cap-1 bytes, NUL-terminated)
+// and return its length; -1 on Ctrl+C, on a stop request, or when another
+// reader already holds the console. Blocks until Enter, yielding while it
+// waits, and stays interruptible throughout.
+//
+// Until this existed a package could only ask something by taking over the
+// whole screen with fw_tui_begin, which is why backup's confirmation is a -y
+// flag rather than a question. The console is a single stream that intr_check
+// also polls for Ctrl+C, so this claims it for the duration and hands it back —
+// a second reader helping itself to those bytes is what quietly corrupted large
+// transfers before. The claim cannot outlive its owner: it is released when the
+// task ends, and it carries a deadline for the case where the task survives but
+// the call does not.
+int      fw_line_read(char *buf, int cap);
 
 // --- the registry (API 1.19) ------------------------------------------------
 //

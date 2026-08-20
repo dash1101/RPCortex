@@ -64,6 +64,7 @@ extern "C" void task_irq_restore(unsigned state) {
 }
 
 extern "C" void net_tcp_task_ended(int slot);
+void intr_input_task_ended(int slot);
 
 void task_slot_recycled(int slot) {
     sandbox_forget(slot);
@@ -72,6 +73,11 @@ void task_slot_recycled(int slot) {
     // half-open connection holds a PCB nobody will collect. Neither is the
     // package author's to clean up after their task has already gone.
     net_tcp_task_ended(slot);
+    // Same argument for the console. A task that claimed it and then died —
+    // faulted, killed, or simply returned — would otherwise own the input
+    // stream until a reboot, with nothing able to take it back and no way to
+    // see who was holding it. The claim goes where its owner went.
+    intr_input_task_ended(slot);
 }
 
 uint32_t task_now_ms(void) {
