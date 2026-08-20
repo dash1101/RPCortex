@@ -2497,7 +2497,8 @@ static const char *kBuildDirs[] = {
 // several objects folded together with `ld -r`. That produces a different
 // section layout from anything the compiler emits directly, and the loader has
 // to handle it identically or a package that builds fine will not load.
-static const char *kNames[] = { "greet", "bench", "stress", "tuidemo", "httpd", "novad1" };
+static const char *kNames[] = { "greet", "bench", "stress", "tuidemo", "httpd", "novad1",
+                                "backup", "fileexp", "sysmon" };
 
 // --- the inputs, named rather than skipped (task #101) -----------------------
 //
@@ -2529,8 +2530,13 @@ static const char *missing_from(const char *dir) {
 }
 
 int main(int argc, char **argv) {
-    static char paths[8][64];
-    static const char *kApps[8];
+    // Sized from kNames so adding a package here can never write past the end —
+    // it was a fixed [8] and the ninth name (backup/fileexp/sysmon, #108) walked
+    // one slot off it. A count that follows the list is the fix, not a bigger
+    // fixed number that drifts again the next time.
+    static constexpr int kNApps = (int)(sizeof(kNames) / sizeof(kNames[0]));
+    static char paths[kNApps][64];
+    static const char *kApps[kNApps];
     int napps = 0;
 
     // Complete directories only. A partial one is remembered separately, because
