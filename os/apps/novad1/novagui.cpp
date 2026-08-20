@@ -904,6 +904,115 @@ bool begin(void) {
     return panel;
 }
 
+// A headless driver — `novad1 tap` — injects gestures into the same queue the
+// encoder feeds. But a gesture that lands on a dimmed or dark panel is spent on
+// waking it — see the level check in drain_input — and never reaches the screen.
+// On the glass that is exactly right: the first press you make picking the device
+// up should say "show me", not "act on whatever the cursor happens to be on". A
+// driver has none of that walking-up, and on the lock, which is dark PRECISELY
+// because the device idled into it, the eaten press meant the pinpad never opened
+// and the unlock could not be driven headlessly at all.
+//
+// So the driver ASKS, and the runner grants it at the top of the next drain, on
+// its own task, where set_level's I2C write and every g_level write already live.
+// The driver must never wake the panel itself: that would put the shell task
+// inside the display driver while the runner is mid-show — the battery-icon
+// freeze wearing a different coat. One writer (the driver) sets it, one
+// reader-and-clearer (the runner) grants it, volatile, the same shape as the
+// input ring two files over.
+static volatile bool g_wake_req;
+
+void request_wake(void) { g_wake_req = true; }
+
+bool screen_active(void) { return g_level == LVL_ACTIVE; }
+
+// The panel level on the idle clock, pulled out of run() so a test can put the
+// panel to sleep the way the runner does rather than by imitating it.
+void update_level(uint32_t now) {
+    // Dim, then off, on their own timers. Both are contrast changes, so waking is
+    // instant and nothing has to be re-initialised.
+    uint32_t idle = (now - g_last_input) / 1000;
+    int dim_s = nova::reg_int(NOVA_KEY_PREFIX "DimSec", 30);
+    int off_s = nova::reg_int(NOVA_KEY_PREFIX "OffSec", 120);
+    if      (off_s > 0 && idle >= (uint32_t)off_s) set_level(LVL_OFF);
+    else if (dim_s > 0 && idle >= (uint32_t)dim_s) set_level(LVL_DIM);
+}
+
+// One pass over the input queue — the whole of the loop's inner while, so the
+// harness can drive the runner through the SAME dispatch tap injects into rather
+// than through a copy that omits the one branch that matters.
+bool drain_input(void) {
+    // A driver asked the panel to wake. Granted here, on the runner's task and
+    // BEFORE the per-gesture wake-consume below would otherwise spend the driver's
+    // first gesture on the wake. See g_wake_req.
+    if (g_wake_req) {
+        g_wake_req = false;
+        set_level(LVL_ACTIVE);
+        g_last_input = fw_millis();
+    }
+
+    bool had_input = false;
+    bool turned = false;      // a rotation was consumed this frame
+    Event e;
+    while ((e = input().next()) != EV_NONE) {
+        had_input = true;
+
+        // ONE DETENT PER FRAME, and this is the whole difference between an
+        // encoder that feels connected to the screen and one that does not.
+        //
+        // Draining the queue in a single frame means a fast spin moves the
+        // selection six rows and redraws once: the cursor teleports and there is
+        // no sense of having travelled. Taking one step per frame draws every
+        // position it passes through, which is what reads as smooth. Buttons are
+        // NOT rationed — a press waiting behind three detents would feel stuck.
+        if (e == EV_ROT_CW || e == EV_ROT_CCW) {
+            if (turned) { input().unget(e); break; }
+            turned = true;
+        }
+
+        // A gesture while the screen is dark wakes it and is CONSUMED. On a device
+        // you pick up out of a pocket, the first press is "show me", not "open
+        // whatever the cursor happens to be on". A headless driver escapes this by
+        // asking for the wake above, so its gesture arrives with the panel already
+        // lit and is delivered rather than eaten.
+        if (g_level != LVL_ACTIVE) { set_level(LVL_ACTIVE); g_last_input = fw_millis(); continue; }
+        g_last_input = fw_millis();
+
+        // Holding HOME opens the power menu from ANY screen, whatever state it is
+        // in, so lock and shutdown are always one gesture away. It does not stack
+        // a second copy on itself.
+        // ...with one exception, and power_gesture_ok() is where it is written
+        // down and where it is checked.
+        if (e == EV_HOME_HOLD && power_gesture_ok()) {
+            Screen *s = top();
+            if (!s || !nova::ieq(s->title(), "Power")) {
+                // Make room first. This is the one push reached by a gesture from
+                // ANY screen, and it is the one that can find the pool already
+                // full. STACK_MAX - 1, not STACK_MAX: the menu's own first row is
+                // Controls, which is a second push.
+                if (depth() >= STACK_MAX - 1) go_home();
+                screens::open_power();
+            }
+            g_dirty = true;
+            continue;
+        }
+
+        Screen *s = top();
+        if (!s) continue;
+        Action a = s->on_event(e);
+
+        // HOME is a guaranteed way out, not a courtesy each screen has to
+        // remember. `modal` is the deliberate opt-out and exists for one reason: a
+        // lock that HOME escapes is not a lock.
+        if (a == ACT_STAY && e == EV_HOME && !s->modal()) a = ACT_HOME;
+
+        if      (a == ACT_BACK) pop();
+        else if (a == ACT_HOME) go_home();
+        g_dirty = true;
+    }
+    return had_input;
+}
+
 void run(void) {
     // Refuse a loop nobody claimed, and refuse a second one. Two tasks in here
     // is the same corruption from the other end, and a task arriving without a
@@ -917,84 +1026,11 @@ void run(void) {
         // No poll here. The input task samples the encoder at 2 ms because
         // quadrature needs consecutive readings, and this loop sleeps up to
         // 300 ms — see the note at the top of novainput.cpp.
-
-        bool had_input = false;
-        bool turned = false;      // a rotation was consumed this frame
-        Event e;
-        while ((e = input().next()) != EV_NONE) {
-            had_input = true;
-
-            // ONE DETENT PER FRAME, and this is the whole difference between an
-            // encoder that feels connected to the screen and one that does not.
-            //
-            // Draining the queue in a single frame means a fast spin moves the
-            // selection six rows and redraws once: the cursor teleports and
-            // there is no sense of having travelled. Taking one step per frame
-            // draws every position it passes through, which is what reads as
-            // smooth. The MicroPython suite arrived at the same answer and was
-            // capped at its loop rate; here the loop runs at 60 a second while
-            // anything is queued, so a fast spin keeps up instead of lagging.
-            //
-            // Buttons are NOT rationed — a press waiting behind three detents
-            // would be a button that feels stuck.
-            if (e == EV_ROT_CW || e == EV_ROT_CCW) {
-                if (turned) { input().unget(e); break; }
-                turned = true;
-            }
-
-            // A gesture while the screen is dark wakes it and is CONSUMED. On a
-            // device you pick up out of a pocket, the first press is "show me",
-            // not "open whatever the cursor happens to be on".
-            if (g_level != LVL_ACTIVE) { set_level(LVL_ACTIVE); g_last_input = fw_millis(); continue; }
-            g_last_input = fw_millis();
-
-            // Holding HOME opens the power menu from ANY screen, whatever state
-            // it is in, so lock and shutdown are always one gesture away. It
-            // does not stack a second copy on itself.
-            // ...with one exception, and power_gesture_ok() is where it is
-            // written down and where it is checked.
-            if (e == EV_HOME_HOLD && power_gesture_ok()) {
-                Screen *s = top();
-                if (!s || !nova::ieq(s->title(), "Power")) {
-                    // Make room first. This is the one push reached by a gesture
-                    // from ANY screen, and it is the one that can find the pool
-                    // already full — home, the roots, five levels of files and a
-                    // viewer is eight. A silent nothing there is the guarantee
-                    // quietly not being kept, and from the outside it is
-                    // indistinguishable from a button that did not register.
-                    //
-                    // Safe HERE and nowhere else: nothing on this line is inside
-                    // a screen's own method, whereas open_power() is also an
-                    // OpenFn called from inside Gallery::on_event.
-                    // STACK_MAX - 1, not STACK_MAX: the menu's own first row
-                    // is Controls, which is a second push. Making room for one
-                    // and not for two left Controls dead at exactly depth seven
-                    // — the menu fitted, the screen it offers did not, and it
-                    // said nothing about it.
-                    if (depth() >= STACK_MAX - 1) go_home();
-                    screens::open_power();
-                }
-                g_dirty = true;
-                continue;
-            }
-
-            Screen *s = top();
-            if (!s) continue;
-            Action a = s->on_event(e);
-
-            // HOME is a guaranteed way out, not a courtesy each screen has to
-            // remember. A screen that handles it keeps its own behaviour; one
-            // that ignores it gets dropped to home anyway — without this, a
-            // screen that forgot the branch was a room with no door.
-            //
-            // `modal` is the deliberate opt-out and exists for one reason: a
-            // lock that HOME escapes is not a lock.
-            if (a == ACT_STAY && e == EV_HOME && !s->modal()) a = ACT_HOME;
-
-            if      (a == ACT_BACK) pop();
-            else if (a == ACT_HOME) go_home();
-            g_dirty = true;
-        }
+        //
+        // The whole of the dispatch is drain_input(), so the one rule the harness
+        // used to copy — and copied without the wake-consume — is now the runner's
+        // own, driven the same way by both.
+        bool had_input = drain_input();
 
         uint32_t now = fw_millis();
         uint32_t dt  = frame_dt(now, &last, had_input);
@@ -1020,13 +1056,10 @@ void run(void) {
             if (sig != g_status_sig) { g_status_sig = sig; g_dirty = true; }
         }
 
-        // Dim, then off, on their own timers. Both are contrast changes, so
-        // waking is instant and nothing has to be re-initialised.
+        // Dim, then off, on their own timers — the runner's rule, now in the one
+        // place both it and the harness call.
+        update_level(now);
         uint32_t idle = (now - g_last_input) / 1000;
-        int dim_s = nova::reg_int(NOVA_KEY_PREFIX "DimSec", 30);
-        int off_s = nova::reg_int(NOVA_KEY_PREFIX "OffSec", 120);
-        if      (off_s > 0 && idle >= (uint32_t)off_s) set_level(LVL_OFF);
-        else if (dim_s > 0 && idle >= (uint32_t)dim_s) set_level(LVL_DIM);
 
         // And the lock, on the same clock and read the same way. It is a third
         // tier rather than a thing hung off "screen off", because the two are

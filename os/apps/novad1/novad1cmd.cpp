@@ -49,6 +49,35 @@ int setup(void) {
     // is the one function whose whole job is "remove ALL of them" — a truncated
     // list reads as a shorter list and leaves the rest behind.
     static char out[512];
+
+    // A board first set up by an OLDER Nova D1 has the screen as a legacy STARTUP
+    // entry — `startup add novad1 gui --bg` — rather than a service. That ran the
+    // screen fine, but `pkg install` stands a running SERVICE aside for an upgrade
+    // and a startup entry is not one: the install found the package busy, could
+    // not name why, and refused, with nothing to say that a migration was needed.
+    // So setup moves it. Every novad1 startup entry comes out here and the service
+    // goes in below, which is the whole migration. Idempotent — a board already on
+    // a service has nothing in the startup list to find, so a second run migrates
+    // nothing rather than doubling anything up.
+    //
+    // Same re-read-every-time walk as the service tidy-up below, and for the same
+    // reason: removing by index renumbers the list, so a captured snapshot goes
+    // stale the moment the first remove lands.
+    int migrated = 0;
+    for (int guard = 0; guard < 12; guard++) {
+        out[0] = 0;
+        fw_shell_run("startup list", out, sizeof(out));
+        if (!out[0]) break;                              // could not read it; leave it be
+        int found = nova::listing_index_of(out, "novad1");
+        if (found < 0) break;
+        char cmd[32];
+        snprintf(cmd, sizeof(cmd), "startup remove %d", found);
+        if (fw_shell_run(cmd, nullptr, 0) != 0) break;   // stop rather than spin
+        migrated++;
+    }
+    if (migrated) fw_printf("  startup    migrated %d old boot entr%s to a service\n",
+                            migrated, migrated == 1 ? "y" : "ies");
+
     // EVERY existing entry goes first, then exactly one is added.
     //
     // Without this, running setup twice registered the screen twice, and two
@@ -214,6 +243,16 @@ int tap(int argc, char **argv) {
         if (n < 1) n = 1;
     }
     if (n > 64) n = 64;
+
+    // Wake the panel first, or the whole drive stops at the lock. A gesture that
+    // lands on a dimmed or dark panel is spent on waking it and never reaches the
+    // screen — right for a thumb picking the device up, fatal for a headless
+    // driver, and the reason the on-device unlock could not be verified: the lock
+    // is dark precisely because the device idled into it, so the first `tap sel`
+    // only woke it and the pinpad never opened. The runner does the wake itself,
+    // on its own task; this only asks. See gui::request_wake.
+    gui::request_wake();
+
     for (int i = 0; i < n; i++) {
         input().inject(e);
         // A detent at a time, with a frame between, because the runner takes at
@@ -221,9 +260,15 @@ int tap(int argc, char **argv) {
         // would queue them and arrive as a spin rather than as sixteen steps.
         fw_task_sleep_ms(40);
     }
-    // Long enough for the frame after the last gesture to have been drawn, so
-    // what is reported below is what is on the glass.
-    fw_task_sleep_ms(120);
+
+    // Wait for the runner to actually drain what was injected before reporting,
+    // rather than trust a fixed sleep to outlast whatever nap it was in: a dark
+    // panel naps 300 ms, and a blind 120 ms would read the screen from before the
+    // gesture landed. Bounded, so a wedged runner cannot wedge the shell with it.
+    for (int i = 0; i < 200 && input().pending(); i++) fw_task_sleep_ms(5);
+    // And a moment more for the frame the gesture produced to have been drawn, so
+    // a `shot` straight after this photographs what the gesture did.
+    fw_task_sleep_ms(80);
 
     ui::Screen *s = gui::top();
     fw_printf("%-9s x%-2d  ->  depth %u, showing '%s'\n", what, n,
@@ -310,6 +355,20 @@ int service(int argc, char **argv) {
         fw_printf("Nova D1 screen: %s\n", gui::running() ? "running" : "stopped");
         fw_shell_run("service list", out, sizeof(out));
         fw_printf("%s", out);
+
+        // A board an older Nova D1 set up still starts the screen from the legacy
+        // startup list, not a service. `pkg install` can stand a service aside for
+        // an upgrade but not a startup entry, so an upgrade there refuses without
+        // saying why. Say why here — this is where somebody checking on the screen
+        // will look — and name the one command that fixes it.
+        char st[256];
+        st[0] = 0;
+        fw_shell_run("startup list", st, sizeof(st));
+        if (nova::listing_index_of(st, "novad1") >= 0) {
+            fw_printf("\nThis board still starts the screen from the old startup list.\n");
+            fw_printf("An upgrade with `pkg install` will refuse to stand it aside.\n");
+            fw_printf("Run `novad1 setup` to migrate it to a service.\n");
+        }
         return 0;
     }
     if (!strcmp(sub, "start")) {
