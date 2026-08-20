@@ -3,15 +3,18 @@
 // v1's editor was its own 700-line program with its own screen handling. This
 // one is the text buffer and the keys; the framework does the rest.
 //
-// The buffer is a fixed array of fixed-width lines rather than anything clever.
-// A rope or a gap buffer is the right answer at a megabyte; at 24 KB on a
-// device whose whole heap is under 400 KB, an array is faster, allocates once,
-// and cannot fragment. The limits are stated up front and enforced rather than
-// discovered.
+// The text is a paged store of fixed-width lines rather than anything clever. A
+// rope or a gap buffer is the right answer at a megabyte; at this size, on a
+// device whose whole heap is under 400 KB and often fragmented, fixed lines in
+// small chunks are faster and — the reason for the paging — never ask the heap
+// for one big block it may not have. See linestore.h for why that block used to
+// stop `edit` opening at all. The limits are stated up front and enforced rather
+// than discovered.
 
 #include "command.h"
 #include "out.h"
 #include "tui.h"
+#include "linestore.h"
 
 #include <stdlib.h>
 
@@ -28,12 +31,14 @@ namespace { struct ScreenFree { void *p; ~ScreenFree() { free(p); } }; }
 #include <stdlib.h>
 #include <stdarg.h>
 
-#define ED_MAX_LINES 400
-#define ED_MAX_COL   200
-#define ED_BUF_MAX   (32 * 1024)
+// The file is streamed into the store a block at a time rather than read whole
+// into a 32 KB buffer first — one more large allocation the editor no longer
+// makes. The block is small and sized under a chunk, so it never becomes the
+// largest thing the editor holds.
+#define ED_READ_BLOCK 2048
 
 struct Editor {
-    char   (*line)[ED_MAX_COL];   // allocated, not static: 78 KB is not a global
+    LineStore ls;                 // the text, paged (linestore.h)
     int      count;               // lines in use
     int      cy, cx;              // cursor, in buffer coordinates
     int      top, left;           // scroll
@@ -55,7 +60,9 @@ static void ed_note(Editor *e, const char *fmt, ...) {
 
 static bool ed_load(Editor *e, const char *path) {
     e->count = 0;
-    e->line[0][0] = 0;
+    char *line = ls_line(&e->ls, 0);
+    if (!line) { ed_note(e, "not enough memory to open it"); return false; }
+    line[0] = 0;
 
     bool is_dir = false; uint32_t size = 0;
     if (!storage_stat(path, &is_dir, &size)) {
@@ -65,27 +72,61 @@ static bool ed_load(Editor *e, const char *path) {
     }
     if (is_dir) { ed_note(e, "that is a directory"); return false; }
 
-    char *buf = (char *)malloc(ED_BUF_MAX);
-    if (!buf) { ed_note(e, "not enough memory to open it"); return false; }
-    uint32_t n = storage_read_file(path, (uint8_t *)buf, ED_BUF_MAX - 1);
-    buf[n] = 0;
-    if (n >= ED_BUF_MAX - 1) e->truncated = true;
+    AppSource src; void *h = nullptr;
+    if (!storage_open_source(path, &src, &h)) { ed_note(e, "could not open %s", path); return false; }
+
+    // Streamed a block at a time, straight into the store — the file never lands
+    // in RAM whole. The store grows a chunk at a time as the rows fill, so the
+    // most memory in one piece while opening is one chunk, not the file. The read
+    // block is smaller than a chunk, so it is never the largest thing held.
+    uint8_t *buf = (uint8_t *)malloc(ED_READ_BLOCK);
+    if (!buf) { storage_close_source(h); ed_note(e, "not enough memory to open it"); return false; }
 
     int row = 0, col = 0;
-    for (uint32_t i = 0; i < n && row < ED_MAX_LINES; i++) {
-        char c = buf[i];
-        if (c == '\r') continue;
-        if (c == '\n') { e->line[row][col] = 0; row++; col = 0; continue; }
-        // A line too long is CUT rather than wrapped: wrapping would change the
-        // file's meaning on save, and silently rewriting someone's file is worse
-        // than refusing part of a line.
-        if (col + 1 < ED_MAX_COL) e->line[row][col++] = c;
-        else e->truncated = true;
+    bool oom = false;
+    uint32_t off = 0;
+    // `line` tracks row's buffer. It is fetched once per row, at the growth edge
+    // below; a new chunk allocated for a later row never moves this one, because
+    // each chunk is its own allocation.
+    while (row < ED_MAX_LINES) {
+        int got = src.read(src.ctx, off, buf, ED_READ_BLOCK);
+        if (got <= 0) break;                 // end of file, or a read error: stop with what we have
+        off += (uint32_t)got;
+        for (int i = 0; i < got && row < ED_MAX_LINES; i++) {
+            char c = (char)buf[i];
+            if (c == '\r') continue;
+            if (c == '\n') {
+                line[col] = 0;
+                row++; col = 0;
+                if (row < ED_MAX_LINES) {
+                    line = ls_line(&e->ls, row);   // growth edge: the one place a chunk is added
+                    if (!line) { oom = true; break; }
+                }
+                continue;
+            }
+            // A line too long is CUT rather than wrapped: wrapping would change the
+            // file's meaning on save, and silently rewriting someone's file is worse
+            // than refusing part of a line.
+            if (col + 1 < ED_MAX_COL) line[col++] = c;
+            else e->truncated = true;
+        }
+        if (oom) break;
     }
-    if (row < ED_MAX_LINES) { e->line[row][col] = 0; row++; }
-    else e->truncated = true;
-    e->count = row ? row : 1;
     free(buf);
+    storage_close_source(h);
+
+    if (oom || row >= ED_MAX_LINES) {
+        // Out of heap partway in, or more lines than the store holds. What loaded
+        // is complete up to here and every counted row is allocated; it is just
+        // not the whole file, so it is marked exactly like one too tall — readable,
+        // never savable. count = row leaves out the row whose chunk could not be
+        // added, so no counted index is missing its buffer.
+        e->truncated = true;
+    } else {
+        line[col] = 0;      // terminate the final, unterminated line
+        row++;
+    }
+    e->count = row ? row : 1;
 
     if (e->truncated) ed_note(e, "opened, but too big to hold entirely - DO NOT SAVE");
     else              ed_note(e, "%d lines", e->count);
@@ -101,8 +142,9 @@ static bool ed_save(Editor *e) {
     if (!h) { ed_note(e, "could not write %s", e->path); return false; }
     bool ok = true;
     for (int i = 0; i < e->count && ok; i++) {
-        uint32_t len = (uint32_t)strlen(e->line[i]);
-        if (len) ok = storage_sink_write(h, (const uint8_t *)e->line[i], len);
+        const char *l = ls_line(&e->ls, i);       // i < count, so allocated by the invariant
+        uint32_t len = (uint32_t)strlen(l);
+        if (len) ok = storage_sink_write(h, (const uint8_t *)l, len);
         if (ok)  ok = storage_sink_write(h, (const uint8_t *)"\n", 1);
     }
     if (!storage_close_sink(h)) ok = false;
@@ -114,7 +156,7 @@ static bool ed_save(Editor *e) {
 // --- editing ----------------------------------------------------------------
 
 static void ed_insert(Editor *e, char c) {
-    char *l = e->line[e->cy];
+    char *l = ls_line(&e->ls, e->cy);      // cy < count, so allocated
     int len = (int)strlen(l);
     if (len + 1 >= ED_MAX_COL) { ed_note(e, "line is full (%d)", ED_MAX_COL - 1); return; }
     memmove(l + e->cx + 1, l + e->cx, (size_t)(len - e->cx + 1));
@@ -123,7 +165,7 @@ static void ed_insert(Editor *e, char c) {
 }
 
 static void ed_backspace(Editor *e) {
-    char *l = e->line[e->cy];
+    char *l = ls_line(&e->ls, e->cy);      // cy < count, so allocated
     if (e->cx > 0) {
         int len = (int)strlen(l);
         memmove(l + e->cx - 1, l + e->cx, (size_t)(len - e->cx + 1));
@@ -133,11 +175,13 @@ static void ed_backspace(Editor *e) {
     }
     if (e->cy == 0) return;
     // Join with the line above, which is where the cursor lands.
-    char *up = e->line[e->cy - 1];
+    char *up = ls_line(&e->ls, e->cy - 1);
     int ulen = (int)strlen(up), llen = (int)strlen(l);
     if (ulen + llen >= ED_MAX_COL) { ed_note(e, "joined line would be too long"); return; }
     memcpy(up + ulen, l, (size_t)llen + 1);
-    for (int i = e->cy; i < e->count - 1; i++) memcpy(e->line[i], e->line[i + 1], ED_MAX_COL);
+    // Shifting up only touches indices already below count — all allocated.
+    for (int i = e->cy; i < e->count - 1; i++)
+        memcpy(ls_line(&e->ls, i), ls_line(&e->ls, i + 1), ED_MAX_COL);
     e->count--;
     e->cy--;
     e->cx = ulen;
@@ -146,9 +190,16 @@ static void ed_backspace(Editor *e) {
 
 static void ed_newline(Editor *e) {
     if (e->count + 1 >= ED_MAX_LINES) { ed_note(e, "file is full (%d lines)", ED_MAX_LINES); return; }
-    for (int i = e->count; i > e->cy + 1; i--) memcpy(e->line[i], e->line[i - 1], ED_MAX_COL);
-    char *l = e->line[e->cy];
-    snprintf(e->line[e->cy + 1], ED_MAX_COL, "%s", l + e->cx);
+    // The growth edge. Index `count` is the new last line; touch it first so the
+    // one chunk this might add is added here, where failure can still be refused.
+    // If it fails, count is left unchanged and the invariant holds: every index
+    // below count still has its buffer. Every memcpy below is then to an index
+    // that exists.
+    if (!ls_line(&e->ls, e->count)) { ed_note(e, "out of memory - line not added"); return; }
+    for (int i = e->count; i > e->cy + 1; i--)
+        memcpy(ls_line(&e->ls, i), ls_line(&e->ls, i - 1), ED_MAX_COL);
+    char *l = ls_line(&e->ls, e->cy);
+    snprintf(ls_line(&e->ls, e->cy + 1), ED_MAX_COL, "%s", l + e->cx);
     l[e->cx] = 0;
     e->count++;
     e->cy++;
@@ -159,7 +210,7 @@ static void ed_newline(Editor *e) {
 static void ed_clamp(Editor *e, int rows, int cols) {
     if (e->cy < 0) e->cy = 0;
     if (e->cy >= e->count) e->cy = e->count - 1;
-    int len = (int)strlen(e->line[e->cy]);
+    int len = (int)strlen(ls_line(&e->ls, e->cy));    // cy now in [0,count), allocated
     if (e->cx > len) e->cx = len;
     if (e->cx < 0) e->cx = 0;
 
@@ -178,13 +229,17 @@ static int cmd_edit(int argc, char **argv) {
 
     Editor *e = (Editor *)calloc(1, sizeof(Editor));
     if (!e) { out_err("Not enough memory."); return 1; }
-    e->line = (char (*)[ED_MAX_COL])malloc((size_t)ED_MAX_LINES * ED_MAX_COL);
-    if (!e->line) { free(e); out_err("Not enough memory to open an editor."); return 1; }
+    // The text store starts empty and grows a chunk at a time from ed_load. There
+    // is no 80 KB line array to reserve up front any more — that single block was
+    // what stopped `edit` opening on a board with Nova D1 resident, where the heap
+    // has plenty free but never that much in one piece. calloc zeroed the store, so
+    // it is ready to use; the first chunk is asked for (and can be refused) inside
+    // ed_load, where the memory is actually needed.
 
     path_resolve(fs_cwd(), argv[1], e->path, sizeof(e->path));
     if (!ed_load(e, e->path)) {
         out_err("%s", e->status);
-        free(e->line); free(e);
+        ls_free(&e->ls); free(e);
         return 1;
     }
 
@@ -196,13 +251,13 @@ static int cmd_edit(int argc, char **argv) {
     // two screens that are open for seconds at a time. Allocated here, it costs
     // nothing until it is used and comes back when the screen closes.
     TuiScreen *sp = (TuiScreen *)malloc(sizeof(TuiScreen));
-    if (!sp) { out_err("Not enough memory to open this screen."); return 1; }
+    if (!sp) { out_err("Not enough memory to open this screen."); ls_free(&e->ls); free(e); return 1; }
     TuiScreen &s = *sp;
     ScreenFree _sf{sp};
     tuiterm_begin();
     if (!tuiterm_active()) {
         out_err("Could not start the editor.");
-        free(e->line); free(e);
+        ls_free(&e->ls); free(e);
         return 1;
     }
     uint16_t tw = 80, th = 24;
@@ -237,7 +292,7 @@ static int cmd_edit(int argc, char **argv) {
             for (int r = 0; r < rows; r++) {
                 int i = e->top + r;
                 if (i >= e->count) break;
-                const char *l = e->line[i];
+                const char *l = ls_line(&e->ls, i);   // i < count, so allocated
                 int len = (int)strlen(l);
                 if (e->left < len) tui_text(&s, 0, r + 1, l + e->left, TUI_NORMAL, TUI_DEFAULT);
             }
@@ -274,16 +329,16 @@ static int cmd_edit(int argc, char **argv) {
             switch (ev.key) {
                 case TUI_KEY_UP:    e->cy--; break;
                 case TUI_KEY_DOWN:  e->cy++; break;
-                case TUI_KEY_LEFT:  if (e->cx) e->cx--; else if (e->cy) { e->cy--; e->cx = (int)strlen(e->line[e->cy]); } break;
-                case TUI_KEY_RIGHT: if (e->cx < (int)strlen(e->line[e->cy])) e->cx++;
+                case TUI_KEY_LEFT:  if (e->cx) e->cx--; else if (e->cy) { e->cy--; e->cx = (int)strlen(ls_line(&e->ls, e->cy)); } break;
+                case TUI_KEY_RIGHT: if (e->cx < (int)strlen(ls_line(&e->ls, e->cy))) e->cx++;
                                     else if (e->cy < e->count - 1) { e->cy++; e->cx = 0; } break;
                 case TUI_KEY_HOME:  e->cx = 0; break;
-                case TUI_KEY_END:   e->cx = (int)strlen(e->line[e->cy]); break;
+                case TUI_KEY_END:   e->cx = (int)strlen(ls_line(&e->ls, e->cy)); break;
                 case TUI_KEY_PGUP:  e->cy -= rows - 1; break;
                 case TUI_KEY_PGDN:  e->cy += rows - 1; break;
                 case TUI_KEY_DELETE: {
                     // Delete-forward is backspace from one place further on.
-                    int len = (int)strlen(e->line[e->cy]);
+                    int len = (int)strlen(ls_line(&e->ls, e->cy));
                     if (e->cx < len) { e->cx++; ed_backspace(e); }
                     else if (e->cy < e->count - 1) { e->cy++; e->cx = 0; ed_backspace(e); }
                     break;
@@ -335,7 +390,7 @@ static int cmd_edit(int argc, char **argv) {
     tuiterm_end();
     if (e->dirty) out_warn("Exited with unsaved changes.");
     else          out_ok("%s", e->status);
-    free(e->line);
+    ls_free(&e->ls);
     free(e);
     return 0;
 }
