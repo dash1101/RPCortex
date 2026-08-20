@@ -262,7 +262,9 @@ int main(void) {
         ck(e.truncated, "more lines than fit marks the file truncated");
         ck(e.count == ED_MAX_LINES, "the line count is capped");
         bool all = true;
-        for (int i = 0; i < e.count; i++) if (!ls_line(&e.ls, i)) all = false;
+        // The raw chunk pointer, not ls_line — ls_line would allocate a missing
+        // chunk on demand and hide the very gap this is looking for.
+        for (int i = 0; i < e.count; i++) if (!e.ls.chunk[i / LS_LINES_PER_CHUNK]) all = false;
         ck(all, "every counted line has its chunk (the invariant holds after a full load)");
         ls_free(&e.ls);
     }
@@ -283,7 +285,10 @@ int main(void) {
         ck(e.truncated, "an allocation failure mid-load marks the file truncated");
         ck(e.count == LS_LINES_PER_CHUNK, "the count stops at the last line that fit");
         bool all = true;
-        for (int i = 0; i < e.count; i++) if (!ls_line(&e.ls, i)) all = false;
+        // Raw chunk pointers again: after the load, the injected failure is off,
+        // so ls_line could re-allocate the failed chunk and paper over a count
+        // that ran one line too far. The chunk that failed must still be absent.
+        for (int i = 0; i < e.count; i++) if (!e.ls.chunk[i / LS_LINES_PER_CHUNK]) all = false;
         ck(all, "every counted line is allocated despite the failure (no crash, invariant held)");
         ls_free(&e.ls);
     }
