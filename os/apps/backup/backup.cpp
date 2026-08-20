@@ -20,7 +20,7 @@
 #include "rpc_app.h"
 #include <stdio.h>       // snprintf - one of the handful of libc calls api.cpp exports
 
-RPC_APP_VER("backup", "2.0");
+RPC_APP_VER("backup", "2.1");
 
 #define BK_DIR      "/etc/backups"
 #define BK_NAME_MAX 32
@@ -336,12 +336,19 @@ static int bk_restore(const char *name, int confirmed) {
         return 1;
     }
     fw_printf("Restored %d files from '%s'.\n", done, name);
-    // Not politeness - the running OS holds the registry in memory, and the
-    // next thing that saves a setting writes that copy back over the file just
-    // put in place. Rebooting is what makes the restore stick.
-    fw_printf("Reboot now to pick them up: anything that saves a setting first\n");
-    fw_printf("will write the running configuration back over these.\n");
-    return 0;
+    // The reboot happens HERE rather than being left to the person, and that is
+    // the whole difference between a restore that sticks and one that does not.
+    // The running OS holds the registry in memory; the next thing that saves a
+    // setting writes that copy back over the files just put in place - and the
+    // `reboot` COMMAND is exactly that thing, because it persists the clock
+    // through a whole-registry write on its way out (clock_persist). So telling
+    // someone to "reboot now" sent them at the one action guaranteed to undo the
+    // restore. fw_reboot resets without saving anything, and nothing runs between
+    // the copy above and the reset, so the running configuration never gets
+    // written back. The board comes up on the snapshot. -y already said yes.
+    fw_printf("Rebooting into the restored configuration...\n");
+    fw_reboot();
+    return 0;   // fw_reboot does not return
 }
 
 static int bk_remove(const char *name) {

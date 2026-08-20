@@ -90,6 +90,13 @@ void  fw_free(void *p)     { free(p); }
 uint32_t fw_heap_largest(void) { return g_largest; }
 uint32_t fw_millis(void)       { return 1234567; }
 
+// A confirmed restore reboots to apply, and that IS the fix: a plain `reboot`
+// runs clock_persist, which writes the live in-memory registry back over the
+// files the restore just put down. fw_reboot resets without saving, so nothing
+// undoes the restore. Counted so the test can prove restore reaches it.
+static int g_rebooted = 0;
+void fw_reboot(void) { g_rebooted++; }
+
 int fw_time_get(FwTime *out) {
     if (!out) return 0;
     *out = g_now;
@@ -348,11 +355,12 @@ int main(void) {
         fs_file("/os/registry.cfg", "Settings.Theme=broken\n");
         fs_file("/os/users.cfg", "");
 
+        g_rebooted = 0;
         int rc = run("restore", "good", "-y");
         ck(rc == 0, "a confirmed restore succeeds");
         ck(fs_read("/os/registry.cfg") == original, "the registry came back");
         ck(fs_read("/os/users.cfg") == "dash:hash:admin\n", "so did the accounts");
-        ck(out_has("Reboot"), "and it says a reboot is what makes it stick");
+        ck(g_rebooted == 1, "and it reboots to apply, so nothing writes the live config back");
 
         rc = run("restore", "nosuch", "-y");
         ck(rc != 0, "restoring a snapshot that is not there fails");
