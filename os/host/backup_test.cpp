@@ -118,6 +118,27 @@ int fw_file_write(const char *path, const void *data, uint32_t len) {
     return 1;
 }
 
+// When set, the fake filesystem is "full": a streamed copy writes as much as it
+// can and then fails, exactly as storage_copy does when a write hits a full
+// volume partway — leaving a TRUNCATED destination behind. That partial file is
+// the whole reason bk_copy has to clean up after a failed copy.
+static bool g_fs_full = false;
+
+// The streamed copy the package now uses instead of read-then-write. Whole file
+// on success, nothing held in between; a missing source is a failure, not an
+// empty copy.
+int fw_file_copy(const char *from, const char *to) {
+    auto it = g_fs.find(from);
+    if (it == g_fs.end() || it->second.is_dir) return 0;
+    const std::string &src = it->second.data;
+    if (g_fs_full) {
+        g_fs[to] = FakeNode{false, src.substr(0, src.size() / 2)};   // the half that fit
+        return 0;
+    }
+    g_fs[to] = FakeNode{false, src};
+    return 1;
+}
+
 // A directory only goes when it is empty — the same rule storage_remove has,
 // and the reason `backup remove` empties one first.
 int fw_file_remove(const char *path) {
@@ -390,32 +411,50 @@ int main(void) {
         ck(rc != 0, "and an escaping name is refused");
     }
 
-    // --- copying: the two refusals -----------------------------------------
+    // --- copying: streamed, no ceiling -------------------------------------
+    //
+    // The old version read a file into one buffer and wrote it back out, which
+    // capped a copy at a single allocation and refused anything larger by name.
+    // Streaming through fw_file_copy removed both the ceiling and the two
+    // refusals that guarded it. To see the ceiling come back, put a size check
+    // back into bk_copy: the first case here goes red.
     {
         fs_reset();
         fs_dir("/etc");
-        // A file past what can be held in one piece. It must be named, not
-        // silently truncated into the snapshot.
-        fs_file("/os/registry.cfg", std::string(BK_FILE_MAX + 1, 'x'));
+
+        // Far past the old 32 KB ceiling, and it copies whole.
+        std::string big(128u * 1024u, 'x');
+        fs_file("/os/registry.cfg", big);
         out_reset();
         long n = bk_copy("/os/registry.cfg", "/etc/copy.cfg");
-        ck(n < 0, "a file past the size limit is refused");
-        ck(out_has("past the"), "and says why");
-        ck(!fs_has("/etc/copy.cfg"), "and nothing was written");
+        ck(n == (long)big.size(), "a file far past the old 32 KB ceiling copies whole");
+        ck(fs_read("/etc/copy.cfg") == big, "and every byte of it arrives");
 
-        // A heap with no block big enough. Same answer, different reason, and
-        // on this OS it is the likelier of the two.
-        fs_file("/os/registry.cfg", std::string(4096, 'x'));
-        g_largest = 100;
+        // A source that is not there is a failure, not a silent empty copy.
+        fs_reset();
+        fs_dir("/etc");
         out_reset();
         n = bk_copy("/os/registry.cfg", "/etc/copy.cfg");
-        ck(n < 0, "a copy with no free block big enough is refused");
-        ck(out_has("no free block"), "and says that rather than 'out of memory'");
-        ck(!fs_has("/etc/copy.cfg"), "and again nothing was written");
-        g_largest = 1u << 20;
+        ck(n < 0, "a copy of a source that is not there is refused");
+        ck(!fs_has("/etc/copy.cfg"), "and nothing is written");
+
+        // A destination that runs out of room mid-stream leaves a truncated file
+        // behind. bk_copy has to take that half away.
+        fs_reset();
+        fs_dir("/etc");
+        fs_file("/os/registry.cfg", std::string(4096, 'x'));
+        g_fs_full = true;
+        out_reset();
+        n = bk_copy("/os/registry.cfg", "/etc/copy.cfg");
+        g_fs_full = false;
+        ck(n < 0, "a copy that runs out of room is refused");
+        ck(!fs_has("/etc/copy.cfg"),
+           "and the half it wrote is removed, not left as a stub a restore trusts");
 
         // An empty file is a real answer, not an absence: a config somebody
         // emptied on purpose has to restore empty.
+        fs_reset();
+        fs_dir("/etc");
         fs_file("/os/registry.cfg", "");
         n = bk_copy("/os/registry.cfg", "/etc/copy.cfg");
         ck(n == 0, "an empty file copies as zero bytes");
