@@ -192,6 +192,11 @@ for board in "${BOARDS[@]}"; do
             printf '    [!] no filesystem: the reserve and the slots are the whole of this flash\n'
             exit 1
         fi
+        # WHERE those bytes went, by component. The slot line above says how much
+        # is left; this says what is spending it, so a pass that grew the image
+        # can be pointed at what grew rather than bisected for. A readout, never a
+        # gate — `|| true` keeps a reporting hiccup from failing a good build.
+        python3 "$(dirname "$0")/tools/size-report.py" "$dir/rpcortex_v2.elf.map" --groups 2>/dev/null || true
     fi
 done
 

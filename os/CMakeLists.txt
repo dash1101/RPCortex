@@ -178,10 +178,15 @@ target_include_directories(rpcortex_v2 PRIVATE
 #
 # The SD driver is an SPI block layer, a FAT16/32 reader and a `sd` command, and
 # together they are a few kilobytes of flash. A few kilobytes is nothing on an
-# RP2350 and it is a meaningful slice of what a Pico W has left:
+# RP2350 and it is a meaningful slice of what a Pico W has left. Slot headroom at
+# build 413, release build (build.sh prints the live figure every build):
 #
-#   pico2_w    85 KB headroom      pico2   170 KB headroom
-#   pico_w     66 KB headroom      pico    119 KB headroom
+#   pico2_w    39 KB headroom      pico2   131 KB headroom
+#   pico_w     46 KB headroom      pico    104 KB headroom
+#
+# pico2_w is the tight board now, not pico_w: it carries the same radio blob AND
+# the package slot the RP2040 boards do not have. Older notes calling pico_w the
+# constraint predate that slot.
 #
 # The reason it is off on the RP2040 boards is not only the budget, though. Nova
 # D1 — the thing with a card slot wired to it — targets the RP2350 boards, and
@@ -399,13 +404,24 @@ target_compile_definitions(rpcortex_v2 PRIVATE
 # image needs is storage nobody gets, doubled.
 #
 # Sized against the DEVELOPMENT build (--dev-packages), which is the largest an
-# image gets, so a debugging build never fails to fit.
+# image gets, so a debugging build never fails to fit. Measured at build 413,
+# in KB; build.sh prints the live release figure every build, which is the one
+# that gates a release — these are the debugging worst case.
 #
-#   board     image   slot    spare   filesystem
-#   pico2_w    916     1024     108       2048
-#   pico_w     748      832      83        384
-#   pico2      320      512     191       3072
-#   pico       247      384     136       1280
+#   board     image   slot    spare   pkg-slots   filesystem
+#   pico2_w   1019    1024        5         256         1792
+#   pico_w     820     832       12           0          384
+#   pico2      415     512       97         256         2816
+#   pico       314     384       70           0         1280
+#
+# The pico-slots column is new since this table was first written; it comes out
+# of the filesystem, which is why the pico2_w filesystem is 1792 and not 2048.
+# The spare column is the one to watch: pico2_w's dev build sits 5 KB under the
+# wall. At build 412 it was 9 KB OVER — a measured 1058040 B against the 1048576 B
+# slot, so `build.sh pico2_w --dev-packages` failed its own slot check. The
+# scanf/strtod size pass at 413 is what brought the debugging build back inside
+# its slot. The next feature that lands on all boards has to keep an eye on this
+# row, not just the release headroom.
 #
 # The wireless images carry the 227 KB CYW43 blob and cannot be made much
 # smaller. The plain ones have no radio and no business reserving room for one.
