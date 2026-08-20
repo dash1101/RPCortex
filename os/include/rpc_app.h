@@ -23,7 +23,7 @@ extern "C" {
 // MINOR: a symbol added — older-minor apps still run (everything they want is
 //        present); newer-minor apps refused (they may want something absent).
 #define RPC_API_MAJOR 1
-#define RPC_API_MINOR 22
+#define RPC_API_MINOR 23
 
 typedef struct {
     uint32_t magic;          // RPC_APP_MAGIC
@@ -64,15 +64,24 @@ typedef struct {
     unsigned char ctrl, shift, alt;
 } FwTuiEvent;
 
-#define FW_KEY_UP    256
-#define FW_KEY_DOWN  257
-#define FW_KEY_LEFT  258
-#define FW_KEY_RIGHT 259
-#define FW_KEY_HOME  260
-#define FW_KEY_END   261
-#define FW_KEY_PGUP  262
-#define FW_KEY_PGDN  263
-#define FW_KEY_ESC   279
+// These numbers are NOT free to choose. fw_tui_poll copies the terminal layer's
+// key value straight through — no translation — so each of these has to equal
+// the matching entry in the firmware's own TuiKey enum (core/tuikey.h), and
+// api.cpp asserts that at compile time. The gap between DELETE and ESC is the
+// function keys and Ctrl+arrows the terminal also sends; the ABI does not name
+// them because no package has wanted them, but the run they belong to is what
+// puts Escape at 282 rather than next to Page Down.
+#define FW_KEY_UP     256
+#define FW_KEY_DOWN   257
+#define FW_KEY_LEFT   258
+#define FW_KEY_RIGHT  259
+#define FW_KEY_HOME   260
+#define FW_KEY_END    261
+#define FW_KEY_PGUP   262
+#define FW_KEY_PGDN   263
+#define FW_KEY_INSERT 264
+#define FW_KEY_DELETE 265
+#define FW_KEY_ESC    282
 
 // Enter and leave full-screen mode. ALWAYS pair them: a terminal left with
 // mouse reporting on sends escape sequences to the shell for every click
@@ -147,6 +156,38 @@ int      fw_file_exists(const char *path);
 // that keeps its files under a directory of its own has to make each level —
 // and until this existed it could not make any of them.
 int      fw_mkdir(const char *path);
+
+// --- streamed file operations (API 1.23) ------------------------------------
+//
+// Three things the firmware already did for the shell, with no door for a
+// package. Each STREAMS — the file never lands in RAM whole — so none of them
+// carries the size ceiling that whole-file read-then-write did: a package
+// copying a file used to read it into one buffer and write it back out, which
+// capped it at a single allocation and refused anything larger by name.
+//
+// All three return 1 on success, 0 on failure, matching fw_file_write and
+// fw_mkdir. (fw_file_read's byte count is the read-side exception, not the rule.)
+
+// Append `len` bytes to a file, creating it if it is not there. The write-side
+// mirror of fw_file_read_at: fw_file_write only ever TRUNCATES, so before this
+// there was no way to grow a file without holding the whole of it in memory to
+// rewrite. This is the same call the shell's `>>` redirect uses, and it refuses
+// up front when the filesystem has no room rather than writing a partial tail.
+int      fw_file_append(const char *path, const void *data, uint32_t len);
+
+// Copy a file, streamed a few hundred bytes at a time. An empty source copies
+// as an empty file. UNLIKE append, this does NOT check for room up front — it
+// discovers a full filesystem only when a write fails partway, which means a
+// failed copy can leave a TRUNCATED destination behind. A caller that cannot
+// tolerate half a file (a backup, say) must remove the destination when this
+// returns 0.
+int      fw_file_copy(const char *from, const char *to);
+
+// Rename or move a file or directory. The direct door that lets a package
+// rename WITHOUT building a shell command line out of a filename — a name
+// carrying a quote or a semicolon is just a name here, never something the
+// shell could mistake for a command. Absolute paths, like everything else.
+int      fw_file_rename(const char *from, const char *to);
 
 // --- the registry (API 1.19) ------------------------------------------------
 //
