@@ -45,6 +45,11 @@ extern "C" void usbmsc_service(void);
 static inline void usbmsc_service(void) {}
 #endif
 
+// Provided by usbhid.cpp, always. This is the ONLY place a HID report may be
+// submitted — the keyboard's keystrokes are queued by the shell task and turned
+// into reports here, on core 0, for the same reason the whole task is pinned.
+extern "C" void usbhid_service(void);
+
 // Pinned to core 0, and it has to be.
 //
 // The tempting version of this task is unpinned, so that USB keeps turning on
@@ -71,6 +76,10 @@ static int usb_task(void *) {
         // happens HERE, before the device stack is entered — see usbmsc.cpp for
         // why the order matters.
         usbmsc_service();
+        // Turn any queued keystrokes into HID reports, still before the device
+        // stack is entered — the reports it submits are sent when stdio_flush
+        // runs tud_task just below.
+        usbhid_service();
         // Pushes anything buffered out and, on the way, gives the device stack
         // its turn: enumeration, control transfers, and every mass-storage
         // callback happen inside here, in thread context.
