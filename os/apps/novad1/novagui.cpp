@@ -1045,13 +1045,21 @@ void run(void) {
         // route. Nothing crashed, which is why it looked like a timing problem.
         s = top();
 
-        // The status bar changes on its own — the clock (so a timezone change
-        // shows without a gesture), the power state, the stopwatch — and it is
-        // the runner's, not the screen's, so nothing above marked the frame
-        // dirty when it moved. Redraw when a drawn value changes. Only while
-        // ACTIVE and not fullscreen: a dimmed panel means nobody is looking, and
-        // a fullscreen screen has no bar.
-        if (s && !s->fullscreen() && g_level == LVL_ACTIVE) {
+        // The status bar changes on its own — the clock (so a minute rolls over
+        // or a timezone change shows without a gesture), the power state, the
+        // stopwatch — and it is the runner's, not the screen's, so nothing above
+        // marked the frame dirty when it moved. Redraw when a drawn value
+        // changes.
+        //
+        // While DIM as well as ACTIVE, because a dimmed panel is still a LIT
+        // panel — the contrast is 0x10, not zero — and somebody looking at it
+        // expects the clock to be the time, not the time it dimmed at. Only a
+        // panel that is OFF (contrast 0, nothing to see) skips this, which is
+        // where the real power saving is: an untouched device redraws exactly
+        // when a shown number changes and not one frame besides, and stops
+        // entirely once the screen is dark. (Not on a fullscreen screen — it has
+        // no bar, and drives its own redraws through tick().)
+        if (s && !s->fullscreen() && g_level != LVL_OFF) {
             uint32_t sig = status_signature();
             if (sig != g_status_sig) { g_status_sig = sig; g_dirty = true; }
         }
