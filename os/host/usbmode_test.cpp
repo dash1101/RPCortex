@@ -1,8 +1,9 @@
-// The USB mode arithmetic: the console is always present, the drive and the
-// keyboard are never present together, the device never boots as a keyboard,
-// and each mode's descriptor length and interface count are exactly right. A
-// wrong length here is a device that will not enumerate at all, so the numbers
-// are pinned where a host test can reach them.
+// The USB mode arithmetic: the device boots with neither the drive nor the
+// keyboard active, the two are never active together, and the one static
+// composite descriptor is exactly as long as the host expects. The mutual
+// exclusion is the safety rule the maintainer asked for, so the whole
+// can-enter matrix is checked, and a little state machine proves that however
+// you drive it you never end up with both on.
 #include "../core/usbmode.h"
 #include <stdio.h>
 
@@ -17,44 +18,57 @@ int main(void) {
 
     const UsbMode modes[] = { USB_MODE_CONSOLE, USB_MODE_STORAGE, USB_MODE_HID };
 
-    // The console (CDC) is present in every mode — lose it and the serial link
-    // that drives the whole device disappears with it.
-    for (UsbMode m : modes) ck(usbmode_has_cdc(m), "CDC present in every mode");
-
-    // The drive and the keyboard are never present at the same time. That is the
-    // safety rule the maintainer asked for, stated three ways: no mode carries
-    // both, exactly one carries the drive, exactly one carries the keyboard.
-    int with_msc = 0, with_hid = 0, with_both = 0;
-    for (UsbMode m : modes) {
-        if (usbmode_has_msc(m) && usbmode_has_hid(m)) with_both++;
-        if (usbmode_has_msc(m)) with_msc++;
-        if (usbmode_has_hid(m)) with_hid++;
-    }
-    ck(with_both == 0, "no mode carries both drive and keyboard");
-    ck(with_msc == 1, "exactly one mode is the drive");
-    ck(with_hid == 1, "exactly one mode is the keyboard");
-    ck(usbmode_has_msc(USB_MODE_STORAGE), "STORAGE is the drive");
-    ck(usbmode_has_hid(USB_MODE_HID), "HID is the keyboard");
-
-    // The device must never come up able to type. Boot is the console mode.
+    // Boot is console: neither function on. A device that came up typing would
+    // type into whatever had focus the instant it was plugged in.
     ck(usbmode_boot() == USB_MODE_CONSOLE, "boot mode is console");
-    ck(usbmode_boot() != USB_MODE_HID, "boot mode is never the keyboard");
+    ck(!usbmode_storage_active(usbmode_boot()), "boot: drive not active");
+    ck(!usbmode_hid_active(usbmode_boot()),     "boot: keyboard not active");
 
-    // Interface counts: CDC is two interfaces, reset one, and the drive or
-    // keyboard one more.
-    ck(usbmode_num_interfaces(USB_MODE_CONSOLE) == 3, "console has 3 interfaces");
-    ck(usbmode_num_interfaces(USB_MODE_STORAGE) == 4, "storage has 4 interfaces");
-    ck(usbmode_num_interfaces(USB_MODE_HID)     == 4, "hid has 4 interfaces");
+    // Each mode switches on exactly its own function, and no mode has both on.
+    ck(usbmode_storage_active(USB_MODE_STORAGE), "STORAGE activates the drive");
+    ck(usbmode_hid_active(USB_MODE_HID),         "HID activates the keyboard");
+    for (UsbMode m : modes)
+        ck(!(usbmode_storage_active(m) && usbmode_hid_active(m)), "no mode has both on");
 
-    // wTotalLength: the config header plus each present block. These are the
-    // bytes the host reads to size the configuration; a wrong one is a failed
-    // enumeration.
-    ck(usbmode_total_len(USB_MODE_CONSOLE) == 9 + 66 + 9,        "console length = 84");
-    ck(usbmode_total_len(USB_MODE_STORAGE) == 9 + 66 + 9 + 23,   "storage length = 107");
-    ck(usbmode_total_len(USB_MODE_HID)     == 9 + 66 + 9 + 25,   "hid length = 109");
+    // The can-enter matrix, in full. Leaving to console is always allowed;
+    // re-entering the current mode is a no-op and allowed; STORAGE is refused
+    // while HID is active and HID while STORAGE is.
+    ck(usbmode_can_enter(USB_MODE_CONSOLE, USB_MODE_CONSOLE), "console->console ok");
+    ck(usbmode_can_enter(USB_MODE_CONSOLE, USB_MODE_STORAGE), "console->storage ok");
+    ck(usbmode_can_enter(USB_MODE_CONSOLE, USB_MODE_HID),     "console->hid ok");
+    ck(usbmode_can_enter(USB_MODE_STORAGE, USB_MODE_CONSOLE), "storage->console ok");
+    ck(usbmode_can_enter(USB_MODE_STORAGE, USB_MODE_STORAGE), "storage->storage ok (no-op)");
+    ck(!usbmode_can_enter(USB_MODE_STORAGE, USB_MODE_HID),    "storage->hid REFUSED");
+    ck(usbmode_can_enter(USB_MODE_HID, USB_MODE_CONSOLE),     "hid->console ok");
+    ck(!usbmode_can_enter(USB_MODE_HID, USB_MODE_STORAGE),    "hid->storage REFUSED");
+    ck(usbmode_can_enter(USB_MODE_HID, USB_MODE_HID),         "hid->hid ok (no-op)");
 
-    // The three named modes are all valid; the predicate the switch shares
-    // agrees.
+    // Drive the mode the way the firmware does — only ever moving when
+    // can_enter allows it — and assert the drive and keyboard are never both on
+    // at any step. A refused request leaves the mode where it was.
+    {
+        UsbMode cur = usbmode_boot();
+        const UsbMode want[] = {
+            USB_MODE_STORAGE, USB_MODE_HID /*refused*/, USB_MODE_CONSOLE,
+            USB_MODE_HID, USB_MODE_STORAGE /*refused*/, USB_MODE_CONSOLE,
+        };
+        bool ever_both = false;
+        for (UsbMode w : want) {
+            if (usbmode_can_enter(cur, w)) cur = w;
+            if (usbmode_storage_active(cur) && usbmode_hid_active(cur)) ever_both = true;
+        }
+        ck(!ever_both, "driving the mode never leaves both functions on");
+        // The two refused steps mean we land back at console, having passed
+        // through storage and hid but never jumped between them directly.
+        ck(cur == USB_MODE_CONSOLE, "the sequence ends at console");
+    }
+
+    // The one static composite: five interfaces, and a configuration descriptor
+    // that is the sum of every block. A wrong total is a failed enumeration.
+    ck(USBMODE_COMPOSITE_ITFS == 5, "composite has 5 interfaces");
+    ck(USBMODE_COMPOSITE_LEN == 9 + 66 + 9 + 23 + 25, "composite length = 132");
+
+    // Every named mode is valid; the predicate the switch shares agrees.
     for (UsbMode m : modes) ck(usbmode_ok(m), "each named mode is valid");
 
     // Names, so a status line and a log read the same word.

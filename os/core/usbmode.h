@@ -1,29 +1,38 @@
-// The three shapes the USB device can take, and the arithmetic that decides
-// whether it enumerates.
+// Which USB function is ACTIVE, and the rule that keeps the drive and the
+// keyboard from ever being active together.
 //
-// The device is a composite that changes at runtime: the serial console (CDC)
-// is always present, and exactly one of the mass-storage drive (MSC) or the
-// keyboard (HID) is present beside it — never both, never neither-plus-both.
-// That "never both" is the whole safety story the maintainer asked for: a host
-// that sees a keyboard AND a drive from one gadget, appearing and vanishing, is
-// the confusion this avoids. It is enforced structurally — there is one current
-// mode, so entering HID is leaving STORAGE.
+// The device is one static composite: the serial console (CDC), the BOOTSEL
+// reset interface, the mass-storage drive (MSC) and the keyboard (HID) are all
+// enumerated, all the time. Nothing here appears or disappears on the bus —
+// that was the other design, and re-enumerating to swap a config tore down the
+// console (the primary interface, PuTTY at 115200) on every switch and made
+// download mode slow again. Both are properties the shipped drive fought hard
+// to get, so this keeps them.
 //
-// This header is the single source of truth for which interfaces each mode
-// carries and how long its configuration descriptor is. usb_descriptors.c
-// builds the real bytes and static_asserts each array against the numbers here;
-// usbmode_test.cpp proves the invariants off-device. A wrong length is the
-// classic "the device won't enumerate at all" bug, so it is worth pinning in a
-// place a host test can reach.
+// Instead, a "mode" is which function is switched ON: the drive is empty and
+// offered nothing until STORAGE, and the keyboard sends no keystrokes until
+// HID. Exactly one is active at a time, and CONSOLE means neither — which is
+// the whole safety story the maintainer asked for. "Never both at once" is
+// "never both ACTIVE at once", enforced by there being one current mode and by
+// usbmode_can_enter() refusing the one that would collide with the other.
+//
+// The keyboard being present-but-idle at boot is deliberate and safe: a HID
+// interface that sends no reports types nothing, so the device cannot type a
+// payload the instant it is plugged in. Only an explicit command switches HID
+// on, and nothing here persists across a reboot.
+//
+// This header is pure so the arithmetic and the invariant are provable off the
+// device (usbmode_test.cpp). usb_descriptors.c static_asserts the one static
+// configuration descriptor against the lengths below.
 #ifndef RPC_USBMODE_H
 #define RPC_USBMODE_H
 
 #include <stdint.h>
 
 typedef enum {
-    USB_MODE_CONSOLE = 0,   // CDC + the RPi-reset interface. The boot mode.
-    USB_MODE_STORAGE = 1,   // CDC + reset + MSC. The download drive.
-    USB_MODE_HID     = 2,   // CDC + reset + HID keyboard.
+    USB_MODE_CONSOLE = 0,   // neither the drive nor the keyboard is active. Boot.
+    USB_MODE_STORAGE = 1,   // the download drive is offered and writable.
+    USB_MODE_HID     = 2,   // the keyboard is typing.
 } UsbMode;
 
 // Descriptor block lengths, mirrored from TinyUSB's TUD_*_DESC_LEN (checked
@@ -35,39 +44,48 @@ typedef enum {
 #define USBMODE_MSC_LEN    23
 #define USBMODE_HID_LEN    25
 
-static inline int usbmode_has_cdc(UsbMode m) { (void)m; return 1; }   // always
-static inline int usbmode_has_reset(UsbMode m) { (void)m; return 1; } // always
-static inline int usbmode_has_msc(UsbMode m) { return m == USB_MODE_STORAGE; }
-static inline int usbmode_has_hid(UsbMode m) { return m == USB_MODE_HID; }
+// The one static composite carries every interface at once: CDC (two
+// interfaces), reset (one), MSC (one), HID (one) — five in all — and its
+// configuration descriptor is the sum of every block. These are what the host
+// reads to size the configuration; a wrong total is a device that will not
+// enumerate at all, which is why it is pinned where a host test can reach it.
+#define USBMODE_COMPOSITE_ITFS 5
+#define USBMODE_COMPOSITE_LEN \
+    (USBMODE_CONFIG_LEN + USBMODE_CDC_LEN + USBMODE_RESET_LEN + \
+     USBMODE_MSC_LEN + USBMODE_HID_LEN)
 
-// CDC is two interfaces (control + data); reset is one; MSC and HID one each.
-static inline uint8_t usbmode_num_interfaces(UsbMode m) {
-    uint8_t n = 2 /*CDC*/ + 1 /*reset*/;
-    if (usbmode_has_msc(m)) n++;
-    if (usbmode_has_hid(m)) n++;
-    return n;
-}
+// Which function a mode switches on. The interfaces are always present; these
+// say whether the drive is offered / the keyboard is typing.
+static inline int usbmode_storage_active(UsbMode m) { return m == USB_MODE_STORAGE; }
+static inline int usbmode_hid_active(UsbMode m)     { return m == USB_MODE_HID; }
 
-// wTotalLength: the config header plus every present interface block.
-static inline uint16_t usbmode_total_len(UsbMode m) {
-    uint16_t n = USBMODE_CONFIG_LEN + USBMODE_CDC_LEN + USBMODE_RESET_LEN;
-    if (usbmode_has_msc(m)) n += USBMODE_MSC_LEN;
-    if (usbmode_has_hid(m)) n += USBMODE_HID_LEN;
-    return n;
-}
-
-// The mode a device must come up in: never HID. A gadget that enumerates as a
-// keyboard the instant it is plugged into a machine would type its payload into
-// whatever has focus, at power-on, with nobody having asked. So boot is a mode
-// that cannot type, and HID is only ever reached by an explicit request that
-// does not survive a reboot.
+// The mode a device must come up in: CONSOLE, so neither the drive nor the
+// keyboard is active. A gadget that came up typing would type its payload into
+// whatever had focus, at power-on, with nobody having asked. HID is only ever
+// reached by an explicit request that does not survive a reboot.
 static inline UsbMode usbmode_boot(void) { return USB_MODE_CONSOLE; }
 
-// The invariant, as one predicate so a test and the switch agree on it: MSC and
-// HID are never both present, CDC always is.
+// The invariant, as one predicate the switch and the test share: from the
+// current mode, may we enter the requested one? Leaving to CONSOLE is always
+// allowed; STORAGE is refused while the keyboard is active and HID while the
+// drive is; re-entering the current mode is a no-op and allowed. This is what
+// makes "the drive and the keyboard are never both active" true by
+// construction — the collision is refused at the door.
+static inline int usbmode_can_enter(UsbMode current, UsbMode requested) {
+    if (requested == current) return 1;
+    switch (requested) {
+        case USB_MODE_CONSOLE: return 1;
+        case USB_MODE_STORAGE: return current != USB_MODE_HID;
+        case USB_MODE_HID:     return current != USB_MODE_STORAGE;
+    }
+    return 0;
+}
+
+// A mode value is one of the three, and never has both functions on. The second
+// clause cannot fail for a valid enum, which is the point: it states the
+// invariant so a test fails loudly if the enum ever grows a "both" member.
 static inline int usbmode_ok(UsbMode m) {
-    if (!usbmode_has_cdc(m)) return 0;
-    if (usbmode_has_msc(m) && usbmode_has_hid(m)) return 0;
+    if (usbmode_storage_active(m) && usbmode_hid_active(m)) return 0;
     return m == USB_MODE_CONSOLE || m == USB_MODE_STORAGE || m == USB_MODE_HID;
 }
 
