@@ -23,6 +23,7 @@
 #include "novagui_contact.h"
 #include "novagui_radios.h"
 #include "novagui_tasks.h"
+#include "novagui_usb.h"
 
 #include "rpc_app.h"
 #include <string.h>
@@ -186,6 +187,10 @@ static const App kApps[] = {
     { "media",      "Media",      CAT_TOOLS,    screens::open_media,     "bt" },
     { "cmds",       "Commands",   CAT_TOOLS,    screens::open_commands,  nullptr },
     { "logs",       "Logs",       CAT_TOOLS,    screens::open_logs,      nullptr },
+    // Drives the USB HID firmware — list DuckyScript payloads, switch mode, run
+    // one behind a confirmation. No module gate: whether usbmode/badusb exist is a
+    // firmware question the screen asks itself, not a chip on a pin.
+    { "badusb",     "BadUSB",     CAT_TOOLS,    screens::open_badusb,    nullptr },
     // The module table files iButton under Testing, and this row is in Tools
     // ON PURPOSE. No app has ever been in the Testing category, and build_catalogue
     // makes a home-screen folder for every category that has anything in it — so

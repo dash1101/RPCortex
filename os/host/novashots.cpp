@@ -57,6 +57,7 @@
 #include "../apps/novad1/novagui_media.cpp"
 #include "../apps/novad1/novagui_contact.cpp"
 #include "../apps/novad1/novagui_radios.cpp"
+#include "../apps/novad1/novagui_usb.cpp"
 #include "../apps/novad1/novagui_tasks.cpp"
 #include "../apps/novad1/novagui.cpp"
 

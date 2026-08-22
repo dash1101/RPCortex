@@ -50,6 +50,7 @@
 #include "../apps/novad1/novagui_media.cpp"
 #include "../apps/novad1/novagui_contact.cpp"
 #include "../apps/novad1/novagui_radios.cpp"
+#include "../apps/novad1/novagui_usb.cpp"
 #include "../apps/novad1/novagui_tasks.cpp"
 #include "../apps/novad1/novagui.cpp"
 #include "../apps/novad1/novad1cmd.cpp"
@@ -2467,6 +2468,80 @@ static void test_apps_state_is_honest(void) {
        "a screen not yet written is 'not built'");
 }
 
+// --- the BadUSB launcher ----------------------------------------------------------
+//
+// Lists the payloads in the badusb directory, reads the USB mode for its header,
+// and runs one behind a confirmation. The launcher does NOT switch modes — `badusb`
+// enters the keyboard, types, and stands it back down by itself, and refuses on its
+// own if the download drive is open — so this proves it asks before typing and runs
+// `badusb <path>` on a yes. If the commands are absent (older firmware) it says so
+// rather than failing silently.
+//
+// DEVICE-UNCONFIRMED: the USB HID firmware is another agent's (branch usb-hid) and
+// the typing into a real host cannot be checked here. The parse, the listing, the
+// confirm gate and the launch command are host-proven.
+static void test_badusb(void) {
+    using namespace nova;
+    using namespace nova::screens;
+
+    // The mode parse, against the functions usbmode reports.
+    ok(usb::parse_mode("[:] USB: keyboard active\n") == usb::USB_KEYBOARD, "keyboard is read");
+    ok(usb::parse_mode("[:] USB: storage (download)\n") == usb::USB_STORAGE, "storage is read");
+    ok(usb::parse_mode("[:] USB: console\n") == usb::USB_CONSOLE, "console is read");
+    ok(usb::parse_mode("unknown command: usbmode\n") == usb::USB_UNKNOWN,
+       "an error names no mode");
+    ok(usb::parse_mode("") == usb::USB_UNKNOWN, "and neither does an empty reply");
+
+    // --- present: usbmode reports a mode, the directory holds two payloads.
+    g_run_spawned = 1;
+    shell_says("usbmode", "[:] USB: storage (download drive)\n", 0);
+    open_by_key("badusb");
+    ui::Screen *s = gui::top();
+    ok(s && !strcmp(s->title(), "BadUSB"), "the BadUSB screen opens");
+    s->tick(33);                                  // reap `usbmode`
+    eq(nova::screens::g_usb_n, 2, "it lists the payloads in the directory");
+
+    // A payload asks before it types, and only runs on a yes.
+    s->on_event(EV_SELECT);                        // cursor is on the first payload
+    ui::Screen *q = gui::top();
+    ok(q && q != s && q->modal(), "a payload asks before it types");
+    // Backing out of the question runs nothing.
+    g_last_shell[0] = 0;
+    q->on_event(EV_BACK);
+    gui::pop();
+    ok(strncmp(g_last_shell, "badusb", 6) != 0, "declining types nothing");
+
+    // Saying yes runs badusb with the full path — no mode switch, the firmware
+    // owns that.
+    shell_says("badusb", "[@] Typed 12 keystrokes.\n", 0);
+    s->on_event(EV_SELECT);
+    q = gui::top();
+    q->on_event(EV_ROT_CW);                        // No -> Run
+    q->on_event(EV_SELECT);                        // runs the yes callback (ACT_BACK)
+    gui::pop();                                    // close the dialog as the runner would
+    g_last_shell[0] = 0;
+    s->tick(33);                                   // fires `badusb <path>`
+    streq_(g_last_shell, "badusb /nova/badusb/hello.txt",
+           "a confirmed run types the chosen payload by its full path, no mode switch");
+    s->tick(33);                                   // reap -> done
+    gui::go_home();
+
+    // --- older firmware: usbmode is not a command. Say so; SELECT is not dead.
+    shell_says("usbmode", "unknown command: usbmode\n", 1);
+    open_by_key("badusb");
+    s = gui::top();
+    s->tick(33);                                   // reap the error
+    s->on_event(EV_SELECT);
+    ok(gui::top() != s, "an older firmware pushes a notice");
+    ok(strstr(ui::last_notice(), "usbmode") != nullptr,
+       "which names the missing commands rather than doing nothing");
+    gui::pop();
+
+    shell_says(nullptr, nullptr);
+    g_run_spawned = 0;
+    gui::go_home();
+}
+
 int main(void) {
     STAGE(test_single_instance);
     STAGE(test_one_detent_animates);
@@ -2507,6 +2582,7 @@ int main(void) {
     STAGE(test_list_keeps_its_place);
     STAGE(test_radio_status_is_re_asked);
     STAGE(test_lora_messages);
+    STAGE(test_badusb);
     STAGE(test_apps_state_is_honest);
     STAGE(test_set_time_reports_the_truth);
     STAGE(test_tap_drives_the_lock_on_a_dark_panel);

@@ -605,6 +605,9 @@ static const FakeEntry g_fake_fs[] = {
     // Not an app. It is here to prove the scan's filter does something rather
     // than merely compiling.
     { "/nova/apps", "readme.txt", 0, 0, 0, 0, nullptr, nullptr, "not an app" },
+    // A couple of BadUSB payloads for the launcher screen to list and run.
+    { "/nova/badusb", "hello.txt",   0, 24, 0, 0, nullptr, nullptr, "STRING hello\nENTER\n" },
+    { "/nova/badusb", "greeting.dd", 0, 40, 0, 0, nullptr, nullptr, "GUI r\nSTRING notepad\nENTER\n" },
 };
 static const unsigned FAKE_FS_N = sizeof(g_fake_fs) / sizeof(g_fake_fs[0]);
 
