@@ -23,7 +23,7 @@
 #include <stdio.h>
 #include <string.h>
 
-RPC_APP_VER("sysmon", "2.0");
+RPC_APP_VER("sysmon", "2.1");
 
 #define SM_REG_REFRESH "Apps.SysMon_Refresh"
 #define SM_DEFAULT_MS  750
