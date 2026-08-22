@@ -2446,6 +2446,27 @@ static void test_lora_messages(void) {
     gui::go_home();
 }
 
+// --- `novad1 apps` says "ready" only when a chip actually answered ---------------
+//
+// The SPI radios report UNKNOWN presence until their screen probes them, and the
+// listing used to print that as "ready" — which is how a LoRa app looked live on a
+// board whose SX1276 reads absent. "ready" now means PRESENT; UNKNOWN reads
+// "unchecked". Reintroduce by returning "ready" for MOD_UNKNOWN and the first
+// assertion goes red.
+static void test_apps_state_is_honest(void) {
+    using namespace nova;
+    modules_scan();                                   // SPI radios settle to UNKNOWN
+    const gui::App *lora  = find_app("sx1276");        // SPI radio, module-gated
+    const gui::App *clock = find_app("clock");         // built-in, nothing to probe
+    const gui::App *gps   = find_app("gps");           // screen not written yet
+    ok(lora  && !strcmp(cmd::apps_state(*lora),  "unchecked"),
+       "an unprobed SPI radio is 'unchecked', not 'ready'");
+    ok(clock && !strcmp(cmd::apps_state(*clock), "ready"),
+       "a built-in with no chip to probe is ready");
+    ok(gps   && !strcmp(cmd::apps_state(*gps),   "not built"),
+       "a screen not yet written is 'not built'");
+}
+
 int main(void) {
     STAGE(test_single_instance);
     STAGE(test_one_detent_animates);
@@ -2486,6 +2507,7 @@ int main(void) {
     STAGE(test_list_keeps_its_place);
     STAGE(test_radio_status_is_re_asked);
     STAGE(test_lora_messages);
+    STAGE(test_apps_state_is_honest);
     STAGE(test_set_time_reports_the_truth);
     STAGE(test_tap_drives_the_lock_on_a_dark_panel);
     STAGE(test_tap_reaches_power_and_controls);

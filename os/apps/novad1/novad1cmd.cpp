@@ -498,6 +498,25 @@ static bool apps_known(const char *key) {
     return napps::by_key(key) != nullptr;
 }
 
+// The state column, honestly. "ready" has to mean a chip actually answered, not
+// "pins are assigned" — the SPI radios (cc1101, sx1276) sit UNKNOWN until their
+// screen probes them, and calling that "ready" is how a LoRa app looked live on a
+// board whose SX1276 reads absent. "unchecked" says the true thing: nobody has
+// asked the chip yet, and opening the app is what asks. app_available still treats
+// UNKNOWN as openable — an unprobed radio must not grey out — so only the word
+// here changes, not what the icon does.
+static const char *apps_state(const gui::App &e) {
+    if (!e.open)    return "not built";
+    if (!e.module)  return "ready";                 // nothing to probe; it is code
+    const Module *m = module_by_id(e.module);
+    if (!m)         return "ready";
+    switch (module_presence(*m)) {
+        case MOD_PRESENT: return "ready";
+        case MOD_UNKNOWN: return "unchecked";       // an SPI radio, not yet asked
+        default:          return "no module";       // ABSENT or UNWIRED
+    }
+}
+
 int apps(int argc, char **argv) {
     apps_look();
 
@@ -506,9 +525,7 @@ int apps(int argc, char **argv) {
         for (unsigned i = 0; i < gui::app_count(); i++) {
             const gui::App &e = gui::apps()[i];
             fw_printf("%-14s %-9s %-6s %s\n", e.key, category_name(e.cat),
-                      home_shows(e.key) ? "yes" : "no",
-                      !e.open ? "not built"
-                              : gui::app_available(e) ? "ready" : "no module");
+                      home_shows(e.key) ? "yes" : "no", apps_state(e));
         }
         // Read from napps rather than from the catalogue. The catalogue's rows
         // point INTO the scan's table and are only rebuilt on the runner's task,
