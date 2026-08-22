@@ -34,6 +34,7 @@
 #include "path.h"
 #include "storage.h"
 #include "task.h"
+#include "usbhid.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -169,7 +170,16 @@ static uint32_t reap_deleted(void) {
 }
 
 static int cmd_download(int argc, char **argv) {
+    // The drive and the keyboard are never on together. Take STORAGE mode
+    // first, so a keyboard that is mid-payload is reported plainly rather than
+    // as a vague failure to prepare the transfer area.
+    if (!usb_mode_enter(USB_MODE_STORAGE)) {
+        out_err("The USB keyboard is busy. Stop it first -- the keyboard and the "
+                "drive cannot be on together.");
+        return 1;
+    }
     if (!usbmsc_open()) {
+        usb_mode_leave(USB_MODE_STORAGE);
         out_err("The transfer area could not be prepared.");
         return 1;
     }
@@ -289,6 +299,7 @@ static int cmd_download(int argc, char **argv) {
     out_progress_done();
     printf("\r                                          \r");
     usbmsc_close();
+    usb_mode_leave(USB_MODE_STORAGE);
 
     out_blank();
     if (taken) out_ok("%u file%s copied into /usb", (unsigned)taken, taken == 1 ? "" : "s");

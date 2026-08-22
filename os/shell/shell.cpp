@@ -72,6 +72,7 @@ void fetch_register(void);
 void ps_register(void);
 void log_register(void);
 void usbdrive_register(void);
+void hid_register(void);
 void stock_register(void);
 void stock_install_once(void);
 void jobs_register(void);
@@ -608,6 +609,7 @@ void shell_register_builtins(void) {
     ps_register();          // ps / kill — the task manager
     log_register();         // logdump
     usbdrive_register();    // usbdrive — offer the filesystem over USB, or do not
+    hid_register();         // hid / badusb — the USB keyboard
 #if defined(RPC_HAS_SD) && RPC_HAS_SD
     sd_register();          // sd — the memory card, browsed at /sd
 #endif

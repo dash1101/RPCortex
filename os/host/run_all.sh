@@ -110,6 +110,15 @@ declare -A SRC=(
     # reworded is a test somebody turns off. Run it with no arguments to get the
     # frames as characters and actually look at a layout.
     [novashots]=""
+    # The USB personality stack, in its three pure pieces: the ASCII->keycode
+    # map (a wrong entry types the wrong letter with no error), the DuckyScript
+    # reader (a typo must never become keystrokes), and the mode arithmetic that
+    # keeps the drive and the keyboard from ever being present at once. All three
+    # are hardware-free by design so the safety rules are provable off-device;
+    # usbmode.h and hidkey.h are header-only, ducky.cpp is a real source.
+    [hidkey_test]=""
+    [ducky_test]="$CORE/ducky.cpp"
+    [usbmode_test]=""
     [packages_test]="fakehw.cpp"
     [lock_test]="$CORE/lock.cpp $CORE/task.cpp $CORE/blackbox.cpp"
     [interrupt_test]="$CORE/interrupt.cpp $CORE/task.cpp $CORE/blackbox.cpp host_task_stub.cpp"

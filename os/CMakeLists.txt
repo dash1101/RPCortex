@@ -72,6 +72,8 @@ add_executable(rpcortex_v2
     ${OS_ROOT}/usb_descriptors.c
     ${OS_ROOT}/usbdev.cpp
     ${OS_ROOT}/usbmsc.cpp
+    ${OS_ROOT}/usbhid.cpp
+    ${OS_ROOT}/core/ducky.cpp
     ${OS_ROOT}/core/fatview.cpp
     ${OS_ROOT}/core/fat12.cpp
     ${OS_ROOT}/core/blockcache.cpp
@@ -156,6 +158,7 @@ add_executable(rpcortex_v2
     ${OS_ROOT}/shell/ps.cpp
     ${OS_ROOT}/shell/logcmd.cpp
     ${OS_ROOT}/shell/usbdrive.cpp
+    ${OS_ROOT}/shell/hid.cpp
     ${OS_ROOT}/shell/stock.cpp
     ${OS_ROOT}/shell/jobs.cpp
     ${OS_ROOT}/shell/fsinit.cpp
@@ -500,6 +503,14 @@ target_compile_definitions(rpcortex_v2 PRIVATE PICO_STDIO_USB_ENABLE_IRQ_BACKGRO
 target_compile_definitions(rpcortex_v2 PRIVATE
     CFG_TUD_MSC=1
     CFG_TUD_MSC_EP_BUFSIZE=512)
+
+# The keyboard. Always compiled in, like the drive: the composite is static and
+# the mode gate (usbmode.h) is what keeps the drive and the keyboard from being
+# active at the same time, not their presence. The endpoint buffer holds one
+# 8-byte boot-keyboard report — [modifier, reserved, six keys].
+target_compile_definitions(rpcortex_v2 PRIVATE
+    CFG_TUD_HID=1
+    CFG_TUD_HID_EP_BUFSIZE=8)
 
 # THE CONSOLE: USB on real hardware, UART under the emulator.
 #
