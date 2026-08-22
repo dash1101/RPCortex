@@ -110,6 +110,25 @@ static int cmd_hid(int argc, char **argv) {
     return 1;
 }
 
+// --- usbmode -----------------------------------------------------------------
+//
+// A read-only view of which USB function is active. The modes are not switched
+// here — the drive is opened by `download`, the keyboard used by `hid`/`badusb`
+// — because each of those does real work around the switch (the drive syncs
+// /usb, the keyboard types a payload and stands down). This is the status line
+// a script or the GUI reads to know where things stand.
+static int cmd_usbmode(int argc, char **argv) {
+    (void)argv;
+    UsbMode m = usb_mode_current();
+    out_multi("  USB mode: %s", usbmode_name(m));
+    out_multi("    console   always      serial console + BOOTSEL reset");
+    out_multi("    storage   %s", usbmode_storage_active(m) ? "ON          download is running" : "off");
+    out_multi("    keyboard  %s", usbmode_hid_active(m) ? "ON          typing a payload" : "off         present but idle");
+    if (argc > 1)
+        out_multi("  To switch: 'download' opens the drive; 'hid' or 'badusb' use the keyboard.");
+    return 0;
+}
+
 // --- badusb ------------------------------------------------------------------
 
 #define BADUSB_MAX 8192      // a payload larger than this is almost certainly a mistake
@@ -199,6 +218,11 @@ static int cmd_badusb(int argc, char **argv) {
     out_err("This build has no USB keyboard support.");
     return 1;
 }
+static int cmd_usbmode(int argc, char **argv) {
+    (void)argc; (void)argv;
+    out_multi("  USB mode: console (this build has no drive or keyboard).");
+    return 0;
+}
 
 #endif  // CFG_TUD_HID
 
@@ -209,6 +233,10 @@ void hid_register(void) {
     static const Command cbad{"badusb",
         "badusb <file>  -- run a DuckyScript payload as USB keystrokes",
         cmd_badusb};
+    static const Command cmode{"usbmode",
+        "usbmode  -- show which USB function is active (console/storage/keyboard)",
+        cmd_usbmode};
     cmd_register(&chid);
     cmd_register(&cbad);
+    cmd_register(&cmode);
 }
