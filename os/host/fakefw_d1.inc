@@ -519,7 +519,18 @@ int fw_net_resolve(const char *host, char *ip_out, unsigned cap) {
     return (int)snprintf(ip_out, cap, "93.184.216.34");
 }
 
-int fw_time_get(struct FwTime *out) { (void)out; return 0; }
+// A settable fake clock, OFF by default so every existing test still sees
+// fw_time_get FAIL — which is what "--:--", "clock not set" and the boot-time
+// checks all lean on. The status-bar refresh test turns it on and moves it a
+// minute, because a frozen clock while the panel was dim is the exact regression
+// that test guards.
+static bool     g_fake_time_ok = false;
+static FwTime   g_fake_time;
+int fw_time_get(struct FwTime *out) {
+    if (!g_fake_time_ok) return 0;
+    if (out) *out = g_fake_time;
+    return 1;
+}
 
 // The screens that arrived with the settings, wireless, files and operations
 // groups reach further into the ABI than the runner alone ever did.

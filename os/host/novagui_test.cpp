@@ -2156,6 +2156,126 @@ static void test_set_time_reports_the_truth(void) {
     gui::go_home();
 }
 
+// --- the screen-off timer survives a trickle of notifications ---------------------
+//
+// "Screen off works only sometimes." The idle timer itself was fine — with no
+// input the panel reaches OFF at OffSec and stays. What made it "sometimes" was
+// the toast path: a notification woke the panel AND reset g_last_input, so every
+// background event — a BLE device seen, an app's line of output, an incognito
+// toggle — wound the whole dim/off countdown back to zero. A device that received
+// them on any cadence never went dark.
+//
+// Now a toast wakes the panel for its banner (update_level holds it lit for the
+// three seconds) but does NOT count as activity, so the panel sleeps on the
+// schedule the last GESTURE set, however many notifications arrive between.
+//
+// Driven through the REAL gui::frame_step — the runner's own per-frame body, not
+// a copy — with notifications every 30 s across the whole span. The assertions
+// land at 145/175/200 s, each clear of the 3 s banner a post raises.
+//
+// Reintroduce: put `g_last_input = now;` back in frame_step's toast block. Every
+// post then resets the clock, the idle never passes DimSec, and all three
+// assertions go red — the panel never reaches OFF at any horizon.
+static void test_screen_off_survives_notifications(void) {
+    using namespace nova;
+    char b[64];
+    while (notify::take_toast(b, sizeof(b))) {}     // no banner pending at the start
+    fw_reg_set("Apps.NovaD1_LockSec", "0");
+    fw_reg_set("Apps.NovaD1_Lock_Kind", "none");
+    fw_reg_set("Apps.NovaD1_DimSec", "30");
+    fw_reg_set("Apps.NovaD1_OffSec", "120");
+    fw_reg_set("Apps.NovaD1_Notify", "on");
+    fw_reg_set("Apps.NovaD1_Notify_Haptic", "off");  // no buzzer/vibe on the host
+    fw_reg_set("Apps.NovaD1_Notify_LED", "off");
+
+    gui::go_home();
+    input().flush();
+    gui::request_wake();
+    gui::drain_input();                             // ACTIVE, idle clock at now
+    ok(gui::screen_active(), "the panel starts lit");
+
+    const uint32_t base = g_ms;
+    bool off_145 = false, off_175 = false, off_200 = false;
+    for (uint32_t t = 1; t <= 200; t++) {
+        if (t % 30 == 0) notify::post("BLE: device nearby");  // a background event
+        g_ms = base + t * 1000;                    // pin the intended clock
+        gui::frame_step(g_ms, false);              // no gesture, ever
+        if (t == 145) off_145 = gui::screen_off();
+        if (t == 175) off_175 = gui::screen_off();
+        if (t == 200) off_200 = gui::screen_off();
+    }
+    ok(off_145, "the panel is OFF at 145 s with a notification every 30 s");
+    ok(off_175, "and stays OFF at 175 s");
+    ok(off_200, "and at 200 s — a background notification does not wind the timer back");
+
+    fw_reg_set("Apps.NovaD1_Notify_Haptic", "on");
+    fw_reg_set("Apps.NovaD1_Notify_LED", "on");
+    gui::go_home();
+}
+
+// --- the status bar keeps time while DIM, and goes quiet when OFF ------------------
+//
+// Build 429's regression (commit 7893316 fixed it): the clock, battery and
+// stopwatch froze the moment the panel dimmed, because the self-refresh was gated
+// on LVL_ACTIVE. A dimmed panel is a LIT panel someone reads at a glance, and a
+// frozen clock on it looks broken. The guard is now `g_level != LVL_OFF` inside
+// frame_step, and this drives that REAL frame_step so a guard that drifts from the
+// runner is caught rather than hidden in a lookalike.
+//
+// Reintroduce: change the guard back to `g_level == LVL_ACTIVE`. The DIM assertion
+// goes red — a shown value that changed no longer marks the frame — while the OFF
+// assertion stays green, because OFF skips the check either way.
+static void test_status_bar_refreshes_while_dim(void) {
+    using namespace nova;
+    char b[64];
+    while (notify::take_toast(b, sizeof(b))) {}     // no banner holding the panel lit
+    fw_reg_set("Apps.NovaD1_LockSec", "0");
+    fw_reg_set("Apps.NovaD1_Lock_Kind", "none");
+    fw_reg_set("Apps.NovaD1_DimSec", "30");
+    fw_reg_set("Apps.NovaD1_OffSec", "120");
+
+    // A settable clock, so a minute can actually roll over — the fake's is frozen
+    // at --:-- otherwise, and a signature that never moves would prove nothing.
+    g_fake_time_ok = true;
+    g_fake_time = FwTime{ 2026, 8, 22, 10, 30, 0, 6 };
+
+    // Home carries the status bar (it is not fullscreen), which is what refreshes.
+    gui::go_home();
+    input().flush();
+    gui::request_wake();
+    gui::drain_input();                             // ACTIVE, idle clock at now
+    ok(gui::screen_active(), "the panel starts lit");
+    const uint32_t base = g_ms;
+
+    // Into DIM, past DimSec and short of OffSec. This same frame_step also primes
+    // g_status_sig with the current minute, so the next comparison is against a
+    // real prior value and not whatever an earlier stage left behind.
+    g_ms = base + 35000;
+    gui::frame_step(g_ms, false);
+    ok(!gui::screen_active() && !gui::screen_off(), "the panel is DIM at 35 s");
+    gui::take_dirty();                             // clear the DIM-transition dirty
+
+    // The minute rolls over. Nothing else changes, and no gesture arrives.
+    g_fake_time.minute = 31;
+    gui::frame_step(g_ms, false);
+    ok(gui::take_dirty(), "the status bar redraws when the clock changes while DIM");
+
+    // Into OFF, past OffSec. Consume the OFF-transition dirty.
+    g_ms = base + 130000;
+    gui::frame_step(g_ms, false);
+    ok(gui::screen_off(), "the panel is OFF at 130 s");
+    gui::take_dirty();
+
+    // Another minute. OFF means contrast zero, nothing to see — so the refresh
+    // must NOT fire. This is the power saving the guard exists to keep.
+    g_fake_time.minute = 32;
+    gui::frame_step(g_ms, false);
+    ok(!gui::take_dirty(), "and does NOT redraw once the panel is OFF");
+
+    g_fake_time_ok = false;                        // back to the frozen fake clock
+    gui::go_home();
+}
+
 int main(void) {
     STAGE(test_single_instance);
     STAGE(test_one_detent_animates);
@@ -2198,6 +2318,8 @@ int main(void) {
     STAGE(test_set_time_reports_the_truth);
     STAGE(test_tap_drives_the_lock_on_a_dark_panel);
     STAGE(test_tap_reaches_power_and_controls);
+    STAGE(test_screen_off_survives_notifications);
+    STAGE(test_status_bar_refreshes_while_dim);
     STAGE(test_setup_migrates_a_legacy_startup_entry);
     STAGE(test_service_status_flags_a_legacy_startup_entry);
     STAGE(test_no_panel);
