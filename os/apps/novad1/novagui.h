@@ -62,6 +62,12 @@ unsigned depth(void);
 // the screen's own tick to notice.
 void invalidate(void);
 
+// Read AND clear the frame-dirty flag — the same consume run()'s draw does at
+// the end of a frame. A test seam: whether frame_step marked the frame is the
+// whole of what the status-bar self-refresh decides, and there is no way to see
+// it from outside the runner otherwise.
+bool take_dirty(void);
+
 // --- the app catalogue ---------------------------------------------------------
 
 typedef void (*OpenFn)(void);
@@ -147,6 +153,15 @@ bool drain_input(void);
 // transition, not an imitation of it.
 void update_level(uint32_t now);
 
+// The runner's per-frame housekeeping AFTER input and the top screen's tick: the
+// self-refreshing status bar, the idle level tiers, the auto-lock and the toast.
+// A FUNCTION for the reason drain_input and update_level are — the harness drove
+// the loop with its own copy, and the status-bar refresh and the dim/off timing
+// only lived in run(), so no host test could reach the exact sequence. Both call
+// this now. `had_input` is whether a gesture was handled this frame; it only
+// affects whether a showing toast is dismissed early.
+void frame_step(uint32_t now, bool had_input);
+
 // Ask the runner to bring the panel to full brightness at the top of its next
 // drain. For a headless driver — `novad1 tap` — whose injected gesture would
 // otherwise be spent waking a dimmed or dark panel instead of reaching the
@@ -159,6 +174,12 @@ void request_wake(void);
 // they actually dimmed it before asserting a gesture woke it — a wake test on a
 // panel that never slept is a check with nothing to check.
 bool screen_active(void);
+
+// Is the panel fully OFF (contrast 0)? The idle tiers are active, dim and off,
+// and screen_active() alone cannot tell dim from off — which the screen-off timer
+// test has to, since the whole bug it guards is a panel that dims but never
+// blanks. DIM is the state where neither this nor screen_active() is true.
+bool screen_off(void);
 
 // What the last second of frames cost, for the Resources screen and for `d1
 // perf`. A frame rate nobody can read on the device is not a claim.

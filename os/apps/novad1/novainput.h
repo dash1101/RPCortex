@@ -77,12 +77,24 @@ public:
     // hardware had produced it.
     void inject(Event e);
 
+    // Reverse the encoder. Which way "clockwise" moves the selection depends on
+    // how the two phases are wired, and it has flip-flopped between builds, so it
+    // is a SETTING (Apps.NovaD1_EncRev) rather than a hard-coded direction that
+    // gets flipped again next time. begin() reads it; the Display settings row
+    // toggles it live through here, so a board wired the other way is a preference
+    // and not a recompile. This only swaps which event a decoded step emits —
+    // which physical direction is correct is the maintainer's to confirm on the
+    // knob, because a host cannot: injected gestures are post-decode.
+    void set_reversed(bool on) { rev_ = on; }
+    bool reversed(void) const { return rev_; }
+
 private:
     bool     ready_;
 
     // The encoder.
     int      pin_a_, pin_b_;
     uint8_t  state_;            // the transition table's current state
+    bool     rev_;             // swap CW/CCW — see set_reversed()
 
     // The buttons, in a fixed scan order so an index means the same thing
     // everywhere: 0 = SELECT (the encoder's own push), 1 = BACK, 2 = HOME.

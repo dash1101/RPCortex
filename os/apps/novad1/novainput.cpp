@@ -137,6 +137,11 @@ bool Input::begin(void) {
 
     if (pin_a_ == board::PIN_NONE || pin_b_ == board::PIN_NONE) return false;
 
+    // Default REVERSED. The reference board reads backwards without it — the
+    // reported complaint — so the out-of-the-box direction is the corrected one,
+    // and a board wired the other way clears the setting rather than recompiling.
+    rev_ = nova::reg_bool(NOVA_KEY_PREFIX "EncRev", true);
+
     // Active low with a pull-up: the switch shorts to ground, which is how every
     // EC11 and tactile button on the reference build is wired.
     fw_gpio_init((unsigned)pin_a_, FW_PIN_IN);
@@ -177,8 +182,11 @@ void Input::poll_encoder(void) {
     uint8_t ps = (uint8_t)((a << 1) | b);
     uint8_t st = kTable[(state_ & 0x07) * 4 + ps];
     state_ = st;
-    if      (st & DIR_CW)  push(EV_ROT_CW);
-    else if (st & DIR_CCW) push(EV_ROT_CCW);
+    // rev_ swaps the two. The table decode is untouched — a decoded step is still
+    // a decoded step — only which direction it MEANS is flipped, so a reversed
+    // board behaves like a normally wired one everywhere above this line.
+    if      (st & DIR_CW)  push(rev_ ? EV_ROT_CCW : EV_ROT_CW);
+    else if (st & DIR_CCW) push(rev_ ? EV_ROT_CW  : EV_ROT_CCW);
 }
 
 void Input::poll_button(int i) {

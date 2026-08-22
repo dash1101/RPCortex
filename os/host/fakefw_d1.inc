@@ -433,10 +433,19 @@ int      fw_file_remove(const char *p) {
 int fw_board(char *out, unsigned cap) { snprintf(out, cap, "pico2_w"); return 1; }
 unsigned fw_gpio_count(void) { return 30; }
 int fw_gpio_usable(unsigned p) { return (p < 30 && p != 23 && p != 24 && p != 25 && p != 29) ? 1 : 0; }
+// Scripted pin levels, OFF by default so every existing test still reads the
+// resting 1 (pull-ups, nothing pressed). The encoder-direction test turns it on
+// and walks the two phases through a detent, which is the only way to exercise
+// the quadrature decode from a host — an injected gesture is post-decode.
+static bool g_gpio_script = false;
+static int  g_gpio_level[40];
 int fw_gpio_init(unsigned, int) { return 0; }
 int fw_gpio_pull(unsigned, int) { return 0; }
 int fw_gpio_put(unsigned, int) { return 0; }
-int fw_gpio_get(unsigned) { return 1; }
+int fw_gpio_get(unsigned pin) {
+    if (g_gpio_script && pin < 40) return g_gpio_level[pin];
+    return 1;
+}
 int fw_gpio_watch(unsigned, int) { return 0; }
 int fw_gpio_events(unsigned, int *level) { if (level) *level = 1; return 0; }
 int fw_adc_init(unsigned) { return 0; }
@@ -519,7 +528,18 @@ int fw_net_resolve(const char *host, char *ip_out, unsigned cap) {
     return (int)snprintf(ip_out, cap, "93.184.216.34");
 }
 
-int fw_time_get(struct FwTime *out) { (void)out; return 0; }
+// A settable fake clock, OFF by default so every existing test still sees
+// fw_time_get FAIL — which is what "--:--", "clock not set" and the boot-time
+// checks all lean on. The status-bar refresh test turns it on and moves it a
+// minute, because a frozen clock while the panel was dim is the exact regression
+// that test guards.
+static bool     g_fake_time_ok = false;
+static FwTime   g_fake_time;
+int fw_time_get(struct FwTime *out) {
+    if (!g_fake_time_ok) return 0;
+    if (out) *out = g_fake_time;
+    return 1;
+}
 
 // The screens that arrived with the settings, wireless, files and operations
 // groups reach further into the ABI than the runner alone ever did.
@@ -585,6 +605,9 @@ static const FakeEntry g_fake_fs[] = {
     // Not an app. It is here to prove the scan's filter does something rather
     // than merely compiling.
     { "/nova/apps", "readme.txt", 0, 0, 0, 0, nullptr, nullptr, "not an app" },
+    // A couple of BadUSB payloads for the launcher screen to list and run.
+    { "/nova/badusb", "hello.txt",   0, 24, 0, 0, nullptr, nullptr, "STRING hello\nENTER\n" },
+    { "/nova/badusb", "greeting.dd", 0, 40, 0, 0, nullptr, nullptr, "GUI r\nSTRING notepad\nENTER\n" },
 };
 static const unsigned FAKE_FS_N = sizeof(g_fake_fs) / sizeof(g_fake_fs[0]);
 

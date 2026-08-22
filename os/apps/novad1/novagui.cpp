@@ -23,6 +23,7 @@
 #include "novagui_contact.h"
 #include "novagui_radios.h"
 #include "novagui_tasks.h"
+#include "novagui_usb.h"
 
 #include "rpc_app.h"
 #include <string.h>
@@ -77,6 +78,7 @@ Canvas &canvas(void)  { return g_canvas; }
 Screen *top(void)     { return g_depth ? g_stack[g_depth - 1] : nullptr; }
 unsigned depth(void)  { return g_depth; }
 void invalidate(void) { g_dirty = true; }
+bool take_dirty(void) { bool d = g_dirty; g_dirty = false; return d; }
 const Perf &perf(void){ return g_perf; }
 bool running(void)    { return g_running; }
 
@@ -167,7 +169,7 @@ static const App kApps[] = {
     { "ir",         "IR",         CAT_WIRELESS, nullptr,  "ir_rx" },
     { "cc1101",     "Sub-GHz",    CAT_WIRELESS, screens::open_subghz, "cc1101" },
     { "sx1276",     "LoRa",       CAT_WIRELESS, screens::open_lora,   "sx1276" },
-    { "msg",        "Messages",   CAT_WIRELESS, nullptr,  "sx1276" },
+    { "msg",        "Messages",   CAT_WIRELESS, screens::open_messages, "sx1276" },
 
     { "gps",        "GPS",        CAT_SENSORS,  nullptr,  "gps" },
     { "dht11",      "Climate",    CAT_SENSORS,  nullptr,  "dht11" },
@@ -185,6 +187,10 @@ static const App kApps[] = {
     { "media",      "Media",      CAT_TOOLS,    screens::open_media,     "bt" },
     { "cmds",       "Commands",   CAT_TOOLS,    screens::open_commands,  nullptr },
     { "logs",       "Logs",       CAT_TOOLS,    screens::open_logs,      nullptr },
+    // Drives the USB HID firmware — list DuckyScript payloads, switch mode, run
+    // one behind a confirmation. No module gate: whether usbmode/badusb exist is a
+    // firmware question the screen asks itself, not a chip on a pin.
+    { "badusb",     "BadUSB",     CAT_TOOLS,    screens::open_badusb,    nullptr },
     // The module table files iButton under Testing, and this row is in Tools
     // ON PURPOSE. No app has ever been in the Testing category, and build_catalogue
     // makes a home-screen folder for every category that has anything in it — so
@@ -925,10 +931,22 @@ static volatile bool g_wake_req;
 void request_wake(void) { g_wake_req = true; }
 
 bool screen_active(void) { return g_level == LVL_ACTIVE; }
+bool screen_off(void)    { return g_level == LVL_OFF; }
 
 // The panel level on the idle clock, pulled out of run() so a test can put the
 // panel to sleep the way the runner does rather than by imitating it.
 void update_level(uint32_t now) {
+    // A notification banner keeps the panel lit for its short life, wherever the
+    // idle clock happens to be — a toast nobody can read is not a notification.
+    // But it deliberately does NOT count as activity: once the banner clears the
+    // panel returns to the dim/off schedule the last GESTURE set, rather than
+    // starting a fresh two-minute countdown from a background event. A toast that
+    // reset the idle clock is why a device that trickled notifications — a BLE
+    // event, an app's line of output, the odd status post — never went dark. That
+    // is the "screen-off works only sometimes" the runner was reported for: the
+    // timer was fine, but every notification quietly wound it back to zero.
+    if (g_toast_until && now < g_toast_until) { set_level(LVL_ACTIVE); return; }
+
     // Dim, then off, on their own timers. Both are contrast changes, so waking is
     // instant and nothing has to be re-initialised.
     uint32_t idle = (now - g_last_input) / 1000;
@@ -1013,6 +1031,62 @@ bool drain_input(void) {
     return had_input;
 }
 
+// The per-frame housekeeping, after input and the top screen's tick. Its own
+// function so the harness drives the SAME status-refresh and dim/off sequence the
+// device runs, rather than a copy that drifts — the way the frozen-clock-while-dim
+// regression hid, in a rule that lived only here.
+void frame_step(uint32_t now, bool had_input) {
+    Screen *s = top();
+
+    // The status bar changes on its own — the clock (so a minute rolls over or a
+    // timezone change shows without a gesture), the power state, the stopwatch —
+    // and it is the runner's, not the screen's, so nothing above marked the frame
+    // dirty when it moved. Redraw when a drawn value changes.
+    //
+    // While DIM as well as ACTIVE, because a dimmed panel is still a LIT panel —
+    // the contrast is 0x10, not zero — and somebody looking at it expects the
+    // clock to be the time, not the time it dimmed at. Only a panel that is OFF
+    // (contrast 0, nothing to see) skips this, which is where the real power
+    // saving is: an untouched device redraws exactly when a shown number changes
+    // and not one frame besides, and stops entirely once the screen is dark. (Not
+    // on a fullscreen screen — it has no bar, and drives its own redraws through
+    // tick().)
+    if (s && !s->fullscreen() && g_level != LVL_OFF) {
+        uint32_t sig = status_signature();
+        if (sig != g_status_sig) { g_status_sig = sig; g_dirty = true; }
+    }
+
+    // Dim, then off, on their own timers — the runner's rule, now in the one place
+    // both it and the harness call.
+    update_level(now);
+    uint32_t idle = (now - g_last_input) / 1000;
+
+    // And the lock, on the same clock and read the same way. It is a third tier
+    // rather than a thing hung off "screen off", because the two are set
+    // independently and somebody may well want the panel to stay lit and still
+    // want it locked — or the other way round.
+    //
+    // lock_engage refuses when it is already up and when the screen on top is
+    // modal, so this can be an unguarded call every frame and both reasons live in
+    // one place.
+    if (lock_due(idle)) screens::lock_engage();
+
+    // Notification toast. Clear an expired or dismissed one FIRST (so a press that
+    // lands on the same frame a new one arrives does not eat it), then pick up a
+    // new arrival. It is worth waking for — a banner behind a dimmed or dark panel
+    // is not seen — so come to full contrast; update_level above holds the panel
+    // lit for the banner's three seconds. It does NOT touch g_last_input, so a
+    // background notification shows its glance and then lets the panel go back to
+    // sleep on the schedule the last gesture set, rather than winding the whole
+    // dim/off timer back to zero every time one arrives.
+    if (g_toast_until && (now >= g_toast_until || had_input)) { g_toast_until = 0; g_dirty = true; }
+    if (notify::take_toast(g_toast_msg, sizeof(g_toast_msg))) {
+        g_toast_until = now + 3000;
+        set_level(LVL_ACTIVE);
+        g_dirty = true;
+    }
+}
+
 void run(void) {
     // Refuse a loop nobody claimed, and refuse a second one. Two tasks in here
     // is the same corruption from the other end, and a task arriving without a
@@ -1045,52 +1119,10 @@ void run(void) {
         // route. Nothing crashed, which is why it looked like a timing problem.
         s = top();
 
-        // The status bar changes on its own — the clock (so a minute rolls over
-        // or a timezone change shows without a gesture), the power state, the
-        // stopwatch — and it is the runner's, not the screen's, so nothing above
-        // marked the frame dirty when it moved. Redraw when a drawn value
-        // changes.
-        //
-        // While DIM as well as ACTIVE, because a dimmed panel is still a LIT
-        // panel — the contrast is 0x10, not zero — and somebody looking at it
-        // expects the clock to be the time, not the time it dimmed at. Only a
-        // panel that is OFF (contrast 0, nothing to see) skips this, which is
-        // where the real power saving is: an untouched device redraws exactly
-        // when a shown number changes and not one frame besides, and stops
-        // entirely once the screen is dark. (Not on a fullscreen screen — it has
-        // no bar, and drives its own redraws through tick().)
-        if (s && !s->fullscreen() && g_level != LVL_OFF) {
-            uint32_t sig = status_signature();
-            if (sig != g_status_sig) { g_status_sig = sig; g_dirty = true; }
-        }
-
-        // Dim, then off, on their own timers — the runner's rule, now in the one
-        // place both it and the harness call.
-        update_level(now);
-        uint32_t idle = (now - g_last_input) / 1000;
-
-        // And the lock, on the same clock and read the same way. It is a third
-        // tier rather than a thing hung off "screen off", because the two are
-        // set independently and somebody may well want the panel to stay lit
-        // and still want it locked — or the other way round.
-        //
-        // lock_engage refuses when it is already up and when the screen on top
-        // is modal, so this can be an unguarded call every frame and both
-        // reasons live in one place.
-        if (lock_due(idle)) screens::lock_engage();
-
-        // Notification toast. Clear an expired or dismissed one FIRST (so a press
-        // that lands on the same frame a new one arrives does not eat it), then
-        // pick up a new arrival. It is worth waking for — a banner behind a
-        // dimmed panel is not seen — so come to full contrast and reset the idle
-        // clock, which also holds the active frame rate for its first second.
-        if (g_toast_until && (now >= g_toast_until || had_input)) { g_toast_until = 0; g_dirty = true; }
-        if (notify::take_toast(g_toast_msg, sizeof(g_toast_msg))) {
-            g_toast_until = now + 3000;
-            set_level(LVL_ACTIVE);
-            g_last_input = now;
-            g_dirty = true;
-        }
+        // The status bar's self-refresh, the idle dim/off tiers, the auto-lock
+        // and the toast — the runner's own per-frame housekeeping, in one place
+        // both it and the harness call so a test drives the real sequence.
+        frame_step(now, had_input);
 
         if (g_dirty && s) {
             uint32_t t0 = fw_micros();
@@ -1133,6 +1165,10 @@ void run(void) {
         // already kept for the dim/off timers; this reuses it. The window is far
         // shorter than the dim timeout, so it cannot hold the panel awake.
         else if (now - g_last_input < NAP_ACTIVE_MS) nap = NAP_ACTIVE;
+        // A banner is up: keep the active rate so it is snappy and a press over it
+        // is seen at once. This used to ride on the toast resetting g_last_input;
+        // it no longer does that (see update_level), so the banner names itself.
+        else if (g_toast_until && now < g_toast_until) nap = NAP_ACTIVE;
         else if (g_level == LVL_OFF)    nap = NAP_OFF;
         else if (g_level == LVL_DIM)    nap = NAP_DIM;
         else                            nap = NAP_IDLE;

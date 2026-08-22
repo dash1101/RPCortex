@@ -50,6 +50,7 @@
 #include "../apps/novad1/novagui_media.cpp"
 #include "../apps/novad1/novagui_contact.cpp"
 #include "../apps/novad1/novagui_radios.cpp"
+#include "../apps/novad1/novagui_usb.cpp"
 #include "../apps/novad1/novagui_tasks.cpp"
 #include "../apps/novad1/novagui.cpp"
 #include "../apps/novad1/novad1cmd.cpp"
@@ -2156,6 +2157,391 @@ static void test_set_time_reports_the_truth(void) {
     gui::go_home();
 }
 
+// --- the encoder direction is a setting, not a recompile --------------------------
+//
+// Which way "clockwise" moves the selection depends on how the two phases are
+// wired, and it has flip-flopped between builds. So it is a setting now — swap the
+// two events a decoded step emits — defaulting to REVERSED, because the reference
+// board reads backwards without it (the reported complaint).
+//
+// A host cannot tell which physical direction is right — injected gestures are
+// post-decode, so they never touch the table. What it CAN test is the reversal
+// LOGIC, by feeding the two phases a real detent through the fake GPIO and reading
+// the event back. The (a,b) walk 01 -> 00 -> 10 -> 11 from rest is one step
+// clockwise through the Buxton table; the setting decides whether that comes out
+// as turn-right or turn-left.
+//
+// Reintroduce: drop the rev_ swap in poll_encoder (push EV_ROT_CW/CCW plainly) and
+// every reversed assertion goes red — the event no longer follows the setting.
+static nova::Event drive_cw_detent(int pa, int pb) {
+    using namespace nova;
+    static const int seq[4][2] = { {0,1}, {0,0}, {1,0}, {1,1} };
+    input().flush();
+    for (int i = 0; i < 4; i++) {
+        g_gpio_level[pa] = seq[i][0];
+        g_gpio_level[pb] = seq[i][1];
+        input().poll();
+    }
+    Event e;
+    while ((e = input().next()) != EV_NONE)
+        if (e == EV_ROT_CW || e == EV_ROT_CCW) return e;
+    return EV_NONE;
+}
+
+static void test_encoder_direction_setting(void) {
+    using namespace nova;
+    const int pa = board::pin(board::PIN_ENC_A);
+    const int pb = board::pin(board::PIN_ENC_B);
+    ok(pa >= 0 && pa < 40 && pb >= 0 && pb < 40, "the encoder pins are real and scriptable");
+
+    g_gpio_script = true;
+    g_gpio_level[pa] = 1; g_gpio_level[pb] = 1;   // the resting state
+
+    // Baseline: with reversal OFF, one CW detent is a step to the RIGHT — exactly
+    // what build 429 emitted. Recorded, not reasoned about.
+    fw_reg_set("Apps.NovaD1_EncRev", "off");
+    ok(input().begin(), "the input layer comes up");
+    ok(!input().reversed(), "reversal reads off from the registry");
+    eq((int)drive_cw_detent(pa, pb), (int)EV_ROT_CW,
+       "a CW detent turns right with reversal off — build 429's direction");
+
+    // Reversed: the SAME physical detent turns the other way. That swap is the
+    // whole fix for a board that reads backwards.
+    input().set_reversed(true);
+    eq((int)drive_cw_detent(pa, pb), (int)EV_ROT_CCW,
+       "and turns left once reversed — the same detent, flipped");
+
+    // Live: set_reversed took hold with no re-begin, which is what the Display
+    // row leans on to flip the knob under the user's hand.
+    input().set_reversed(false);
+    eq((int)drive_cw_detent(pa, pb), (int)EV_ROT_CW, "toggling back is live, no restart");
+
+    // The DEFAULT is reversed, because the reference board reads backwards without
+    // it. A device with the key never set must come up already corrected.
+    fw_reg_set("Apps.NovaD1_EncRev", "");             // absent -> reg_bool's default
+    ok(input().begin(), "input re-inits from a clean registry");
+    ok(input().reversed(), "the default is reversed, so the reference board reads right out of the box");
+    eq((int)drive_cw_detent(pa, pb), (int)EV_ROT_CCW,
+       "and a CW detent turns left by default — the opposite of 429, as reported");
+
+    g_gpio_script = false;                            // back to the resting-1 fake
+    fw_reg_set("Apps.NovaD1_EncRev", "off");
+    input().begin();
+    input().flush();
+    gui::go_home();
+}
+
+// --- the screen-off timer survives a trickle of notifications ---------------------
+//
+// "Screen off works only sometimes." The idle timer itself was fine — with no
+// input the panel reaches OFF at OffSec and stays. What made it "sometimes" was
+// the toast path: a notification woke the panel AND reset g_last_input, so every
+// background event — a BLE device seen, an app's line of output, an incognito
+// toggle — wound the whole dim/off countdown back to zero. A device that received
+// them on any cadence never went dark.
+//
+// Now a toast wakes the panel for its banner (update_level holds it lit for the
+// three seconds) but does NOT count as activity, so the panel sleeps on the
+// schedule the last GESTURE set, however many notifications arrive between.
+//
+// Driven through the REAL gui::frame_step — the runner's own per-frame body, not
+// a copy — with notifications every 30 s across the whole span. The assertions
+// land at 145/175/200 s, each clear of the 3 s banner a post raises.
+//
+// Reintroduce: put `g_last_input = now;` back in frame_step's toast block. Every
+// post then resets the clock, the idle never passes DimSec, and all three
+// assertions go red — the panel never reaches OFF at any horizon.
+static void test_screen_off_survives_notifications(void) {
+    using namespace nova;
+    char b[64];
+    while (notify::take_toast(b, sizeof(b))) {}     // no banner pending at the start
+    fw_reg_set("Apps.NovaD1_LockSec", "0");
+    fw_reg_set("Apps.NovaD1_Lock_Kind", "none");
+    fw_reg_set("Apps.NovaD1_DimSec", "30");
+    fw_reg_set("Apps.NovaD1_OffSec", "120");
+    fw_reg_set("Apps.NovaD1_Notify", "on");
+    fw_reg_set("Apps.NovaD1_Notify_Haptic", "off");  // no buzzer/vibe on the host
+    fw_reg_set("Apps.NovaD1_Notify_LED", "off");
+
+    gui::go_home();
+    input().flush();
+    gui::request_wake();
+    gui::drain_input();                             // ACTIVE, idle clock at now
+    ok(gui::screen_active(), "the panel starts lit");
+
+    const uint32_t base = g_ms;
+    bool off_145 = false, off_175 = false, off_200 = false;
+    for (uint32_t t = 1; t <= 200; t++) {
+        if (t % 30 == 0) notify::post("BLE: device nearby");  // a background event
+        g_ms = base + t * 1000;                    // pin the intended clock
+        gui::frame_step(g_ms, false);              // no gesture, ever
+        if (t == 145) off_145 = gui::screen_off();
+        if (t == 175) off_175 = gui::screen_off();
+        if (t == 200) off_200 = gui::screen_off();
+    }
+    ok(off_145, "the panel is OFF at 145 s with a notification every 30 s");
+    ok(off_175, "and stays OFF at 175 s");
+    ok(off_200, "and at 200 s — a background notification does not wind the timer back");
+
+    fw_reg_set("Apps.NovaD1_Notify_Haptic", "on");
+    fw_reg_set("Apps.NovaD1_Notify_LED", "on");
+    gui::go_home();
+}
+
+// --- the status bar keeps time while DIM, and goes quiet when OFF ------------------
+//
+// Build 429's regression (commit 7893316 fixed it): the clock, battery and
+// stopwatch froze the moment the panel dimmed, because the self-refresh was gated
+// on LVL_ACTIVE. A dimmed panel is a LIT panel someone reads at a glance, and a
+// frozen clock on it looks broken. The guard is now `g_level != LVL_OFF` inside
+// frame_step, and this drives that REAL frame_step so a guard that drifts from the
+// runner is caught rather than hidden in a lookalike.
+//
+// Reintroduce: change the guard back to `g_level == LVL_ACTIVE`. The DIM assertion
+// goes red — a shown value that changed no longer marks the frame — while the OFF
+// assertion stays green, because OFF skips the check either way.
+static void test_status_bar_refreshes_while_dim(void) {
+    using namespace nova;
+    char b[64];
+    while (notify::take_toast(b, sizeof(b))) {}     // no banner holding the panel lit
+    fw_reg_set("Apps.NovaD1_LockSec", "0");
+    fw_reg_set("Apps.NovaD1_Lock_Kind", "none");
+    fw_reg_set("Apps.NovaD1_DimSec", "30");
+    fw_reg_set("Apps.NovaD1_OffSec", "120");
+
+    // A settable clock, so a minute can actually roll over — the fake's is frozen
+    // at --:-- otherwise, and a signature that never moves would prove nothing.
+    g_fake_time_ok = true;
+    g_fake_time = FwTime{ 2026, 8, 22, 10, 30, 0, 6 };
+
+    // Home carries the status bar (it is not fullscreen), which is what refreshes.
+    gui::go_home();
+    input().flush();
+    gui::request_wake();
+    gui::drain_input();                             // ACTIVE, idle clock at now
+    ok(gui::screen_active(), "the panel starts lit");
+    const uint32_t base = g_ms;
+
+    // Into DIM, past DimSec and short of OffSec. This same frame_step also primes
+    // g_status_sig with the current minute, so the next comparison is against a
+    // real prior value and not whatever an earlier stage left behind.
+    g_ms = base + 35000;
+    gui::frame_step(g_ms, false);
+    ok(!gui::screen_active() && !gui::screen_off(), "the panel is DIM at 35 s");
+    gui::take_dirty();                             // clear the DIM-transition dirty
+
+    // The minute rolls over. Nothing else changes, and no gesture arrives.
+    g_fake_time.minute = 31;
+    gui::frame_step(g_ms, false);
+    ok(gui::take_dirty(), "the status bar redraws when the clock changes while DIM");
+
+    // Into OFF, past OffSec. Consume the OFF-transition dirty.
+    g_ms = base + 130000;
+    gui::frame_step(g_ms, false);
+    ok(gui::screen_off(), "the panel is OFF at 130 s");
+    gui::take_dirty();
+
+    // Another minute. OFF means contrast zero, nothing to see — so the refresh
+    // must NOT fire. This is the power saving the guard exists to keep.
+    g_fake_time.minute = 32;
+    gui::frame_step(g_ms, false);
+    ok(!gui::take_dirty(), "and does NOT redraw once the panel is OFF");
+
+    g_fake_time_ok = false;                        // back to the frozen fake clock
+    gui::go_home();
+}
+
+// --- LoRa Messages ----------------------------------------------------------------
+//
+// The msg screen drives `lora status`/`lora send`/`lora recv` on the shared radio
+// worker. Text crosses as hex, so the screen turns words into bytes and back; a
+// received line is added to the recent list AND raised as a notification, which is
+// the background-receive path. It is gated on a REAL `lora status`, because the
+// module-readiness flag reads "ready" from pins alone even where the chip is
+// absent — which is the state on the bench board.
+//
+// DEVICE-UNCONFIRMED: the RF itself needs two SX1276s. This proves the screen, the
+// hex round trip, the parse and the notify path against the firmware's exact text.
+static void test_lora_messages(void) {
+    using namespace nova;
+    using namespace nova::screens;
+
+    // The hex round trip both commands carry.
+    char hex[48], txt[24];
+    ok(radios::text_to_hex("Hi", hex, sizeof(hex)) && !strcmp(hex, "4869"),
+       "text encodes to hex");
+    eq(radios::hex_to_text("4869", txt, sizeof(txt)), 2, "hex decodes to the right length");
+    streq_(txt, "Hi", "and back to the text");
+    radios::hex_to_text("48656c6c6f", txt, sizeof(txt));
+    streq_(txt, "Hello", "the fake's RX payload is 'Hello'");
+    ok(radios::hex_to_text("486", txt, sizeof(txt)) < 0, "an odd nibble count is rejected");
+    ok(radios::hex_to_text("zz", txt, sizeof(txt)) < 0, "and a non-hex digit is too");
+    radios::hex_to_text("0148", txt, sizeof(txt));
+    ok(txt[0] == '.' && txt[1] == 'H', "a control byte shows as a dot, not a control code");
+
+    // A clean ring and no pending toast.
+    nova::screens::g_msg_n = 0; nova::screens::g_msg_head = 0;
+    char drain[64]; while (notify::take_toast(drain, sizeof(drain))) {}
+    fw_reg_set("Apps.NovaD1_Notify", "on");
+
+    // --- present: the default fake reports a chip (ver 0x12).
+    g_run_spawned = 1;
+    open_by_key("msg");
+    ui::Screen *s = gui::top();
+    ok(s && !strcmp(s->title(), "Messages"), "the Messages screen opens");
+    s->tick(33);                                  // reap `lora status` (present)
+
+    // Send a canned line: Send -> picker -> Hello.
+    s->on_event(EV_SELECT);                       // Send opens the picker in place
+    ok(gui::top() == s, "Send opens the picker, not a 'needs a chip' notice");
+    s->on_event(EV_ROT_CW);                       // Compose... -> Hello
+    g_last_shell[0] = 0;
+    s->on_event(EV_SELECT);                       // choose Hello -> queue the send
+    s->tick(33);                                  // tick fires it; the worker runs inline
+    streq_(g_last_shell, "lora send 48656c6c6f",
+           "a canned message is sent as the hex of its text");
+    ok(nova::screens::g_msg_n >= 1 && msg_at(0) &&
+       !strcmp(msg_at(0)->text, "Hello") && !msg_at(0)->rx,
+       "and it lands in the recent list as sent");
+
+    // Listen: the fake replies with an RX line carrying RSSI and SNR.
+    s->on_event(EV_ROT_CW);                       // Send -> Listen
+    s->on_event(EV_SELECT);                       // run `lora recv 10`
+    s->tick(33);                                  // reap the RX
+    ok(!strncmp(g_last_shell, "lora recv", 9), "Listen runs a receive");
+    ok(nova::screens::g_msg_n >= 2 && msg_at(0) &&
+       !strcmp(msg_at(0)->text, "Hello") && msg_at(0)->rx,
+       "a received message is decoded from hex into the list");
+    eq(msg_at(0)->rssi, -42, "with its RSSI kept for the screen");
+    ok(notify::take_toast(drain, sizeof(drain)) && strstr(drain, "Hello"),
+       "and it raises a notification — the background-receive path");
+    gui::go_home();
+
+    // --- absent: a chip that answers 'absent' is NOT a dead button.
+    shell_says("lora status",
+               "[:] LoRa  SX1276\n  Chip   absent   (ver 0x00)\n"
+               "  Freq   915.00 MHz\n  Modem  SF7 BW125 CR4/5\n");
+    open_by_key("msg");
+    s = gui::top();
+    s->tick(33);                                  // reap the absent status
+    g_last_shell[0] = 0;
+    s->on_event(EV_SELECT);                       // Send
+    ok(gui::top() != s, "an absent chip pushes a notice");
+    ok(strstr(ui::last_notice(), "SX1276") != nullptr,
+       "which says it needs an SX1276 rather than doing nothing");
+    ok(g_last_shell[0] == 0, "and nothing was sent");
+    gui::pop();                                   // dismiss the notice
+    gui::go_home();
+
+    // --- an EMPTY status capture is the OS's one buffer held elsewhere, not a
+    // missing chip, and must not read as absent.
+    shell_says("lora status", "", 0);
+    open_by_key("msg");
+    s = gui::top();
+    s->tick(33);
+    s->on_event(EV_SELECT);                       // Send
+    ok(gui::top() == s, "an empty status is 'busy', so Send is not blocked as absent");
+
+    shell_says(nullptr, nullptr);
+    g_run_spawned = 0;
+    gui::go_home();
+}
+
+// --- `novad1 apps` says "ready" only when a chip actually answered ---------------
+//
+// The SPI radios report UNKNOWN presence until their screen probes them, and the
+// listing used to print that as "ready" — which is how a LoRa app looked live on a
+// board whose SX1276 reads absent. "ready" now means PRESENT; UNKNOWN reads
+// "unchecked". Reintroduce by returning "ready" for MOD_UNKNOWN and the first
+// assertion goes red.
+static void test_apps_state_is_honest(void) {
+    using namespace nova;
+    modules_scan();                                   // SPI radios settle to UNKNOWN
+    const gui::App *lora  = find_app("sx1276");        // SPI radio, module-gated
+    const gui::App *clock = find_app("clock");         // built-in, nothing to probe
+    const gui::App *gps   = find_app("gps");           // screen not written yet
+    ok(lora  && !strcmp(cmd::apps_state(*lora),  "unchecked"),
+       "an unprobed SPI radio is 'unchecked', not 'ready'");
+    ok(clock && !strcmp(cmd::apps_state(*clock), "ready"),
+       "a built-in with no chip to probe is ready");
+    ok(gps   && !strcmp(cmd::apps_state(*gps),   "not built"),
+       "a screen not yet written is 'not built'");
+}
+
+// --- the BadUSB launcher ----------------------------------------------------------
+//
+// Lists the payloads in the badusb directory, reads the USB mode for its header,
+// and runs one behind a confirmation. The launcher does NOT switch modes — `badusb`
+// enters the keyboard, types, and stands it back down by itself, and refuses on its
+// own if the download drive is open — so this proves it asks before typing and runs
+// `badusb <path>` on a yes. If the commands are absent (older firmware) it says so
+// rather than failing silently.
+//
+// DEVICE-UNCONFIRMED: the USB HID firmware is another agent's (branch usb-hid) and
+// the typing into a real host cannot be checked here. The parse, the listing, the
+// confirm gate and the launch command are host-proven.
+static void test_badusb(void) {
+    using namespace nova;
+    using namespace nova::screens;
+
+    // The mode parse, against the functions usbmode reports.
+    ok(usb::parse_mode("[:] USB: keyboard active\n") == usb::USB_KEYBOARD, "keyboard is read");
+    ok(usb::parse_mode("[:] USB: storage (download)\n") == usb::USB_STORAGE, "storage is read");
+    ok(usb::parse_mode("[:] USB: console\n") == usb::USB_CONSOLE, "console is read");
+    ok(usb::parse_mode("unknown command: usbmode\n") == usb::USB_UNKNOWN,
+       "an error names no mode");
+    ok(usb::parse_mode("") == usb::USB_UNKNOWN, "and neither does an empty reply");
+
+    // --- present: usbmode reports a mode, the directory holds two payloads.
+    g_run_spawned = 1;
+    shell_says("usbmode", "[:] USB: storage (download drive)\n", 0);
+    open_by_key("badusb");
+    ui::Screen *s = gui::top();
+    ok(s && !strcmp(s->title(), "BadUSB"), "the BadUSB screen opens");
+    s->tick(33);                                  // reap `usbmode`
+    eq(nova::screens::g_usb_n, 2, "it lists the payloads in the directory");
+
+    // A payload asks before it types, and only runs on a yes.
+    s->on_event(EV_SELECT);                        // cursor is on the first payload
+    ui::Screen *q = gui::top();
+    ok(q && q != s && q->modal(), "a payload asks before it types");
+    // Backing out of the question runs nothing.
+    g_last_shell[0] = 0;
+    q->on_event(EV_BACK);
+    gui::pop();
+    ok(strncmp(g_last_shell, "badusb", 6) != 0, "declining types nothing");
+
+    // Saying yes runs badusb with the full path — no mode switch, the firmware
+    // owns that.
+    shell_says("badusb", "[@] Typed 12 keystrokes.\n", 0);
+    s->on_event(EV_SELECT);
+    q = gui::top();
+    q->on_event(EV_ROT_CW);                        // No -> Run
+    q->on_event(EV_SELECT);                        // runs the yes callback (ACT_BACK)
+    gui::pop();                                    // close the dialog as the runner would
+    g_last_shell[0] = 0;
+    s->tick(33);                                   // fires `badusb <path>`
+    streq_(g_last_shell, "badusb /nova/badusb/hello.txt",
+           "a confirmed run types the chosen payload by its full path, no mode switch");
+    s->tick(33);                                   // reap -> done
+    gui::go_home();
+
+    // --- older firmware: usbmode is not a command. Say so; SELECT is not dead.
+    shell_says("usbmode", "unknown command: usbmode\n", 1);
+    open_by_key("badusb");
+    s = gui::top();
+    s->tick(33);                                   // reap the error
+    s->on_event(EV_SELECT);
+    ok(gui::top() != s, "an older firmware pushes a notice");
+    ok(strstr(ui::last_notice(), "usbmode") != nullptr,
+       "which names the missing commands rather than doing nothing");
+    gui::pop();
+
+    shell_says(nullptr, nullptr);
+    g_run_spawned = 0;
+    gui::go_home();
+}
+
 int main(void) {
     STAGE(test_single_instance);
     STAGE(test_one_detent_animates);
@@ -2195,9 +2581,15 @@ int main(void) {
     STAGE(test_menu_keeps_its_place);
     STAGE(test_list_keeps_its_place);
     STAGE(test_radio_status_is_re_asked);
+    STAGE(test_lora_messages);
+    STAGE(test_badusb);
+    STAGE(test_apps_state_is_honest);
     STAGE(test_set_time_reports_the_truth);
     STAGE(test_tap_drives_the_lock_on_a_dark_panel);
     STAGE(test_tap_reaches_power_and_controls);
+    STAGE(test_encoder_direction_setting);
+    STAGE(test_screen_off_survives_notifications);
+    STAGE(test_status_bar_refreshes_while_dim);
     STAGE(test_setup_migrates_a_legacy_startup_entry);
     STAGE(test_service_status_flags_a_legacy_startup_entry);
     STAGE(test_no_panel);
