@@ -168,7 +168,7 @@ static const App kApps[] = {
     { "ir",         "IR",         CAT_WIRELESS, nullptr,  "ir_rx" },
     { "cc1101",     "Sub-GHz",    CAT_WIRELESS, screens::open_subghz, "cc1101" },
     { "sx1276",     "LoRa",       CAT_WIRELESS, screens::open_lora,   "sx1276" },
-    { "msg",        "Messages",   CAT_WIRELESS, nullptr,  "sx1276" },
+    { "msg",        "Messages",   CAT_WIRELESS, screens::open_messages, "sx1276" },
 
     { "gps",        "GPS",        CAT_SENSORS,  nullptr,  "gps" },
     { "dht11",      "Climate",    CAT_SENSORS,  nullptr,  "dht11" },

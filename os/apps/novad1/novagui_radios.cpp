@@ -161,6 +161,47 @@ bool parse_lora_recv(const char *text, LoraRx *out) {
     return true;
 }
 
+// Text <-> hex. `lora send`/`lora recv` carry the payload as hex bytes and a
+// person types words, so the Messages screen turns one into the other. Pure, so
+// the round trip is host-tested against the exact strings the firmware prints.
+bool text_to_hex(const char *text, char *out, unsigned cap) {
+    static const char *const d = "0123456789abcdef";
+    unsigned n = 0;
+    for (const unsigned char *p = (const unsigned char *)text; *p; p++) {
+        if (n + 3 > cap) { if (cap) out[0] = 0; return false; }   // two chars + NUL
+        out[n++] = d[*p >> 4];
+        out[n++] = d[*p & 0x0f];
+    }
+    if (!cap) return false;
+    out[n] = 0;
+    return true;
+}
+
+static int hex_nibble(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+// Hex -> text. Returns the text length, or -1 on an odd or non-hex string. A byte
+// outside printable ASCII becomes '.', so a binary mesh frame shown on the panel
+// is legible rather than a scatter of control codes that could move the cursor.
+int hex_to_text(const char *hex, char *out, unsigned cap) {
+    unsigned n = 0;
+    while (hex[0] && hex[1]) {
+        int hi = hex_nibble(hex[0]), lo = hex_nibble(hex[1]);
+        if (hi < 0 || lo < 0) return -1;
+        if (n + 1 >= cap) break;                         // full — a summary, not the frame
+        int ch = (hi << 4) | lo;
+        out[n++] = (ch >= 0x20 && ch < 0x7f) ? (char)ch : '.';
+        hex += 2;
+    }
+    if (hex[0] && !hex[1]) return -1;                    // a dangling nibble is malformed
+    if (cap) out[n] = 0;
+    return (int)n;
+}
+
 }  // namespace radios
 }  // namespace screens
 }  // namespace nova
@@ -175,6 +216,7 @@ bool parse_lora_recv(const char *text, LoraRx *out) {
 #include "novagui.h"
 #include "novakeys.h"
 #include "novacore.h"
+#include "novanotify.h"
 
 #include "rpc_app.h"
 
@@ -547,10 +589,285 @@ private:
     uint8_t      tries_;
 };
 
+// --- Messages -----------------------------------------------------------------
+//
+// The messenger v1 had in novalora.py, on the same `lora` text contract the LoRa
+// link test leans on: type or pick a short line and send it, listen for one, and
+// keep the last few either way. It is a package, so a message is hex over `lora
+// send`/`lora recv`, and the screen turns words into bytes and back.
+//
+// Every received line goes through the notification path (msg_receive), so one
+// that arrives is seen from any screen — the same toast the rest of the device
+// uses. That is the background-receive path task #36 asks for; the always-on
+// LISTENER that would drive it unattended is a background service, and left to the
+// device pass because it needs the chip to prove and would fight the one shared
+// SPI worker in the meantime. Here Listen drives one receive at a time.
+//
+// DEVICE-UNCONFIRMED end to end: both radios read absent on the bench board, and
+// real RF needs a second SX1276. The screen logic, the hex round trip and the
+// status/receive parse are host-tested; the air is not.
+
+// The recent messages, kept OUT of the 384-byte pool slot so they survive the
+// screen closing and a receive can append from anywhere. Newest at head.
+#define MSG_MAX      8
+#define MSG_TEXT_MAX 22
+struct MsgItem { char text[MSG_TEXT_MAX]; int rssi; bool rx; };
+static MsgItem  g_msg[MSG_MAX];
+static int      g_msg_n;
+static unsigned g_msg_head;
+
+static void msg_store(const char *text, bool rx, int rssi) {
+    MsgItem &m = g_msg[g_msg_head];
+    nova::copy(m.text, sizeof(m.text), text);
+    m.rx = rx; m.rssi = rssi;
+    g_msg_head = (g_msg_head + 1) % MSG_MAX;
+    if (g_msg_n < MSG_MAX) g_msg_n++;
+}
+// Newest first: i = 0 is the most recent.
+static const MsgItem *msg_at(int i) {
+    if (i < 0 || i >= g_msg_n) return nullptr;
+    return &g_msg[(g_msg_head + MSG_MAX - 1 - (unsigned)i) % MSG_MAX];
+}
+
+// The one receive path — decode, keep, and RAISE A NOTIFICATION. A background
+// listener would call exactly this, which is the whole point of routing it here:
+// a message lands the same way whether the screen is up or not, and the toast
+// carries it to wherever you are.
+static void msg_receive(const char *hex, int rssi) {
+    char txt[MSG_TEXT_MAX];
+    if (radios::hex_to_text(hex, txt, sizeof(txt)) < 0) return;
+    msg_store(txt, true, rssi);
+    char banner[48];
+    snprintf(banner, sizeof(banner), "LoRa: %s", txt);
+    nova::notify::post(banner);
+}
+
+// The quick lines, so most messages are two presses and no keyboard.
+static const char *const kCanned[] = { "Hello", "On my way", "ACK", "SOS" };
+#define MSG_CANNED_N 4
+
+// A send queued from the compose keyboard (whose text does not outlive the
+// callback) or from a canned row, fired by tick() once the shared bus is free.
+static char g_msg_compose[MSG_TEXT_MAX];
+static char g_msg_last_sent[MSG_TEXT_MAX];
+static bool g_msg_send_pending;
+
+static void msg_typed(void *, const char *text) {
+    nova::copy(g_msg_compose, sizeof(g_msg_compose), text);
+    g_msg_send_pending = (g_msg_compose[0] != 0);
+}
+
+class MsgScreen : public Screen {
+public:
+    const char *title(void) const override { return "Messages"; }
+
+    int help(const char **out, int max) const override {
+        if (max < 3) return 0;
+        out[0] = "Send picks a line or types one.";
+        out[1] = "Listen waits for a message.";
+        out[2] = "Needs a second SX1276.";
+        return 3;
+    }
+
+    void enter(void) override {
+        rf_disown();
+        phase_ = 0;
+        mode_ = MODE_MAIN;
+        // First open checks the chip; coming back from the keyboard or a notice
+        // must NOT re-ask, or a queued send is thrown away and the cursor jumps.
+        if (!started_) {
+            started_ = true;
+            sel_ = 0; pick_ = 0;
+            have_status_ = false; present_ = false; detail_[0] = 0; note_[0] = 0;
+            pending_ = P_STATUS; tries_ = 0;
+            if (rf_run("lora status")) tries_ = 1;
+        }
+    }
+
+    void leave(void) override { rf_disown(); }
+
+    bool animating(void) const override { return g_rf_busy != 0; }
+
+    bool tick(uint32_t dt) override {
+        phase_ += dt;
+        bool changed = false;
+
+        // A queued send, fired once the shared worker is free.
+        if (g_msg_send_pending && !g_rf_busy && !g_rf_ready && pending_ == P_IDLE) {
+            char hex[2 * MSG_TEXT_MAX + 1];
+            if (!radios::text_to_hex(g_msg_compose, hex, sizeof(hex))) {
+                nova::copy(note_, sizeof(note_), "too long");
+            } else {
+                char line[64];
+                snprintf(line, sizeof(line), "lora send %s", hex);
+                if (rf_run(line)) {
+                    nova::copy(g_msg_last_sent, sizeof(g_msg_last_sent), g_msg_compose);
+                    pending_ = P_SEND;
+                    nova::copy(note_, sizeof(note_), "sending...");
+                }
+            }
+            g_msg_send_pending = false;
+            changed = true;
+        }
+
+        // The status request, until it has actually been made (see rf_retry).
+        if (pending_ == P_STATUS && !tries_) {
+            if (!rf_retry(&tries_, "lora status") && tries_ >= RF_TRIES) {
+                pending_ = P_IDLE;
+                nova::copy(note_, sizeof(note_), "radio busy - reopen");
+                changed = true;
+            }
+        }
+
+        if (rf_reap()) {
+            changed = true;
+            if (pending_ == P_STATUS) {
+                // A held capture returns empty and a guest gets a refusal; neither
+                // is "no chip", and neither may render as "needs an SX1276".
+                if (!g_rf_out[0])      nova::copy(note_, sizeof(note_), "no result - busy");
+                else if (g_rf_rc != 0) nova::copy(note_, sizeof(note_), "refused");
+                else {
+                    RadioStatus st;
+                    radios::parse_lora_status(g_rf_out, &st);
+                    present_ = st.present;
+                    nova::copy(detail_, sizeof(detail_), st.detail);
+                    have_status_ = true;
+                }
+            } else if (pending_ == P_SEND) {
+                if (strstr(g_rf_out, "Sent")) {
+                    msg_store(g_msg_last_sent, false, 0);
+                    nova::copy(note_, sizeof(note_), "sent");
+                } else {
+                    nova::copy(note_, sizeof(note_), "send failed");
+                }
+            } else if (pending_ == P_RECV) {
+                LoraRx rx;
+                if (radios::parse_lora_recv(g_rf_out, &rx)) {
+                    msg_receive(rx.hex, rx.rssi);
+                    char txt[MSG_TEXT_MAX];
+                    radios::hex_to_text(rx.hex, txt, sizeof(txt));
+                    snprintf(note_, sizeof(note_), "RX %.12s %ddBm", txt, rx.rssi);
+                } else {
+                    nova::copy(note_, sizeof(note_), "nothing received");
+                }
+            }
+            pending_ = P_IDLE;
+        }
+        return changed || g_rf_busy;
+    }
+
+    void draw(Canvas &c) override {
+        if (mode_ == MODE_PICK) { draw_pick(c); return; }
+
+        int y = ui::TOP;
+        char line[40];
+
+        // The chip, said plainly. "needs an SX1276" is the honest state on a board
+        // without one, and it is NOT a dead button — SELECT below says the same.
+        if (have_status_ && present_)      snprintf(line, sizeof(line), "SX1276 %s", detail_);
+        else if (have_status_)             nova::copy(line, sizeof(line), "No SX1276 - needs one");
+        else if (pending_ == P_STATUS)     nova::copy(line, sizeof(line), "SX1276: checking...");
+        else                               nova::copy(line, sizeof(line), "SX1276: unknown");
+        c.text_fit(2, y, line, 1, c.width() - 12, false);
+        if (g_rf_busy) c.spinner(c.width() - 9, y, phase_ / RF_SPIN_MS, 1);
+        y += ui::ROWH;
+
+        // The two most recent messages, newest first.
+        for (int i = 0; i < 2; i++) {
+            const MsgItem *m = msg_at(i);
+            if (m) {
+                if (m->rx) snprintf(line, sizeof(line), "< %.12s %ddBm", m->text, m->rssi);
+                else       snprintf(line, sizeof(line), "> %.16s", m->text);
+            } else if (i == 0) {
+                nova::copy(line, sizeof(line), "no messages yet");
+            } else line[0] = 0;
+            if (line[0]) c.text_fit(2, y, line, 1, c.width() - 4, false);
+            y += ui::ROWH;
+        }
+
+        if (note_[0]) c.text_fit(2, y, note_, 1, c.width() - 4, false);
+        y += ui::ROWH;
+
+        static const char *const kAct[2] = { "Send", "Listen" };
+        draw_actions(c, y, kAct, 2, sel_);
+    }
+
+    Action on_event(Event e) override {
+        if (mode_ == MODE_PICK) return pick_event(e);
+
+        if (e == EV_ROT_CW || e == EV_ROT_CCW) { sel_ ^= 1; return ui::ACT_STAY; }
+        if (e == EV_SELECT || e == EV_SELECT_HOLD) {
+            if (have_status_ && !present_) {
+                ui::notice("Messages", "This needs an SX1276. Fit one and set its "
+                                       "pins in System, Hardware.");
+                return ui::ACT_STAY;
+            }
+            if (sel_ == 0) { mode_ = MODE_PICK; pick_ = 0; }        // Send
+            else {                                                  // Listen
+                if (rf_run("lora recv 10")) {
+                    pending_ = P_RECV;
+                    nova::copy(note_, sizeof(note_), "listening...");
+                } else nova::copy(note_, sizeof(note_), "busy");
+            }
+            return ui::ACT_STAY;
+        }
+        return Screen::on_event(e);
+    }
+
+private:
+    enum { MODE_MAIN, MODE_PICK };
+    enum { P_IDLE, P_STATUS, P_SEND, P_RECV };
+
+    void draw_pick(Canvas &c) {
+        c.text(2, ui::TOP, "Send which?", 1);
+        const int rows = ui::rows_for(c) - 1;
+        int top = pick_ - (rows - 1);
+        if (top < 0) top = 0;
+        for (int i = 0; i < rows; i++) {
+            int idx = top + i;
+            if (idx > MSG_CANNED_N) break;                 // 0 = Compose, 1..N = canned
+            int y = ui::TOP + ui::ROWH + i * ui::ROWH;
+            bool on = (idx == pick_);
+            if (on) c.rounded_rect(0, y - 1, c.width(), ui::ROWH, 1, true);
+            const char *label = idx == 0 ? "Compose..." : kCanned[idx - 1];
+            c.text(3, y, label, on ? 0 : 1);
+        }
+    }
+
+    Action pick_event(Event e) {
+        const int n = MSG_CANNED_N + 1;                    // Compose + canned
+        if (e == EV_ROT_CW)  { pick_ = (pick_ + 1) % n; return ui::ACT_STAY; }
+        if (e == EV_ROT_CCW) { pick_ = (pick_ + n - 1) % n; return ui::ACT_STAY; }
+        if (e == EV_BACK)    { mode_ = MODE_MAIN; return ui::ACT_STAY; }
+        if (e == EV_SELECT || e == EV_SELECT_HOLD) {
+            if (pick_ == 0) {
+                ui::keyboard("Message", "", false, msg_typed, nullptr, this);
+            } else {
+                nova::copy(g_msg_compose, sizeof(g_msg_compose), kCanned[pick_ - 1]);
+                g_msg_send_pending = true;
+            }
+            mode_ = MODE_MAIN;
+            return ui::ACT_STAY;
+        }
+        return ui::ACT_STAY;                               // BACK is the only way up
+    }
+
+    int          sel_;        // Send / Listen
+    int          pick_;       // row in the send picker
+    unsigned     phase_;
+    char         detail_[24]; // "SF7 BW125 CR4/5"
+    bool         present_, have_status_, started_;
+    char         note_[40];
+    int          pending_;
+    int          mode_;
+    uint8_t      tries_;
+};
+
 // --- the App table's entry points ---------------------------------------------
 
-void open_subghz(void) { gui::push<SubGhzScreen>(); }
-void open_lora(void)   { gui::push<LoRaScreen>(); }
+void open_subghz(void)   { gui::push<SubGhzScreen>(); }
+void open_lora(void)     { gui::push<LoRaScreen>(); }
+void open_messages(void) { gui::push<MsgScreen>(); }
 
 }  // namespace screens
 }  // namespace nova

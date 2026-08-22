@@ -2350,6 +2350,102 @@ static void test_status_bar_refreshes_while_dim(void) {
     gui::go_home();
 }
 
+// --- LoRa Messages ----------------------------------------------------------------
+//
+// The msg screen drives `lora status`/`lora send`/`lora recv` on the shared radio
+// worker. Text crosses as hex, so the screen turns words into bytes and back; a
+// received line is added to the recent list AND raised as a notification, which is
+// the background-receive path. It is gated on a REAL `lora status`, because the
+// module-readiness flag reads "ready" from pins alone even where the chip is
+// absent — which is the state on the bench board.
+//
+// DEVICE-UNCONFIRMED: the RF itself needs two SX1276s. This proves the screen, the
+// hex round trip, the parse and the notify path against the firmware's exact text.
+static void test_lora_messages(void) {
+    using namespace nova;
+    using namespace nova::screens;
+
+    // The hex round trip both commands carry.
+    char hex[48], txt[24];
+    ok(radios::text_to_hex("Hi", hex, sizeof(hex)) && !strcmp(hex, "4869"),
+       "text encodes to hex");
+    eq(radios::hex_to_text("4869", txt, sizeof(txt)), 2, "hex decodes to the right length");
+    streq_(txt, "Hi", "and back to the text");
+    radios::hex_to_text("48656c6c6f", txt, sizeof(txt));
+    streq_(txt, "Hello", "the fake's RX payload is 'Hello'");
+    ok(radios::hex_to_text("486", txt, sizeof(txt)) < 0, "an odd nibble count is rejected");
+    ok(radios::hex_to_text("zz", txt, sizeof(txt)) < 0, "and a non-hex digit is too");
+    radios::hex_to_text("0148", txt, sizeof(txt));
+    ok(txt[0] == '.' && txt[1] == 'H', "a control byte shows as a dot, not a control code");
+
+    // A clean ring and no pending toast.
+    nova::screens::g_msg_n = 0; nova::screens::g_msg_head = 0;
+    char drain[64]; while (notify::take_toast(drain, sizeof(drain))) {}
+    fw_reg_set("Apps.NovaD1_Notify", "on");
+
+    // --- present: the default fake reports a chip (ver 0x12).
+    g_run_spawned = 1;
+    open_by_key("msg");
+    ui::Screen *s = gui::top();
+    ok(s && !strcmp(s->title(), "Messages"), "the Messages screen opens");
+    s->tick(33);                                  // reap `lora status` (present)
+
+    // Send a canned line: Send -> picker -> Hello.
+    s->on_event(EV_SELECT);                       // Send opens the picker in place
+    ok(gui::top() == s, "Send opens the picker, not a 'needs a chip' notice");
+    s->on_event(EV_ROT_CW);                       // Compose... -> Hello
+    g_last_shell[0] = 0;
+    s->on_event(EV_SELECT);                       // choose Hello -> queue the send
+    s->tick(33);                                  // tick fires it; the worker runs inline
+    streq_(g_last_shell, "lora send 48656c6c6f",
+           "a canned message is sent as the hex of its text");
+    ok(nova::screens::g_msg_n >= 1 && msg_at(0) &&
+       !strcmp(msg_at(0)->text, "Hello") && !msg_at(0)->rx,
+       "and it lands in the recent list as sent");
+
+    // Listen: the fake replies with an RX line carrying RSSI and SNR.
+    s->on_event(EV_ROT_CW);                       // Send -> Listen
+    s->on_event(EV_SELECT);                       // run `lora recv 10`
+    s->tick(33);                                  // reap the RX
+    ok(!strncmp(g_last_shell, "lora recv", 9), "Listen runs a receive");
+    ok(nova::screens::g_msg_n >= 2 && msg_at(0) &&
+       !strcmp(msg_at(0)->text, "Hello") && msg_at(0)->rx,
+       "a received message is decoded from hex into the list");
+    eq(msg_at(0)->rssi, -42, "with its RSSI kept for the screen");
+    ok(notify::take_toast(drain, sizeof(drain)) && strstr(drain, "Hello"),
+       "and it raises a notification — the background-receive path");
+    gui::go_home();
+
+    // --- absent: a chip that answers 'absent' is NOT a dead button.
+    shell_says("lora status",
+               "[:] LoRa  SX1276\n  Chip   absent   (ver 0x00)\n"
+               "  Freq   915.00 MHz\n  Modem  SF7 BW125 CR4/5\n");
+    open_by_key("msg");
+    s = gui::top();
+    s->tick(33);                                  // reap the absent status
+    g_last_shell[0] = 0;
+    s->on_event(EV_SELECT);                       // Send
+    ok(gui::top() != s, "an absent chip pushes a notice");
+    ok(strstr(ui::last_notice(), "SX1276") != nullptr,
+       "which says it needs an SX1276 rather than doing nothing");
+    ok(g_last_shell[0] == 0, "and nothing was sent");
+    gui::pop();                                   // dismiss the notice
+    gui::go_home();
+
+    // --- an EMPTY status capture is the OS's one buffer held elsewhere, not a
+    // missing chip, and must not read as absent.
+    shell_says("lora status", "", 0);
+    open_by_key("msg");
+    s = gui::top();
+    s->tick(33);
+    s->on_event(EV_SELECT);                       // Send
+    ok(gui::top() == s, "an empty status is 'busy', so Send is not blocked as absent");
+
+    shell_says(nullptr, nullptr);
+    g_run_spawned = 0;
+    gui::go_home();
+}
+
 int main(void) {
     STAGE(test_single_instance);
     STAGE(test_one_detent_animates);
@@ -2389,6 +2485,7 @@ int main(void) {
     STAGE(test_menu_keeps_its_place);
     STAGE(test_list_keeps_its_place);
     STAGE(test_radio_status_is_re_asked);
+    STAGE(test_lora_messages);
     STAGE(test_set_time_reports_the_truth);
     STAGE(test_tap_drives_the_lock_on_a_dark_panel);
     STAGE(test_tap_reaches_power_and_controls);
