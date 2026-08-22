@@ -433,10 +433,19 @@ int      fw_file_remove(const char *p) {
 int fw_board(char *out, unsigned cap) { snprintf(out, cap, "pico2_w"); return 1; }
 unsigned fw_gpio_count(void) { return 30; }
 int fw_gpio_usable(unsigned p) { return (p < 30 && p != 23 && p != 24 && p != 25 && p != 29) ? 1 : 0; }
+// Scripted pin levels, OFF by default so every existing test still reads the
+// resting 1 (pull-ups, nothing pressed). The encoder-direction test turns it on
+// and walks the two phases through a detent, which is the only way to exercise
+// the quadrature decode from a host — an injected gesture is post-decode.
+static bool g_gpio_script = false;
+static int  g_gpio_level[40];
 int fw_gpio_init(unsigned, int) { return 0; }
 int fw_gpio_pull(unsigned, int) { return 0; }
 int fw_gpio_put(unsigned, int) { return 0; }
-int fw_gpio_get(unsigned) { return 1; }
+int fw_gpio_get(unsigned pin) {
+    if (g_gpio_script && pin < 40) return g_gpio_level[pin];
+    return 1;
+}
 int fw_gpio_watch(unsigned, int) { return 0; }
 int fw_gpio_events(unsigned, int *level) { if (level) *level = 1; return 0; }
 int fw_adc_init(unsigned) { return 0; }

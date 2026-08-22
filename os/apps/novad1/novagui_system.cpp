@@ -6,6 +6,7 @@
 #include "novaboard.h"
 #include "novacore.h"
 #include "display.h"
+#include "novainput.h"
 #include "novakeys.h"
 
 #include "rpc_app.h"
@@ -193,6 +194,7 @@ public:
         dim_    = nova::reg_int(NOVA_KEY_PREFIX "DimSec", 30);
         off_    = nova::reg_int(NOVA_KEY_PREFIX "OffSec", 120);
         invert_ = nova::reg_bool(NOVA_KEY_PREFIX "Invert", false);
+        enc_rev_ = nova::reg_bool(NOVA_KEY_PREFIX "EncRev", true);
         dirty_  = false;
     }
 
@@ -203,6 +205,7 @@ public:
         nova::reg_set_int(NOVA_KEY_PREFIX "DimSec", dim_);
         nova::reg_set_int(NOVA_KEY_PREFIX "OffSec", off_);
         nova::reg_set_bool(NOVA_KEY_PREFIX "Invert", invert_);
+        nova::reg_set_bool(NOVA_KEY_PREFIX "EncRev", enc_rev_);
         nova::reg_save();
     }
 
@@ -227,11 +230,11 @@ public:
     }
 
 private:
-    static constexpr int ROWS = 5;
+    static constexpr int ROWS = 6;
     static const char *const kLabels[ROWS];
 
     int  sel_, bright_, dim_, off_;
-    bool invert_, dirty_, started_;
+    bool invert_, dirty_, started_, enc_rev_;
 
     void value(int i, char *out, unsigned cap) const {
         switch (i) {
@@ -239,6 +242,7 @@ private:
             case 1: if (dim_) snprintf(out, cap, "%ds", dim_); else nova::copy(out, cap, "never"); break;
             case 2: if (off_) snprintf(out, cap, "%ds", off_); else nova::copy(out, cap, "never"); break;
             case 3: nova::copy(out, cap, invert_ ? "on" : "off"); break;
+            case 4: nova::copy(out, cap, enc_rev_ ? "reversed" : "normal"); break;
             default: nova::copy(out, cap, display().kind_name()); break;
         }
     }
@@ -271,6 +275,13 @@ private:
                 dirty_ = true;
                 invert_ = !invert_;
                 display().invert(invert_);
+                break;
+            case 4:
+                // Live, on the input task's next poll — the whole point is to
+                // turn the knob and feel it flip, not to reboot to find out.
+                dirty_ = true;
+                enc_rev_ = !enc_rev_;
+                input().set_reversed(enc_rev_);
                 break;
             default: next_panel(); break;
         }
@@ -334,7 +345,7 @@ const int DisplaySettings::kTimeouts[DisplaySettings::TIMEOUTS] = {
 // The MicroPython suite's labels, exactly. Somebody who has used that device
 // should not have to relearn a word to change the same setting.
 const char *const DisplaySettings::kLabels[DisplaySettings::ROWS] = {
-    "Brightness", "Dim After", "Screen Off", "Invert", "Panel",
+    "Brightness", "Dim After", "Screen Off", "Invert", "Encoder", "Panel",
 };
 
 void open_display_settings(void) { gui::push<DisplaySettings>(); }

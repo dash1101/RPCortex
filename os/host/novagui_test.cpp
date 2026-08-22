@@ -2156,6 +2156,80 @@ static void test_set_time_reports_the_truth(void) {
     gui::go_home();
 }
 
+// --- the encoder direction is a setting, not a recompile --------------------------
+//
+// Which way "clockwise" moves the selection depends on how the two phases are
+// wired, and it has flip-flopped between builds. So it is a setting now — swap the
+// two events a decoded step emits — defaulting to REVERSED, because the reference
+// board reads backwards without it (the reported complaint).
+//
+// A host cannot tell which physical direction is right — injected gestures are
+// post-decode, so they never touch the table. What it CAN test is the reversal
+// LOGIC, by feeding the two phases a real detent through the fake GPIO and reading
+// the event back. The (a,b) walk 01 -> 00 -> 10 -> 11 from rest is one step
+// clockwise through the Buxton table; the setting decides whether that comes out
+// as turn-right or turn-left.
+//
+// Reintroduce: drop the rev_ swap in poll_encoder (push EV_ROT_CW/CCW plainly) and
+// every reversed assertion goes red — the event no longer follows the setting.
+static nova::Event drive_cw_detent(int pa, int pb) {
+    using namespace nova;
+    static const int seq[4][2] = { {0,1}, {0,0}, {1,0}, {1,1} };
+    input().flush();
+    for (int i = 0; i < 4; i++) {
+        g_gpio_level[pa] = seq[i][0];
+        g_gpio_level[pb] = seq[i][1];
+        input().poll();
+    }
+    Event e;
+    while ((e = input().next()) != EV_NONE)
+        if (e == EV_ROT_CW || e == EV_ROT_CCW) return e;
+    return EV_NONE;
+}
+
+static void test_encoder_direction_setting(void) {
+    using namespace nova;
+    const int pa = board::pin(board::PIN_ENC_A);
+    const int pb = board::pin(board::PIN_ENC_B);
+    ok(pa >= 0 && pa < 40 && pb >= 0 && pb < 40, "the encoder pins are real and scriptable");
+
+    g_gpio_script = true;
+    g_gpio_level[pa] = 1; g_gpio_level[pb] = 1;   // the resting state
+
+    // Baseline: with reversal OFF, one CW detent is a step to the RIGHT — exactly
+    // what build 429 emitted. Recorded, not reasoned about.
+    fw_reg_set("Apps.NovaD1_EncRev", "off");
+    ok(input().begin(), "the input layer comes up");
+    ok(!input().reversed(), "reversal reads off from the registry");
+    eq((int)drive_cw_detent(pa, pb), (int)EV_ROT_CW,
+       "a CW detent turns right with reversal off — build 429's direction");
+
+    // Reversed: the SAME physical detent turns the other way. That swap is the
+    // whole fix for a board that reads backwards.
+    input().set_reversed(true);
+    eq((int)drive_cw_detent(pa, pb), (int)EV_ROT_CCW,
+       "and turns left once reversed — the same detent, flipped");
+
+    // Live: set_reversed took hold with no re-begin, which is what the Display
+    // row leans on to flip the knob under the user's hand.
+    input().set_reversed(false);
+    eq((int)drive_cw_detent(pa, pb), (int)EV_ROT_CW, "toggling back is live, no restart");
+
+    // The DEFAULT is reversed, because the reference board reads backwards without
+    // it. A device with the key never set must come up already corrected.
+    fw_reg_set("Apps.NovaD1_EncRev", "");             // absent -> reg_bool's default
+    ok(input().begin(), "input re-inits from a clean registry");
+    ok(input().reversed(), "the default is reversed, so the reference board reads right out of the box");
+    eq((int)drive_cw_detent(pa, pb), (int)EV_ROT_CCW,
+       "and a CW detent turns left by default — the opposite of 429, as reported");
+
+    g_gpio_script = false;                            // back to the resting-1 fake
+    fw_reg_set("Apps.NovaD1_EncRev", "off");
+    input().begin();
+    input().flush();
+    gui::go_home();
+}
+
 // --- the screen-off timer survives a trickle of notifications ---------------------
 //
 // "Screen off works only sometimes." The idle timer itself was fine — with no
@@ -2318,6 +2392,7 @@ int main(void) {
     STAGE(test_set_time_reports_the_truth);
     STAGE(test_tap_drives_the_lock_on_a_dark_panel);
     STAGE(test_tap_reaches_power_and_controls);
+    STAGE(test_encoder_direction_setting);
     STAGE(test_screen_off_survives_notifications);
     STAGE(test_status_bar_refreshes_while_dim);
     STAGE(test_setup_migrates_a_legacy_startup_entry);
