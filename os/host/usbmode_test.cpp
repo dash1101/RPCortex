@@ -1,7 +1,7 @@
 // The USB mode arithmetic: the device boots with neither the drive nor the
 // keyboard active, the two are never active together, and the one static
 // composite descriptor is exactly as long as the host expects. The mutual
-// exclusion is the safety rule the maintainer asked for, so the whole
+// exclusion is the safety rule, so the whole
 // can-enter matrix is checked, and a little state machine proves that however
 // you drive it you never end up with both on.
 #include "../core/usbmode.h"

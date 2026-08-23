@@ -12,7 +12,7 @@
 // Instead, a "mode" is which function is switched ON: the drive is empty and
 // offered nothing until STORAGE, and the keyboard sends no keystrokes until
 // HID. Exactly one is active at a time, and CONSOLE means neither — which is
-// the whole safety story the maintainer asked for. "Never both at once" is
+// the whole safety story. "Never both at once" is
 // "never both ACTIVE at once", enforced by there being one current mode and by
 // usbmode_can_enter() refusing the one that would collide with the other.
 //

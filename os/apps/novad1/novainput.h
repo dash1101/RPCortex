@@ -83,7 +83,7 @@ public:
     // gets flipped again next time. begin() reads it; the Display settings row
     // toggles it live through here, so a board wired the other way is a preference
     // and not a recompile. This only swaps which event a decoded step emits —
-    // which physical direction is correct is the maintainer's to confirm on the
+    // which physical direction is correct is a bench check on the
     // knob, because a host cannot: injected gestures are post-decode.
     void set_reversed(bool on) { rev_ = on; }
     bool reversed(void) const { return rev_; }
