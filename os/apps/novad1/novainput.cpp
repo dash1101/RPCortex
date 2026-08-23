@@ -137,10 +137,12 @@ bool Input::begin(void) {
 
     if (pin_a_ == board::PIN_NONE || pin_b_ == board::PIN_NONE) return false;
 
-    // Default REVERSED. The reference board reads backwards without it — the
-    // reported complaint — so the out-of-the-box direction is the corrected one,
-    // and a board wired the other way clears the setting rather than recompiling.
-    rev_ = nova::reg_bool(NOVA_KEY_PREFIX "EncRev", true);
+    // Default OFF. The raw decode already turns the menus the right way — that
+    // was never the complaint. The gallery was the one that read backwards, and
+    // that is fixed in the gallery's own handling, not here. This stays a
+    // setting so a board wired the other way can flip everything together
+    // without a recompile.
+    rev_ = nova::reg_bool(NOVA_KEY_PREFIX "EncRev", false);
 
     // Active low with a pull-up: the switch shorts to ground, which is how every
     // EC11 and tactile button on the reference build is wired.

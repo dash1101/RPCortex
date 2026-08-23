@@ -614,8 +614,12 @@ public:
         if (count_ <= 0) return Screen::on_event(e);
         // Moving starts the slide from a full step away, in the direction it
         // came from, so the icons appear to travel from where they were.
-        if (e == EV_ROT_CW)  { sel_ = wrapped(sel_ + 1); slide_ = 256; dir_ =  1; return ACT_STAY; }
-        if (e == EV_ROT_CCW) { sel_ = wrapped(sel_ - 1); slide_ = 256; dir_ = -1; return ACT_STAY; }
+        // The ring is horizontal, so a turn that moves a vertical menu's
+        // highlight DOWN has to move the ring the other way in sel_ terms to
+        // read as the same gesture under the hand — CW steps sel_ back, not
+        // forward. This is deliberately opposite to a list; see the encoder fix.
+        if (e == EV_ROT_CW)  { sel_ = wrapped(sel_ - 1); slide_ = 256; dir_ = -1; return ACT_STAY; }
+        if (e == EV_ROT_CCW) { sel_ = wrapped(sel_ + 1); slide_ = 256; dir_ =  1; return ACT_STAY; }
         if (e == EV_SELECT) {
             const App *a = items_[sel_];
             // WHICH app is being opened, recorded before the call.
@@ -1021,8 +1025,11 @@ bool drain_input(void) {
 
         // HOME is a guaranteed way out, not a courtesy each screen has to
         // remember. `modal` is the deliberate opt-out and exists for one reason: a
-        // lock that HOME escapes is not a lock.
-        if (a == ACT_STAY && e == EV_HOME && !s->modal()) a = ACT_HOME;
+        // lock that HOME escapes is not a lock. Any answer other than "go home"
+        // is overridden — including a screen that treats HOME like BACK and asks
+        // for a single pop, which used to leak one level at a time out of a deep
+        // stack instead of leaving.
+        if (e == EV_HOME && a != ACT_HOME && !s->modal()) a = ACT_HOME;
 
         if      (a == ACT_BACK) pop();
         else if (a == ACT_HOME) go_home();

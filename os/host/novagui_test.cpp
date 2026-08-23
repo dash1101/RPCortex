@@ -517,8 +517,10 @@ static void test_installed_apps(void) {
     if (flat_home) {
         flat_home->enter();
         // One detent backwards from the first icon is the last one, and the
-        // last one is the last app installed.
-        flat_home->on_event(EV_ROT_CCW);
+        // last one is the last app installed. In the gallery a CW detent steps
+        // back (its ring is mirrored from a list — see the encoder fix), so CW
+        // is the way to the last icon.
+        flat_home->on_event(EV_ROT_CW);
         flat_home->on_event(EV_SELECT);
         ui::Screen *last = gui::top();
         ok(last && last != flat_home, "and its last icon opens something");
@@ -2216,13 +2218,15 @@ static void test_encoder_direction_setting(void) {
     input().set_reversed(false);
     eq((int)drive_cw_detent(pa, pb), (int)EV_ROT_CW, "toggling back is live, no restart");
 
-    // The DEFAULT is reversed, because the reference board reads backwards without
-    // it. A device with the key never set must come up already corrected.
+    // The DEFAULT is OFF: the raw decode already turns the menus the right way,
+    // which was never the complaint. (The gallery read backwards, and that is
+    // fixed in the gallery, not by flipping the whole knob.) A device with the
+    // key never set comes up on the menu-correct direction.
     fw_reg_set("Apps.NovaD1_EncRev", "");             // absent -> reg_bool's default
     ok(input().begin(), "input re-inits from a clean registry");
-    ok(input().reversed(), "the default is reversed, so the reference board reads right out of the box");
-    eq((int)drive_cw_detent(pa, pb), (int)EV_ROT_CCW,
-       "and a CW detent turns left by default — the opposite of 429, as reported");
+    ok(!input().reversed(), "the default is off — the menus already read right");
+    eq((int)drive_cw_detent(pa, pb), (int)EV_ROT_CW,
+       "and a CW detent turns right by default — build 429's menu direction");
 
     g_gpio_script = false;                            // back to the resting-1 fake
     fw_reg_set("Apps.NovaD1_EncRev", "off");
