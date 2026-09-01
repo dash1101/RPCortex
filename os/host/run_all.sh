@@ -18,6 +18,14 @@ CXX="${CXX:-g++} -std=c++17 -Wall -Wextra -Wno-unused-parameter -g -fsanitize=ad
 OUT=$(mktemp -d)
 trap 'rm -rf "$OUT"' EXIT
 
+# Make UndefinedBehaviorSanitizer ABORT on the first diagnostic instead of its
+# default, which is to print the line and keep going. Without this a misaligned
+# load or a signed overflow logs a "runtime error" to stderr and the test still
+# prints "ok" and exits 0 — the defect is reported to nobody and fails nothing.
+# A test that cannot fail is not a test; this is what makes the sanitizer runs
+# gate the build. (ASan already aborts by default.)
+export UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1:${UBSAN_OPTIONS:-}"
+
 # test name -> extra sources
 declare -A SRC=(
     [path_test]="$CORE/path.cpp"

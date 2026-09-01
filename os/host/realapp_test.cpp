@@ -2493,6 +2493,286 @@ static int check_movw_fixture(void) {
     return bad;
 }
 
+// --- task #112 finding 2: a DETERMINISTICALLY misaligned GOT_BREL / ABS32 site -
+//
+// app_pic_install's R_ARM_GOT_BREL case, and the ABS32 apply in app_pic_load,
+// both used to read and write a slot by casting a byte offset straight to
+// uint32_t* and dereferencing it. That offset is an ELF relocation's r_offset,
+// and nothing forces it to be 4-aligned: section PLACEMENT is always rounded up
+// to at least 4 bytes (the `al < 4 ? 4 : al` in both layout loops), but the byte
+// offset a relocation sits at WITHIN its own section is whatever the compiler
+// emitted. On Nova D1, one of ~2474 GOT_BREL sites lands on a halfword boundary —
+// harmless on the M33 (unaligned word access is quietly allowed) and a hard fault
+// waiting on an M0+ (ARMv6-M), and undefined behaviour on paper either way.
+//
+// The package that exposed this needs a full build tree (see kBuildDirs below),
+// which this suite refuses to assume, so an incidentally-misaligned compiler
+// output is not a property a host-only check can hold onto — it is exactly the
+// "depends on what the allocator handed back" flakiness that made the original
+// symptom show up in roughly half the runs. This object is hand-built instead,
+// the same way build_movw_object is: the misalignment is FIXED BY CONSTRUCTION,
+// so the defect is hit on every single run rather than however often a compiler
+// happens to schedule a literal pool onto an odd halfword.
+//
+// Two GOT_BREL sites, not one: an ALIGNED one first (.text+8, claims GOT slot 0,
+// written value 0) and the MISALIGNED one second (.text+2, claims slot 1, written
+// value 4). A fixture with only the misaligned site would expect a written value
+// of 0 — indistinguishable from "the write never happened", exactly the false
+// pass a correctness check must not have.
+static constexpr uint32_t MIS_TEXT_BYTES = 16u;
+static constexpr uint32_t MIS_DATA_BYTES = 6u;
+static constexpr int      MIS_NSECT      = 9;
+static constexpr int      MIS_NSYM       = 5;
+
+static uint8_t *build_pic_misalign_object(uint32_t *len_out) {
+    // .text: target_fn, a MISALIGNED GOT slot at +2, target_fn2, an ALIGNED GOT
+    // slot at +8, app_main, and a trailing pad halfword. None of this executes on
+    // the host — app_pic_install only reads and patches bytes — so wherever a
+    // symbol needs to point at code, `bx lr` is all that is there.
+    static const uint16_t text[MIS_TEXT_BYTES / 2] = {
+        0x4770,             // +0  target_fn: bx lr
+        0x0000, 0x0000,     // +2  GOT slot B — MISALIGNED: site = blob_off[.text] + 2
+        0x4770,             // +6  target_fn2: bx lr
+        0x0000, 0x0000,     // +8  GOT slot A — aligned
+        0x4770,             // +12 app_main: bx lr
+        0xbf00,             // +14 pad: nop
+    };
+    // .data: a nonzero filler halfword (so a patch landing one byte early or late
+    // shows up as a changed marker rather than a lucky match), then a MISALIGNED
+    // ABS32 site at +2 whose pre-patch content (the "addend") is 1, NOT zero —
+    // `*p += base + value` has two halves, and an addend of 0 would let a broken
+    // *read* of the site (base+value alone) produce the same result as a correct
+    // one. Little-endian, so the low byte of the 4-byte site carries the 1.
+    static const uint8_t data[MIS_DATA_BYTES] = { 0xCA, 0xFE, 0x01, 0x00, 0x00, 0x00 };
+
+    static const char shstr[] =
+        "\0.text\0.rel.text\0.data\0.rel.data\0.rpc_app_header\0.symtab\0.strtab\0.shstrtab";
+    static const char strtab[] = "\0target_fn\0target_fn2\0const_val\0app_main";
+
+    // Offsets computed from the strings themselves, not hand-counted, so a
+    // renamed symbol or section cannot silently desync the tables below.
+    auto off_after = [](const char *base, uint32_t at) -> uint32_t {
+        return at + (uint32_t)strlen(base + at) + 1;
+    };
+    const uint32_t n_text    = 1;
+    const uint32_t n_reltext = off_after(shstr, n_text);
+    const uint32_t n_data    = off_after(shstr, n_reltext);
+    const uint32_t n_reldata = off_after(shstr, n_data);
+    const uint32_t n_hdr     = off_after(shstr, n_reldata);
+    const uint32_t n_sym     = off_after(shstr, n_hdr);
+    const uint32_t n_str     = off_after(shstr, n_sym);
+    const uint32_t n_shstr   = off_after(shstr, n_str);
+
+    const uint32_t s_target  = 1;
+    const uint32_t s_target2 = off_after(strtab, s_target);
+    const uint32_t s_const   = off_after(strtab, s_target2);
+    const uint32_t s_main    = off_after(strtab, s_const);
+
+    // Two GOT_BREL relocations against .text, in the order they take GOT slots:
+    // the ALIGNED one (+8, target_fn) FIRST, so it claims slot 0; the MISALIGNED
+    // one (+2, target_fn2) second, so it claims slot 1 and a written value of 4.
+    struct { uint32_t off, sym, type; } trel[2] = {
+        { 8, 1, R_ARM_GOT_BREL },
+        { 2, 2, R_ARM_GOT_BREL },
+    };
+    // One ABS32 relocation against .data, at a misaligned offset, naming an
+    // SHN_ABS symbol — so the expected result (0 + the constant, nothing else)
+    // does not depend on where the slot or the RAM block happen to land.
+    struct { uint32_t off, sym, type; } drel[1] = {
+        { 2, 3, R_ARM_ABS32 },
+    };
+
+    RpcAppHeader hdr{};
+    hdr.magic = RPC_APP_MAGIC;
+    hdr.api_major = RPC_API_MAJOR;
+    hdr.api_minor = RPC_API_MINOR;
+    snprintf(hdr.name, sizeof(hdr.name), "misalignfix");
+
+    const uint32_t eh_sz = sizeof(Elf32_Ehdr), sh_sz = sizeof(Elf32_Shdr);
+    uint32_t off = eh_sz;
+    const uint32_t o_text    = off; off += MIS_TEXT_BYTES;
+    const uint32_t o_reltext = off; off += 2 * (uint32_t)sizeof(Elf32_Rel);
+    const uint32_t o_data    = off; off += MIS_DATA_BYTES;
+    const uint32_t o_reldata = off; off += 1 * (uint32_t)sizeof(Elf32_Rel);
+    const uint32_t o_hdr     = off; off += (uint32_t)sizeof(RpcAppHeader);
+    const uint32_t o_sym     = off; off += MIS_NSYM * (uint32_t)sizeof(Elf32_Sym);
+    const uint32_t o_str     = off; off += (uint32_t)sizeof(strtab);
+    const uint32_t o_shs     = off; off += (uint32_t)sizeof(shstr);
+    off = (off + 3u) & ~3u;
+    const uint32_t o_shdr = off; off += MIS_NSECT * sh_sz;
+
+    uint8_t *b = (uint8_t *)calloc(off, 1);
+    if (!b) return nullptr;
+
+    memcpy(b, "\x7f" "ELF", 4);
+    b[4] = 1; b[5] = 1; b[6] = 1;
+    put16(b + 16, ET_REL);
+    put16(b + 18, EM_ARM);
+    put32(b + 20, 1);
+    put32(b + 32, o_shdr);
+    put16(b + 40, (uint32_t)eh_sz);
+    put16(b + 46, (uint32_t)sh_sz);
+    put16(b + 48, MIS_NSECT);
+    put16(b + 50, MIS_NSECT - 1);            // e_shstrndx: .shstrtab is the last section
+
+    memcpy(b + o_text, text, MIS_TEXT_BYTES);
+    memcpy(b + o_data, data, MIS_DATA_BYTES);
+    memcpy(b + o_hdr, &hdr, sizeof(hdr));
+    memcpy(b + o_str, strtab, sizeof(strtab));
+    memcpy(b + o_shs, shstr, sizeof(shstr));
+    for (int i = 0; i < 2; i++) {
+        put32(b + o_reltext + i * 8, trel[i].off);
+        put32(b + o_reltext + i * 8 + 4, (trel[i].sym << 8) | trel[i].type);
+    }
+    put32(b + o_reldata, drel[0].off);
+    put32(b + o_reldata + 4, (drel[0].sym << 8) | drel[0].type);
+
+    // Symbols: locals first (ELF requires it; .symtab's sh_info below records
+    // where they end). target_fn/target_fn2 carry the Thumb bit the way GAS
+    // emits it; const_val is SHN_ABS, so its "address" is just a constant.
+    struct { uint32_t name, value, size, info, shndx; } sy[MIS_NSYM] = {
+        { 0,         0,          0, 0x00, 0 },        // reserved
+        { s_target,  0u | 1u,    2, 0x02, 1 },         // LOCAL FUNC, .text+0 | T
+        { s_target2, 6u | 1u,    2, 0x02, 1 },         // LOCAL FUNC, .text+6 | T
+        { s_const,   0x12345678u, 0, 0x01, SHN_ABS },  // LOCAL OBJECT, absolute
+        { s_main,    12u | 1u,   2, 0x12, 1 },         // GLOBAL FUNC, .text+12 | T
+    };
+    for (int i = 0; i < MIS_NSYM; i++) {
+        uint8_t *p = b + o_sym + i * sizeof(Elf32_Sym);
+        put32(p, sy[i].name);
+        put32(p + 4, sy[i].value);
+        put32(p + 8, sy[i].size);
+        p[12] = (uint8_t)sy[i].info;
+        p[13] = 0;
+        put16(p + 14, (uint16_t)sy[i].shndx);
+    }
+
+    struct { uint32_t name, type, flags, off, size, link, info, align, entsz; } sc[MIS_NSECT] = {
+        { 0,         0 /*SHT_NULL*/, 0,                         0,         0,               0, 0, 0, 0 },
+        { n_text,    SHT_PROGBITS, SHF_ALLOC | SHF_EXECINSTR,   o_text,    MIS_TEXT_BYTES,  0, 0, 4, 0 },
+        { n_reltext, SHT_REL,      0,                           o_reltext, 2 * 8u,          6, 1, 4, 8 },
+        { n_data,    SHT_PROGBITS, SHF_ALLOC | SHF_WRITE,       o_data,    MIS_DATA_BYTES,  0, 0, 4, 0 },
+        { n_reldata, SHT_REL,      0,                           o_reldata, 1 * 8u,          6, 3, 4, 8 },
+        { n_hdr,     SHT_PROGBITS, SHF_ALLOC,                   o_hdr,     (uint32_t)sizeof(RpcAppHeader), 0, 0, 4, 0 },
+        { n_sym,     SHT_SYMTAB,   0,                           o_sym,     MIS_NSYM * (uint32_t)sizeof(Elf32_Sym), 7, 4, 4, (uint32_t)sizeof(Elf32_Sym) },
+        { n_str,     SHT_STRTAB,   0,                           o_str,     (uint32_t)sizeof(strtab), 0, 0, 1, 0 },
+        { n_shstr,   SHT_STRTAB,   0,                           o_shs,     (uint32_t)sizeof(shstr),  0, 0, 1, 0 },
+    };
+    for (int i = 0; i < MIS_NSECT; i++) {
+        uint8_t *p = b + o_shdr + i * sh_sz;
+        put32(p,      sc[i].name);
+        put32(p + 4,  sc[i].type);
+        put32(p + 8,  sc[i].flags);
+        put32(p + 12, 0);
+        put32(p + 16, sc[i].off);
+        put32(p + 20, sc[i].size);
+        put32(p + 24, sc[i].link);
+        put32(p + 28, sc[i].info);
+        put32(p + 32, sc[i].align);
+        put32(p + 36, sc[i].entsz);
+    }
+
+    *len_out = off;
+    return b;
+}
+
+// Install through app_pic_install (patches the misaligned GOT_BREL site into the
+// blob), then load that same slot through app_pic_load (applies the misaligned
+// ABS32 site into RAM) — the two halves of the flash-slot path, and the two
+// places the #112 fix landed. Runs unconditionally, with no dependency on a
+// built package tree — see main() below, which calls this before the artifact
+// gate for exactly that reason.
+static int check_pic_misalign_fixture(void) {
+    uint32_t len = 0;
+    uint8_t *obj = build_pic_misalign_object(&len);
+    if (!obj) { printf("  FAIL misalign fixture: could not build the object\n"); return 1; }
+
+    g_arena = nullptr; g_used_bytes = 0; g_arena_cap = 0;
+    loader_set_allocator(alloc32, free32);
+    g_membuf = obj; g_memlen = len;
+    AppSource src{}; src.read = mem_read; src.ctx = nullptr; src.size = len;
+
+    auto block_alloc = [&](uint32_t cap) -> uint8_t * {
+        uint8_t *raw = (uint8_t *)alloc32(cap + APP_BLOCK_ALIGN);
+        if (!raw) return nullptr;
+        return (uint8_t *)(((uintptr_t)raw + (APP_BLOCK_ALIGN - 1)) & ~(uintptr_t)(APP_BLOCK_ALIGN - 1));
+    };
+
+    int bad = 0;
+    const uint32_t SLOTCAP = 4096u;
+    uint8_t *slot = block_alloc(SLOTCAP);
+    PicManifest m{};
+    if (!slot) {
+        printf("  FAIL misalign fixture: no room for the slot buffer\n");
+        bad = 1;
+    } else {
+        SlotBuf sb{slot, SLOTCAP, 0};
+        LoadResult rc = app_pic_install(src, slot_sink, &sb, &m);
+        if (rc != LOAD_OK) {
+            printf("  FAIL misalign fixture: install failed: %s\n", load_result_str(rc));
+            bad = 1;
+        } else {
+            // GOT slot A (aligned, .text+8) must read 0 — it claimed slot 0.
+            // GOT slot B (MISALIGNED, .text+2) must read 4 — it claimed slot 1.
+            uint32_t a_val = 0, b_val = 0;
+            memcpy(&a_val, slot + 8, 4);
+            memcpy(&b_val, slot + 2, 4);
+            if (a_val != 0 || b_val != 4) {
+                printf("  FAIL misalign fixture: GOT_BREL patch wrong: aligned site "
+                       "(.text+8)=%u (want 0), misaligned site (.text+2)=%u (want 4)\n",
+                       (unsigned)a_val, (unsigned)b_val);
+                bad = 1;
+            } else if (m.got_count != 2) {
+                printf("  FAIL misalign fixture: %u GOT slot(s), the object has 2\n",
+                       (unsigned)m.got_count);
+                bad = 1;
+            }
+
+            if (!bad) {
+                LoadedApp app{};
+                LoadResult lrc = app_pic_load(slot, &m, &app);
+                if (lrc != LOAD_OK) {
+                    printf("  FAIL misalign fixture: app_pic_load failed: %s\n",
+                           load_result_str(lrc));
+                    bad = 1;
+                } else {
+                    // The MISALIGNED ABS32 site (.data+2) must read the pre-patch
+                    // addend (1) PLUS the SHN_ABS constant: base(PIC_CLASS_ABS) is
+                    // 0 by definition, so the expected 0x12345679 does not depend
+                    // on where the RAM block landed, and — since it is neither the
+                    // raw addend nor the raw constant alone — it can only match if
+                    // BOTH the read of the old word and the write of the new one
+                    // went to the right (misaligned) address.
+                    uint32_t abs_val = 0;
+                    memcpy(&abs_val, (uint8_t *)app.data + m.abs[0].site, 4);
+                    if (abs_val != 0x12345679u) {
+                        printf("  FAIL misalign fixture: ABS32 patch wrong: 0x%x "
+                               "(want 0x12345679)\n", (unsigned)abs_val);
+                        bad = 1;
+                    } else if (m.abs_count != 1 || (m.abs[0].site % 4) != 2) {
+                        printf("  FAIL misalign fixture: ABS32 site bookkeeping drifted "
+                               "(%u site(s), site%%4=%u) — the fixture is no longer "
+                               "exercising a misaligned word\n",
+                               (unsigned)m.abs_count, (unsigned)(m.abs[0].site % 4));
+                        bad = 1;
+                    } else {
+                        printf("  ok   misalign fixture: 2-byte-misaligned GOT_BREL "
+                               "(.text+2) and ABS32 (.data+2) sites both round-trip "
+                               "correctly, through memcpy rather than a uint32_t* cast\n");
+                    }
+                    app_unload(&app);
+                }
+            }
+        }
+    }
+
+    app_pic_manifest_free(&m);
+    free(obj);
+    g_membuf = nullptr;
+    g_arena = nullptr; g_used_bytes = 0; g_arena_cap = 0;
+    return bad;
+}
+
 // Where build.sh actually puts the apps. It builds per BOARD, so there is no
 // single "build" directory — and there WAS a stale one left from an older
 // layout that this test happily read for hours while reporting success. The
@@ -2540,6 +2820,13 @@ static const char *missing_from(const char *dir) {
 }
 
 int main(int argc, char **argv) {
+    // Run BEFORE the built-artifact gate below, which `return`s early when this
+    // suite has nothing built to load against (task #101). The misalign fixture
+    // is synthetic and needs no built package, and it would be exactly the wrong
+    // lesson for THIS suite in particular to have a check that silently never
+    // runs in a tree nobody has built yet.
+    int fails = check_pic_misalign_fixture();
+
     // Sized from kNames so adding a package here can never write past the end —
     // it was a fixed [8] and the ninth name (backup/fileexp/sysmon, #108) walked
     // one slot off it. A count that follows the list is the fix, not a bigger
@@ -2587,7 +2874,6 @@ int main(int argc, char **argv) {
         printf("  realapp: 0 loaded, 1 failed\n");
         return 1;
     }
-    int fails = 0;
 
     // --- two copies at once, on a heap that only fits one --------------------
     //

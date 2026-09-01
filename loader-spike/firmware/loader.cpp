@@ -868,7 +868,13 @@ LoadResult app_load(const AppSource &src, LoadedApp *out) {
 
             case R_ARM_ABS32:
             case R_ARM_TARGET1: {
-                uint32_t *p = (uint32_t *)(uintptr_t)P;
+                // memcpy in/out rather than a uint32_t* cast: P is base +
+                // r_offset, and r_offset carries no alignment guarantee, so a
+                // word access at a halfword offset is UB — tolerated on M33,
+                // a fault on M0+. Same as the GOT_BREL sites below and in
+                // app_pic_install.
+                uint32_t v;
+                memcpy(&v, (void *)(uintptr_t)P, 4);
                 // S ALREADY carries the Thumb bit. AAELF stores it in st_value
                 // itself: a symbol referring to Thumb code has bit 0 set, which
                 // readelf shows as st_value = 1 for a function at the start of
@@ -880,13 +886,16 @@ LoadResult app_load(const AppSource &src, LoadedApp *out) {
                 // through the symbol lookup rather than a relocation — which is
                 // exactly why loading a package always worked and running one
                 // never did.
-                *p = *p + S;
+                v = v + S;
+                memcpy((void *)(uintptr_t)P, &v, 4);
                 break;
             }
 
             case R_ARM_REL32: {
-                uint32_t *p = (uint32_t *)(uintptr_t)P;
-                *p = *p + S - P;
+                uint32_t v;
+                memcpy(&v, (void *)(uintptr_t)P, 4);
+                v = v + S - P;
+                memcpy((void *)(uintptr_t)P, &v, 4);
                 break;
             }
 
@@ -901,23 +910,26 @@ LoadResult app_load(const AppSource &src, LoadedApp *out) {
                 // package). A nonzero one would mean "S's slot, then N bytes on",
                 // which an r9-relative load cannot express — so it is refused
                 // rather than made to point one slot away and fault far from here.
-                uint32_t *p = (uint32_t *)(uintptr_t)P;
-                if (*p != 0) {
+                uint32_t existing;
+                memcpy(&existing, (void *)(uintptr_t)P, 4);
+                if (existing != 0) {
                     set_detail(out, "GOT_BREL addend");
                     rc = LOAD_ERR_RELOC_UNSUPPORTED;
                     break;
                 }
                 uint32_t off;
                 if (!got_offset_for(S, &off)) { rc = LOAD_ERR_RELOC_RANGE; break; }
-                *p = off;
+                memcpy((void *)(uintptr_t)P, &off, 4);
                 break;
             }
 
             case R_ARM_PREL31: {
-                uint32_t *p = (uint32_t *)(uintptr_t)P;
-                int32_t a = (int32_t)(*p << 1) >> 1;          // sign-extend 31
+                uint32_t w;
+                memcpy(&w, (void *)(uintptr_t)P, 4);
+                int32_t a = (int32_t)(w << 1) >> 1;           // sign-extend 31
                 int32_t v = (int32_t)(S + a - P);
-                *p = (*p & 0x80000000u) | ((uint32_t)v & 0x7fffffffu);
+                w = (w & 0x80000000u) | ((uint32_t)v & 0x7fffffffu);
+                memcpy((void *)(uintptr_t)P, &w, 4);
                 break;
             }
 
@@ -1637,11 +1649,23 @@ LoadResult app_pic_install(const AppSource &src, SlotWrite sink, void *sink_ctx,
 
                 switch (type) {
                 case R_ARM_GOT_BREL: {
-                    uint32_t *p = (uint32_t *)(page + (site - pos));
-                    if (*p != 0) { rc = LOAD_ERR_RELOC_UNSUPPORTED; break; }   // addend, cannot express
+                    // `site` is a byte offset into the page buffer and is NOT
+                    // guaranteed 4-aligned: it comes straight from the ELF
+                    // relocation's r_offset, and one of Nova D1's GOT_BREL sites
+                    // lands on a halfword boundary. A uint32_t* cast+deref there is
+                    // undefined behaviour — unaligned word access is quietly
+                    // allowed on M33 but hard-faults on M0+ (ARMv6-M). memcpy in
+                    // and out of a local instead; the target is little-endian
+                    // native, so a 4-byte memcpy is bit-for-bit what the cast used
+                    // to do, alignment or not.
+                    uint8_t *p = page + (site - pos);
+                    uint32_t existing;
+                    memcpy(&existing, p, 4);
+                    if (existing != 0) { rc = LOAD_ERR_RELOC_UNSUPPORTED; break; }   // addend, cannot express
                     int32_t off = got_slot(cls, value, is_func);
                     if (off < 0) { rc = LOAD_ERR_RELOC_RANGE; break; }
-                    *p = (uint32_t)off;
+                    uint32_t stored = (uint32_t)off;
+                    memcpy(p, &stored, 4);
                     break;
                 }
                 case R_ARM_THM_CALL:
@@ -1818,8 +1842,17 @@ LoadResult app_pic_load(const void *slot, const PicManifest *m, LoadedApp *out) 
     uint32_t *got = (uint32_t *)data;
     for (uint32_t k = 0; k < m->got_count; k++)
         got[k] = base(m->got[k].cls) + m->got[k].value;
-    for (uint32_t a = 0; a < m->abs_count; a++)
-        *(uint32_t *)(data + m->abs[a].site) += base(m->abs[a].cls) + m->abs[a].value;
+    // Same unaligned-uint32_t* hazard as R_ARM_GOT_BREL in app_pic_install: `site`
+    // is ram_off[tgt] + the ELF relocation's r_offset (recorded above, at install
+    // time), an untrusted byte offset with no 4-byte guarantee. memcpy in and out
+    // rather than deref a cast pointer — see the GOT_BREL comment for why.
+    for (uint32_t a = 0; a < m->abs_count; a++) {
+        uint8_t *p = data + m->abs[a].site;
+        uint32_t v;
+        memcpy(&v, p, 4);
+        v += base(m->abs[a].cls) + m->abs[a].value;
+        memcpy(p, &v, 4);
+    }
 
     // The gates stay in RAM: unprivileged code returning from a supervisor call
     // executes the privilege-restoring instruction, and that is the one thing kept
