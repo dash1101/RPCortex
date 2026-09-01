@@ -46,7 +46,7 @@ static volatile UsbMode g_usb_mode = USB_MODE_CONSOLE;
 // without a lock in the hot path — a lock there would be taken on both cores
 // around the device stack, the very inversion the drive was rebuilt to avoid.
 
-enum { ACT_KEY = 0, ACT_DELAY = 1 };
+enum { ACT_KEY = 0, ACT_DELAY = 1, ACT_HOLD = 2, ACT_RELEASE = 3 };
 struct HidAction { uint8_t type; uint8_t mod; uint8_t kc; uint32_t ms; };
 
 #define HID_RING 64                    // one slot always left empty (full = head+1==tail)
@@ -56,20 +56,55 @@ static volatile uint16_t  g_tail;      // consumer (usb task)
 static volatile bool      g_abort;     // producer raises it; consumer drops the queue
 
 // Consumer-owned, read by the producer's flush.
-static volatile uint8_t   g_key_down;  // a key is pressed, waiting to be released
+static volatile uint8_t   g_key_down;  // a transient key is pressed, release it next turn
 static volatile bool      g_delaying;
 static volatile uint32_t  g_delay_until;
 
+// The HELD set — what HOLD put down and RELEASE has not yet let go of. A boot
+// keyboard report carries at most six keycodes; five of the slots can be held
+// so one is always free for the transient key that a normal keystroke taps on
+// top of them. Consumer-owned, like g_key_down.
+#define HID_HELD_MAX 5
+static volatile uint8_t   g_held_mod;          // modifiers held down
+static volatile uint8_t   g_held_keys[HID_HELD_MAX];
+static volatile uint8_t   g_held_n;
+
 #if CFG_TUD_HID
-static void hid_send(uint8_t mod, uint8_t kc) {
-    uint8_t keys[6] = { kc, 0, 0, 0, 0, 0 };   // one key at a time is plenty for typing
-    tud_hid_keyboard_report(0, mod, keys);     // report id 0: the report is the 8 bytes
+// One report: every held key and modifier, plus an optional transient key
+// tapped on top. This is the single place a report is built, so held state can
+// never be lost — a normal keystroke, a HOLD, and a RELEASE all send through
+// here and all carry whatever is currently held.
+static void report_now(uint8_t xtra_mod, uint8_t xtra_kc) {
+    uint8_t keys[6] = { 0, 0, 0, 0, 0, 0 };
+    int i = 0;
+    for (int j = 0; j < g_held_n && i < 6; j++) keys[i++] = g_held_keys[j];
+    if (xtra_kc && i < 6) keys[i++] = xtra_kc;
+    tud_hid_keyboard_report(0, (uint8_t)(g_held_mod | xtra_mod), keys);
 }
 static inline bool hid_ready(void) { return tud_hid_ready(); }
 #else
-static void hid_send(uint8_t, uint8_t) {}
+static void report_now(uint8_t, uint8_t) {}
 static inline bool hid_ready(void) { return false; }
 #endif
+
+// Add a key to the held set (idempotent, and silently full-safe). Consumer-side.
+static void held_add(uint8_t kc) {
+    if (!kc) return;
+    for (int j = 0; j < g_held_n; j++) if (g_held_keys[j] == kc) return;
+    if (g_held_n < HID_HELD_MAX) g_held_keys[g_held_n++] = kc;
+}
+// Remove one held key, or (kc==0) leave the set alone.
+static void held_remove(uint8_t kc) {
+    if (!kc) return;
+    for (int j = 0; j < g_held_n; j++) {
+        if (g_held_keys[j] == kc) {
+            for (int k = j + 1; k < g_held_n; k++) g_held_keys[k - 1] = g_held_keys[k];
+            g_held_n--;
+            return;
+        }
+    }
+}
+static void held_clear(void) { g_held_mod = 0; g_held_n = 0; }
 
 // --- the consumer: run on the usb task, core 0 ------------------------------
 
@@ -78,23 +113,30 @@ void usbhid_service(void) {
     // and do nothing else. This also covers leaving HID mid-payload — the last
     // release is sent here.
     if (g_usb_mode != USB_MODE_HID) {
-        if (g_key_down) { if (hid_ready()) { hid_send(0, 0); g_key_down = 0; } }
-        else { g_tail = g_head; g_delaying = false; }
+        // Leaving HID: let go of everything still held and stop. The last report
+        // is an all-keys-up, so a payload interrupted mid-HOLD does not leave a
+        // key stuck down on the host.
+        if (g_key_down || g_held_n || g_held_mod) {
+            if (hid_ready()) { g_key_down = 0; held_clear(); report_now(0, 0); }
+        } else { g_tail = g_head; g_delaying = false; }
         return;
     }
 
-    // Interrupted: drop the rest of the payload and release the held key.
+    // Interrupted: drop the rest of the payload and release everything held.
     if (g_abort) {
         g_tail = g_head;
         g_delaying = false;
-        if (g_key_down) { if (hid_ready()) { hid_send(0, 0); g_key_down = 0; } }
+        if (g_key_down || g_held_n || g_held_mod) {
+            if (hid_ready()) { g_key_down = 0; held_clear(); report_now(0, 0); }
+        }
         return;
     }
 
-    // A press is always followed by its release before the next action, so the
-    // host sees two distinct keystrokes for two identical characters.
+    // A transient press is always followed by its release before the next
+    // action, so the host sees two distinct keystrokes for two identical
+    // characters. The release report still carries whatever is HELD.
     if (g_key_down) {
-        if (hid_ready()) { hid_send(0, 0); g_key_down = 0; }
+        if (hid_ready()) { report_now(0, 0); g_key_down = 0; }
         return;
     }
 
@@ -121,11 +163,25 @@ void usbhid_service(void) {
         return;
     }
 
-    // A key: press it now, release it next turn. Wait for the endpoint first —
-    // if the host is not reading, the queue simply backs up and the producer
-    // blocks, which its stop() can break out of.
-    if (!hid_ready()) return;
-    hid_send(a.mod, a.kc);
+    if (!hid_ready()) return;          // host not reading yet; the queue backs up
+
+    if (a.type == ACT_HOLD) {
+        g_held_mod = (uint8_t)(g_held_mod | a.mod);
+        held_add(a.kc);
+        report_now(0, 0);              // hold takes effect now, with no transient
+        g_tail = (uint16_t)((g_tail + 1) % HID_RING);
+        return;
+    }
+    if (a.type == ACT_RELEASE) {
+        if (!a.mod && !a.kc) held_clear();
+        else { g_held_mod = (uint8_t)(g_held_mod & ~a.mod); held_remove(a.kc); }
+        report_now(0, 0);
+        g_tail = (uint16_t)((g_tail + 1) % HID_RING);
+        return;
+    }
+
+    // A key: press it now (on top of anything held), release it next turn.
+    report_now(a.mod, a.kc);
     g_key_down = 1;
     g_tail = (uint16_t)((g_tail + 1) % HID_RING);
 }
@@ -158,6 +214,12 @@ static void enqueue_key(uint8_t mod, uint8_t kc, int (*stop)(void)) {
 static void enqueue_delay(uint32_t ms, int (*stop)(void)) {
     ring_push(ACT_DELAY, 0, 0, ms, stop);
 }
+static void enqueue_hold(uint8_t mod, uint8_t kc, int (*stop)(void)) {
+    ring_push(ACT_HOLD, mod, kc, 0, stop);
+}
+static void enqueue_release(uint8_t mod, uint8_t kc, int (*stop)(void)) {
+    ring_push(ACT_RELEASE, mod, kc, 0, stop);
+}
 static int enqueue_string(const char *s, int (*stop)(void)) {
     int n = 0;
     for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
@@ -165,6 +227,29 @@ static int enqueue_string(const char *s, int (*stop)(void)) {
         uint8_t kc = 0, sh = 0;
         if (!hid_ascii_to_keycode((char)*p, &kc, &sh)) continue;   // skip what a keyboard cannot type
         enqueue_key(sh ? HID_MOD_SHIFT : 0, kc, stop);
+        n++;
+    }
+    return n;
+}
+
+// ALTSTRING: type each character by its decimal code on the number pad while
+// Alt is held — the Windows "Alt code" trick, which a host turns into the
+// character independent of its keyboard layout. Hold Alt, tap the keypad digits
+// of the ASCII value, release Alt, and the character appears on release.
+static int enqueue_altstring(const char *s, int (*stop)(void)) {
+    int n = 0;
+    for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
+        if (stop && stop()) { g_abort = true; break; }
+        unsigned code = (unsigned)*p;             // the ASCII value to spell out
+        char digits[6];
+        int d = 0;
+        if (code == 0) digits[d++] = '0';
+        else for (unsigned v = code; v && d < (int)sizeof(digits); v /= 10)
+            digits[d++] = (char)('0' + (v % 10));
+        enqueue_hold(HID_MOD_ALT, 0, stop);       // Alt down
+        for (int i = d - 1; i >= 0; i--)          // digits most-significant first
+            enqueue_key(0, hid_digit_to_keypad(digits[i] - '0'), stop);
+        enqueue_release(0, 0, stop);              // Alt up -> the character lands
         n++;
     }
     return n;
@@ -182,11 +267,15 @@ static void d_key(void *ctx, uint8_t mod, uint8_t kc) { enqueue_key(mod, kc, ((D
 static void d_text(void *ctx, const char *s)          { enqueue_string(s, ((DuckyCtx *)ctx)->stop); }
 static void d_delay(void *ctx, uint32_t ms)           { enqueue_delay(ms, ((DuckyCtx *)ctx)->stop); }
 static int  d_stop(void *ctx) { DuckyCtx *c = (DuckyCtx *)ctx; return c->stop ? c->stop() : 0; }
+static void d_hold(void *ctx, uint8_t mod, uint8_t kc)    { enqueue_hold(mod, kc, ((DuckyCtx *)ctx)->stop); }
+static void d_release(void *ctx, uint8_t mod, uint8_t kc) { enqueue_release(mod, kc, ((DuckyCtx *)ctx)->stop); }
+static void d_altstring(void *ctx, const char *s)        { enqueue_altstring(s, ((DuckyCtx *)ctx)->stop); }
 
 int usbhid_run_ducky(const char *script, int (*stop)(void), int *error_line) {
     DuckyCtx c = { stop };
     DuckyEmit e;
-    e.key = d_key; e.text = d_text; e.delay = d_delay; e.stop = d_stop; e.ctx = &c;
+    e.key = d_key; e.text = d_text; e.delay = d_delay; e.stop = d_stop;
+    e.hold = d_hold; e.release = d_release; e.altstring = d_altstring; e.ctx = &c;
     DuckyState st;
     int lines = ducky_run(script, &st, &e);
     if (error_line) *error_line = st.error_line;
@@ -211,11 +300,13 @@ bool usb_mode_enter(UsbMode m) {
     if (!usbmode_can_enter(g_usb_mode, m)) return false;
     if (m == USB_MODE_HID) {
         // Arm an empty queue before the service turn can see HID as active, so a
-        // stale action from a previous run cannot be typed into this one.
+        // stale action from a previous run cannot be typed into this one. The
+        // held set starts empty too — no key from a previous session is down.
         g_head = g_tail = 0;
         g_key_down = 0;
         g_delaying = false;
         g_abort = false;
+        held_clear();
         __sync_synchronize();
     }
     g_usb_mode = m;

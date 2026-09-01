@@ -59,6 +59,19 @@
 #define HK_UP         0x52
 #define HK_MENU       0x65   // the "application"/context-menu key
 
+// The number pad, which is a separate set of keycodes from the digit row. It
+// matters for one thing: an Alt+numpad code, the Windows way of typing a
+// character by its decimal value (ALTSTRING / ALTCHAR). Only the keypad digits
+// count for that — the digit row does not produce an alt code.
+#define HK_KP_1       0x59   // KP 1..9 run 0x59..0x61
+#define HK_KP_0       0x62
+
+// The decimal digit d (0..9) as its KEYPAD keycode, for an Alt+numpad code.
+static inline uint8_t hid_digit_to_keypad(int d) {
+    if (d <= 0 || d > 9) return HK_KP_0;      // 0 sits after 9, not before 1
+    return (uint8_t)(HK_KP_1 + (d - 1));
+}
+
 // Map one printable ASCII character to a keycode + shift. Returns false for
 // anything outside 0x20..0x7E (control characters and the top bit set), which
 // the caller turns into "nothing to type" rather than a wrong key.

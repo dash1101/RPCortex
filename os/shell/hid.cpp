@@ -154,7 +154,9 @@ static bool payload_path(const char *arg, char *out, size_t cap) {
 static int cmd_badusb(int argc, char **argv) {
     if (argc < 2) {
         out_multi("Usage: badusb <file>");
-        out_multi("  Runs a DuckyScript payload as USB keystrokes.");
+        out_multi("  Runs a DuckyScript payload as USB keystrokes. Reads the Hak5");
+        out_multi("  1.0 set plus the common Flipper extensions (REM_BLOCK, REPEAT,");
+        out_multi("  HOLD/RELEASE, ALTSTRING, SYSRQ), so a Flipper payload runs as is.");
         out_multi("  A bare name is found in /nova/badusb or /badusb; or give a path.");
         out_multi("  Aim the host at the target window first; Ctrl+C stops it.");
         return 1;

@@ -6,23 +6,40 @@
 // what to do, so the same reader drives the real keyboard on the device and a
 // recording mock in the host tests. It never touches USB itself.
 //
-// Grounded in the Hak5 DuckyScript 1.0 command set, not recall — a wrong key
-// name types silence, which is the failure that is invisible until it is on a
-// real machine.
+// Grounded in the Hak5 DuckyScript command set, not recall — a wrong key name
+// types silence, which is the failure that is invisible until it is on a real
+// machine. Beyond the 1.0 basics it also reads the common Flipper Zero
+// extensions, so a payload written for a Flipper runs here unchanged:
+//
+//   REM_BLOCK / END_REM      a multi-line comment
+//   REPEAT <n>               run the previous command n more times
+//   HOLD <key> / RELEASE     hold a key or modifier down, release it later
+//   ALTSTRING <text>         type text via Alt+numpad codes (layout-independent)
+//   ALTCHAR <text>           same, the single-character spelling
+//   SYSRQ <key>              the Linux magic-SysRq chord (Alt+PrintScreen+key)
+//   WAIT_FOR_BUTTON_PRESS    a no-op here: there is no Flipper OK button, so it
+//                            is recognised and skipped rather than mistyped
 #ifndef RPC_DUCKY_H
 #define RPC_DUCKY_H
 
 #include <stdint.h>
 
 // What a line turns into. The emitter owns press-and-release; `key` is one
-// chord (modifiers held while the keycode is tapped). `stop` lets a long
-// payload be interrupted — the runner asks it between lines and it returns
-// nonzero to abort, which is how Ctrl+C on the console stops a runaway script.
+// chord (modifiers held while the keycode is tapped). `hold` presses a key or
+// modifier and KEEPS it down until a matching `release` (release with mod==0
+// and keycode==0 lets go of everything) — that is HOLD/RELEASE, and every
+// keystroke in between carries the held keys. `altstring` types a run of text
+// as Alt+numpad codes. `stop` lets a long payload be interrupted — the runner
+// asks it between lines and it returns nonzero to abort, which is how Ctrl+C on
+// the console stops a runaway script.
 typedef struct {
     void (*key)(void *ctx, uint8_t mod, uint8_t keycode);
     void (*text)(void *ctx, const char *s);
     void (*delay)(void *ctx, uint32_t ms);
     int  (*stop)(void *ctx);
+    void (*hold)(void *ctx, uint8_t mod, uint8_t keycode);     // press and keep held
+    void (*release)(void *ctx, uint8_t mod, uint8_t keycode);  // (0,0) releases all
+    void (*altstring)(void *ctx, const char *s);               // type via Alt+numpad
     void *ctx;
 } DuckyEmit;
 
