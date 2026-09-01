@@ -27,11 +27,65 @@ namespace cmd {
 // storage, check the pins, and register the screen so it comes up at every boot
 // without anyone typing anything.
 
+// The example BadUSB payloads setup drops into /nova/badusb, so the launcher and
+// `badusb` have something to run the first time. One shows the basics, one tours
+// the Flipper extensions the reader understands, one is a single-chord demo.
+// Written only when absent — a name a person has edited is never overwritten.
+struct SeedPayload { const char *name; const char *body; };
+static const SeedPayload kSeedPayloads[] = {
+    { "hello.txt",
+      "REM The simplest payload: type a line and press Enter. Aim the host at a\n"
+      "REM text field, then:  badusb hello.txt\n"
+      "DELAY 500\n"
+      "STRING Hello from a Nova D1!\n"
+      "ENTER\n" },
+    { "flipper-demo.txt",
+      "REM_BLOCK\n"
+      "  A tour of the Flipper DuckyScript extensions the Nova D1 understands.\n"
+      "  Harmless -- it only types into a text field. Aim the host at an editor.\n"
+      "END_REM\n"
+      "DEFAULTDELAY 300\n"
+      "STRING These next three letters are HELD in uppercase:\n"
+      "ENTER\n"
+      "HOLD SHIFT\n"
+      "STRING abc\n"
+      "RELEASE\n"
+      "ENTER\n"
+      "REM ALTSTRING types by Alt+numpad code, independent of the host layout:\n"
+      "ALTSTRING Nova\n"
+      "ENTER\n"
+      "REM REPEAT runs the previous line again:\n"
+      "STRING dot\n"
+      "REPEAT 3\n"
+      "ENTER\n" },
+    { "lock-screen.txt",
+      "REM Lock a Windows workstation (Win+L). Benign, and a tidy chord demo.\n"
+      "DELAY 500\n"
+      "GUI l\n" },
+};
+
+static void seed_badusb_examples(void) {
+    const char *dir = "/nova/badusb";
+    fw_mkdir(dir);                                 // harmless if it already exists
+    int wrote = 0, kept = 0;
+    for (unsigned i = 0; i < sizeof(kSeedPayloads) / sizeof(kSeedPayloads[0]); i++) {
+        char path[64];
+        snprintf(path, sizeof(path), "%s/%s", dir, kSeedPayloads[i].name);
+        if (fw_file_exists(path)) { kept++; continue; }   // never clobber an edit
+        uint32_t len = (uint32_t)strlen(kSeedPayloads[i].body);
+        if (fw_file_write(path, kSeedPayloads[i].body, len)) wrote++;
+    }
+    if (wrote) fw_printf("  badusb     %d example payload%s in %s\n",
+                         wrote, wrote == 1 ? "" : "s", dir);
+    else if (kept) fw_printf("  badusb     examples already in %s\n", dir);
+}
+
 int setup(void) {
     fw_printf("Nova D1 setup\n\n");
 
     nova::paths_init();
     fw_printf("  storage    %s\n", fw_file_exists(NOVA_ROOT) ? NOVA_ROOT : "COULD NOT CREATE");
+    seed_badusb_examples();
 
     static char report[1024];
     unsigned bad = board::check(report, sizeof(report));
