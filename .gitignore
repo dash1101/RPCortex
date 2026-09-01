@@ -94,7 +94,18 @@ os/CONTAIN-RESUME.md
 
 # The emulator platform is a third-party checkout plus a built DLL; emu/run.sh
 # fetches and builds it on first use.
-emu/Renode_RP2040/
+emu/Renode_RP2040
 
-# Worktrees this session creates for parallel work. Never part of the tree.
+# Per-worktree scratch directories; never part of the tree.
 .claude/
+
+# Robot Framework run artifacts and Renode VM snapshots — regenerated output,
+# and they bake the absolute path a run was invoked from into their contents.
+log.html
+report.html
+robot_output.xml
+emu/log.html
+emu/report.html
+emu/robot_output.xml
+emu/snapshots/
+emu/logs/

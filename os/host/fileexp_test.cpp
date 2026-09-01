@@ -311,14 +311,14 @@ int main(void) {
     // --- parents ------------------------------------------------------------
     {
         char p[64];
-        fx_parent(p, sizeof(p), "/home/dash/notes.txt");
-        ck(strcmp(p, "/home/dash") == 0, "the parent of a deep path");
+        fx_parent(p, sizeof(p), "/home/alice/notes.txt");
+        ck(strcmp(p, "/home/alice") == 0, "the parent of a deep path");
         fx_parent(p, sizeof(p), "/home");
         ck(strcmp(p, "/") == 0, "the parent of a top-level folder is the root");
         // The one that matters: without this, going up walks off the top for ever.
         fx_parent(p, sizeof(p), "/");
         ck(strcmp(p, "/") == 0, "the root is its own parent");
-        fx_parent(p, sizeof(p), "/home/dash/");
+        fx_parent(p, sizeof(p), "/home/alice/");
         ck(strcmp(p, "/home") == 0, "a trailing slash does not cost a level");
     }
 
