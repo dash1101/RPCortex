@@ -50,6 +50,7 @@
 #include "../apps/novad1/novagui_media.cpp"
 #include "../apps/novad1/novagui_contact.cpp"
 #include "../apps/novad1/novagui_radios.cpp"
+#include "../apps/novad1/novagui_sensors.cpp"
 #include "../apps/novad1/novagui_usb.cpp"
 #include "../apps/novad1/novagui_tasks.cpp"
 #include "../apps/novad1/novagui.cpp"
@@ -2458,18 +2459,35 @@ static void test_lora_messages(void) {
 // board whose SX1276 reads absent. "ready" now means PRESENT; UNKNOWN reads
 // "unchecked". Reintroduce by returning "ready" for MOD_UNKNOWN and the first
 // assertion goes red.
+//
+// gps, dht11 and ir used to be the "screen not yet written" case this test was
+// named for — now that they have screens, they join cc1101/sx1276 as
+// module-gated and wired-by-default, so they read "unchecked" until THEIR
+// screen probes them, the same as an SPI radio. battery is the different one:
+// PIN_BATTERY has no board default at all (see novapower.h), so it is
+// MOD_UNWIRED rather than MOD_UNKNOWN and reads "no module" — reintroduce by
+// treating MOD_UNWIRED as MOD_UNKNOWN in apps_state and this assertion goes red.
 static void test_apps_state_is_honest(void) {
     using namespace nova;
     modules_scan();                                   // SPI radios settle to UNKNOWN
     const gui::App *lora  = find_app("sx1276");        // SPI radio, module-gated
     const gui::App *clock = find_app("clock");         // built-in, nothing to probe
-    const gui::App *gps   = find_app("gps");           // screen not written yet
+    const gui::App *gps   = find_app("gps");           // wired by default, unprobed
+    const gui::App *dht   = find_app("dht11");         // wired by default, unprobed
+    const gui::App *ir    = find_app("ir");            // wired by default, unprobed
+    const gui::App *batt  = find_app("battery");       // no board default at all
     ok(lora  && !strcmp(cmd::apps_state(*lora),  "unchecked"),
        "an unprobed SPI radio is 'unchecked', not 'ready'");
     ok(clock && !strcmp(cmd::apps_state(*clock), "ready"),
        "a built-in with no chip to probe is ready");
-    ok(gps   && !strcmp(cmd::apps_state(*gps),   "not built"),
-       "a screen not yet written is 'not built'");
+    ok(gps   && !strcmp(cmd::apps_state(*gps),   "unchecked"),
+       "GPS is wired by default and unprobed, same as an SPI radio");
+    ok(dht   && !strcmp(cmd::apps_state(*dht),   "unchecked"),
+       "so is the DHT11 pin");
+    ok(ir    && !strcmp(cmd::apps_state(*ir),    "unchecked"),
+       "so is the IR receiver pin");
+    ok(batt  && !strcmp(cmd::apps_state(*batt),  "no module"),
+       "battery has no default pin at all, which reads differently from unprobed");
 }
 
 // --- the BadUSB launcher ----------------------------------------------------------
@@ -2546,6 +2564,288 @@ static void test_badusb(void) {
     gui::go_home();
 }
 
+// --- Battery, Climate, GPS and IR: gated on real hardware, not a wired pin ------
+//
+// Four screens with no firmware command behind them — see novagui_sensors.cpp's
+// own note on why — so none of them go through shell_says. Each is proven
+// against the ABI hook it actually calls: a scripted ADC channel, a scripted
+// one-wire waveform with its own virtual clock, a canned UART buffer, a
+// scripted edge count. Every one of the four must show a real "no chip"
+// answer on the reference profile's OWN wiring before it is ever told a chip
+// is there, because "the pin is assigned" is exactly the claim these screens
+// exist to NOT make on its own.
+
+// Which text row (0-indexed from ui::TOP) has anything lit, after clearing and
+// drawing the top screen fresh. A raw pixel COUNT is the wrong tool for
+// telling "this branch drew two lines" from "this branch drew three" apart —
+// two different two-line messages can happen to light very nearly the same
+// number of pixels, which is exactly the case a gate-condition mutation
+// produces (a different message of about the same size, not a blank panel).
+// Row occupancy is what the branch actually decided; this reads that back.
+static bool row_has(int row) {
+    using namespace nova;
+    ui::Screen *s = gui::top();
+    if (!s) return false;
+    Canvas &c = gui::canvas();
+    c.clear(0);
+    s->draw(c);
+    int y0 = ui::TOP + row * ui::ROWH;
+    for (int y = y0; y < y0 + ui::FH && y < c.height(); y++)
+        for (int x = 0; x < c.width(); x++) if (c.get(x, y)) return true;
+    return false;
+}
+
+static void test_battery(void) {
+    using namespace nova;
+    using namespace nova::screens;
+
+    board::clear(board::PIN_BATTERY);      // the reference profile default: none
+    g_adc_script = true;
+
+    // --- absent: no pin at all, the ordinary state of this board. Three rows:
+    // "No sense pin.", "Set one with", and the "d1 pins set battery" remedy —
+    // the same three-line shape iButton's own "no pin" message uses.
+    eq(board::pin(board::PIN_BATTERY), board::PIN_NONE, "no default battery pin on this profile");
+    g_ms += 6000;                          // past novapower.cpp's 5s cache
+    ui::Screen *s = open_app("battery");
+    ok(s && !strcmp(s->title(), "Battery"), "the Battery screen opens");
+    eq((int)s->on_event(EV_ROT_CW), (int)ui::ACT_STAY, "a turn does not trap");
+    eq((int)s->on_event(EV_BACK),   (int)ui::ACT_BACK, "and BACK is not trapped");
+    ok(power::percent() < 0, "the gate reads absent with no pin at all");
+    ok(row_has(0) && row_has(1) && row_has(2),
+       "'no sense pin' draws its message and the remedy to set one");
+
+    // --- wired, but nothing plausible behind it: a divider never fitted.
+    // Also two rows, a different message, and still not a reading.
+    board::set(board::PIN_BATTERY, 26);    // ADC channel 0
+    g_adc_raw[0] = 0;
+    g_ms += 6000;
+    ok(power::percent() < 0, "a wired pin with no plausible reading is still absent");
+    s = open_app("battery");
+    ok(row_has(0) && !row_has(2), "'no reading' is two rows too, not three");
+
+    // --- present: a plausible divider reading. Three rows: percent, mV,
+    // source — the one shape only a real reading takes.
+    g_adc_raw[0] = 2295;                   // the same arithmetic novapower.cpp runs
+    g_ms += 6000;
+    eq(power::millivolts(), 3698, "the screen's reading is novapower's own arithmetic");
+    eq(power::percent(), 58, "and so is the percentage");
+    s = open_app("battery");
+    s->tick(33);
+    ok(row_has(0) && row_has(1) && row_has(2),
+       "a present battery draws all three rows: percent, millivolts, source");
+
+    g_adc_script = false;
+    g_adc_raw[0] = -1;
+    board::clear(board::PIN_BATTERY);
+    gui::go_home();
+}
+
+// Encode one 5-byte DHT frame as a waveform: the 80/80us ACK, then forty bits
+// each 50us low and 27us (zero) or 70us (one) high — dht_read_raw's own shape
+// in novagui_sensors.cpp, driven by the fake's scripted clock rather than the
+// wall one. Ends with one more low pulse, the same as the real part does: the
+// last bit's HIGH duration is measured by timing how long it lasts before the
+// NEXT low edge, so without one final edge after bit 39 there is nothing to
+// time it against and the read spins until DHT_TIMEOUT instead of finishing —
+// caught by running this very waveform through dht_read_raw before trusting
+// it. Returns the segment count.
+static int dht_build_wave(const unsigned char *b, DhtSeg *wave) {
+    int n = 0;
+    wave[n].level = 0; wave[n].dur_us = 80; n++;
+    wave[n].level = 1; wave[n].dur_us = 80; n++;
+    for (int byte = 0; byte < 5; byte++) {
+        for (int bit = 7; bit >= 0; bit--) {
+            bool one = (b[byte] >> bit) & 1;
+            wave[n].level = 0; wave[n].dur_us = 50; n++;
+            wave[n].level = 1; wave[n].dur_us = (uint32_t)(one ? 70 : 27); n++;
+        }
+    }
+    wave[n].level = 0; wave[n].dur_us = 50; n++;      // the closing edge
+    return n;
+}
+
+static void test_climate(void) {
+    using namespace nova;
+    using namespace nova::screens;
+
+    board::clear(board::PIN_DHT);
+    const unsigned pin = (unsigned)board::pin(board::PIN_DHT);
+    ok(pin != (unsigned)board::PIN_NONE, "DHT11 is wired on the reference profile");
+
+    ui::Screen *s = open_app("dht11");
+    ok(s && !strcmp(s->title(), "Climate"), "the Climate screen opens");
+    eq((int)s->on_event(EV_ROT_CW), (int)ui::ACT_STAY, "a turn does not trap");
+    eq((int)s->on_event(EV_BACK),   (int)ui::ACT_BACK, "and BACK is not trapped");
+
+    // --- a clean frame: 55.0% humidity, 23.0C.
+    unsigned char good[5] = { 55, 0, 23, 0, 0 };
+    good[4] = (unsigned char)(good[0] + good[1] + good[2] + good[3]);
+    DhtSeg wave[2 + 40 * 2 + 1];
+    int wn = dht_build_wave(good, wave);
+
+    dht_wave_script(pin, wave, (unsigned)wn);
+    g_run_spawned = 1;                 // the worker runs inline, on this call
+    s = open_app("dht11");
+    s->tick(33);                       // enter() armed the request; this reaps it
+    g_run_spawned = 0;
+    dht_wave_clear();
+
+    eq((int)g_cl_err, (int)DHT_OK, "a clean waveform decodes with no error");
+    eq((int)g_cl_bytes[0], 55, "the humidity integer byte round-trips");
+    eq((int)g_cl_bytes[2], 23, "and so does the temperature integer byte");
+    int present_pixels = lit_pixels();
+    ok(present_pixels > 12, "and the reading reaches the panel");
+
+    // --- THE ONE THAT MATTERS: a frame whose checksum does not add up. The
+    // bytes look exactly like a real reading; only the sum says no.
+    unsigned char bad[5] = { 55, 0, 23, 0, 0 };
+    bad[4] = (unsigned char)(bad[0] + bad[1] + bad[2] + bad[3] + 1);   // wrong on purpose
+    wn = dht_build_wave(bad, wave);
+    dht_wave_script(pin, wave, (unsigned)wn);
+    g_run_spawned = 1;
+    s = open_app("dht11");
+    s->tick(33);
+    g_run_spawned = 0;
+    dht_wave_clear();
+    eq((int)g_cl_err, (int)DHT_CHECKSUM, "a frame whose checksum fails is not accepted");
+    ok(lit_pixels() != present_pixels, "and does not draw the same panel as a good read");
+
+    // --- nothing answers: the line never goes low.
+    dht_wave_script(pin, nullptr, 0);
+    g_run_spawned = 1;
+    s = open_app("dht11");
+    s->tick(33);
+    g_run_spawned = 0;
+    dht_wave_clear();
+    eq((int)g_cl_err, (int)DHT_NO_RESPONSE, "a silent line is 'nothing answered', not a decoded zero");
+
+    // --- no pin at all: the defensive case — DHT is wired by default, so the
+    // catalogue gate does not normally stop here first, but a pin cleared
+    // with the screen still reachable must be said plainly, same as iButton.
+    board::set(board::PIN_DHT, board::PIN_NONE);
+    s = open_app("dht11");
+    ok(lit_pixels() > 12, "an unwired DHT says so rather than drawing nothing");
+    board::clear(board::PIN_DHT);
+
+    gui::go_home();
+}
+
+static void test_gps(void) {
+    using namespace nova;
+    using namespace nova::screens;
+
+    board::clear(board::PIN_GPS_TX);
+    board::clear(board::PIN_GPS_RX);
+    ok(board::pin(board::PIN_GPS_TX) != board::PIN_NONE &&
+       board::pin(board::PIN_GPS_RX) != board::PIN_NONE,
+       "GPS is wired on the reference profile");
+
+    // The checksum and field parser, proven against a sentence this file
+    // builds and controls — not a memorised example, so nothing here depends
+    // on recalling a real checksum correctly.
+    char body[64];
+    snprintf(body, sizeof(body), "$GPGGA,120000,0000.000,N,00000.000,E,1,07,1.0,0.0,M,0.0,M,,");
+    unsigned x = 0;
+    for (const char *p = body + 1; *p; p++) x ^= (unsigned char)*p;
+    char sent[80];
+    snprintf(sent, sizeof(sent), "%s*%02X\r\n", body, x);
+
+    ok(nmea_checksum_ok(sent), "a sentence built with the matching XOR checks out");
+    char fq[4], sats[4];
+    ok(nmea_field(sent, 6, fq, sizeof(fq)) && !strcmp(fq, "1"), "field 6 is the fix quality");
+    ok(nmea_field(sent, 7, sats, sizeof(sats)) && !strcmp(sats, "07"), "field 7 is the satellite count");
+
+    char corrupt[80];
+    snprintf(corrupt, sizeof(corrupt), "%s", sent);
+    corrupt[10] ^= 0x20;                              // one flipped byte in the payload
+    ok(!nmea_checksum_ok(corrupt), "and a single flipped byte is rejected");
+
+    // --- no pin at all.
+    board::set(board::PIN_GPS_TX, board::PIN_NONE);
+    ui::Screen *s = open_app("gps");
+    ok(s && !strcmp(s->title(), "GPS"), "the GPS screen opens");
+    eq((int)s->on_event(EV_ROT_CCW), (int)ui::ACT_STAY, "a turn does not trap");
+    eq((int)s->on_event(EV_BACK),    (int)ui::ACT_BACK, "and BACK is not trapped");
+    int nopin_pixels = lit_pixels();
+    ok(nopin_pixels > 12, "and it says a pin is needed rather than drawing nothing");
+    board::clear(board::PIN_GPS_TX);
+
+    // --- wired, but nothing readable on the wire.
+    uart_feed("");
+    s = open_app("gps");
+    s->tick(33);
+    ok(!g_gps_have, "a wired pin with nothing behind it is not a GPS either");
+    int quiet_pixels = lit_pixels();
+    ok(quiet_pixels > 12 && quiet_pixels != nopin_pixels,
+       "and reads differently from 'no pin at all'");
+
+    // --- present: a checksummed sentence arrives.
+    uart_feed(sent);
+    s->tick(33);
+    ok(g_gps_have, "a checksummed sentence is recognised");
+    ok(g_gps_fixed, "GGA fix quality 1 reads as a fix");
+    streq_(g_gps_sats, "07", "and the satellite count is kept");
+    ok(lit_pixels() != quiet_pixels, "a fix draws a different picture from silence");
+
+    uart_feed("");
+    gui::go_home();
+}
+
+static void test_ir(void) {
+    using namespace nova;
+    using namespace nova::screens;
+
+    board::clear(board::PIN_IR_RX);
+    const int pin = board::pin(board::PIN_IR_RX);
+    ok(pin != board::PIN_NONE, "IR is wired on the reference profile");
+    g_gpio_ev_script = true;
+
+    // --- no pin at all.
+    board::set(board::PIN_IR_RX, board::PIN_NONE);
+    ui::Screen *s = open_app("ir");
+    ok(s && !strcmp(s->title(), "IR"), "the IR screen opens");
+    eq((int)s->on_event(EV_ROT_CW), (int)ui::ACT_STAY, "a turn does not trap");
+    eq((int)s->on_event(EV_SELECT), (int)ui::ACT_STAY, "neither does SELECT");
+    eq((int)s->on_event(EV_BACK),   (int)ui::ACT_BACK, "and BACK is not trapped");
+    ok(lit_pixels() > 12, "and it says a pin is needed rather than drawing nothing");
+    board::clear(board::PIN_IR_RX);
+
+    // --- a receiver that cannot even arm the watch: the GPIO refuses.
+    g_gpio_watch_fail = true;
+    s = open_app("ir");
+    int fail_pixels = lit_pixels();
+    ok(fail_pixels > 12, "a refused watch still draws something");
+    g_gpio_watch_fail = false;
+
+    // --- armed, quiet: the two cases this screen cannot and must not tell
+    // apart — a receiver that has never seen a signal and one that is not
+    // fitted at all.
+    g_gpio_ev_count[pin] = 0;
+    s = open_app("ir");
+    s->tick(33);
+    ok(!g_ir_seen, "no edges counted is not proof either way");
+    int quiet_pixels = lit_pixels();
+    ok(quiet_pixels > 12 && quiet_pixels != fail_pixels,
+       "and reads differently from a GPIO that would not even arm");
+
+    // --- present: a remote is pressed, edges arrive.
+    g_gpio_ev_count[pin] = 3;
+    s->tick(33);
+    ok(g_ir_seen, "a nonzero edge count is proof a receiver answered");
+    ok(lit_pixels() != quiet_pixels, "which draws differently from silence");
+
+    // A later quiet poll must not un-prove it: one press is proof, and
+    // forgetting it would be the false negative this screen exists to avoid.
+    g_gpio_ev_count[pin] = 0;
+    s->tick(33);
+    ok(g_ir_seen, "seeing one signal is not forgotten on the next quiet poll");
+
+    g_gpio_ev_script = false;
+    board::clear(board::PIN_IR_RX);
+    gui::go_home();
+}
+
 int main(void) {
     STAGE(test_single_instance);
     STAGE(test_one_detent_animates);
@@ -2587,6 +2887,10 @@ int main(void) {
     STAGE(test_radio_status_is_re_asked);
     STAGE(test_lora_messages);
     STAGE(test_badusb);
+    STAGE(test_battery);
+    STAGE(test_climate);
+    STAGE(test_gps);
+    STAGE(test_ir);
     STAGE(test_apps_state_is_honest);
     STAGE(test_set_time_reports_the_truth);
     STAGE(test_tap_drives_the_lock_on_a_dark_panel);

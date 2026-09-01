@@ -43,10 +43,18 @@ static int      g_i2c_writes;
 // is what a device out of the box actually says.
 static int      g_bta_playing;
 
+// Climate's one-wire read times a busy loop against fw_micros(), which this
+// fake otherwise never advances on its own — see the DHT waveform script
+// further down, by fw_gpio_get. While it is loaded, fw_micros() reads ITS
+// clock instead of the wall one, because the read has to see time pass on
+// every poll or a missing edge would spin forever instead of timing out.
+static bool     g_dht_wave_on;
+static uint32_t g_dht_clock;
+
 extern "C" {
 
 uint32_t fw_millis(void) { return g_ms; }
-uint32_t fw_micros(void) { return g_ms * 1000u; }
+uint32_t fw_micros(void) { return g_dht_wave_on ? g_dht_clock : g_ms * 1000u; }
 void     fw_task_sleep_ms(uint32_t ms) { g_ms += ms; }
 void     fw_task_yield(void) {}
 // Scriptable, because a worker loop that does not check it is a worker that
@@ -439,17 +447,84 @@ int fw_gpio_usable(unsigned p) { return (p < 30 && p != 23 && p != 24 && p != 25
 // the quadrature decode from a host — an injected gesture is post-decode.
 static bool g_gpio_script = false;
 static int  g_gpio_level[40];
+
+// A DHT one-wire waveform, for Climate. A read is a list of (level, duration)
+// segments — the 80us/80us ACK, then forty 50us-low/26-or-70us-high bits — and
+// this walks a virtual clock through them, a few microseconds at a time, on
+// every fw_gpio_get of the ONE pin being scripted. fw_micros() (above) reads
+// the same clock while it runs, so wait_level's busy loop sees exactly the
+// waveform a test built and nothing about the host's real clock. OFF (a null
+// list) by default; a test loads one around the read it is proving and clears
+// it after, the same discipline g_run_spawned already follows.
+struct DhtSeg { int level; uint32_t dur_us; };
+static const DhtSeg *g_dht_wave;
+static unsigned      g_dht_wave_n;
+static int           g_dht_pin = -1;
+static unsigned      g_dht_seg;
+static uint32_t      g_dht_seg_at;
+
+static void dht_wave_script(unsigned pin, const DhtSeg *wave, unsigned n) {
+    g_dht_pin = (int)pin; g_dht_wave = wave; g_dht_wave_n = n;
+    g_dht_wave_on = true; g_dht_clock = 0; g_dht_seg = 0; g_dht_seg_at = 0;
+}
+static void dht_wave_clear(void) {
+    g_dht_wave = nullptr; g_dht_wave_n = 0; g_dht_pin = -1; g_dht_wave_on = false;
+}
+
+static int dht_wave_level(void) {
+    g_dht_clock += 4;      // us per poll: coarse, still splits 27us from 70us
+    while (g_dht_seg < g_dht_wave_n &&
+           g_dht_clock - g_dht_seg_at >= g_dht_wave[g_dht_seg].dur_us) {
+        g_dht_seg_at += g_dht_wave[g_dht_seg].dur_us;
+        g_dht_seg++;
+    }
+    // Past the end of a scripted frame: idle high, forever, exactly like a
+    // sensor that has finished answering and a pull-up holding the rest.
+    return g_dht_seg < g_dht_wave_n ? g_dht_wave[g_dht_seg].level : 1;
+}
+
 int fw_gpio_init(unsigned, int) { return 0; }
 int fw_gpio_pull(unsigned, int) { return 0; }
 int fw_gpio_put(unsigned, int) { return 0; }
 int fw_gpio_get(unsigned pin) {
+    // Keyed on g_dht_wave_on, NOT on g_dht_wave being non-null: an empty/null
+    // wave is how a test scripts "nothing ever pulls the line low", and it
+    // still has to advance the virtual clock on every poll — dht_wave_level()
+    // already returns idle-high for that case. Keying this on the pointer
+    // instead skips dht_wave_level() entirely for that one script, fw_micros()
+    // then never moves, and wait_level's timeout check compares a frozen clock
+    // to itself forever. That is not a hang on real hardware; it was one here.
+    if (g_dht_wave_on && (int)pin == g_dht_pin) return dht_wave_level();
     if (g_gpio_script && pin < 40) return g_gpio_level[pin];
     return 1;
 }
-int fw_gpio_watch(unsigned, int) { return 0; }
-int fw_gpio_events(unsigned, int *level) { if (level) *level = 1; return 0; }
+// Scripted edge counts, for IR: a receiver only ever proves itself by
+// toggling, so the fake's "has anything happened" is a count a test sets and
+// this reads once and zeroes, the same one-shot shape the real ABI documents.
+// g_gpio_watch_fail makes arming refuse, for the "GPIO would not arm" path.
+static bool g_gpio_ev_script  = false;
+static int  g_gpio_ev_count[40];
+static bool g_gpio_watch_fail = false;
+int fw_gpio_watch(unsigned, int edges) { return (edges && g_gpio_watch_fail) ? -1 : 0; }
+int fw_gpio_events(unsigned pin, int *level) {
+    if (level) *level = 1;
+    if (g_gpio_ev_script && pin < 40) {
+        int n = g_gpio_ev_count[pin];
+        g_gpio_ev_count[pin] = 0;
+        return n;
+    }
+    return 0;
+}
 int fw_adc_init(unsigned) { return 0; }
-int fw_adc_read(unsigned) { return -1; }
+// Scripted per-channel raw reading, for Battery. -1 by default: the same
+// "nothing to see" fw_adc_read gives for real before anything has called
+// fw_adc_init, which is what an unwired PIN_BATTERY looks like from here too.
+static bool g_adc_script = false;
+static int  g_adc_raw[4] = { -1, -1, -1, -1 };
+int fw_adc_read(unsigned ch) {
+    if (g_adc_script && ch < 4) return g_adc_raw[ch];
+    return -1;
+}
 unsigned fw_adc_temp_channel(void) { return 4; }
 
 int fw_i2c_init(unsigned, unsigned, unsigned, unsigned) { return 0; }
@@ -464,6 +539,32 @@ int fw_pwm_init(unsigned, unsigned) { return 1000; }
 int fw_pwm_duty(unsigned, unsigned) { return 0; }
 int fw_pwm_stop(unsigned) { return 0; }
 void fw_busy_wait_us(uint32_t) {}
+
+// A canned inbound line, for GPS. The real fw_uart_read waits up to
+// timeout_ms for as much as was asked and returns what actually arrived,
+// which for a timeout of 0 is "whatever is already in the FIFO, right now" —
+// GPS never asks for more than that, so the fake only has to hold bytes and
+// hand them back in order, not time anything. OFF (empty) by default.
+static char     g_uart_in[256];
+static unsigned g_uart_in_n;
+static unsigned g_uart_in_pos;
+static void uart_feed(const char *s) {
+    unsigned n = (unsigned)strlen(s);
+    if (n > sizeof(g_uart_in)) n = sizeof(g_uart_in);
+    memcpy(g_uart_in, s, n);
+    g_uart_in_n = n; g_uart_in_pos = 0;
+}
+int fw_uart_init(unsigned, unsigned, unsigned, unsigned) { return 0; }
+int fw_uart_write(unsigned, const void *, unsigned len) { return (int)len; }
+int fw_uart_read(unsigned, void *buf, unsigned len, unsigned) {
+    unsigned avail = g_uart_in_n - g_uart_in_pos;
+    unsigned n = len < avail ? len : avail;
+    if (n) memcpy(buf, g_uart_in + g_uart_in_pos, n);
+    g_uart_in_pos += n;
+    return (int)n;
+}
+int fw_uart_available(unsigned) { return (int)(g_uart_in_n - g_uart_in_pos) > 0 ? 1 : 0; }
+int fw_uart_deinit(unsigned) { return 0; }
 
 // --- the network, faked ------------------------------------------------------------
 //

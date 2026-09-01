@@ -22,6 +22,7 @@
 #include "novagui_media.h"
 #include "novagui_contact.h"
 #include "novagui_radios.h"
+#include "novagui_sensors.h"
 #include "novagui_tasks.h"
 #include "novagui_usb.h"
 
@@ -166,14 +167,14 @@ static const App kApps[] = {
     { "pn532",      "NFC",        CAT_WIRELESS, screens::open_nfc,       "pn532" },
     // 'ir' is the app the MicroPython home used; ir_rx and ir_tx are the two
     // halves of the hardware behind it, and they have their own icons.
-    { "ir",         "IR",         CAT_WIRELESS, nullptr,  "ir_rx" },
+    { "ir",         "IR",         CAT_WIRELESS, screens::open_ir, "ir_rx" },
     { "cc1101",     "Sub-GHz",    CAT_WIRELESS, screens::open_subghz, "cc1101" },
     { "sx1276",     "LoRa",       CAT_WIRELESS, screens::open_lora,   "sx1276" },
     { "msg",        "Messages",   CAT_WIRELESS, screens::open_messages, "sx1276" },
 
-    { "gps",        "GPS",        CAT_SENSORS,  nullptr,  "gps" },
-    { "dht11",      "Climate",    CAT_SENSORS,  nullptr,  "dht11" },
-    { "battery",    "Battery",    CAT_SENSORS,  nullptr,  "battery" },
+    { "gps",        "GPS",        CAT_SENSORS,  screens::open_gps,     "gps" },
+    { "dht11",      "Climate",    CAT_SENSORS,  screens::open_climate, "dht11" },
+    { "battery",    "Battery",    CAT_SENSORS,  screens::open_battery, "battery" },
     { "clock",      "Clock",      CAT_SENSORS,  screens::open_clock,     nullptr },
 
     { "files",      "Files",      CAT_TOOLS,    screens::open_files,     nullptr },
