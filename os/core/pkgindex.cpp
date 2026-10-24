@@ -27,8 +27,21 @@ uint32_t pkgindex_add(char *buf, uint32_t len, uint32_t cap,
     // line per package either way, and an upgrade actually changes the version
     // it reports. See the header for what the early return cost.
     len = pkgindex_remove(buf, len, cap, name);
+
+    // A list cut short mid-line — power lost during the write — has no newline to
+    // end it, and appending straight on would glue the new entry to the damaged
+    // one: the old package would report a version of "1.2added,1.0" and the new
+    // one would be on flash and missing from the list.
+    if (len && buf[len - 1] != '\n') {
+        if (len + 1 >= cap) return len;
+        buf[len++] = '\n';
+    }
+
     int add = snprintf(buf + len, cap - len, "%s,%s\n", name, version);
-    if (add < 0 || (uint32_t)add >= cap - len) return len;   // no room; unchanged
+    if (add < 0 || (uint32_t)add >= cap - len) {              // no room; unchanged
+        buf[len] = 0;
+        return len;
+    }
     return len + (uint32_t)add;
 }
 

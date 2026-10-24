@@ -27,6 +27,28 @@ int main(void) {
     len = pkgindex_add(buf, len, sizeof(buf), "calc", "2.1");
     ck(strcmp(buf, "novad1,1.0\ncalc,2.1\n") == 0, "add a second package");
 
+    // A list cut short mid-line (power lost during a write) has no trailing
+    // newline. Appending must not glue the new entry onto the damaged line.
+    set("greet,1.0\nbench,1.2");
+    len = pkgindex_add(buf, len, sizeof(buf), "added", "3.0");
+    ck(pkgindex_has(buf, len, "added"), "an entry added after a cut-short line is found");
+    ck(pkgindex_has(buf, len, "bench"), "and the damaged line keeps its own name");
+    ck(strcmp(buf, "greet,1.0\nbench,1.2\nadded,3.0\n") == 0, "on its own line");
+    {   // no room for the separator: left alone and still terminated
+        char tight[8] = "a,1\nb,2";   // seven characters and the NUL
+        uint32_t n = pkgindex_add(tight, (uint32_t)strlen(tight), sizeof(tight), "c", "3");
+        ck(n < sizeof(tight) && tight[n] == 0, "a full buffer stays terminated");
+    }
+    {   // room for the separator but not for the entry: no half an entry is left behind
+        char tight[12] = "a,1\nb,2";
+        uint32_t n = pkgindex_add(tight, (uint32_t)strlen(tight), sizeof(tight), "c", "3");
+        ck(strcmp(tight, "a,1\nb,2\n") == 0 && n == strlen(tight), "an entry that does not fit is not half written");
+    }
+
+    set("");
+    len = pkgindex_add(buf, len, sizeof(buf), "novad1", "1.0");
+    len = pkgindex_add(buf, len, sizeof(buf), "calc", "2.1");
+    len = pkgindex_add(buf, len, sizeof(buf), "novad1", "9.9");
     // one line per package, and the version follows the install
     len = pkgindex_add(buf, len, sizeof(buf), "novad1", "9.9");
     ck(strcmp(buf, "calc,2.1\nnovad1,9.9\n") == 0,
