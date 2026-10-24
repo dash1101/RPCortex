@@ -71,6 +71,10 @@ declare -A SRC=(
     [crashlog_test]="$CORE/crashlog.cpp $CORE/logring.cpp $CORE/task.cpp $CORE/blackbox.cpp host_task_stub.cpp"
     [idle_test]="$CORE/idle.cpp"
     [clockcfg_test]="$CORE/clockcfg.cpp"
+    # Mutation fuzzing of the parsers that read other people's bytes: HTTP
+    # responses, package indexes, the installed-package list and FAT volumes.
+    # RPC_FUZZ_ITERS=2000000 for a long run; see the header of fuzz_test.cpp.
+    [fuzz_test]="$CORE/httpparse.cpp $CORE/repoindex.cpp $CORE/pkgindex.cpp $CORE/fatro.cpp $CORE/cmdline.cpp $CORE/lineedit.cpp $CORE/clockcfg.cpp $CORE/interrupt.cpp $CORE/task.cpp $CORE/blackbox.cpp host_task_stub.cpp"
     [secret_test]="$CORE/secret.cpp $CORE/sha256.cpp"
     [protect_test]="$CORE/protect.cpp $CORE/path.cpp"
     [fsguard_test]="$SHELL_DIR/fsguard.cpp $CORE/protect.cpp $CORE/path.cpp $CORE/out.cpp $CORE/lock.cpp $CORE/task.cpp $CORE/blackbox.cpp $CORE/logring.cpp host_task_stub.cpp"
