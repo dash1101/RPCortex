@@ -49,6 +49,28 @@ int main(void) {
     ok(repo_version_cmp("3.0.0", "2.1.1") > 0,   "version: RPCMark 3.0.0 beats 2.1.1");
     ok(repo_version_cmp("0.9.1", "1.0.0") < 0,   "version: 0.9.1 is older than 1.0.0");
 
+    // A version is never newer than itself. The old comparison returned "newer"
+    // the moment it met a suffix on the left without looking at the right, so a
+    // package at 1.0-beta was offered an upgrade to 1.0-beta, for ever.
+    const char *odd[] = {"1.0-beta", "v1.0", "2.1rc1", "1.0b", "a.b", "-1", "0x10",
+                         "1.2.3-4", "", "1..2", "99999999999", "1.0.0.463"};
+    for (const char *v : odd)
+        ok(repo_version_cmp(v, v) == 0, "version: a suffixed version equals itself");
+    ok(repo_version_cmp("1.0-beta", "1.0-beta") == 0, "version: 1.0-beta equals 1.0-beta");
+    ok(repo_version_cmp("1.0b", "1.0") > 0,      "version: a suffix sorts newer, as before");
+    ok(repo_version_cmp("1.0", "1.0b") < 0,      "version: and the other way round");
+    ok(repo_version_cmp("1.0rc1", "1.0rc2") < 0, "version: two suffixes compare as text");
+    ok(repo_version_cmp("1.0rc2", "1.0rc1") > 0, "version: and the other way round");
+    ok(repo_version_cmp("1.0rc", "1.0rc1") < 0,  "version: a longer suffix with the same start is newer");
+    ok(repo_version_cmp("1.1rc1", "1.0") > 0,    "version: the number still decides before any suffix");
+    ok(repo_version_cmp("1.0", "1.1rc1") < 0,    "version: and the other way round");
+    ok(repo_version_cmp("2.0.0.463", "2.0.0.462") > 0, "version: the build number is a fourth component");
+    ok(repo_version_cmp("99999999999999999999", "1") > 0, "version: a huge number saturates instead of wrapping");
+    ok(repo_version_cmp("1", "99999999999999999999") < 0, "version: and the other way round");
+    // 2^32 + 1: wrapped to 32 bits it would read as 1 and sort below 2.
+    ok(repo_version_cmp("4294967297", "2") > 0,  "version: a number past 32 bits does not wrap to a small one");
+    ok(repo_version_cmp("2", "4294967297") < 0,  "version: and the other way round");
+
     // --- synthetic shapes ---------------------------------------------------
     {
         const char *j = "{\"name\":\"repo\",\"maintainer\":\"someone\",\"packages\":["

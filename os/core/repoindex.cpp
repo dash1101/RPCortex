@@ -165,16 +165,48 @@ bool repo_find(const char *json, uint32_t len, const char *name, RepoEntry *out)
     return f.hit;
 }
 
+// The number at the front of a component. It saturates rather than wrapping: a
+// version like 99999999999 overflows a 32-bit long on the device, and signed
+// overflow is undefined, not merely wrong.
+static const char *version_digits(const char *s, int32_t *out) {
+    int32_t v = 0;
+    while (*s >= '0' && *s <= '9') {
+        int d = *s - '0';
+        v = (v > (0x7fffffff - d) / 10) ? 0x7fffffff : v * 10 + d;
+        s++;
+    }
+    *out = v;
+    return s;
+}
+
 int repo_version_cmp(const char *a, const char *b) {
     while (*a || *b) {
-        long va = 0, vb = 0;
-        while (*a >= '0' && *a <= '9') { va = va * 10 + (*a - '0'); a++; }
-        while (*b >= '0' && *b <= '9') { vb = vb * 10 + (*b - '0'); b++; }
+        int32_t va, vb;
+        a = version_digits(a, &va);
+        b = version_digits(b, &vb);
         if (va != vb) return va < vb ? -1 : 1;
+
+        // Whatever sits between the digits and the next dot is a suffix: "rc1",
+        // "b", the "-beta" in "1.0-beta". A component with one sorts NEWER than
+        // one without, as it always has; two suffixes compare as text. The old
+        // code returned "newer" the moment it met a suffix on the left without
+        // looking at the right, so a version compared newer than ITSELF and
+        // `pkg upgrade` offered the same upgrade for ever.
+        const char *sa = a, *sb = b;
+        while (*a && *a != '.') a++;
+        while (*b && *b != '.') b++;
+        size_t la = (size_t)(a - sa), lb = (size_t)(b - sb);
+        if (la || lb) {
+            if (!la) return -1;
+            if (!lb) return 1;
+            int c = strncmp(sa, sb, la < lb ? la : lb);
+            if (c) return c < 0 ? -1 : 1;
+            if (la != lb) return la < lb ? -1 : 1;
+        }
         // Step over one separator each. A component that simply ran out counts
         // as zero, so "2.1" and "2.1.0" compare equal.
-        if (*a == '.') a++; else if (*a) return 1;   // trailing junk sorts newer
-        if (*b == '.') b++; else if (*b) return -1;
+        if (*a == '.') a++;
+        if (*b == '.') b++;
     }
     return 0;
 }
