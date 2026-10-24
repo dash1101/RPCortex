@@ -21,10 +21,13 @@ component.
 
 ### The headline
 
-**No interpreter.** RPCMark scores around **1.2 million** against a v1 device's
-5,000–6,000. That is not a typo and it is not a projection — `bench` runs the
-same workload as `tools/bench.py` does on v1, same iteration counts, so the two
-numbers are the same measurement taken twice.
+**No interpreter.** On a Pico 2 W at its stock 150 MHz, RPCMark scores about
+**700,000** against a v1 device's 5,000–6,000: over a hundred times as fast, at the
+same clock. That is not a typo and it is not a projection — `bench` runs the same
+workload as `tools/bench.py` does on v1, same iteration counts, so the two numbers
+are the same measurement taken twice. The score follows the clock almost exactly:
+about 900,000 at 200 MHz and 1.1 million at 250 MHz (`pulse set`, or `pulse boot`
+to keep it).
 
 **A bad package costs a command, not the device.** This is the part with no
 equivalent in v1 at all. On RP2350 a package runs unprivileged, with the memory
@@ -123,6 +126,10 @@ updates itself.
   another task.
 - **Interruptible everything.** Ctrl+C stops any command instantly, because the
   interrupt check and the scheduler yield are the same call.
+- **Pastes arrive whole.** Anything typed or pasted while a command runs waits in
+  a 512-byte stash, then in the USB buffer, which holds the rest back from the
+  host when it fills. The line editor holds the console while it waits for keys,
+  so a background package polling for a stop request cannot take bytes from it.
 - **PIO, SPI and I2C for packages**, which is what makes drivers possible
   without touching the firmware.
 - **It puts itself back together.** Settings and accounts are written twice, so
@@ -145,11 +152,16 @@ updates itself.
 
 The filesystem commands down to `ls`'s exact columns. Text processing. Accounts
 with salted SHA-256, roles and the guided first run. The shell: pipes, `&&`,
-`||`, `;`, redirection, quoting, history, the aliases. `wifi` with all its
+`||`, `;`, redirection, quoting (single and double; a quote opens only at the start
+of a word, so `wifi connect Dad's WiFi` and `echo don't` keep their apostrophes),
+history, the aliases. `wifi` with all its
 subcommands, `ping`, `nslookup`, `ntp`. `startup`, `task`, `service`, `watch`.
 The `.rps` scripting language, unchanged — scripts carry over as they are. Idle auto-logout
 (`Shell.Idle_Logout`, minutes, off by default). `curl` takes all of v1's flags: `-X`, `-d`, `-H`,
-`-I`, `-v`, `-s`, `-o` and `--timeout`.
+`-I`, `-v`, `-s`, `-o` and `--timeout`. `pulse boot <MHz>` sets the clock the device
+starts at, and it does apply it: a start that follows one which did not finish skips
+it and says so, so a clock that hangs the board cannot do it twice running.
+`pulse boot off` turns it off.
 
 And the console itself: v1's tagged output, colours and boot banner, checked
 byte for byte against the original escape sequences.
@@ -197,6 +209,10 @@ have — and packages there run with the OS's own privileges.
   free failed and 47 KB worked. A board with Nova D1 and every developer package
   loaded used to boot with 41 KB; it now boots with 69 KB. A handshake that runs out
   says so and gives the numbers, and `unload` or a restart brings the room back.
+- **A Ctrl+C behind a full stash of type-ahead waits.** Input that arrives while a
+  command runs is kept, up to about 500 bytes beyond the USB buffer; past that the
+  check stops reading, so a Ctrl+C typed after a very large paste is seen when the
+  command ends. Nothing typed is dropped to make room.
 - **A rollback copy needs room for a second firmware image.** An update from a file
   or over the network puts the new image on the filesystem first, so the copy of the
   running firmware has to fit alongside it. On a 1792 KB filesystem with an 850 KB
