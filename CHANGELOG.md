@@ -126,6 +126,14 @@ updates itself.
   another task.
 - **Interruptible everything.** Ctrl+C stops any command instantly, because the
   interrupt check and the scheduler yield are the same call.
+- **The package loader refuses a damaged or hostile package instead of trusting it.**
+  Fuzzing it found four faults, all in how it believed numbers read from the file: a
+  relocation offset past the end of its section was a write wherever it pointed, and
+  an odd one a misaligned read that faults on RP2040; a section-name offset past the
+  end of the name table was a read from wherever it landed; and a section size or
+  alignment that wrapped the 32-bit layout total allocated a small block and then
+  filled it at the claimed size. Each is now a refusal with a reason. The packages
+  `build.sh` produces load exactly as before.
 - **Pastes arrive whole.** Anything typed or pasted while a command runs waits in
   a 512-byte stash, then in the USB buffer, which holds the rest back from the
   host when it fills. The line editor holds the console while it waits for keys,
