@@ -59,7 +59,9 @@ updates itself.
   On v1 a misbehaving background service could only be found by rebooting.
 - **Crash reporting that survives the crash.** A log ring and a black box in
   memory the reset does not clear, so the next boot says what the last run was
-  doing when it stopped. v1 lost everything on reboot.
+  doing when it stopped. v1 lost everything on reboot. After a bad shutdown the
+  next boot also writes the black-box record and the log to `/os/crash.log`, so a
+  crash survives the power being pulled as well.
 - **A USB drive.** `download` presents a real FAT volume, so files move by drag
   and drop in both directions instead of over the serial line.
 - **Bluetooth.** The same chip does both radios. v1 could not reach Classic at
@@ -139,7 +141,8 @@ The filesystem commands down to `ls`'s exact columns. Text processing. Accounts
 with salted SHA-256, roles and the guided first run. The shell: pipes, `&&`,
 `||`, `;`, redirection, quoting, history, the aliases. `wifi` with all its
 subcommands, `ping`, `nslookup`, `ntp`. `startup`, `task`, `service`, `watch`.
-The `.rps` scripting language, unchanged — scripts carry over as they are.
+The `.rps` scripting language, unchanged — scripts carry over as they are. Idle auto-logout
+(`Shell.Idle_Logout`, minutes, off by default).
 
 And the console itself: v1's tagged output, colours and boot banner, checked
 byte for byte against the original escape sequences.
@@ -150,13 +153,13 @@ byte for byte against the original escape sequences.
 
 | Board | Image | Filesystem | Sandbox | Card |
 |---|---|---|---|---|
-| Pico 2 W | 916 KB | 2 MB | yes | yes |
-| Pico 2 | 320 KB | 3 MB | yes | yes |
-| Pico W | 748 KB | 384 KB | no | no |
-| Pico | 247 KB | 1.25 MB | no | no |
+| Pico 2 W | 999 KB | 2 MB | yes | yes |
+| Pico 2 | 396 KB | 3 MB | yes | yes |
+| Pico W | 795 KB | 384 KB | no | no |
+| Pico | 290 KB | 1.25 MB | no | no |
 
-The image figures are the development build, which is the largest one gets and
-is therefore what every flash slot is sized against; the table they come from is
+The image figures are the shipped `.bin` sizes, and the development build is the
+largest one gets, so it is what every flash slot is sized against; the table they come from is
 in `os/CMakeLists.txt`, next to the slot sizes it justifies. "Card" is a microSD
 slot, which is built for the RP2350 boards only.
 

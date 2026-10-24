@@ -6,7 +6,7 @@ One command runs everything that can be run without hardware:
 cd os/host && ./run_all.sh
 ```
 
-Around sixty suites, about half a minute, and the last line is the answer to one
+Seventy runs (every suite, plus the plain-allocator reruns), about half a minute, and the last line is the answer to one
 question. **It is not the question "does the OS work".** What that line covers
 and what it cannot is the last section of this file, and it is the part worth
 reading first.
