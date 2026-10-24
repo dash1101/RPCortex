@@ -42,6 +42,7 @@
 #include "pico/cyw43_arch.h"    // WL_GPIO2 is the only route to VBUS sense here
 #endif
 #include "pico/aon_timer.h"
+#include "fsguard.h"
 #include "sha256.h"
 #include "framebuf.h"
 #include "arena.h"
@@ -264,19 +265,27 @@ extern "C" int fw_line_read(char *buf, int cap) {
 extern "C" int  fw_task_kill(int pid)          { return task_kill(pid) ? 1 : 0; }
 extern "C" uint32_t fw_cores(void)             { return task_core_count(); }
 
+// FILE ACCESS IS CHECKED AGAINST THE SESSION. A package runs with the rights of
+// whoever is logged in, so the shell's protected files (shell/fsguard.h) are as
+// closed to a package run by a guest as they are to `cat`. An admin, and the
+// system itself, are unaffected. A refusal is a plain failure return: the calls
+// have no way to say why, and a package that probes is told no.
 extern "C" int fw_file_write(const char *path, const void *data, uint32_t len) {
     if (!ok_s(path) || !ok_r(data, len)) return 0;
+    if (!fs_may_change(path)) return 0;
     task_alive();
     return storage_write_file(path, (const uint8_t *)data, len) ? 1 : 0;
 }
 extern "C" uint32_t fw_file_read(const char *path, void *buf, uint32_t cap) {
     task_alive();
     if (!ok_s(path) || !ok_w(buf, cap)) return 0;
+    if (!fs_may_read(path)) return 0;
     return storage_read_file(path, (uint8_t *)buf, cap);
 }
 extern "C" int fw_file_remove(const char *path) {
     task_alive();
     if (!ok_s(path)) return 0;
+    if (!fs_may_change(path)) return 0;
     return storage_remove(path) ? 1 : 0;
 }
 extern "C" int fw_file_exists(const char *path) {
@@ -304,16 +313,19 @@ extern "C" int fw_mkdir(const char *path) {
 // thing this boundary exists to stop.
 extern "C" int fw_file_append(const char *path, const void *data, uint32_t len) {
     if (!ok_s(path) || !ok_r(data, len)) return 0;
+    if (!fs_may_change(path)) return 0;
     task_alive();
     return storage_append_file(path, (const uint8_t *)data, len) ? 1 : 0;
 }
 extern "C" int fw_file_copy(const char *from, const char *to) {
     if (!ok_s(from) || !ok_s(to)) return 0;
+    if (!fs_may_change(from) || !fs_may_change(to)) return 0;     // copying out is reading
     task_alive();
     return storage_copy(from, to) ? 1 : 0;
 }
 extern "C" int fw_file_rename(const char *from, const char *to) {
     if (!ok_s(from) || !ok_s(to)) return 0;
+    if (!fs_may_change(from) || !fs_may_change(to)) return 0;
     task_alive();
     return storage_rename(from, to) ? 1 : 0;
 }
@@ -1225,6 +1237,7 @@ static void dir_pick_cb(void *ctx, const char *name, bool is_dir, uint32_t size)
 extern "C" uint32_t fw_file_read_at(const char *path, uint32_t offset,
                                     void *buf, uint32_t cap) {
     if (!ok_s(path) || !ok_w(buf, cap)) return 0;
+    if (!fs_may_read(path)) return 0;
     task_alive();
     return storage_read_at(path, offset, (uint8_t *)buf, cap);
 }

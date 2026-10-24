@@ -11,6 +11,7 @@
 #include "storage.h"
 #include "textcore.h"
 #include "path.h"
+#include "fsguard.h"
 #include "interrupt.h"
 
 #include <stdio.h>
@@ -49,6 +50,7 @@ static char *read_text(const char *arg, uint32_t *out_len, bool *truncated) {
     if (shell_stdin() || !arg) return dup_stdin(out_len);
     char path[128];
     path_resolve(fs_cwd(), arg, path, sizeof(path));
+    if (!fs_allow_read(path)) return nullptr;
     bool is_dir = false;
     if (!storage_stat(path, &is_dir, nullptr) || is_dir) return nullptr;
     char *buf = (char *)malloc(TEXT_CAP + 1);
@@ -248,6 +250,7 @@ static int cmd_hex(int argc, char **argv) {
     uint32_t want = (argc >= 3) ? (uint32_t)strtoul(argv[2], nullptr, 10) : 256;
     char path[128];
     path_resolve(fs_cwd(), argv[1], path, sizeof(path));
+    if (!fs_allow_read(path)) return 1;
     AppSource src; void *h = nullptr;
     if (!storage_open_source(path, &src, &h)) { out_err("No such file: %s", path); return 1; }
     if (want > src.size) want = src.size;

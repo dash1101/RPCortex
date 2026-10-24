@@ -100,6 +100,8 @@ void tuiterm_begin(void) {}
 void tuiterm_end(void) {}
 void tuiterm_present(const TuiScreen *) {}
 void tuiterm_cursor(int, int, bool) {}
+// The editor asks the session whether it may open a path; the test is always allowed to.
+bool fs_allow_change(const char *) { return true; }
 bool tuiterm_poll(TuiEvent *) { return false; }
 void tuiterm_size(uint16_t *w, uint16_t *h) { if (w) *w = 80; if (h) *h = 24; }
 bool tuiterm_refresh(void) { return false; }

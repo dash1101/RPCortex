@@ -14,6 +14,7 @@
 #include "rps.h"
 #include "storage.h"
 #include "path.h"
+#include "fsguard.h"
 #include "interrupt.h"
 #include "task.h"
 #include "session.h"
@@ -79,6 +80,7 @@ static int cmd_script(int argc, char **argv) {
 
     char full[128];
     path_resolve(fs_cwd(), argv[1], full, sizeof(full));
+    if (!fs_allow_read(full)) return 1;
 
     bool is_dir = false; uint32_t size = 0;
     if (!storage_stat(full, &is_dir, &size)) { out_err("No such file: %s", full); return 1; }

@@ -26,6 +26,7 @@
 #include "task.h"
 #include "storage.h"
 #include "path.h"
+#include "fsguard.h"
 #include "blackbox.h"
 
 #include <string.h>
@@ -771,6 +772,7 @@ static int cmd_wget(int argc, char **argv) {
 
     char full[128];      // the size every other command here uses
     path_resolve(fs_cwd(), name, full, sizeof(full));
+    if (!fs_allow_change(full)) return 1;
 
     FileSink fs{nullptr};
     fs.h = storage_open_sink(full);
@@ -926,6 +928,7 @@ static int cmd_curl(int argc, char **argv) {
     if (save) {
         char full[128];
         path_resolve(fs_cwd(), save, full, sizeof(full));
+        if (!fs_allow_change(full)) { http_set_timeout_ms(0); return 1; }
         FileSink fs{nullptr};
         fs.h = storage_open_sink(full);
         if (!fs.h) { http_set_timeout_ms(0); out_err("Could not create '%s'.", full); return 1; }

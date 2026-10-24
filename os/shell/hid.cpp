@@ -16,6 +16,7 @@
 #include "interrupt.h"
 #include "out.h"
 #include "path.h"
+#include "fsguard.h"
 #include "storage.h"
 #include "task.h"
 #include "usbhid.h"
@@ -140,6 +141,7 @@ static bool payload_path(const char *arg, char *out, size_t cap) {
     bool is_dir = false; uint32_t sz = 0;
     if (strchr(arg, '/')) {
         path_resolve(fs_cwd(), arg, out, cap);
+        if (!fs_allow_read(out)) return false;       // typing a secret into a host is reading it
         return storage_stat(out, &is_dir, &sz) && !is_dir;
     }
     static const char *const dirs[] = { "/nova/badusb", "/badusb" };
@@ -148,6 +150,7 @@ static bool payload_path(const char *arg, char *out, size_t cap) {
         if (storage_stat(out, &is_dir, &sz) && !is_dir) return true;
     }
     path_resolve(fs_cwd(), arg, out, cap);
+    if (!fs_allow_read(out)) return false;
     return storage_stat(out, &is_dir, &sz) && !is_dir;
 }
 

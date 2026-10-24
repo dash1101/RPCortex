@@ -112,6 +112,12 @@ updates itself.
   it cannot reach is the tools that happen to be packaged: `gpio`, `i2cscan`,
   `dht`, `ws2812`. A faulty app is listed with the reason it will not open
   rather than quietly dropped.
+- **Protected files.** The registry, the user list, their backups and the device
+  key are closed to every account except an admin: not readable, not changeable,
+  and not reachable through a directory or a wildcard (`rm -r /os`, `rm /os/*`).
+  That covers the shell commands, redirects, the editor, the USB drive and the
+  file calls a package makes, so a guest cannot read saved secrets or edit the
+  user list into making themselves an admin. v1 had no such protection.
 - **Real background work.** v1's `task run` entered a foreground scheduler: it
   was scheduled tasks or an interactive shell, not both. Here the timer is just
   another task.
@@ -186,12 +192,12 @@ have — and packages there run with the OS's own privileges.
 
 ### Known limitations
 
-- **Saved Wi-Fi passwords are sealed, but not locked away.** They are stored
+- **Saved Wi-Fi passwords are sealed, not unbreakable.** They are stored
   encrypted under a per-device key (`/os/device.key`, left out of backups), so a
-  copy of the registry, a backup or a support dump no longer shows them. The key
-  is in the same flash, and the filesystem has no per-file permissions yet, so any
-  logged-in account can read both files and someone holding the flash can recover
-  a password. Per-file permissions are the missing half.
+  copy of the registry, a backup or a support dump no longer shows them, and an
+  ordinary account cannot read the key or the registry (see "Protected files").
+  The key is in the same flash as the passwords, so someone holding the whole
+  device can still recover one: there is no secure element to put it in.
 - **No package sandbox on RP2040.** Not an omission — ARMv6-M protection regions
   are power-of-two sized and aligned to their own size, so the five a package
   needs cost more RAM than those boards have. Packages there run with the OS's

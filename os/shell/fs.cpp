@@ -9,6 +9,7 @@
 #include "out.h"
 #include "storage.h"
 #include "path.h"
+#include "fsguard.h"
 #include "fmt.h"
 #include "interrupt.h"
 
@@ -27,6 +28,17 @@ const char *fs_cwd(void) { return g_cwd; }
 // host-tested away from littlefs. This wrapper binds it to the shell's cwd.
 static void resolve(const char *in, char *out, size_t cap) {
     path_resolve(g_cwd, in, out, cap);
+}
+
+// Resolve a path the command is about to READ, or CHANGE, and say no if this
+// session may not. Both return false after printing the reason.
+static bool resolve_read(const char *in, char *out, size_t cap) {
+    resolve(in, out, cap);
+    return fs_allow_read(out);
+}
+static bool resolve_change(const char *in, char *out, size_t cap) {
+    resolve(in, out, cap);
+    return fs_allow_change(out);
 }
 
 static int cmd_pwd(int, char **) { out_multi("%s", g_cwd); return 0; }
@@ -140,7 +152,7 @@ static int cmd_cat(int argc, char **argv) {
     int bad = 0;
     for (int i = 1; i < argc; i++) {
         char path[128];
-        resolve(argv[i], path, sizeof(path));
+        if (!resolve_read(argv[i], path, sizeof(path))) { bad++; continue; }
         bool is_dir = false;
         if (storage_stat(path, &is_dir, nullptr) && is_dir) {
             out_err("'%s' is a directory.", path);
@@ -319,7 +331,7 @@ static int cmd_rm(int argc, char **argv) {
             strncat(joined, argv[i], sizeof(joined) - strlen(joined) - 1);
         }
         char full[160];
-        resolve(joined, full, sizeof(full));
+        if (!resolve_change(joined, full, sizeof(full))) return 1;
         if (storage_stat(full, nullptr, nullptr)) {
             if (!storage_remove(full)) { rm_explain(full); return 1; }
             return 0;
@@ -329,7 +341,7 @@ static int cmd_rm(int argc, char **argv) {
     int failed = 0;
     for (int i = at; i < argc; i++) {
         char path[160];
-        resolve(argv[i], path, sizeof(path));
+        if (!resolve_change(argv[i], path, sizeof(path))) { failed++; continue; }
 
         // A WILDCARD. Split the last component off and match it against the
         // directory's entries; everything else is an ordinary path.
@@ -404,21 +416,24 @@ static int cmd_rm(int argc, char **argv) {
 
 static int cmd_mv(int argc, char **argv) {
     if (argc < 3) { out_multi("Usage: mv <from> <to>"); return 1; }
-    char a[128], b[128]; resolve(argv[1], a, sizeof(a)); resolve(argv[2], b, sizeof(b));
+    char a[128], b[128];
+    if (!resolve_change(argv[1], a, sizeof(a)) || !resolve_change(argv[2], b, sizeof(b))) return 1;
     if (!storage_rename(a, b)) { out_err("Could not move %s", a); return 1; }
     return 0;
 }
 
 static int cmd_cp(int argc, char **argv) {
     if (argc < 3) { out_multi("Usage: cp <from> <to>"); return 1; }
-    char a[128], b[128]; resolve(argv[1], a, sizeof(a)); resolve(argv[2], b, sizeof(b));
+    char a[128], b[128];
+    if (!resolve_change(argv[1], a, sizeof(a)) || !resolve_change(argv[2], b, sizeof(b))) return 1;
     if (!storage_copy(a, b)) { out_err("Could not copy %s", a); return 1; }
     return 0;
 }
 
 static int cmd_touch(int argc, char **argv) {
     if (argc < 2) { out_multi("Usage: touch <file>"); return 1; }
-    char path[128]; resolve(argv[1], path, sizeof(path));
+    char path[128];
+    if (!resolve_change(argv[1], path, sizeof(path))) return 1;
     bool exists = storage_stat(path, nullptr, nullptr);
     if (exists) return 0;                          // already there; nothing to do
     if (!storage_write_file(path, (const uint8_t *)"", 0)) {
@@ -501,11 +516,12 @@ static int cmd_rename(int argc, char **argv) {
         return 1;
     }
     char from[128];
-    resolve(argv[1], from, sizeof(from));
+    if (!resolve_change(argv[1], from, sizeof(from))) return 1;
     char to[128];
     const char *slash = strrchr(from, '/');
     int dirlen = slash ? (int)(slash - from) : 0;
     snprintf(to, sizeof(to), "%.*s/%s", dirlen, from, argv[2]);
+    if (!fs_allow_change(to)) return 1;
     if (!storage_rename(from, to)) { out_err("Could not rename %s", from); return 1; }
     return 0;
 }

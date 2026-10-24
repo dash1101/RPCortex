@@ -121,6 +121,7 @@ add_executable(rpcortex_v2
     ${OS_ROOT}/core/crashlog.cpp
     ${OS_ROOT}/core/idle.cpp
     ${OS_ROOT}/core/secret.cpp
+    ${OS_ROOT}/core/protect.cpp
     ${OS_ROOT}/core/blackbox.cpp
     ${OS_ROOT}/core/joblist.cpp
     ${OS_ROOT}/core/detach.cpp
@@ -161,6 +162,7 @@ add_executable(rpcortex_v2
     ${OS_ROOT}/shell/ps.cpp
     ${OS_ROOT}/shell/logcmd.cpp
     ${OS_ROOT}/shell/devkey.cpp
+    ${OS_ROOT}/shell/fsguard.cpp
     ${OS_ROOT}/shell/usbdrive.cpp
     ${OS_ROOT}/shell/hid.cpp
     ${OS_ROOT}/shell/stock.cpp

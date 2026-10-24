@@ -43,6 +43,8 @@ package ABI, so packages — which only ever call `fw_*` — are testable too.
 | `crashlog_test` | The crash report text: header fields, log order and kind tags, a wrapped ring, and a buffer too small for it, checked for overruns with guard bytes. Rotating and writing the file needs a board. |
 | `idle_test` | The idle auto-logout arithmetic: the setting parser (garbage, negatives and huge values all mean off or clamp) and the expiry test across the 32-bit millisecond wrap. The shell hook that uses it needs a logged-in session and has not run on a board. |
 | `secret_test` | Sealing a saved password: HMAC-SHA-256 against the RFC 4231 vectors, exact output against a separate Python implementation, every length from 1 to 63, a wrong key or network name, any single changed character, truncation, a NUL inside the plaintext, and 65,535 forged tags. The key file and the registry round trip on a board have not been run. |
+| `protect_test` | Which paths are off limits to an ordinary account: the five files in every spelling (case, `..`, `//`, a relative path), the directory and the root that contain them, wildcards that would match them, near misses that must stay open, and a path too long to judge. |
+| `fsguard_test` | The decision about the person: nobody logged in, an admin, the guest and an ordinary account, what is allowed and what is refused, the message and the log line. The call sites in each command, and the package file calls, are not run by any test; they are checked by build only. |
 | `novagui_test`, `novashots` | The Nova D1 runner with the hardware faked, and a pass that opens every screen and looks at the panel it produced. |
 | `cacerts` | That the shipped roots parse under the device's mbedtls config. |
 

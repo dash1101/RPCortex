@@ -24,6 +24,7 @@ namespace { struct ScreenFree { void *p; ~ScreenFree() { free(p); } }; }
 #include "tuiterm.h"
 #include "storage.h"
 #include "path.h"
+#include "fsguard.h"
 #include "task.h"
 
 #include <stdio.h>
@@ -237,6 +238,7 @@ static int cmd_edit(int argc, char **argv) {
     // ed_load, where the memory is actually needed.
 
     path_resolve(fs_cwd(), argv[1], e->path, sizeof(e->path));
+    if (!fs_allow_change(e->path)) { ls_free(&e->ls); free(e); return 1; }
     if (!ed_load(e, e->path)) {
         out_err("%s", e->status);
         ls_free(&e->ls); free(e);

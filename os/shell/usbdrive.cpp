@@ -32,6 +32,7 @@
 #include "interrupt.h"
 #include "out.h"
 #include "path.h"
+#include "fsguard.h"
 #include "storage.h"
 #include "task.h"
 #include "usbhid.h"
@@ -193,6 +194,7 @@ static int cmd_download(int argc, char **argv) {
     for (int i = 1; i < argc; i++) {
         char src[128];
         path_resolve(fs_cwd(), argv[i], src, sizeof(src));
+        if (!fs_allow_change(src)) continue;              // copying it out is as bad as reading it
         bool is_dir = false;
         uint32_t size = 0;
         if (!storage_stat(src, &is_dir, &size) || is_dir) {

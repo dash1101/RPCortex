@@ -20,6 +20,7 @@
 #include "history.h"
 #include "out.h"
 #include "path.h"
+#include "fsguard.h"
 #include "cmdline.h"
 #include "perms.h"
 #include "blackbox.h"
@@ -904,9 +905,10 @@ static int run_segment(char *seg) {
             if (last && outfile) {
                 char path[128];
                 path_resolve(fs_cwd(), outfile, path, sizeof(path));
-                bool ok = append ? storage_append_file(path, (const uint8_t *)buf_a, n)
-                                 : storage_write_file(path, (const uint8_t *)buf_a, n);
-                if (!ok) { out_err("Could not write %s.", path); status = 1; }
+                bool ok = fs_allow_change(path) &&
+                          (append ? storage_append_file(path, (const uint8_t *)buf_a, n)
+                                  : storage_write_file(path, (const uint8_t *)buf_a, n));
+                if (!ok) { if (fs_may_change(path)) out_err("Could not write %s.", path); status = 1; }
             } else {
                 // Hand this stage's output to the next as its input. The buffers
                 // swap rather than copy: the next stage captures into the other

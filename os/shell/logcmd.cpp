@@ -11,6 +11,7 @@
 #include "blackbox.h"
 #include "storage.h"
 #include "path.h"
+#include "fsguard.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -75,6 +76,7 @@ static int cmd_logdump(int argc, char **argv) {
         const char *name = (argc >= 3) ? argv[2] : "log.txt";
         char path[128];
         path_resolve(fs_cwd(), name, path, sizeof(path));
+        if (!fs_allow_change(path)) return 1;
 
         // Built in one buffer and written once: appending per line would take
         // the filesystem lock dozens of times and interleave with anything else
