@@ -7,9 +7,16 @@ The OS booting, asserted rather than eyeballed.
 #
 #     emu/run-tests.sh
 #
-# WHAT IT COVERS TODAY is the boot path: the banner, both cores coming up, and
-# littlefs being formatted and mounted on emulated flash. That is where three of
-# the last four bugs that reached a desk actually lived.
+# WHAT IT COVERS TODAY is the boot path: the banner, both cores coming up,
+# littlefs being formatted and mounted on emulated flash, and POST finishing so
+# the shell can start. That is where three of the last four bugs that reached a
+# desk actually lived.
+#
+# The last assertion is the one that matters for stalls. The model has no RTC, and
+# the SDK spins forever waiting on it, so a boot that merely MOUNTED the
+# filesystem used to pass while never reaching the shell. The firmware skips the
+# RTC start in emulator builds (kernel.cpp, RPC_CONSOLE_UART); this fails if that
+# or any later step stops short of the first-run setup.
 #
 # WHAT IT DOES NOT COVER YET is the shell, and the reason is written down in
 # emu/README.md: the first-run wizard prompts without a newline and the
@@ -59,3 +66,6 @@ Boots To A Mounted Filesystem
     # formats; the interesting assertion is that it mounts afterwards.
     Wait For Line On Uart     Filesystem mounted
     Wait For Line On Uart     Reading the registry
+    # POST finished, and the shell task got as far as the first-run wizard.
+    Wait For Line On Uart     System ready
+    Wait For Line On Uart     You will be asked to set a root password

@@ -83,3 +83,11 @@ Two things to try next, in order:
 
 The second is the better bet: it needs nothing from the model that is not
 already proven.
+
+**No RTC.** The RP2040 model does not implement the RTC peripheral. The SDK writes
+the time and then waits for a status bit the model never raises, so
+`aon_timer_start_calendar` spins forever and boot stops after POST without
+reaching the shell. `kernel.cpp` skips that call in emulator builds
+(`RPC_CONSOLE_UART`), so the clock reports "not set" there. `boot.robot` asserts
+that boot gets as far as the first-run wizard, which is what catches this class
+of stall.

@@ -313,7 +313,15 @@ bool kboot(void) {
         } else {
             t.tm_year = 2026 - 1900; t.tm_mon = 0; t.tm_mday = 1;
         }
+#ifndef RPC_CONSOLE_UART
         aon_timer_start_calendar(&t);
+#else
+        // The emulator's RP2040 model has no RTC. The SDK writes the time, then
+        // waits for a status bit the model never raises, so this call spins
+        // forever and boot never reaches the shell. The clock stays "not
+        // running" in an emulator build, which every reader already handles.
+        (void)t;
+#endif
     }
     if (strcmp(reg_get("System.Clock_Set", "false"), "true") != 0)
         out_warnp("POST", "The clock is not set. Use 'date set' or 'ntp sync'.");

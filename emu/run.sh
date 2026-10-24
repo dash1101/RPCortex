@@ -48,6 +48,7 @@ include @$PLAT/boards/initialize_custom_board.resc
 sysbus LoadELF @$ELF
 sysbus.cpu0 VectorTableOffset 0x00000000
 sysbus.cpu1 VectorTableOffset 0x00000000
+logLevel 3 sysbus
 sysbus.uart0 CreateFileBackend @$OUT/console.txt true
 start
 RESC
