@@ -133,13 +133,20 @@ part in one line.
 
 ### 3. Crash reporting that survives power loss
 
-The ring and the black box now survive a *warm* reset, which covers the watchdog
-case. They do not survive power being pulled, which is the other half.
+**Landed** — `core/crashlog.{h,cpp}` builds the report and `crashlog_save` in
+`shell/logcmd.cpp` writes it.
 
-The piece missing is small: on a boot that detects a previous crash, write the
-ring and the black box to `/os/crash.log` before anything else can overwrite
-them. `logdump save` already does the writing; it needs to happen automatically
-rather than being remembered.
+The ring and the black box survive a *warm* reset, which covers the watchdog
+case. They do not survive power being pulled, which is the other half. So on a
+boot that detects a previous crash, the black box and the ring are written to
+`/os/crash.log` as soon as the filesystem is mounted and `/os` exists, before
+anything else can overwrite them. The report before it is kept as
+`/os/crash.old`, so a second crash does not erase the first.
+
+The text is host-tested (`crashlog_test`). Detecting a crash, writing the file
+and rotating it across two crashes in a row has been run in the emulator, against
+littlefs on its flash model; the emulator has no shell input, so the file's
+contents were not read back there. It has not run on a board.
 
 ## What should not be re-litigated
 
@@ -428,8 +435,8 @@ in the layer being fixed.
 7. ~~`.rps` scripting, matching v1's semantics~~
 8. **Service supervision** — restart a failed service instead of leaving it
    dead. `service` starts them and lists them; nothing brings one back
-9. **Automatic crash-log-to-flash** *(small, independent, do it any time)* —
-   `logdump save` still has to be remembered
+9. ~~Automatic crash-log-to-flash~~ — `/os/crash.log`, written at boot after a
+   bad shutdown; unconfirmed on a board
 10. **The ESP32-S3 port** — `core/` moves unchanged; the context switch, storage
     and network layers do not
 

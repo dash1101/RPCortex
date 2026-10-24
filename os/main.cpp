@@ -47,6 +47,7 @@ void jobs_run_startup(void);
 void jobs_start_services(void);
 bool safeboot_consume(char *staged, uint32_t cap);
 int  shell_run_line_now(char *line);
+bool crashlog_save(const BlackBox *bb);
 
 // Everything that needs a real stack. Runs as pid 2.
 static int shell_task(void *) {
@@ -241,6 +242,12 @@ int main(void) {
     fs_layout_check(/*verbose*/false);
     fs_integrity_check(/*verbose*/false);
     fs_accounts_check();
+
+    // The previous run's record, written down before it can be lost. The black
+    // box and the ring survive a warm reset but not power being pulled, so this
+    // is what keeps the cause of a crash nobody was watching.
+    if (bb && crashlog_save(bb))
+        out_infop("Crash", "A report was saved to /os/crash.log.");
 
     // Core 0 registers as a flash lockout victim before core 1 exists.
     //
