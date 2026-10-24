@@ -192,6 +192,17 @@ have — and packages there run with the OS's own privileges.
 
 ### Known limitations
 
+- **HTTPS needs about 45 KB of free memory.** A handshake holds the session, the
+  certificate chain and the key exchange in the heap. Measured on a Pico 2 W: 41 KB
+  free failed and 47 KB worked. A board with Nova D1 and every developer package
+  loaded used to boot with 41 KB; it now boots with 69 KB. A handshake that runs out
+  says so and gives the numbers, and `unload` or a restart brings the room back.
+- **A rollback copy needs room for a second firmware image.** An update from a file
+  or over the network puts the new image on the filesystem first, so the copy of the
+  running firmware has to fit alongside it. On a 1792 KB filesystem with an 850 KB
+  image it does not, and the update says "No room to keep a rollback copy" and
+  carries on without one. Streaming the download straight into the staging area
+  would make the room, and is the fix to make before relying on rollback.
 - **Saved Wi-Fi passwords are sealed, not unbreakable.** They are stored
   encrypted under a per-device key (`/os/device.key`, left out of backups), so a
   copy of the registry, a backup or a support dump no longer shows them, and an

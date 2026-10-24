@@ -213,7 +213,7 @@ static bool download(const char *url, const char *dest, char *hex_out, uint64_t 
         // connection actually managed is what points at the cause.
         if (r.error == FETCH_ERR_RECV || r.error == FETCH_ERR_CONNECT ||
             r.error == FETCH_ERR_SEND) {
-            char d[96];
+            char d[192];
             http_last_detail(d, sizeof(d));
             out_multi("  %s", d);
         }

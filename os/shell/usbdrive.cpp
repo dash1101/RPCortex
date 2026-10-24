@@ -39,6 +39,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 
 #include "pico/stdlib.h"
 
@@ -116,10 +117,14 @@ static uint32_t offer_usb_folder(void) {
     }
     if (!is_dir) return 0;
 
-    static NameList list;
+    // From the heap for the length of the call: `download` is rare, and this was
+    // 4 KB of static RAM held for the life of the device.
+    NameList *lp = (NameList *)malloc(sizeof(NameList));
+    if (!lp) return 0;
+    NameList &list = *lp;
     list.n = 0;
     list.overflow = false;
-    if (!storage_walk(USB_DIR, name_cb, &list)) return 0;
+    if (!storage_walk(USB_DIR, name_cb, &list)) { free(lp); return 0; }
 
     uint32_t sent = 0;
     bool all = !list.overflow;
@@ -152,6 +157,7 @@ static uint32_t offer_usb_folder(void) {
         out_warn("/usb holds more than %d files; only the first %d are on the "
                  "drive.", SYNC_MAX, SYNC_MAX);
     g_sent_all = all;
+    free(lp);
     return sent;
 }
 

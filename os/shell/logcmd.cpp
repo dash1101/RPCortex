@@ -14,6 +14,7 @@
 #include "fsguard.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 const char *fs_cwd(void);
@@ -39,10 +40,11 @@ static int format_line(const LogLine *l, char *out, uint32_t cap, bool colour) {
     return snprintf(out, cap, "%4u.%03u  [%s] %s", s, ms, log_kind_tag(l->kind), l->text);
 }
 
-// One buffer for both `logdump save` and the crash report. Neither runs while the
-// other does (the crash report is written once, at boot, before any command can),
-// and a second static of this size would cost the same RAM again for nothing.
-static char g_blob[CRASHLOG_MAX];
+// `logdump save` and the crash report each build their text in a buffer of
+// CRASHLOG_MAX bytes, taken from the heap for the length of the call. It used to be
+// a static: 7 KB reserved for good on a board where the heap is 285 KB and a TLS
+// handshake needs about 45 KB of it, to serve something that runs once a boot at
+// most. A failed allocation is reported, not fatal.
 
 // Write the previous run's black box and the log ring to CRASHLOG_PATH, keeping
 // the report before it as CRASHLOG_OLD. Called once at boot, after the
@@ -54,7 +56,12 @@ static char g_blob[CRASHLOG_MAX];
 // against real littlefs on the emulator's flash model, across two crashes in a
 // row. DEVICE-UNCONFIRMED: it has not run on a board's flash.
 bool crashlog_save(const BlackBox *bb) {
-    size_t n = crashlog_format(g_blob, sizeof(g_blob), bb);
+    char *blob = (char *)malloc(CRASHLOG_MAX);
+    if (!blob) {
+        log_addf(LOG_K_WARN, "[Crash] no memory to build the report in");
+        return false;
+    }
+    size_t n = crashlog_format(blob, CRASHLOG_MAX, bb);
     bool is_dir = false;
     uint32_t sz = 0;
     if (storage_stat(CRASHLOG_PATH, &is_dir, &sz) && !is_dir) {
@@ -62,7 +69,9 @@ bool crashlog_save(const BlackBox *bb) {
         if (!storage_rename(CRASHLOG_PATH, CRASHLOG_OLD))
             storage_remove(CRASHLOG_PATH);            // better to lose the old than the new
     }
-    if (!storage_write_file(CRASHLOG_PATH, (const uint8_t *)g_blob, (uint32_t)n)) {
+    bool wrote = storage_write_file(CRASHLOG_PATH, (const uint8_t *)blob, (uint32_t)n);
+    free(blob);
+    if (!wrote) {
         log_addf(LOG_K_WARN, "[Crash] could not write %s", CRASHLOG_PATH);
         return false;
     }
@@ -81,16 +90,19 @@ static int cmd_logdump(int argc, char **argv) {
         // Built in one buffer and written once: appending per line would take
         // the filesystem lock dozens of times and interleave with anything else
         // writing.
-        char *blob = g_blob;
+        char *blob = (char *)malloc(CRASHLOG_MAX);
+        if (!blob) { out_err("Not enough memory to build the log in (%u bytes in one piece).", (unsigned)CRASHLOG_MAX); return 1; }
         uint32_t n = 0;
         for (uint32_t i = 0; i < log_count(); i++) {
             const LogLine *l = log_at(i);
             if (!l) break;
-            n += (uint32_t)format_line(l, blob + n, sizeof(g_blob) - n - 2, false);
-            if (n + 2 >= sizeof(g_blob)) break;
+            n += (uint32_t)format_line(l, blob + n, CRASHLOG_MAX - n - 2, false);
+            if (n + 2 >= CRASHLOG_MAX) break;
             blob[n++] = '\n';
         }
-        if (!storage_write_file(path, (const uint8_t *)blob, n)) {
+        bool wrote = storage_write_file(path, (const uint8_t *)blob, n);
+        free(blob);
+        if (!wrote) {
             out_err("Could not write %s.", path);
             return 1;
         }

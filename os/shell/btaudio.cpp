@@ -63,7 +63,10 @@ bool bt_stack_up(void);
 // flash read does not interrupt the music, short enough that stopping does not
 // leave a fifth of a second still to play.
 #define PCM_RING_SAMPLES 8192
-static int16_t g_pcm[PCM_RING_SAMPLES];
+// 16 KB, taken the first time audio is used rather than reserved at every boot:
+// most boots never play a note, and the heap is where a TLS handshake needs its
+// room. Once taken it is kept, since the stack it feeds is set up once.
+static int16_t *g_pcm;
 static PcmRing g_ring;
 
 // --- what is playing --------------------------------------------------------
@@ -248,6 +251,11 @@ static bool source_ready(void) {
     if (inited) return true;
     if (!bt_stack_up()) return false;
 
+    if (!g_pcm) g_pcm = (int16_t *)malloc(PCM_RING_SAMPLES * sizeof(int16_t));
+    if (!g_pcm) {
+        log_add(LOG_K_WARN, "btaudio: no memory for the audio buffer (16 KB in one piece)");
+        return false;
+    }
     pcm_ring_init(&g_ring, g_pcm, PCM_RING_SAMPLES);
 
     // The encoder, configured before anything asks it for a frame. Without

@@ -28,6 +28,7 @@
 #include "path.h"
 #include "fsguard.h"
 #include "blackbox.h"
+#include "kernel.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -134,6 +135,8 @@ struct TcpConn {
     // timed out, and those need three different next steps.
     volatile int   last_err;     // the lwIP error, when one arrived
     volatile bool  handshook;    // the connected callback fired
+    bool tls;                    // this connection was HTTPS
+    uint32_t free_at_open;       // heap free when it was opened, for a failure message
     volatile uint32_t sent;      // request bytes handed to the stack
     volatile uint32_t got;       // payload bytes received
 };
@@ -309,6 +312,8 @@ static int lw_open(void *ctx, const char *host, uint16_t port, bool tls) {
     // reached, which is the one that did not finish.
     bb_note_phase("http: waiting for the network lock");
     net_op_acquire();
+    c->tls = tls;
+    c->free_at_open = heap_free();
 
     // The wireless driver only works on the core that initialised it. Nothing
     // reaches this from the wrong core today; saying so plainly beats finding
@@ -504,6 +509,11 @@ static void lw_close(void *ctx) {
     net_op_release();
 }
 
+// How much free heap a TLS handshake wants. A measured threshold with a margin,
+// not a calculated one: on a Pico 2 W with everything loaded, 41 KB free failed
+// and 47 KB free worked.
+#define TLS_HEAP_NEEDED (50u * 1024u)
+
 // The connection is big (a 2 KB ring), so it does not live on a task stack.
 // One at a time is the right limit here: a shell running two downloads at once
 // is not a thing worth the second buffer.
@@ -525,6 +535,20 @@ void http_last_detail(char *out, unsigned cap) {
     snprintf(out, cap, "%s; handshake %s, sent %lu, received %lu",
              why, g_conn.handshook ? "ok" : "NOT DONE",
              (unsigned long)g_conn.sent, (unsigned long)g_conn.got);
+
+    // A TLS handshake that dies before anything is exchanged, with no network
+    // error behind it, is nearly always the heap: it takes about 45 KB for the
+    // session, the certificate chain and the key exchange, and mbedtls reports a
+    // failed allocation only as "the handshake did not finish". Measured on a
+    // Pico 2 W: 41 KB free failed, 47 KB free worked. Say so, with the number,
+    // rather than leave "no error reported" as the whole explanation.
+    if (g_conn.tls && !g_conn.handshook && g_conn.free_at_open < TLS_HEAP_NEEDED) {
+        size_t n = strlen(out);
+        if (n + 1 < cap)
+            snprintf(out + n, cap - n,
+                     " - low on memory (%u KB free, TLS needs about %u KB): 'unload' a package or 'reboot'",
+                     (unsigned)(g_conn.free_at_open / 1024), (unsigned)(TLS_HEAP_NEEDED / 1024));
+    }
 }
 
 bool http_transport_get(HttpTransport *t) {
@@ -844,7 +868,7 @@ static int cmd_curl(int argc, char **argv) {
     char method[12] = "";
     bool quiet = false, verbose = false, head = false;
     uint32_t timeout_s = 0;
-    static char hdrs[HTTP_EXTRA_MAX + 1];
+    char hdrs[HTTP_EXTRA_MAX + 1];       // on the stack: 321 bytes, not 321 bytes of RAM forever
     hdrs[0] = 0;
 
     for (int i = 1; i < argc; i++) {
@@ -953,7 +977,7 @@ static int cmd_curl(int argc, char **argv) {
     if (!good) {
         out_err("%s%s%s", fetch_error_str(r.error), r.detail[0] ? " - " : "", r.detail);
         if (r.error == FETCH_ERR_RECV || r.error == FETCH_ERR_CONNECT || r.error == FETCH_ERR_SEND) {
-            char d[96]; http_last_detail(d, sizeof(d));
+            char d[192]; http_last_detail(d, sizeof(d));
             out_multi("  %s", d);
         }
         return 1;
