@@ -233,6 +233,47 @@ if(RPC_HAS_SD)
     set_source_files_properties(${RPC_SD_SOURCES} PROPERTIES COMPILE_OPTIONS -Os)
 endif()
 
+# COLD CODE AT -Os, HOT CODE AT -O3.
+#
+# An RP2350 image defaults to -O3 (see the top of this file), and that is worth it
+# for the code that runs on every package call: the scheduler, the sandbox and the
+# ABI. It is not worth it for the rest, which is waiting on a serial line, a radio
+# or a flash write whatever it was compiled at. Measured on a pico2_w: the whole
+# image at -Os is 797 KB against 1009 KB, and where it comes from is the OS shell
+# (84 KB), the Bluetooth stack (51 KB), TLS (26 KB), littlefs (12 KB) and lwIP
+# (11 KB). None of those is on the supervisor-call path.
+#
+# So those get -Os and everything else keeps -O3. Off with -DRPC_COLD_SIZE=OFF to
+# compare. RP2040 boards already build everything at -Os, so this changes nothing
+# there.
+option(RPC_COLD_SIZE "Build cold code at -Os on -O3 images" ON)
+if(RPC_COLD_SIZE AND CMAKE_BUILD_TYPE STREQUAL "Release")
+    # The shell and the libraries, wholesale.
+    file(GLOB RPC_COLD_SHELL ${OS_ROOT}/shell/*.cpp)
+    file(GLOB_RECURSE RPC_COLD_LIBS
+        ${PICO_SDK_PATH}/lib/btstack/*.c
+        ${PICO_SDK_PATH}/lib/lwip/src/*.c
+        ${PICO_SDK_PATH}/lib/mbedtls/library/*.c
+        ${PICO_SDK_PATH}/lib/cyw43-driver/src/*.c
+        ${PICO_SDK_PATH}/src/rp2_common/pico_btstack/*.c
+        ${PICO_SDK_PATH}/src/rp2_common/pico_cyw43_driver/*.c
+        ${PICO_SDK_PATH}/src/rp2_common/pico_lwip/*.c)
+    # And the parts of core/ that are bound by a USB host, a flash write or a
+    # person typing, one by one, because core/ also holds the scheduler and the
+    # locks, which stay at -O3. Each of these is named so that adding a file to
+    # core/ does not move it into this list by accident.
+    set(RPC_COLD_CORE
+        ${OS_ROOT}/core/fat12.cpp ${OS_ROOT}/core/fatview.cpp ${OS_ROOT}/core/fatro.cpp
+        ${OS_ROOT}/core/rps.cpp ${OS_ROOT}/core/repoindex.cpp ${OS_ROOT}/core/pkgindex.cpp
+        ${OS_ROOT}/core/ducky.cpp ${OS_ROOT}/core/users.cpp
+        ${OS_ROOT}/core/httpfetch.cpp ${OS_ROOT}/core/httpparse.cpp
+        ${OS_ROOT}/usbmsc.cpp ${OS_ROOT}/usbhid.cpp)
+    set_source_files_properties(
+        ${RPC_COLD_SHELL} ${RPC_COLD_LIBS} ${RPC_COLD_CORE}
+        ${LFS_DIR}/lfs.c ${LFS_DIR}/lfs_util.c
+        PROPERTIES COMPILE_OPTIONS -Os)
+endif()
+
 # WHICH BUILD THIS IS, baked in.
 #
 # `ver` used to print a registry key that defaults to "1" and that nothing ever

@@ -154,15 +154,22 @@ byte for byte against the original escape sequences.
 
 | Board | Image | Filesystem | Sandbox | Card |
 |---|---|---|---|---|
-| Pico 2 W | 999 KB | 2 MB | yes | yes |
-| Pico 2 | 396 KB | 3 MB | yes | yes |
-| Pico W | 795 KB | 384 KB | no | no |
-| Pico | 290 KB | 1.25 MB | no | no |
+| Pico 2 W | 850 KB | 2 MB | yes | yes |
+| Pico 2 | 347 KB | 3 MB | yes | yes |
+| Pico W | 801 KB | 384 KB | no | no |
+| Pico | 293 KB | 1.25 MB | no | no |
 
 The image figures are the shipped `.bin` sizes, and the development build is the
 largest one gets, so it is what every flash slot is sized against; the table they come from is
 in `os/CMakeLists.txt`, next to the slot sizes it justifies. "Card" is a microSD
 slot, which is built for the RP2350 boards only.
+
+The RP2350 images build the scheduler, the sandbox and the package-call path at
+-O3, and everything that waits on a serial line, a radio or a flash write (the
+shell commands, the Bluetooth, TLS and TCP/IP stacks, littlefs and the USB and
+FAT code) at -Os. That took the Pico 2 W image from 1009 KB to 850 KB, leaving
+173 KB of its 1024 KB slot free; `-DRPC_COLD_SIZE=OFF` builds the old way to
+compare. The RP2040 images were already built at -Os.
 
 **The RP2040 images have not been booted.** They build, both image checks pass
 on them, and the flash layout was verified by reading the constant back out of
