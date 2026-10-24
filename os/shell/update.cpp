@@ -289,7 +289,7 @@ static int do_check(bool quiet) {
     return 0;
 }
 
-static int do_install(bool force) {
+static int do_install(bool force, bool yes) {
     if (!users_is_admin(session_user())) {
         out_err("Only an admin can update the firmware.");
         return 1;
@@ -347,7 +347,8 @@ static int do_install(bool force) {
     out_blank();
     out_warn("About to replace the firmware. Do not remove power.");
     out_multi("  The device reboots into %s when it finishes.", e.ver);
-    if (!session_confirm("  Continue?")) { out_info("Cancelled. The download is kept."); return 0; }
+    // --yes is for scripts, as in v1. The admin check above still applies.
+    if (!yes && !session_confirm("  Continue?")) { out_info("Cancelled. The download is kept."); return 0; }
 
     return update_apply_file(IMAGE_PATH, e.ver, /*at_boot*/false) ? 0 : 1;
 }
@@ -610,8 +611,14 @@ static int cmd_update(int argc, char **argv) {
 
     if (!strcmp(sub, "check"))  return do_check(false);
     if (!strcmp(sub, "install") || !strcmp(sub, "online")) {
-        bool force = (argc >= 3 && !strcmp(argv[2], "--force"));
-        return do_install(force);
+        // v1's spellings: --force/-f and --yes/-y, in either order.
+        bool force = false, yes = false;
+        for (int i = 2; i < argc; i++) {
+            if (!strcmp(argv[i], "--force") || !strcmp(argv[i], "-f")) force = true;
+            else if (!strcmp(argv[i], "--yes") || !strcmp(argv[i], "-y")) yes = true;
+            else { out_err("Unknown option: %s", argv[i]); return 1; }
+        }
+        return do_install(force, yes);
     }
     if (!strcmp(sub, "rollback") || !strcmp(sub, "revert"))
         return rollback_command(argc, argv);
