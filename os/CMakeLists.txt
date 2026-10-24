@@ -364,12 +364,20 @@ add_custom_command(
 # has never been online. v1 shipped its catalogue the same way. It goes stale
 # between releases, which is what `pkg update` is for — but a fresh device
 # should be able to see what exists before it can reach the network.
+#
+# WHERE IT COMES FROM. The package repository, when it is checked out beside this
+# one, so a build always carries the current catalogue. Otherwise stock_index.json
+# in this directory, a copy that is refreshed when a release is cut, so a fresh
+# clone of this repository builds on its own (CI does, and so can anyone else).
+set(STOCK_INDEX ${OS_ROOT}/../../RPCortex-repo/repo-v2/index.json)
+if(NOT EXISTS ${STOCK_INDEX})
+    set(STOCK_INDEX ${OS_ROOT}/stock_index.json)
+endif()
 add_custom_command(
     OUTPUT ${CMAKE_BINARY_DIR}/stock_index.cpp
     COMMAND ${CMAKE_COMMAND} -E env python3 ${OS_ROOT}/tools_bin2c.py
-            ${OS_ROOT}/../../RPCortex-repo/repo-v2/index.json
-            ${CMAKE_BINARY_DIR}/stock_index.cpp stock_index
-    DEPENDS ${OS_ROOT}/../../RPCortex-repo/repo-v2/index.json ${OS_ROOT}/tools_bin2c.py
+            ${STOCK_INDEX} ${CMAKE_BINARY_DIR}/stock_index.cpp stock_index
+    DEPENDS ${STOCK_INDEX} ${OS_ROOT}/tools_bin2c.py
 )
 add_custom_target(stock_index_src DEPENDS ${CMAKE_BINARY_DIR}/stock_index.cpp)
 target_sources(rpcortex_v2 PRIVATE ${CMAKE_BINARY_DIR}/stock_index.cpp)
