@@ -1,0 +1,68 @@
+name: ci
+
+# Every push and pull request builds all four boards and runs the host suites.
+# build.sh does both: it refuses an image that overflows its flash slot, runs the
+# two image checks (check-flashsafe, check-stackswitch), then os/host/run_all.sh.
+#
+# The pico-sdk and littlefs are not in this repository, so they are cloned at the
+# revisions this project builds with. Bump them here and nowhere else.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  PICO_SDK_TAG: "2.3.0"
+  LITTLEFS_TAG: "v2.11.1"
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        board: [pico2_w, pico2, pico_w, pico]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake ninja-build g++ gcc-arm-none-eabi libnewlib-arm-none-eabi \
+            libstdc++-arm-none-eabi-newlib libusb-1.0-0-dev pkg-config python3
+
+      - name: Cache the SDK and littlefs
+        id: deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            sdk
+            littlefs
+          key: deps-${{ env.PICO_SDK_TAG }}-${{ env.LITTLEFS_TAG }}-v1
+
+      - name: Fetch the SDK and littlefs
+        if: steps.deps.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch "$PICO_SDK_TAG" \
+            https://github.com/raspberrypi/pico-sdk.git sdk
+          git -C sdk submodule update --init --depth 1 \
+            lib/btstack lib/cyw43-driver lib/lwip lib/mbedtls lib/tinyusb
+          git clone --depth 1 --branch "$LITTLEFS_TAG" \
+            https://github.com/littlefs-project/littlefs.git littlefs
+
+      - name: Build ${{ matrix.board }} and run the host suites
+        run: ./build.sh ${{ matrix.board }}
+
+      - name: Image size
+        run: |
+          ls -l out/
+          echo "### ${{ matrix.board }}" >> "$GITHUB_STEP_SUMMARY"
+          stat -c '%n %s bytes' out/rpcortex-v2-${{ matrix.board }}.uf2 >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rpcortex-v2-${{ matrix.board }}
+          path: out/rpcortex-v2-${{ matrix.board }}.uf2
+          retention-days: 14
