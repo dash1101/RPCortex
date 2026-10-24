@@ -63,8 +63,16 @@ bool http_parse_url(const char *url, HttpUrl *out) {
         p++;
         const char *ds = p;
         long v = 0;
-        while (*p >= '0' && *p <= '9') { v = v * 10 + (*p - '0'); p++; }
-        if (p == ds || v <= 0 || v > 65535) return false;
+        // Stopped as soon as it is past the largest port, not after the loop: a
+        // long enough run of digits overflows a signed long, which is undefined
+        // and, on a 32-bit part, can wrap back into range — "…:4294967297/"
+        // would connect to port 1.
+        while (*p >= '0' && *p <= '9') {
+            v = v * 10 + (*p - '0');
+            if (v > 65535) return false;
+            p++;
+        }
+        if (p == ds || v <= 0) return false;
         out->port = (uint16_t)v;
     }
 

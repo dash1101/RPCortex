@@ -104,6 +104,15 @@ int main(void) {
         ok(!http_parse_url("http://u:p@example.com/", &u), "url: rejects credentials");
         ok(!http_parse_url("http://example.com:0/x", &u),  "url: rejects port 0");
         ok(!http_parse_url("http://example.com:99999/x", &u), "url: rejects port > 65535");
+        ok(http_parse_url("http://example.com:65535/x", &u) && u.port == 65535, "url: accepts port 65535");
+        ok(!http_parse_url("http://example.com:65536/x", &u), "url: rejects port 65536");
+        // A run of digits long enough to overflow a signed long is not a port, and
+        // must not be computed as one (undefined behaviour, and on a 32-bit part
+        // 4294967297 wraps to 1).
+        ok(!http_parse_url("http://example.com:99999999999999999999/x", &u), "url: rejects a port too long to hold");
+        ok(!http_parse_url("http://example.com:4294967297/x", &u), "url: a port that wraps to 1 is not port 1");
+        ok(!http_parse_url("http://example.com:0/x", &u), "url: rejects port 0");
+        ok(!http_parse_url("http://example.com:00000000000000000000001/x", &u) || u.port == 1, "url: leading zeros are not an overflow");
 
         // A host too long must be refused, not truncated — truncation would
         // connect somewhere real and wrong.
