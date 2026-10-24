@@ -79,3 +79,26 @@ void hex_encode(const uint8_t *in, size_t len, char *out) {
     for (size_t i = 0; i < len; i++) { out[i*2]=h[in[i]>>4]; out[i*2+1]=h[in[i]&0xf]; }
     out[len*2] = 0;
 }
+
+void hmac_sha256(const uint8_t *key, size_t key_len,
+                 const uint8_t *msg, size_t msg_len,
+                 uint8_t out[SHA256_DIGEST_LEN]) {
+    uint8_t k[64] = {0};
+    if (key_len > 64) sha256(key, key_len, k);      // a long key is hashed first
+    else if (key_len) memcpy(k, key, key_len);
+
+    uint8_t pad[64];
+    Sha256Ctx c;
+    uint8_t inner[SHA256_DIGEST_LEN];
+
+    for (int i = 0; i < 64; i++) pad[i] = k[i] ^ 0x36;
+    sha256_init(&c); sha256_update(&c, pad, 64); sha256_update(&c, msg, msg_len);
+    sha256_final(&c, inner);
+
+    for (int i = 0; i < 64; i++) pad[i] = k[i] ^ 0x5c;
+    sha256_init(&c); sha256_update(&c, pad, 64); sha256_update(&c, inner, sizeof(inner));
+    sha256_final(&c, out);
+
+    // The key block and the inner digest do not outlive this call.
+    memset(k, 0, sizeof(k)); memset(pad, 0, sizeof(pad)); memset(inner, 0, sizeof(inner));
+}

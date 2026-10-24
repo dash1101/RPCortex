@@ -25,6 +25,12 @@ void sha256_final(Sha256Ctx *c, uint8_t out[SHA256_DIGEST_LEN]);
 void sha256(const void *data, size_t len, uint8_t out[SHA256_DIGEST_LEN]);
 
 // Hex-encode a digest into `out` (must hold 2*len+1 bytes).
+// HMAC-SHA-256 (RFC 2104). One call over one buffer: every use here builds its
+// message in a small stack array, and a multi-part form would only add state.
+void hmac_sha256(const uint8_t *key, size_t key_len,
+                 const uint8_t *msg, size_t msg_len,
+                 uint8_t out[SHA256_DIGEST_LEN]);
+
 void hex_encode(const uint8_t *in, size_t len, char *out);
 
 #endif  // RPC_SHA256_H

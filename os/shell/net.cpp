@@ -20,6 +20,8 @@
 #include "command.h"
 #include "out.h"
 #include "registry.h"
+#include "secret.h"
+#include "devkey.h"
 #include "session.h"
 #include "interrupt.h"
 #include "task.h"
@@ -500,24 +502,86 @@ static int saved_free_slot(void) {
     return -1;
 }
 
+// Passwords are SEALED before they reach the registry (core/secret.h), under a
+// per-device key kept in a file that backups leave out. So a copy of the registry,
+// a backup or a support dump no longer carries them. It does not stop anyone who
+// has the whole flash, which holds the key too: the device has no secure element.
+//
+// A value written by an older build is plaintext. It is sealed the next time it is
+// touched, and `saved_seal_all` does the lot once per boot so nothing waits for a
+// reconnect to be protected.
+//
+// A sealed value that will not open (a registry restored onto a different device,
+// or damage) reads as "no password", never as a half-decrypted one.
+static void saved_pw_key(int slot, char *k, size_t cap) { saved_key(slot, "PW", k, cap); }
+
+static void saved_store_pw(int slot, const char *ssid, const char *pw) {
+    char k[REG_KEY_MAX];
+    saved_pw_key(slot, k, sizeof(k));
+    uint8_t dk[SECRET_KEY_LEN];
+    char sealed[SECRET_SEAL_MAX];
+    // An open network has nothing to hide, and a passphrase too long to seal is
+    // too long for WPA2 anyway; both are stored as given rather than lost.
+    if (pw && pw[0] && devkey_get(dk) && secret_seal(dk, ssid, pw, sealed, sizeof(sealed)))
+        reg_set(k, sealed);
+    else
+        reg_set(k, pw ? pw : "");
+    memset(dk, 0, sizeof(dk)); memset(sealed, 0, sizeof(sealed));
+}
+
+// Seal any plaintext password still in the registry. Once per boot.
+static void saved_seal_all(void) {
+    static bool done;
+    if (done) return;
+    done = true;
+    char k[REG_KEY_MAX], sk[REG_KEY_MAX];
+    for (int i = 0; i < NET_SAVED; i++) {
+        saved_key(i, "SSID", sk, sizeof(sk));
+        const char *ssid = reg_get(sk, nullptr);
+        if (!ssid || !ssid[0]) continue;
+        saved_pw_key(i, k, sizeof(k));
+        const char *pw = reg_get(k, "");
+        if (pw[0] && !secret_is_sealed(pw)) {
+            char copy[REG_VAL_MAX];
+            snprintf(copy, sizeof(copy), "%s", pw);
+            saved_store_pw(i, ssid, copy);
+            memset(copy, 0, sizeof(copy));
+            log_addf(LOG_K_INFO, "[Net] sealed the saved password for slot %d", i);
+        }
+    }
+}
+
 // Save, replacing an existing entry for the same SSID. When every slot is full
 // the oldest (slot 0) is reused — a device that has seen five networks should
 // still remember the one it just successfully joined.
 static void saved_put(const char *ssid, const char *pw) {
+    saved_seal_all();
     int slot = saved_find(ssid);
     if (slot < 0) slot = saved_free_slot();
     if (slot < 0) slot = 0;
     char k[REG_KEY_MAX];
     saved_key(slot, "SSID", k, sizeof(k)); reg_set(k, ssid);
-    saved_key(slot, "PW",   k, sizeof(k)); reg_set(k, pw ? pw : "");
+    saved_store_pw(slot, ssid, pw);
 }
 
 static bool saved_get(const char *ssid, char *pw, size_t cap) {
+    saved_seal_all();
     int slot = saved_find(ssid);
     if (slot < 0) return false;
     char k[REG_KEY_MAX];
-    saved_key(slot, "PW", k, sizeof(k));
-    snprintf(pw, cap, "%s", reg_get(k, ""));
+    saved_pw_key(slot, k, sizeof(k));
+    const char *v = reg_get(k, "");
+    pw[0] = 0;
+    if (!secret_is_sealed(v)) {                    // empty, or one that could not be sealed
+        snprintf(pw, cap, "%s", v);
+        return true;
+    }
+    uint8_t dk[SECRET_KEY_LEN];
+    if (!devkey_get(dk) || secret_open(dk, ssid, v, pw, cap) != SECRET_OK) {
+        pw[0] = 0;
+        log_addf(LOG_K_WARN, "[Net] the saved password for '%s' could not be read", ssid);
+    }
+    memset(dk, 0, sizeof(dk));
     return true;
 }
 

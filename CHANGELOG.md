@@ -179,6 +179,12 @@ have — and packages there run with the OS's own privileges.
 
 ### Known limitations
 
+- **Saved Wi-Fi passwords are sealed, but not locked away.** They are stored
+  encrypted under a per-device key (`/os/device.key`, left out of backups), so a
+  copy of the registry, a backup or a support dump no longer shows them. The key
+  is in the same flash, and the filesystem has no per-file permissions yet, so any
+  logged-in account can read both files and someone holding the flash can recover
+  a password. Per-file permissions are the missing half.
 - **No package sandbox on RP2040.** Not an omission — ARMv6-M protection regions
   are power-of-two sized and aligned to their own size, so the five a package
   needs cost more RAM than those boards have. Packages there run with the OS's
