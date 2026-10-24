@@ -17,6 +17,7 @@
 #ifndef RPC_HTTPFETCH_H
 #define RPC_HTTPFETCH_H
 
+#include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
 #include "httpparse.h"
@@ -71,7 +72,27 @@ struct FetchOpts {
     // did not say how big the body would be.
     void (*progress)(void *ctx, uint64_t got, uint64_t total);
     void *progress_ctx;
+
+    // What to send. A null method is GET. `headers` is a block of complete
+    // "Name: value\r\n" lines, at most HTTP_EXTRA_MAX bytes; the caller makes
+    // sure no value carries a bare CR or LF, since this sends it as given. `body`
+    // follows the headers with a Content-Length, and a Content-Type of
+    // application/x-www-form-urlencoded unless `headers` supplies one.
+    //
+    // Redirects are followed only for a plain GET with no body. Following one for
+    // any other request means rewriting the method, which is the caller's call.
+    const char *method;
+    const char *headers;
+    const uint8_t *body;
+    uint32_t body_len;
+
+    // Called with the status line and then each response header line, in order.
+    void (*on_header)(void *ctx, const char *line);
+    void *on_header_ctx;
 };
+
+// The most extra-header text a request may carry.
+#define HTTP_EXTRA_MAX 320
 
 struct FetchResult {
     int      error;             // a FetchError
@@ -92,8 +113,21 @@ bool http_fetch(const HttpTransport *t, const char *url,
 
 const char *fetch_error_str(int err);
 
+// Append one "Name: value" argument (as given to `curl -H`) to `block` as
+// "Name: value\r\n", normalising the spacing around the colon. `cap` is the size
+// of the whole buffer, terminator included. Returns false, leaving `block`
+// untouched, when the argument has no colon or no name, contains a CR or LF, or
+// would not fit. The CR/LF refusal is the point: the block is sent exactly as
+// written, so one in a value would let an argument smuggle in another header, or
+// a whole second request.
+bool http_add_header(char *block, size_t cap, const char *arg);
+
 // Build the request bytes for one URL. Exposed for testing, because the exact
 // header block is a thing worth asserting on rather than eyeballing.
 int http_build_request(char *buf, uint32_t cap, const HttpUrl *u, const char *user_agent);
+
+// The same, honouring the method, extra headers and body length in `o`. The body
+// itself is not copied into `buf`; it is sent after the header block.
+int http_build_request_ex(char *buf, uint32_t cap, const HttpUrl *u, const FetchOpts *o);
 
 #endif  // RPC_HTTPFETCH_H

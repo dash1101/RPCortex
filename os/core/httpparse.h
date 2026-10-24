@@ -65,6 +65,19 @@ struct HttpParser {
     HttpSink sink;
     void    *ctx;
     int      sink_rc;                // what the sink said when it refused
+
+    // Set by the caller AFTER http_parser_init, which clears them.
+    //
+    // head_only: this answers a HEAD request. Such a response describes a body
+    // (Content-Length is usually present) without sending one, so waiting for it
+    // would hang until the connection timed out.
+    //
+    // header_cb: called with the status line and then each header line as it
+    // completes, in order, NUL-terminated and without the CRLF. `curl -I` and
+    // `curl -v` print them.
+    bool     head_only;
+    void   (*header_cb)(void *ctx, const char *line);
+    void    *header_ctx;
 };
 
 void http_parser_init(HttpParser *p, HttpSink sink, void *ctx);

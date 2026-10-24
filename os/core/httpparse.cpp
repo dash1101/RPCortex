@@ -159,6 +159,7 @@ static void parse_status_line(HttpParser *p) {
     if (sp[0] < '0' || sp[0] > '9') { p->state = HTTP_ST_ERROR; return; }
     p->status = (int)strtol(sp, nullptr, 10);
     if (p->status < 100 || p->status > 599) { p->state = HTTP_ST_ERROR; return; }
+    if (p->header_cb) p->header_cb(p->header_ctx, p->line);
     p->state = HTTP_ST_HEADERS;
 }
 
@@ -166,6 +167,8 @@ static void parse_status_line(HttpParser *p) {
 // chunked wins over Content-Length when a server sends both, which is what the
 // RFC requires and is also the safer reading of a contradictory response.
 static void headers_complete(HttpParser *p) {
+    // A reply to HEAD never carries a body, whatever Content-Length says.
+    if (p->head_only) { p->state = HTTP_ST_DONE; return; }
     // A 204/304 carries no body whatever the headers claim, and neither does a
     // redirect this client is about to follow.
     if (p->status == 204 || p->status == 304) { p->state = HTTP_ST_DONE; return; }
@@ -214,7 +217,10 @@ uint32_t http_parser_feed(HttpParser *p, const uint8_t *data, uint32_t len) {
         case HTTP_ST_HEADERS:
             if (feed_line(p, data[i++])) {
                 if (p->line_len == 0) { headers_complete(p); }
-                else                  { parse_header_line(p); }
+                else {
+                    if (p->header_cb) p->header_cb(p->header_ctx, p->line);
+                    parse_header_line(p);
+                }
                 line_reset(p);
             }
             break;

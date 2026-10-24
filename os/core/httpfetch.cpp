@@ -25,8 +25,56 @@ const char *fetch_error_str(int err) {
     }
 }
 
-int http_build_request(char *buf, uint32_t cap, const HttpUrl *u, const char *ua) {
-    if (!ua) ua = DEFAULT_UA;
+bool http_add_header(char *block, size_t cap, const char *arg) {
+    if (!block || !arg || cap == 0) return false;
+    for (const char *p = arg; *p; p++) if (*p == '\r' || *p == '\n') return false;
+    while (*arg == ' ' || *arg == '\t') arg++;                 // no leading space on a name
+    const char *colon = strchr(arg, ':');
+    if (!colon || colon == arg) return false;
+    size_t name = (size_t)(colon - arg);
+    while (name && (arg[name - 1] == ' ' || arg[name - 1] == '\t')) name--;
+    if (!name) return false;
+    const char *v = colon + 1;
+    while (*v == ' ' || *v == '\t') v++;
+    size_t vlen = strlen(v);
+    while (vlen && (v[vlen - 1] == ' ' || v[vlen - 1] == '\t')) vlen--;
+    size_t used = strlen(block);
+    size_t need = name + 2 + vlen + 2;                 // "Name: value\r\n"
+    if (used + need + 1 > cap) return false;
+    memcpy(block + used, arg, name);
+    memcpy(block + used + name, ": ", 2);
+    memcpy(block + used + name + 2, v, vlen);
+    memcpy(block + used + name + 2 + vlen, "\r\n", 3);   // includes the terminator
+    return true;
+}
+
+// Does the header block contain a header called `name` (lowercase, no colon)?
+static bool block_has_header(const char *block, const char *name) {
+    if (!block) return false;
+    size_t n = strlen(name);
+    for (const char *p = block; *p; ) {
+        size_t i = 0;
+        while (i < n && p[i] && (char)((p[i] >= 'A' && p[i] <= 'Z') ? p[i] + 32 : p[i]) == name[i]) i++;
+        if (i == n && p[n] == ':') return true;
+        const char *eol = strstr(p, "\r\n");
+        if (!eol) break;
+        p = eol + 2;
+    }
+    return false;
+}
+
+static bool method_is(const char *m, const char *want) {
+    if (!m || !*m) m = "GET";
+    for (; *m && *want; m++, want++)
+        if ((*m >= 'a' && *m <= 'z' ? *m - 32 : *m) != *want) return false;
+    return *m == 0 && *want == 0;
+}
+
+int http_build_request_ex(char *buf, uint32_t cap, const HttpUrl *u, const FetchOpts *o) {
+    const char *ua = (o && o->user_agent) ? o->user_agent : DEFAULT_UA;
+    const char *method = (o && o->method && *o->method) ? o->method : "GET";
+    const char *extra = (o && o->headers) ? o->headers : "";
+    uint32_t body_len = o ? o->body_len : 0;
 
     // Connection: close is deliberate. Keep-alive would save a handshake on the
     // second request, and would cost a connection state machine, an idle timer
@@ -37,15 +85,32 @@ int http_build_request(char *buf, uint32_t cap, const HttpUrl *u, const char *ua
     // and a server that helpfully gzips a .pkg would hand back an archive that
     // fails to open with no clue as to why.
     int n = snprintf(buf, cap,
-                     "GET %s HTTP/1.1\r\n"
+                     "%s %s HTTP/1.1\r\n"
                      "Host: %s\r\n"
                      "User-Agent: %s\r\n"
                      "Accept-Encoding: identity\r\n"
                      "Connection: close\r\n"
-                     "\r\n",
-                     u->path, u->host, ua);
+                     "%s",
+                     method, u->path, u->host, ua, extra);
     if (n < 0 || (uint32_t)n >= cap) return -1;
+
+    if (body_len) {
+        int m = snprintf(buf + n, cap - (uint32_t)n, "%sContent-Length: %lu\r\n",
+                         block_has_header(extra, "content-type")
+                             ? "" : "Content-Type: application/x-www-form-urlencoded\r\n",
+                         (unsigned long)body_len);
+        if (m < 0 || (uint32_t)(n + m) >= cap) return -1;
+        n += m;
+    }
+    if ((uint32_t)n + 2 >= cap) return -1;
+    buf[n++] = '\r'; buf[n++] = '\n'; buf[n] = 0;
     return n;
+}
+
+int http_build_request(char *buf, uint32_t cap, const HttpUrl *u, const char *ua) {
+    FetchOpts o{};
+    o.user_agent = ua;
+    return http_build_request_ex(buf, cap, u, &o);
 }
 
 // What the sink sees, wrapped so the size cap and the progress callback apply
@@ -61,6 +126,7 @@ struct SinkGuard {
     bool      over_limit;
     bool      sink_refused;
     const HttpParser *parser;   // to see the status before the body is passed on
+    bool      follow;           // redirects are being followed, so a 3xx body is discarded
 };
 
 static int guarded_sink(void *ctx, const uint8_t *data, uint32_t len) {
@@ -73,7 +139,7 @@ static int guarded_sink(void *ctx, const uint8_t *data, uint32_t len) {
     //
     // The status is always known by now: the status line is parsed before the
     // headers, and the headers before any body byte is emitted.
-    if (g->parser && g->parser->status >= 300 && g->parser->status < 400)
+    if (g->follow && g->parser && g->parser->status >= 300 && g->parser->status < 400)
         return 0;               // accepted and discarded, so the hop completes
 
     // Refuse BEFORE writing. Catching it afterwards would mean a file already
@@ -98,16 +164,23 @@ static int one_hop(const HttpTransport *t, const HttpUrl *u, const FetchOpts *o,
         return FETCH_ERR_CONNECT;
     }
 
-    char req[HTTP_PATH_MAX + HTTP_HOST_MAX + 160];
-    int n = http_build_request(req, sizeof(req), u, o->user_agent);
+    char req[HTTP_PATH_MAX + HTTP_HOST_MAX + HTTP_EXTRA_MAX + 224];
+    int n = http_build_request_ex(req, sizeof(req), u, o);
     if (n < 0) { t->close(t->ctx); return FETCH_ERR_URL; }
 
     if (t->send(t->ctx, (const uint8_t *)req, (uint32_t)n) != 0) {
         t->close(t->ctx);
         return FETCH_ERR_SEND;
     }
+    if (o->body && o->body_len && t->send(t->ctx, o->body, o->body_len) != 0) {
+        t->close(t->ctx);
+        return FETCH_ERR_SEND;
+    }
 
     http_parser_init(p, guarded_sink, guard);
+    p->head_only  = method_is(o->method, "HEAD");
+    p->header_cb  = o->on_header;
+    p->header_ctx = o->on_header_ctx;
     guard->parser = p;
 
     // A stack buffer sized to about one segment. Bigger would not help: the
@@ -182,6 +255,7 @@ bool http_fetch(const HttpTransport *t, const char *url,
     guard.limit = opts->max_bytes;
     guard.progress = opts->progress;
     guard.progress_ctx = opts->progress_ctx;
+    guard.follow = method_is(opts->method, "GET") && opts->body_len == 0;
 
     for (uint32_t hop = 0; ; hop++) {
         if (hop > max_redirects) {
@@ -198,7 +272,7 @@ bool http_fetch(const HttpTransport *t, const char *url,
 
         if (err != FETCH_OK) { res->error = err; return false; }
 
-        if (http_is_redirect(&p)) {
+        if (guard.follow && http_is_redirect(&p)) {
             HttpUrl next;
             if (!http_resolve_redirect(&u, p.location, &next)) {
                 res->error = FETCH_ERR_REDIRECT;

@@ -142,7 +142,8 @@ with salted SHA-256, roles and the guided first run. The shell: pipes, `&&`,
 `||`, `;`, redirection, quoting, history, the aliases. `wifi` with all its
 subcommands, `ping`, `nslookup`, `ntp`. `startup`, `task`, `service`, `watch`.
 The `.rps` scripting language, unchanged — scripts carry over as they are. Idle auto-logout
-(`Shell.Idle_Logout`, minutes, off by default).
+(`Shell.Idle_Logout`, minutes, off by default). `curl` takes all of v1's flags: `-X`, `-d`, `-H`,
+`-I`, `-v`, `-s`, `-o` and `--timeout`.
 
 And the console itself: v1's tagged output, colours and boot banner, checked
 byte for byte against the original escape sequences.

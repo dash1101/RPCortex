@@ -22,6 +22,7 @@
 #include <signal.h>
 #include <time.h>
 #include <initializer_list>
+#include <strings.h>
 
 static int checks = 0, fails = 0;
 static void ok(bool cond, const char *what) {
@@ -56,6 +57,9 @@ struct Fake {
     bool  cut_short;      // close mid-body rather than finishing
     char  last_request[512];
     char  hosts[8][64];   // the host each connection asked for
+    char  all[2048];      // every byte sent, in order, across all send() calls
+    uint32_t all_n;
+    int   sends;
 };
 
 static int fk_open(void *c, const char *host, uint16_t, bool) {
@@ -70,6 +74,8 @@ static int fk_send(void *c, const uint8_t *d, uint32_t n) {
     if (f->fail_send) return -1;
     uint32_t k = n < sizeof(f->last_request) - 1 ? n : sizeof(f->last_request) - 1;
     memcpy(f->last_request, d, k); f->last_request[k] = 0;
+    f->sends++;
+    if (f->all_n + n < sizeof(f->all)) { memcpy(f->all + f->all_n, d, n); f->all_n += n; f->all[f->all_n] = 0; }
     return 0;
 }
 static int fk_recv(void *c, uint8_t *buf, uint32_t cap) {
@@ -403,6 +409,164 @@ int main(void) {
         if (!ran) printf("    SKIP real-server checks (no python3 http.server)\n");
     }
 
+
+    // --- curl's request shapes: method, headers and a body -------------------
+    struct Hdrs { char line[16][96]; int n; };
+    static auto on_hdr = [](void *c, const char *l) {
+        Hdrs *h = (Hdrs *)c;
+        if (h->n < 16) snprintf(h->line[h->n++], 96, "%s", l);
+    };
+    {
+        Fake f{}; f.responses[0] = R200; f.count = 1;
+        HttpTransport t = fake_transport(&f);
+        Buf b{}; b.refuse_after = -1; FetchResult r;
+        FetchOpts o{};
+        o.method = "POST";
+        o.headers = "X-Key: abc\r\n";
+        static const uint8_t body[] = "a=1&b=2";
+        o.body = body; o.body_len = 7;
+        bool good = http_fetch(&t, "http://h.test/p", sink, &b, &o, &r);
+        ok(good && !strcmp(b.d, "hello world"), "POST: the response comes back");
+        ok(strstr(f.all, "POST /p HTTP/1.1\r\n") == f.all, "POST: request line carries the method");
+        ok(strstr(f.all, "X-Key: abc\r\n") != nullptr, "POST: the extra header is sent");
+        ok(strstr(f.all, "Content-Type: application/x-www-form-urlencoded\r\n") != nullptr,
+           "POST: a body with no Content-Type gets the form default");
+        ok(strstr(f.all, "Content-Length: 7\r\n") != nullptr, "POST: Content-Length matches the body");
+        ok(f.all_n >= 7 && !strcmp(f.all + f.all_n - 11, "\r\n\r\na=1&b=2"),
+           "POST: the body follows the blank line, byte for byte");
+        ok(f.sends == 2, "POST: headers and body are separate sends, the body is not copied");
+    }
+    {   // A caller-supplied Content-Type wins, in any case, and is not duplicated.
+        for (const char *h : {"Content-Type: application/json\r\n", "content-type: text/plain\r\n"}) {
+            Fake f{}; f.responses[0] = R200; f.count = 1;
+            HttpTransport t = fake_transport(&f);
+            Buf b{}; b.refuse_after = -1; FetchResult r;
+            FetchOpts o{}; o.method = "POST"; o.headers = h;
+            static const uint8_t body[] = "{}"; o.body = body; o.body_len = 2;
+            http_fetch(&t, "http://h.test/p", sink, &b, &o, &r);
+            ok(strstr(f.all, "x-www-form-urlencoded") == nullptr, "own Content-Type: no form default added");
+            const char *first = strcasestr(f.all, "content-type:");
+            ok(first && !strcasestr(first + 1, "content-type:"), "own Content-Type: sent exactly once");
+        }
+        // X-Content-Type is not Content-Type.
+        Fake f{}; f.responses[0] = R200; f.count = 1;
+        HttpTransport t = fake_transport(&f);
+        Buf b{}; b.refuse_after = -1; FetchResult r;
+        FetchOpts o{}; o.method = "POST"; o.headers = "X-Content-Type: a\r\n";
+        static const uint8_t body[] = "z"; o.body = body; o.body_len = 1;
+        http_fetch(&t, "http://h.test/p", sink, &b, &o, &r);
+        ok(strstr(f.all, "Content-Type: application/x-www-form-urlencoded\r\n") != nullptr,
+           "a header that merely ends in content-type does not suppress the default");
+    }
+    {   // A plain GET with an extra header sends no body headers.
+        Fake f{}; f.responses[0] = R200; f.count = 1;
+        HttpTransport t = fake_transport(&f);
+        Buf b{}; b.refuse_after = -1; FetchResult r;
+        FetchOpts o{}; o.headers = "Accept: text/plain\r\n";
+        http_fetch(&t, "http://h.test/g", sink, &b, &o, &r);
+        ok(strstr(f.all, "Accept: text/plain\r\n") != nullptr, "GET: extra header sent");
+        ok(strstr(f.all, "Content-Length") == nullptr && f.sends == 1, "GET: no body headers, one send");
+    }
+    for (uint32_t step : {(uint32_t)1, (uint32_t)5, (uint32_t)0}) {
+        // HEAD: the reply describes 1000 bytes and sends none.
+        Fake f{};
+        f.responses[0] = "HTTP/1.1 200 OK\r\nContent-Length: 1000\r\nX-A: b\r\n\r\n";
+        f.count = 1; f.step = step;
+        HttpTransport t = fake_transport(&f);
+        Buf b{}; b.refuse_after = -1; FetchResult r;
+        Hdrs h{};
+        FetchOpts o{}; o.method = "HEAD"; o.on_header = on_hdr; o.on_header_ctx = &h;
+        bool good = http_fetch(&t, "http://h.test/h", sink, &b, &o, &r);
+        char m[80]; snprintf(m, sizeof(m), "HEAD completes without waiting for a body (read size %u)", step);
+        ok(good && r.status == 200 && r.bytes == 0 && b.n == 0, m);
+        ok(strstr(f.all, "HEAD /h HTTP/1.1\r\n") == f.all, "HEAD: request line carries the method");
+        ok(h.n == 3 && !strcmp(h.line[0], "HTTP/1.1 200 OK") &&
+           !strcmp(h.line[1], "Content-Length: 1000") && !strcmp(h.line[2], "X-A: b"),
+           "HEAD: the callback sees the status line and each header once, in order");
+    }
+    {   // The header callback is for any request, and never sees the body.
+        Fake f{}; f.responses[0] = R200; f.count = 1;
+        HttpTransport t = fake_transport(&f);
+        Buf b{}; b.refuse_after = -1; FetchResult r; Hdrs h{};
+        FetchOpts o{}; o.on_header = on_hdr; o.on_header_ctx = &h;
+        http_fetch(&t, "http://h.test/g", sink, &b, &o, &r);
+        ok(h.n == 2 && !strcmp(h.line[1], "Content-Length: 11"), "GET: callback sees headers only");
+    }
+    {   // A POST is not redirected: its method would have to be rewritten.
+        Fake f{};
+        f.responses[0] = "HTTP/1.1 302 Found\r\nLocation: http://b.test/two\r\n"
+                         "Content-Length: 5\r\n\r\nmoved";
+        f.responses[1] = R200; f.count = 2;
+        HttpTransport t = fake_transport(&f);
+        Buf b{}; b.refuse_after = -1; FetchResult r;
+        FetchOpts o{}; o.method = "POST";
+        static const uint8_t body[] = "x"; o.body = body; o.body_len = 1;
+        bool good = http_fetch(&t, "http://a.test/one", sink, &b, &o, &r);
+        ok(!good && r.error == FETCH_ERR_STATUS && r.status == 302, "POST: a 302 is returned, not followed");
+        ok(f.conn == 1 && r.redirects == 0, "POST: only one connection was made");
+        ok(!strcmp(b.d, "moved"), "POST: the 302 body reaches the sink, since nothing replaces it");
+    }
+    {   // An explicit GET (any case) with no body still follows redirects.
+        Fake f{};
+        f.responses[0] = "HTTP/1.1 302 Found\r\nLocation: /two\r\nContent-Length: 0\r\n\r\n";
+        f.responses[1] = R200; f.count = 2;
+        HttpTransport t = fake_transport(&f);
+        Buf b{}; b.refuse_after = -1; FetchResult r;
+        FetchOpts o{}; o.method = "get";
+        ok(http_fetch(&t, "http://a.test/one", sink, &b, &o, &r) && r.redirects == 1,
+           "an explicit lower-case GET still follows a redirect");
+    }
+    {   // Limits: the builder refuses what does not fit rather than truncating.
+        HttpUrl u; http_parse_url("http://example.com/p", &u);
+        FetchOpts o{}; o.method = "POST"; o.headers = "X-Key: abc\r\n"; o.body_len = 10;
+        char buf[512];
+        int full = http_build_request_ex(buf, sizeof(buf), &u, &o);
+        ok(full > 0, "extended request builds");
+        char tight[512];
+        ok(http_build_request_ex(tight, (uint32_t)full, &u, &o) < 0,
+           "a buffer one byte short of the whole request is refused, not truncated");
+        ok(http_build_request_ex(tight, (uint32_t)full + 1, &u, &o) == full, "and one byte more fits exactly");
+    }
+
+
+    // --- curl -H: building the header block ----------------------------------
+    {
+        char blk[64] = "";
+        ok(http_add_header(blk, sizeof(blk), "X-Key: abc"), "-H: a normal header is accepted");
+        ok(!strcmp(blk, "X-Key: abc\r\n"), "-H: stored as Name: value CRLF");
+        ok(http_add_header(blk, sizeof(blk), "Accept:text/plain"), "-H: a second header is accepted");
+        ok(!strcmp(blk, "X-Key: abc\r\nAccept: text/plain\r\n"), "-H: headers accumulate in order, spacing normalised");
+        char sp[64] = "";
+        http_add_header(sp, sizeof(sp), "  Name \t:   padded value ");
+        ok(!strcmp(sp, "Name: padded value\r\n"), "-H: space around the name, colon and value is trimmed");
+    }
+    {
+        char blk[64] = "A: 1\r\n";
+        const char *before = "A: 1\r\n";
+        ok(!http_add_header(blk, sizeof(blk), "no colon here"), "-H: no colon is refused");
+        ok(!http_add_header(blk, sizeof(blk), ": value"), "-H: no name is refused");
+        ok(!http_add_header(blk, sizeof(blk), "   : value"), "-H: a blank name is refused");
+        ok(!http_add_header(blk, sizeof(blk), "X: a\r\nEvil: yes"), "-H: CRLF in a value is refused");
+        ok(!http_add_header(blk, sizeof(blk), "X: a\nEvil: yes"), "-H: a bare LF is refused");
+        ok(!http_add_header(blk, sizeof(blk), "X: a\rb"), "-H: a bare CR is refused");
+        ok(!http_add_header(blk, sizeof(blk), "Evil\r\nX: 1"), "-H: CRLF in the name is refused");
+        ok(!strcmp(blk, before), "-H: a refused header leaves the block untouched");
+        ok(!http_add_header(nullptr, 10, "A: b") && !http_add_header(blk, sizeof(blk), nullptr) &&
+           !http_add_header(blk, 0, "A: b"), "-H: null and zero-size arguments are refused");
+    }
+    {
+        // Exactly at the limit: "K: v\r\n" is 6 bytes, so a 7-byte buffer (with the
+        // terminator) holds one and not a byte less.
+        char fit[7] = "";
+        ok(http_add_header(fit, sizeof(fit), "K: v") && !strcmp(fit, "K: v\r\n"), "-H: fits exactly into 7 bytes");
+        char tight[6] = "";
+        ok(!http_add_header(tight, sizeof(tight), "K: v") && tight[0] == 0, "-H: one byte short is refused, nothing written");
+        char two[HTTP_EXTRA_MAX + 1] = "";
+        int added = 0;
+        while (http_add_header(two, sizeof(two), "X-Fill: 0123456789")) added++;
+        ok(added > 5 && strlen(two) <= HTTP_EXTRA_MAX, "-H: the block stops growing at the limit");
+        ok(strlen(two) % 20 == 0, "-H: and holds only whole headers when full");
+    }
     printf("  %d checks, %d failed\n", checks, fails);
     return fails ? 1 : 0;
 }

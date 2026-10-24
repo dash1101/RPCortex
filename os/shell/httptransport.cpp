@@ -73,6 +73,18 @@ bool http_tls_available(void);       // the shell's working directory (fs.cpp)
 #define READ_MS       15000
 #define SEND_MS       10000
 
+// The connect and read limits for the request in flight. `curl --timeout` moves
+// them; every command puts them back afterwards, so a timeout set for one
+// request cannot leak into the next download.
+static uint32_t g_connect_ms = CONNECT_MS;
+static uint32_t g_read_ms    = READ_MS;
+
+// 0 puts the defaults back.
+static void http_set_timeout_ms(uint32_t ms) {
+    g_connect_ms = ms ? ms : CONNECT_MS;
+    g_read_ms    = ms ? ms : READ_MS;
+}
+
 // --- waiting ----------------------------------------------------------------
 
 // Yield, don't sleep. See the header comment.
@@ -349,7 +361,7 @@ static int lw_open(void *ctx, const char *host, uint16_t port, bool tls) {
     // which is why these say so themselves.
     if (!c->pcb || e != ERR_OK)  { conn_detach(c); net_op_release(); return -1; }
     bb_note_phase(tls ? "http: handshaking" : "http: connecting");
-    if (!wait_flag(c->connected, CONNECT_MS, &c->failed)) {
+    if (!wait_flag(c->connected, g_connect_ms, &c->failed)) {
         // Distinct phases, because "still waiting" and "gave up and is tearing
         // down" are eight seconds apart and were indistinguishable: both left
         // "http: handshaking" as the last note, so a reboot during the teardown
@@ -405,7 +417,7 @@ static int lw_recv(void *ctx, uint8_t *buf, uint32_t cap) {
     TcpConn *c = (TcpConn *)ctx;
     bb_note_phase("http: receiving");
 
-    absolute_time_t deadline = make_timeout_time_ms(READ_MS);
+    absolute_time_t deadline = make_timeout_time_ms(g_read_ms);
     while (rx_available(c) == 0) {
         if (c->failed) return -1;
         if (c->closed) return 0;                 // clean end of body
@@ -542,6 +554,7 @@ bool http_tls_available(void) { return false; }
 void http_last_detail(char *out, unsigned cap) { snprintf(out, cap, "no wireless"); }
 const char *http_tls_why(void) { return "no wireless on this board"; }
 void http_tls_reset(void) {}
+static void http_set_timeout_ms(uint32_t) {}     // no connection to bound
 // No radio, so nothing to resolve. The HTTP wrappers below are shared and
 // already fail through http_transport_get.
 int net_pkg_resolve(const char *, char *out, unsigned cap) { if (out && cap) out[0] = 0; return -1; }
@@ -812,22 +825,75 @@ static int print_sink(void *ctx, const uint8_t *data, uint32_t len) {
     return 0;
 }
 
+// --- curl's request flags ------------------------------------------------------
+
+struct HeaderPrint { bool on; };
+static void print_header_line(void *ctx, const char *line) {
+    if (!((HeaderPrint *)ctx)->on) return;
+    // The data channel, like the body: `curl -I url | grep etag` has to work.
+    out_write(line, (uint32_t)strlen(line));
+    out_write("\n", 1);
+}
+
 static int cmd_curl(int argc, char **argv) {
     const char *url = nullptr;
     const char *save = nullptr;
-    bool quiet = false;
+    const char *data = nullptr;
+    char method[12] = "";
+    bool quiet = false, verbose = false, head = false;
+    uint32_t timeout_s = 0;
+    static char hdrs[HTTP_EXTRA_MAX + 1];
+    hdrs[0] = 0;
 
     for (int i = 1; i < argc; i++) {
-        if (!strcmp(argv[i], "-o") && i + 1 < argc) { save = argv[++i]; continue; }
-        if (!strcmp(argv[i], "-s")) { quiet = true; continue; }
-        if (argv[i][0] != '-') { url = argv[i]; continue; }
+        const char *a = argv[i];
+        if (!strcmp(a, "-o") && i + 1 < argc) { save = argv[++i]; continue; }
+        if (!strcmp(a, "-s") || !strcmp(a, "--silent")) { quiet = true; continue; }
+        if (!strcmp(a, "-v")) { verbose = true; continue; }
+        if (!strcmp(a, "-I") || !strcmp(a, "--head")) { head = true; continue; }
+        if (!strcmp(a, "-d") && i + 1 < argc) { data = argv[++i]; continue; }
+        if (!strcmp(a, "-X") && i + 1 < argc) {
+            const char *m = argv[++i];
+            size_t n = strlen(m);
+            if (n == 0 || n >= sizeof(method)) { out_err("Bad method: %s", m); return 1; }
+            for (size_t k = 0; k < n; k++) {
+                char c = m[k];
+                if (c >= 'a' && c <= 'z') c = (char)(c - 32);
+                if (c < 'A' || c > 'Z') { out_err("Bad method: %s", m); return 1; }
+                method[k] = c;
+            }
+            method[n] = 0;
+            continue;
+        }
+        if (!strcmp(a, "-H") && i + 1 < argc) {
+            if (!http_add_header(hdrs, sizeof(hdrs), argv[++i])) {
+                out_err("Bad or oversized header: %s", argv[i]);
+                out_multi("  Use -H 'Name: value'. Headers may total %d bytes.", HTTP_EXTRA_MAX);
+                return 1;
+            }
+            continue;
+        }
+        if (!strcmp(a, "--timeout") && i + 1 < argc) {
+            long v = strtol(argv[++i], nullptr, 10);
+            if (v < 1 || v > 120) { out_err("--timeout takes 1 to 120 seconds."); return 1; }
+            timeout_s = (uint32_t)v;
+            continue;
+        }
+        if (a[0] == '-' && a[1]) { out_err("Unknown curl flag: %s", a); return 1; }
+        url = a;
     }
     if (!url) {
-        out_multi("Usage: curl <url> [-o file] [-s]");
+        out_multi("Usage: curl <url> [-v] [-s] [-I] [-X method] [-d data] [-H 'Name: value'] [-o file] [--timeout n]");
         out_multi("  Prints the body, so it can be piped:  curl <url> | grep name");
-        out_multi("  -o writes to a file instead;  -s hides the summary.");
+        out_multi("  -o writes to a file instead;  -s hides the summary;  -I shows only the headers.");
+        out_multi("  -d sends a body (and makes it a POST unless -X says otherwise); -H adds a header.");
         return 1;
     }
+
+    // -I is a HEAD whatever -X says, as in v1; a body implies POST when no method
+    // was given.
+    if (head) snprintf(method, sizeof(method), "HEAD");
+    else if (!method[0] && data) snprintf(method, sizeof(method), "POST");
 
     HttpTransport t;
     if (!http_transport_get(&t)) {
@@ -840,10 +906,20 @@ static int cmd_curl(int argc, char **argv) {
         return 1;
     }
 
+    HeaderPrint hp{head};
     FetchOpts o{};
     o.poll = poll_interrupt;
+    o.method = method[0] ? method : nullptr;
+    o.headers = hdrs[0] ? hdrs : nullptr;
+    o.body = (const uint8_t *)data;
+    o.body_len = data ? (uint32_t)strlen(data) : 0;
+    o.on_header = print_header_line;
+    o.on_header_ctx = &hp;
     uint32_t room = storage_free_bytes();
     o.max_bytes = save ? (room > 8192 ? room - 8192 : 1) : 0;
+
+    if (timeout_s) http_set_timeout_ms(timeout_s * 1000u);
+    if (verbose && !quiet) out_info("%s %s", method[0] ? method : "GET", url);
 
     FetchResult r;
     bool good;
@@ -852,7 +928,7 @@ static int cmd_curl(int argc, char **argv) {
         path_resolve(fs_cwd(), save, full, sizeof(full));
         FileSink fs{nullptr};
         fs.h = storage_open_sink(full);
-        if (!fs.h) { out_err("Could not create '%s'.", full); return 1; }
+        if (!fs.h) { http_set_timeout_ms(0); out_err("Could not create '%s'.", full); return 1; }
         good = http_fetch(&t, url, file_sink, &fs, &o, &r);
         if (!storage_close_sink(fs.h) && good) { good = false; r.error = FETCH_ERR_SINK; }
         if (!good) storage_remove(full);
@@ -863,6 +939,13 @@ static int cmd_curl(int argc, char **argv) {
         // A body that did not end in a newline would run into the prompt.
         if (good && ps.n && !quiet) out_write("\n", 1);
     }
+    http_set_timeout_ms(0);
+
+    if (verbose && !quiet && r.status) out_info("HTTP %d", r.status);
+
+    // A HEAD that came back with an error status still did its job, which was to
+    // show the headers; v1 returned the status and printed no error either.
+    if (!good && head && r.error == FETCH_ERR_STATUS) return 0;
 
     if (!good) {
         out_err("%s%s%s", fetch_error_str(r.error), r.detail[0] ? " - " : "", r.detail);
@@ -880,7 +963,7 @@ void http_register(void) {
                             LEVEL_ADMIN};
     cmd_register(&cr);
     static const Command c{"wget", "download a file over HTTP", cmd_wget, nullptr};
-    static const Command c2{"curl", "fetch a URL and print it", cmd_curl, nullptr};
+    static const Command c2{"curl", "fetch a URL and print it (-I headers, -X, -d, -H)", cmd_curl, nullptr};
     cmd_register(&c);
     cmd_register(&c2);
 }
