@@ -21,9 +21,13 @@ enum Connector {
     CON_OR           // ||  run only if the previous failed
 };
 
-// Split into argv, honouring double quotes so `echo "a b"` is one argument.
-// Quotes are removed. There is no escape character — v1's behaviour, and enough
-// for a device shell. Returns argc.
+// Split into argv, honouring single and double quotes so `echo "a b"` and
+// `curl -d '{"k":1}'` are one argument each. A quote opens only where a word
+// begins (so an apostrophe inside Dad's or don't is text), closes only on its own
+// kind (the other kind inside is plain text), and is removed; '' is an empty
+// argument. An unterminated quote takes the rest of the line. There is no escape
+// character — v1's behaviour, and enough for a device shell. The connector, pipe
+// and redirect scans below use the same rule. Returns argc.
 int cmdline_split_args(char *line, char **argv, int max);
 
 // The next unquoted connector, or nullptr. *kind is what it is, *skip its length
