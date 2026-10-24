@@ -252,7 +252,16 @@ static bool read_line(const char *prompt, char *buf, size_t max) {
     g_idle_limit_ms = reg_get("System.Autonomous", "")[0]
                           ? 0 : idle_timeout_ms(reg_get("Shell.Idle_Logout", "0"));
     g_idle_last_ms = task_now_ms();
+    // The editor owns the console while it waits for keystrokes. Without the
+    // claim, any background task that polls for a stop request — a package's
+    // fw_task_should_stop lands in intr_check — takes bytes off the wire into
+    // the stash behind the editor's back. A paste of about 130 bytes or more then
+    // lost characters from the middle of the line, and two readers on one stream
+    // are a way for characters to arrive out of order. It is released before the
+    // line runs, so a command that polls for Ctrl+C is unaffected.
+    bool held = intr_input_claim();
     line_edit(&le, buf, (uint32_t)max);
+    if (held) intr_input_release();
     g_idle_limit_ms = 0;            // disarm: nothing after the prompt may trip it
     return true;
 }

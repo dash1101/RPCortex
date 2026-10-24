@@ -121,13 +121,43 @@ int main(void) {
     ck(strcmp(got, "abc") == 0, "input before the Ctrl+C is preserved");
     intr_clear();
 
-    // A flood must not run off the end of the ring.
+    // A flood must not run off the end of the ring, and must not lose anything:
+    // when the stash is full the check stops reading, so the bytes it did not take
+    // are still on the wire, in order, for the next read.
+    //
+    // A numbered stream, so a dropped byte or a reordered one is visible: byte k
+    // is a letter that depends on k.
+    static char numbered[2048];
+    for (int k = 0; k < 2047; k++) numbered[k] = (char)('a' + (k * 7 + k / 26) % 26);
+    numbered[2047] = 0;
+
     intr_stash_clear();
-    feed(flood);
-    for (int i = 0; i < 20; i++) intr_check();
-    gn = 0;
-    while (intr_stashed() >= 0 && gn < 4096) gn++;
-    ck(gn > 0 && gn < 200, "the stash is bounded and still readable");
+    feed(numbered);
+    for (int i = 0; i < 40; i++) intr_check();     // far more than the ring holds
+    int kept = 0;
+    bool in_order = true;
+    for (int c = intr_stashed(); c >= 0; c = intr_stashed(), kept++)
+        if (c != (unsigned char)numbered[kept]) in_order = false;
+    ck(kept >= 256 && kept <= 512, "the stash holds a screenful or more of type-ahead");
+    ck(in_order, "a full stash keeps the OLDEST bytes, in order");
+    ck(g_at == kept, "a full stash is not read past: the rest is still on the wire");
+
+    // What was left on the wire follows on exactly where the stash stopped.
+    ck(numbered[g_at] != 0 && fake_poll() == (unsigned char)numbered[kept],
+       "the next byte off the wire is the one after the last stashed");
+
+    // And once the stash is drained, reading resumes with nothing missing.
+    intr_stash_clear();
+    feed(numbered);
+    int total = 0;
+    bool whole = true;
+    for (int round = 0; round < 200 && total < 2047; round++) {
+        intr_check();
+        for (int c = intr_stashed(); c >= 0; c = intr_stashed(), total++)
+            if (c != (unsigned char)numbered[total]) whole = false;
+    }
+    ck(total == 2047, "a paste larger than the stash arrives whole, a piece at a time");
+    ck(whole, "and in order");
 
     intr_stash_clear();
     ck(intr_stashed() < 0, "stash_clear empties it");

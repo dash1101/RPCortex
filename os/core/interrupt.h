@@ -38,7 +38,8 @@ bool intr_check(void);
 // Bytes intr_check pulled off the input while scanning for Ctrl+C, in order.
 // The line editor drains these BEFORE reading the real input, so type-ahead and
 // pasted command blocks survive a command running in between. Returns -1 when
-// there is nothing stashed.
+// there is nothing stashed. When the stash is full intr_check stops reading and
+// leaves the rest on the wire; it never drops anything to make room.
 int  intr_stashed(void);
 void intr_stash_clear(void);
 

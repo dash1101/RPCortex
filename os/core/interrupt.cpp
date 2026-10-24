@@ -13,17 +13,26 @@ static IntrPollFn    g_poll;
 // dropping characters, which is a worse bug than the one interrupts fix.
 //
 // So they are stashed here and the line editor drains this first. A ring rather
-// than a growing buffer: type-ahead past a screenful is not worth heap, and
-// dropping the oldest is the least surprising thing to do when it fills.
-#define STASH_N 128
+// than a growing buffer: type-ahead past a screenful is not worth heap.
+//
+// WHEN IT FILLS, STOP READING; do not make room by dropping the oldest. The
+// bytes left on the wire sit in the USB receive buffer, which holds them and
+// pushes back on the host when it fills, so nothing is lost and order is kept.
+// Dropping the oldest looked harmless and was not: a pasted script behind a
+// command that polls for Ctrl+C (`sleep 1` was enough) lost its first lines and
+// ran the rest, which is the worst thing a paste can do. The price of stopping
+// is that a Ctrl+C typed behind a full stash of type-ahead is not seen until the
+// command ends; that is a narrow case against a common one.
+#define STASH_N 512
 static char     g_stash[STASH_N];
 static uint32_t g_head, g_tail;
 
+static bool stash_full(void) { return (g_head + 1) % STASH_N == g_tail; }
+
+// The caller has checked there is room.
 static void stash_put(char c) {
-    uint32_t next = (g_head + 1) % STASH_N;
-    if (next == g_tail) g_tail = (g_tail + 1) % STASH_N;   // full: drop the oldest
     g_stash[g_head] = c;
-    g_head = next;
+    g_head = (g_head + 1) % STASH_N;
 }
 
 int intr_stashed(void) {
@@ -153,7 +162,7 @@ bool intr_check(void) {
     if (!intr_input_may_read(task_self())) return false;
     // Bounded: a command polling in a loop must not be able to spin in here on
     // a flooded input.
-    for (int i = 0; i < 32; i++) {
+    for (int i = 0; i < 32 && !stash_full(); i++) {
         int c = g_poll();
         if (c < 0) break;
         if (c == 0x03) { g_pending = true; return true; }
