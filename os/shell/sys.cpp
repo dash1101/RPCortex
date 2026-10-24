@@ -143,8 +143,9 @@ static int cmd_sysinfo(int, char **) {
     out_info("=== RPCortex %s — System Info ===", RPC_OS_CODENAME);
     out_multi("  OS Version  : %s", RPC_OS_VERSION);
     out_multi("  Codename    : %s", RPC_OS_CODENAME);
-    out_multi("  Build       : %s  (%s)",
-              reg_get("System.Build", "1"), reg_get("System.Stage", "dev"));
+    // The build baked into this image, as `ver` shows it. The registry key this
+    // used to read defaults to "1" and nothing writes it, so every image said so.
+    out_multi("  Build       : %s  (%s)", RPC_OS_BUILD, reg_get("System.Stage", "dev"));
     out_multi("  Image       : C++ native (%s)", RPC_ARCH);
     const char *owner = reg_get("System.Owner", nullptr);
     if (owner && owner[0]) out_multi("  Owner       : %s", owner);
