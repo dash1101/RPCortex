@@ -119,6 +119,7 @@ add_executable(rpcortex_v2
     ${OS_ROOT}/core/lock.cpp
     ${OS_ROOT}/core/logring.cpp
     ${OS_ROOT}/core/crashlog.cpp
+    ${OS_ROOT}/core/idle.cpp
     ${OS_ROOT}/core/blackbox.cpp
     ${OS_ROOT}/core/joblist.cpp
     ${OS_ROOT}/core/detach.cpp

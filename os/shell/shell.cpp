@@ -25,6 +25,7 @@
 #include "blackbox.h"
 #include "lineedit.h"
 #include "interrupt.h"
+#include "idle.h"
 #include "task.h"
 
 #include <stdio.h>
@@ -87,14 +88,38 @@ void fs_layout_check(bool verbose);
 // the two things it cannot know: how to read a byte from this device, and what
 // the completion candidates are.
 
+// --- idle auto-logout ---------------------------------------------------------
+//
+// Armed only while the MAIN prompt is waiting (see read_line), so no other prompt
+// that shares shell_getch can be logged out from under someone. The limit is read
+// again at every prompt, which is why changing the setting needs no re-login.
+// The clock is sampled once per keystroke and once per 64 empty polls: task_now_ms
+// does a 64-bit division, and the poll is the hottest loop the shell has.
+static uint32_t g_idle_limit_ms;    // 0 = not armed
+static uint32_t g_idle_last_ms;     // when a key last arrived
+static uint32_t g_idle_polls;
+static bool     g_idle_fired;       // the limit passed; the prompt loop acts on it
+
 static int shell_getch(void *, uint32_t timeout_us) {
     // Anything intr_check pulled off the wire while a command was running is
     // real input that arrived early — a pasted block, or someone typing ahead.
     // It has to come out before anything new, and in order.
     int stashed = intr_stashed();
-    if (stashed >= 0) return stashed;
+    if (stashed >= 0) {
+        if (g_idle_limit_ms) g_idle_last_ms = task_now_ms();
+        return stashed;
+    }
 
     int c = getchar_timeout_us(timeout_us);
+    if (c != PICO_ERROR_TIMEOUT) {
+        if (g_idle_limit_ms) g_idle_last_ms = task_now_ms();
+    } else if (g_idle_limit_ms && !g_idle_fired && (++g_idle_polls & 63u) == 0 &&
+               idle_expired(g_idle_last_ms, task_now_ms(), g_idle_limit_ms)) {
+        // An Enter ends the line editor, and the prompt loop sees the flag and
+        // discards whatever was typed before logging out.
+        g_idle_fired = true;
+        return '\n';
+    }
     if (c == PICO_ERROR_TIMEOUT) {
         // THE yield point that matters. A prompt waiting for a keystroke is
         // almost all of a device's uptime, and handing the core over here is
@@ -219,7 +244,15 @@ static bool read_line(const char *prompt, char *buf, size_t max) {
     le.complete     = shell_complete;
     le.history      = shell_history;
     le.prompt       = prompt;
+
+    // Auto-logout is off while the device boots straight to a shell (autonomy):
+    // logging out would only log straight back in.
+    g_idle_fired = false;
+    g_idle_limit_ms = reg_get("System.Autonomous", "")[0]
+                          ? 0 : idle_timeout_ms(reg_get("Shell.Idle_Logout", "0"));
+    g_idle_last_ms = task_now_ms();
     line_edit(&le, buf, (uint32_t)max);
+    g_idle_limit_ms = 0;            // disarm: nothing after the prompt may trip it
     return true;
 }
 
@@ -970,6 +1003,17 @@ void shell_run(void) {
                  reg_get("System.Device_ID", "vela"), C_RESET,
                  C_BLUE, fs_cwd(), C_RESET, C_CYAN, C_RESET);
         if (!read_line(prompt, line, sizeof(line))) continue;
+        if (g_idle_fired) {
+            // Whatever was half-typed is discarded, not run and not remembered.
+            g_idle_fired = false;
+            out_blank();
+            out_infop("session", "Logged out after %s minute%s without input.",
+                      reg_get("Shell.Idle_Logout", "0"),
+                      strcmp(reg_get("Shell.Idle_Logout", "0"), "1") == 0 ? "" : "s");
+            session_logout();
+            session_boot();          // back to the login prompt, as `logout` does
+            continue;
+        }
         hist_add(line);          // record before the parser chops it up
         bb_note_command(line);   // so a hang can name the command, not just the task
         run_line(line);

@@ -69,6 +69,7 @@ declare -A SRC=(
     [blackbox_test]="$CORE/blackbox.cpp"
     [logring_test]="$CORE/logring.cpp $CORE/task.cpp $CORE/blackbox.cpp host_task_stub.cpp"
     [crashlog_test]="$CORE/crashlog.cpp $CORE/logring.cpp $CORE/task.cpp $CORE/blackbox.cpp host_task_stub.cpp"
+    [idle_test]="$CORE/idle.cpp"
     [task_test]="$CORE/task.cpp $CORE/blackbox.cpp"
     [smp_test]="$CORE/task.cpp $CORE/blackbox.cpp"
     [calc_test]=""

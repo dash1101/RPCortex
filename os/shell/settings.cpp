@@ -57,6 +57,7 @@ static const Row kRows[] = {
     {ROW_HEAD, "SHELL",         nullptr,               nullptr,  nullptr},
     {ROW_BOOL, "Colour",        "Shell.Color",         "true",   "ANSI colour in output"},
     {ROW_INT,  "History size",  "Shell.History",       "50",     "Lines of command history"},
+    {ROW_INT,  "Idle logout",   "Shell.Idle_Logout",   "0",      "Minutes without typing; 0 is off"},
 };
 #define N_ROWS ((int)(sizeof(kRows) / sizeof(kRows[0])))
 
