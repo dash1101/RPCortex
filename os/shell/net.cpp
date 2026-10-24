@@ -1083,6 +1083,11 @@ static int autoconnect_task(void *) {
 }
 
 void net_autoconnect(void) {
+    // Seal any saved password still in the clear, whether or not auto-join is on.
+    // This used to wait for the first time a network was used, so a device that
+    // never auto-joined kept its old plaintext password until somebody connected.
+    saved_seal_all();
+
     // Read what the last run left BEFORE this run touches any of it.
     //
     // Two things have to agree for this to count against the join: a join was
