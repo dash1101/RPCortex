@@ -40,6 +40,10 @@ enum LoadResult {
     // moves, it fails as a refusal that names itself rather than as a hard
     // fault with no explanation. `pkg` already falls back to the file.
     LOAD_ERR_SLOT_ALIGN,
+    // A section whose size or alignment cannot be laid out: larger than anything
+    // the device could hold, or an alignment that is not a power of two. Both
+    // numbers come from the package, and added up in 32 bits they wrap.
+    LOAD_ERR_BAD_SECTION,
 };
 
 // Sections in one .app, not bytes. Every function and every data item gets its

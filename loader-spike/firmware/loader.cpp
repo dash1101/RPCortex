@@ -78,9 +78,26 @@ static inline uintptr_t block_align(uintptr_t v) {
 // whatever was in the buffer, and the loader would dereference them.
 static bool read_exact(const AppSource &src, uint32_t off, void *dst, uint32_t len) {
     if (len == 0) return true;
-    if (src.size && (off > src.size || off + len > src.size)) return false;
+    if (src.size && ((uint64_t)off + len > src.size)) return false;
     int n = src.read(src.ctx, off, dst, len);
     return n == (int)len;
+}
+
+// The section-name table, and a name out of it.
+//
+// Both indices come from the package. e_shstrndx names a section, and a header
+// whose index is outside the list of sections names nothing: the table is read
+// from whatever that slot of the header buffer happens to hold. A section's
+// sh_name is an offset into the table, and one past its end points into
+// whatever the allocator put next. The table is therefore read with a NUL after
+// it, and a name offset past the end is the empty string.
+static bool names_ok(const AppSource &src, const Elf32_Ehdr &eh, const Elf32_Shdr *sh) {
+    if (eh.e_shnum == 0 || eh.e_shstrndx >= eh.e_shnum) return false;
+    return !src.size || sh[eh.e_shstrndx].sh_size <= src.size;
+}
+
+static const char *section_name(const char *names, uint32_t size, uint32_t idx) {
+    return idx < size ? names + idx : "";
 }
 
 static void set_detail(LoadedApp *a, const char *s) {
@@ -128,6 +145,7 @@ const char *load_result_str(LoadResult r) {
         case LOAD_ERR_RELOC_RANGE:       return "relocation out of range";
         case LOAD_ERR_TOO_MANY_SECTIONS: return "too many sections";
         case LOAD_ERR_SLOT_ALIGN:        return "the slot is not block-aligned";
+        case LOAD_ERR_BAD_SECTION:       return "a section cannot be laid out";
         default:                         return "unknown error";
     }
 }
@@ -298,6 +316,68 @@ static uint32_t veneer_emit(LoadedApp *app, uint32_t target) {
     return (uint32_t)(uintptr_t)v | 1u;
 }
 
+// ---------------------------------------------------------- laying sections out
+
+// The most a package's sections may add up to. Far beyond anything the device
+// can hold (the whole RAM is 520 KB), so this refuses nothing real; it exists so
+// that the sums below cannot wrap.
+#define LOADER_MAX_IMAGE (16u * 1024u * 1024u)
+
+// Place a section of `size` bytes, aligned to `align_in`, after `*total` bytes.
+//
+// Size and alignment both come from the package, and the layout used to add them
+// up in 32 bits: a section that claims 0xFFFFFF00 bytes wraps the total back to a
+// few hundred, a block that size is allocated, and the section is then read or
+// cleared into it at its claimed length. An alignment that is not a power of two
+// rounds to the wrong place with the mask arithmetic. Neither is a package, so
+// neither is laid out.
+static bool layout_add(uint32_t *total, uint32_t size, uint32_t align_in, uint32_t *at) {
+    uint32_t align = align_in ? align_in : 4;
+    if (align < 4) align = 4;
+    if (align > 4096 || (align & (align - 1))) return false;
+    uint64_t t = ((uint64_t)*total + align - 1) & ~(uint64_t)(align - 1);
+    if (t + size > LOADER_MAX_IMAGE) return false;
+    *at = (uint32_t)t;
+    *total = (uint32_t)(t + size);
+    return true;
+}
+
+// ------------------------------------------------------ where a patch may land
+
+// Whether a relocation of this type may patch `r_offset` bytes into a section
+// that is `sec_size` bytes long.
+//
+// r_offset comes from the package. Nothing else bounds it: the patch site is the
+// section's address plus that number, so an offset past the end of the section
+// is a write to wherever it points — in code that runs with the OS's own
+// privileges. That makes this the check between a damaged or hostile package and
+// an arbitrary write, and it has to hold for every type that writes.
+//
+// The width is what the type patches: a word for the data relocations, a
+// halfword and a byte for the narrow ones, and a pair of halfwords for the Thumb
+// instructions. Thumb instructions and halfword data sit on even addresses; a
+// word relocation is written with memcpy and needs no alignment. A type the
+// loader does not apply returns true here and is refused by the switch.
+static bool reloc_site_ok(uint32_t type, uint32_t r_offset, uint32_t sec_size) {
+    uint32_t width, even = 0;
+    switch (type) {
+    case R_ARM_ABS32: case R_ARM_TARGET1: case R_ARM_REL32:
+    case R_ARM_GOT_BREL: case R_ARM_PREL31:
+        width = 4; break;
+    case R_ARM_ABS16:
+        width = 2; even = 1; break;
+    case R_ARM_ABS8:
+        width = 1; break;
+    case R_ARM_THM_MOVW_ABS_NC: case R_ARM_THM_MOVT_ABS:
+    case R_ARM_THM_CALL: case R_ARM_THM_JUMP24:
+        width = 4; even = 1; break;
+    default:
+        return true;
+    }
+    if (even && (r_offset & 1u)) return false;
+    return (uint64_t)r_offset + width <= (uint64_t)sec_size;
+}
+
 // --------------------------------------------------------- Thumb BL encoding
 
 static bool thumb_bl_in_range(int32_t disp) {
@@ -366,9 +446,11 @@ LoadResult app_peek(const AppSource &src, RpcAppHeader *out) {
     if (!read_exact(src, eh.e_shoff, sh, eh.e_shnum * sizeof(Elf32_Shdr)))
         return LOAD_ERR_READ;
 
+    if (!names_ok(src, eh, sh)) return LOAD_ERR_NOT_ELF;
     const Elf32_Shdr &shstr = sh[eh.e_shstrndx];
-    char *names = (char *)malloc(shstr.sh_size);
+    char *names = (char *)malloc((size_t)shstr.sh_size + 1);
     if (!names) return LOAD_ERR_OOM;
+    names[shstr.sh_size] = 0;
     if (!read_exact(src, shstr.sh_offset, names, shstr.sh_size)) {
         free(names);
         return LOAD_ERR_READ;
@@ -376,7 +458,7 @@ LoadResult app_peek(const AppSource &src, RpcAppHeader *out) {
 
     int hdr_idx = -1;
     for (int i = 0; i < eh.e_shnum; i++)
-        if (strcmp(names + sh[i].sh_name, ".rpc_app_header") == 0) { hdr_idx = i; break; }
+        if (strcmp(section_name(names, shstr.sh_size, sh[i].sh_name), ".rpc_app_header") == 0) { hdr_idx = i; break; }
     if (hdr_idx < 0) { free(names); return LOAD_ERR_NO_HEADER; }
 
     bool ok = read_exact(src, sh[hdr_idx].sh_offset, out, sizeof(RpcAppHeader));
@@ -414,9 +496,11 @@ LoadResult app_load(const AppSource &src, LoadedApp *out) {
         return LOAD_ERR_READ;
 
     // Section-name strings, needed to find .rpc_app_header.
+    if (!names_ok(src, eh, sh)) return LOAD_ERR_NOT_ELF;
     const Elf32_Shdr &shstr = sh[eh.e_shstrndx];
-    char *names = (char *)malloc(shstr.sh_size);
+    char *names = (char *)malloc((size_t)shstr.sh_size + 1);
     if (!names) return LOAD_ERR_OOM;
+    names[shstr.sh_size] = 0;
     if (!read_exact(src, shstr.sh_offset, names, shstr.sh_size)) {
         free(names);
         return LOAD_ERR_READ;
@@ -427,7 +511,7 @@ LoadResult app_load(const AppSource &src, LoadedApp *out) {
     // before any of its content is trusted.
     int hdr_idx = -1;
     for (int i = 0; i < eh.e_shnum; i++) {
-        if (strcmp(names + sh[i].sh_name, ".rpc_app_header") == 0) { hdr_idx = i; break; }
+        if (strcmp(section_name(names, shstr.sh_size, sh[i].sh_name), ".rpc_app_header") == 0) { hdr_idx = i; break; }
     }
     if (hdr_idx < 0) { free(names); return LOAD_ERR_NO_HEADER; }
     if (!read_exact(src, sh[hdr_idx].sh_offset, &out->header,
@@ -534,13 +618,14 @@ LoadResult app_load(const AppSource &src, LoadedApp *out) {
             if (!(sh[i].sh_flags & SHF_ALLOC) || sh[i].sh_size == 0) continue;
             bool writable = (sh[i].sh_flags & SHF_WRITE) != 0;
             if (writable != (pass == 1)) continue;
-            uint32_t align = sh[i].sh_addralign ? sh[i].sh_addralign : 4;
-            if (align < 4) align = 4;
-            total = (total + align - 1) & ~(align - 1);
-            map[i].addr = total;           // offset for now; rebased below
+            // offset for now; rebased below
+            if (!layout_add(&total, sh[i].sh_size, sh[i].sh_addralign, &map[i].addr)) {
+                set_detail(out, "section size or alignment");
+                free(names);
+                return LOAD_ERR_BAD_SECTION;
+            }
             map[i].size = sh[i].sh_size;
             map[i].loaded = true;
-            total += sh[i].sh_size;
         }
         if (pass == 0) {
             total = (total + (APP_BLOCK_ALIGN - 1)) & ~(APP_BLOCK_ALIGN - 1);
@@ -550,6 +635,11 @@ LoadResult app_load(const AppSource &src, LoadedApp *out) {
             // writable section is placed, so those sections land above it and
             // `data` itself is the GOT. Zero for a non-PIC package, so the split
             // is exactly where it was.
+            if ((uint64_t)total + got_bytes > LOADER_MAX_IMAGE) {
+                set_detail(out, "global offset table");
+                free(names);
+                return LOAD_ERR_BAD_SECTION;
+            }
             total += got_bytes;
         }
     }
@@ -856,6 +946,12 @@ LoadResult app_load(const AppSource &src, LoadedApp *out) {
             uint32_t P = map[target_sec].addr + rels[r].r_offset;   // patch site
             uint32_t S = 0;
             bool is_func = false;
+
+            if (!reloc_site_ok(type, rels[r].r_offset, map[target_sec].size)) {
+                set_detail(out, "relocation site");
+                rc = LOAD_ERR_RELOC_RANGE;
+                break;
+            }
 
             if (type != R_ARM_NONE) {
                 rc = resolve(sidx, &S, &is_func);
@@ -1329,9 +1425,11 @@ LoadResult app_pic_install(const AppSource &src, SlotWrite sink, void *sink_ctx,
     Elf32_Shdr *const sh = g_shdr;                 // shared; see the note above
     if (!read_exact(src, eh.e_shoff, sh, eh.e_shnum * sizeof(Elf32_Shdr)))
         return LOAD_ERR_READ;
+    if (!names_ok(src, eh, sh)) return LOAD_ERR_NOT_ELF;
     const Elf32_Shdr &shstr = sh[eh.e_shstrndx];
-    char *names = (char *)pic_alloc(shstr.sh_size);
+    char *names = (char *)pic_alloc((size_t)shstr.sh_size + 1);
     if (!names) return LOAD_ERR_OOM;
+    names[shstr.sh_size] = 0;
     if (!read_exact(src, shstr.sh_offset, names, shstr.sh_size)) {
         pic_free(names); return LOAD_ERR_READ;
     }
@@ -1340,7 +1438,7 @@ LoadResult app_pic_install(const AppSource &src, SlotWrite sink, void *sink_ctx,
     // for one firmware is refused by another rather than calling stale indices.
     int hdr_idx = -1;
     for (int i = 0; i < eh.e_shnum; i++)
-        if (strcmp(names + sh[i].sh_name, ".rpc_app_header") == 0) { hdr_idx = i; break; }
+        if (strcmp(section_name(names, shstr.sh_size, sh[i].sh_name), ".rpc_app_header") == 0) { hdr_idx = i; break; }
     if (hdr_idx < 0) { pic_free(names); return LOAD_ERR_NO_HEADER; }
     RpcAppHeader hdr;
     if (!read_exact(src, sh[hdr_idx].sh_offset, &hdr, sizeof(hdr))) {
@@ -1635,6 +1733,13 @@ LoadResult app_pic_install(const AppSource &src, SlotWrite sink, void *sink_ctx,
                 const Elf32_Rel *rels = g_relbuf - first;
                 uint32_t type = ELF32_R_TYPE(rels[r].r_info);
                 if (type == R_ARM_NONE) continue;
+                // r_offset is the package's. Inside the target section and, for a
+                // Thumb instruction, on an even address — or this patches bytes of
+                // some other section, or reads a halfword off an odd address.
+                if (!reloc_site_ok(type, rels[r].r_offset, sh[tgt].sh_size)) {
+                    rc = LOAD_ERR_RELOC_RANGE;
+                    break;
+                }
                 uint32_t site = blob_off[tgt] + rels[r].r_offset;   // blob-relative
                 if (site < pos || site >= end) continue;            // another page's
                 if (site + 4 > end) {                               // straddles the edge
@@ -1746,6 +1851,9 @@ LoadResult app_pic_install(const AppSource &src, SlotWrite sink, void *sink_ctx,
             uint32_t type = ELF32_R_TYPE(rels[r].r_info);
             if (type == R_ARM_NONE) continue;
             if (type != R_ARM_ABS32 && type != R_ARM_TARGET1) { rc = LOAD_ERR_RELOC_UNSUPPORTED; break; }
+            // The site is recorded and applied later, against the real RAM block:
+            // one past the end of the section would be a write past the block.
+            if (!reloc_site_ok(type, rels[r].r_offset, sh[tgt].sh_size)) { rc = LOAD_ERR_RELOC_RANGE; break; }
             if (abs_used >= abs_cap) { rc = LOAD_ERR_RELOC_RANGE; break; }
             uint8_t cls; uint32_t value; bool is_func;
             rc = resolve(ELF32_R_SYM(rels[r].r_info), &cls, &value, &is_func);

@@ -74,6 +74,9 @@ declare -A SRC=(
     # Mutation fuzzing of the parsers that read other people's bytes: HTTP
     # responses, package indexes, the installed-package list and FAT volumes.
     # RPC_FUZZ_ITERS=2000000 for a long run; see the header of fuzz_test.cpp.
+    # The same for the package loader, which reads ELF objects somebody else built.
+    # Needs the packages build.sh produces as its seeds, like realapp_test.
+    [fuzz_loader_test]="$SPIKE/loader.cpp $SPIKE/pkgslot.cpp"
     [fuzz_test]="$CORE/httpparse.cpp $CORE/repoindex.cpp $CORE/pkgindex.cpp $CORE/fatro.cpp $CORE/cmdline.cpp $CORE/lineedit.cpp $CORE/clockcfg.cpp $CORE/interrupt.cpp $CORE/task.cpp $CORE/blackbox.cpp host_task_stub.cpp"
     [secret_test]="$CORE/secret.cpp $CORE/sha256.cpp"
     [protect_test]="$CORE/protect.cpp $CORE/path.cpp"
