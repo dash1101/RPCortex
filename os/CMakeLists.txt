@@ -120,6 +120,7 @@ add_executable(rpcortex_v2
     ${OS_ROOT}/core/logring.cpp
     ${OS_ROOT}/core/crashlog.cpp
     ${OS_ROOT}/core/idle.cpp
+    ${OS_ROOT}/core/clockcfg.cpp
     ${OS_ROOT}/core/secret.cpp
     ${OS_ROOT}/core/protect.cpp
     ${OS_ROOT}/core/blackbox.cpp

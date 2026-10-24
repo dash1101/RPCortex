@@ -70,6 +70,7 @@ declare -A SRC=(
     [logring_test]="$CORE/logring.cpp $CORE/task.cpp $CORE/blackbox.cpp host_task_stub.cpp"
     [crashlog_test]="$CORE/crashlog.cpp $CORE/logring.cpp $CORE/task.cpp $CORE/blackbox.cpp host_task_stub.cpp"
     [idle_test]="$CORE/idle.cpp"
+    [clockcfg_test]="$CORE/clockcfg.cpp"
     [secret_test]="$CORE/secret.cpp $CORE/sha256.cpp"
     [protect_test]="$CORE/protect.cpp $CORE/path.cpp"
     [fsguard_test]="$SHELL_DIR/fsguard.cpp $CORE/protect.cpp $CORE/path.cpp $CORE/out.cpp $CORE/lock.cpp $CORE/task.cpp $CORE/blackbox.cpp $CORE/logring.cpp host_task_stub.cpp"

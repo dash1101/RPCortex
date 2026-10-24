@@ -19,6 +19,8 @@
 #include "users.h"
 #include "history.h"
 #include "interrupt.h"
+#include "clockcfg.h"
+#include "logring.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -374,47 +376,119 @@ static int cmd_env(int argc, char **argv) {
     return 0;
 }
 
+// Set the system clock. stdio's UART divisors were computed for the old clock, so
+// it is brought up again afterwards.
+static bool apply_clock_mhz(unsigned mhz) {
+    if (!set_sys_clock_khz(mhz * 1000, /*required*/false)) return false;
+    stdio_init_all();
+    return true;
+}
+
+static bool boot_clock_enabled(void) {
+    return strcmp(reg_get("Hardware.Boot_Clock_On", "true"), "false") != 0;
+}
+
 // pulse — CPU clock management, v1's command and its layout. Setting the system
 // clock is a real hardware change, so a rejected frequency says so rather than
 // silently leaving the old one in place.
 static int cmd_pulse(int argc, char **argv) {
-    if (argc < 2) {
-        out_info("=== pulse — CPU clock management ===");
+    if (argc < 2 || !strcmp(argv[1], "status")) {
+        if (argc < 2) out_info("=== pulse — CPU clock management ===");
         out_multi("  Current    : %u MHz", cpu_mhz());
-        out_multi("  Boot Clock : %s", reg_get("Hardware.Boot_Clock", "not set"));
-        out_multi("  Max Clock  : %s", reg_get("Hardware.Max_Clock", "unknown"));
-        out_blank();
-        out_multi("  pulse status          Show clock info");
-        out_multi("  pulse set <MHz>       Set clock now         (e.g. pulse set 200)");
-        out_multi("  pulse boot <MHz>      Set the boot clock    (e.g. pulse boot 150)");
-        return 0;
-    }
-    if (!strcmp(argv[1], "status")) {
-        out_multi("  Current    : %u MHz", cpu_mhz());
-        out_multi("  Boot Clock : %s", reg_get("Hardware.Boot_Clock", "not set"));
+        const char *bc = reg_get("Hardware.Boot_Clock", "");
+        if (bc[0]) out_multi("  Boot Clock : %s MHz  (%s)", bc, boot_clock_enabled() ? "on" : "off");
+        else       out_multi("  Boot Clock : not set");
+        if (argc < 2) {
+            out_multi("  Max Clock  : %s", reg_get("Hardware.Max_Clock", "unknown"));
+            out_blank();
+            out_multi("  pulse status          Show clock info");
+            out_multi("  pulse set <MHz>       Set clock now         (e.g. pulse set 200)");
+            out_multi("  pulse boot <MHz>      Set the boot clock    (e.g. pulse boot 150)");
+            out_multi("  pulse boot on | off   Apply the stored boot clock at start, or not");
+        }
         return 0;
     }
     if (!strcmp(argv[1], "set") && argc >= 3) {
-        unsigned mhz = (unsigned)strtoul(argv[2], nullptr, 10);
-        if (mhz < 48 || mhz > 400) { out_err("Out of range. Use 48-400 MHz."); return 1; }
-        if (!set_sys_clock_khz(mhz * 1000, /*required*/false)) {
+        unsigned mhz;
+        if (!clock_parse_mhz(argv[2], &mhz)) {
+            out_err("Use a whole number of MHz, %d-%d.", CLOCK_MHZ_MIN, CLOCK_MHZ_MAX);
+            return 1;
+        }
+        if (!apply_clock_mhz(mhz)) {
             out_err("%u MHz is not reachable from this crystal.", mhz);
             return 1;
         }
-        // stdio's UART/USB divisors were computed for the old clock.
-        stdio_init_all();
         out_ok("Clock set to %u MHz.", cpu_mhz());
         return 0;
     }
     if (!strcmp(argv[1], "boot") && argc >= 3) {
-        unsigned mhz = (unsigned)strtoul(argv[2], nullptr, 10);
-        if (mhz < 48 || mhz > 400) { out_err("Out of range. Use 48-400 MHz."); return 1; }
-        reg_set("Hardware.Boot_Clock", argv[2]);
-        out_ok("Boot clock set to %u MHz (applies from the next boot).", mhz);
+        if (!strcmp(argv[2], "off")) {
+            reg_set("Hardware.Boot_Clock_On", "false");
+            out_ok("Boot clock off. The device starts at its default clock.");
+            return 0;
+        }
+        if (!strcmp(argv[2], "on")) {
+            unsigned mhz;
+            if (!clock_parse_mhz(reg_get("Hardware.Boot_Clock", ""), &mhz)) {
+                out_err("No boot clock is stored. Use: pulse boot <MHz>");
+                return 1;
+            }
+            reg_set("Hardware.Boot_Clock_On", "true");
+            out_ok("Boot clock on. Applies %u MHz from the next start.", mhz);
+            return 0;
+        }
+        unsigned mhz;
+        if (!clock_parse_mhz(argv[2], &mhz)) {
+            out_err("Use a whole number of MHz, %d-%d, or on | off.", CLOCK_MHZ_MIN, CLOCK_MHZ_MAX);
+            return 1;
+        }
+        char val[8];
+        snprintf(val, sizeof(val), "%u", mhz);
+        reg_set("Hardware.Boot_Clock", val);
+        reg_set("Hardware.Boot_Clock_On", "true");
+        out_ok("Boot clock set to %u MHz and on. Applies from the next start.", mhz);
+        if (mhz > 250)
+            out_warn("Above 250 MHz is untested. If the device does not come up it skips the "
+                     "boot clock on the next start, and 'pulse boot off' turns it off.");
         return 0;
     }
-    out_warn("Usage: pulse [status | set <MHz> | boot <MHz>]");
+    out_warn("Usage: pulse [status | set <MHz> | boot <MHz> | boot on | boot off]");
     return 1;
+}
+
+// At start, after the registry is loaded and before anything depends on the
+// clock (core 1, the radio, the card). `last_start_failed` is whether the run
+// before this one ended in a reset nobody asked for: an overclock that hangs the
+// board must not do it again on every start, so that start runs at the default
+// clock and says why.
+void sys_apply_boot_clock(bool last_start_failed) {
+    unsigned mhz = 0;
+    switch (clock_boot_plan(reg_get("Hardware.Boot_Clock", ""), boot_clock_enabled(),
+                            last_start_failed, cpu_mhz(), &mhz)) {
+    case BOOTCLK_NONE:
+    case BOOTCLK_SAME:
+        return;
+    case BOOTCLK_BAD:
+        out_warnp("pulse", "The stored boot clock '%s' is not a frequency, so it was ignored.",
+                  reg_get("Hardware.Boot_Clock", ""));
+        log_addf(LOG_K_WARN, "[pulse] stored boot clock is not a frequency; ignored");
+        return;
+    case BOOTCLK_AFTER_CRASH:
+        out_warnp("pulse", "The boot clock of %u MHz was skipped: the last start did not finish. "
+                  "'pulse boot off' turns it off.", mhz);
+        log_addf(LOG_K_WARN, "[pulse] boot clock %u MHz skipped: the last start did not finish", mhz);
+        return;
+    case BOOTCLK_APPLY:
+        if (!apply_clock_mhz(mhz)) {
+            out_warnp("pulse", "%u MHz is not reachable from this crystal; staying at %u MHz.",
+                      mhz, cpu_mhz());
+            log_addf(LOG_K_WARN, "[pulse] boot clock %u MHz is not reachable", mhz);
+            return;
+        }
+        out_infop("pulse", "Boot clock applied: %u MHz.", cpu_mhz());
+        log_addf(LOG_K_INFO, "[pulse] boot clock applied: %u MHz", cpu_mhz());
+        return;
+    }
 }
 
 // Shared, because more than one command ends in a restart and the core-1 reset

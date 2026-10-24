@@ -48,6 +48,7 @@ void jobs_start_services(void);
 bool safeboot_consume(char *staged, uint32_t cap);
 int  shell_run_line_now(char *line);
 bool crashlog_save(const BlackBox *bb);
+void sys_apply_boot_clock(bool last_start_failed);
 
 // Everything that needs a real stack. Runs as pid 2.
 static int shell_task(void *) {
@@ -236,6 +237,10 @@ int main(void) {
     if (!kboot()) {
         klog(LOG_ERROR, "boot failed - recovery shell not yet implemented");
     }
+
+    // The clock `pulse boot` stored, now that the registry is loaded and before
+    // core 1, the radio or the card depend on it.
+    sys_apply_boot_clock(bb != nullptr);
 
     // Before anything reads a file: put back any directory that is missing, so
     // a deleted /os is a repaired boot rather than a reflash.
