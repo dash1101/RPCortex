@@ -324,6 +324,19 @@ static int do_install(bool force, bool yes) {
         return 1;
     }
 
+    // Before the download rather than part way through it. The filesystem stops
+    // accepting writes at 98% full, and a transfer that reaches that point fails
+    // at the last few kilobytes with no hint of why.
+    if (e.size && !storage_would_fit((uint32_t)e.size)) {
+        out_err("Not enough room for the %lu KB download: %lu KB free, %u%% used.",
+                (unsigned long)(e.size / 1024),
+                (unsigned long)(storage_free_bytes() / 1024),
+                (unsigned)storage_used_percent());
+        out_multi("  The filesystem stops accepting writes at 98%% full. 'df' shows what is");
+        out_multi("  using it, and 'rm' clears space.");
+        return 1;
+    }
+
     out_info("Downloading %s (%lu KB)...", e.ver, (unsigned long)(e.size / 1024));
     char hex[65]; uint64_t got = 0;
     if (!download(e.url, IMAGE_PATH, hex, &got)) return 1;
