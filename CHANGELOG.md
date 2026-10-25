@@ -225,12 +225,14 @@ have — and packages there run with the OS's own privileges.
   command runs is kept, up to about 500 bytes beyond the USB buffer; past that the
   check stops reading, so a Ctrl+C typed after a very large paste is seen when the
   command ends. Nothing typed is dropped to make room.
-- **A rollback copy needs room for a second firmware image.** An update from a file
-  or over the network puts the new image on the filesystem first, so the copy of the
-  running firmware has to fit alongside it. On a 1792 KB filesystem with an 850 KB
-  image it does not, and the update says "No room to keep a rollback copy" and
-  carries on without one. Streaming the download straight into the staging area
-  would make the room, and is the fix to make before relying on rollback.
+- **A rollback copy takes most of the filesystem.** `update install` saves the running
+  firmware before it applies the new one (seen on a Pico 2 W: "Rollback copy saved:
+  v2.0.0 (854 KB)"), and that copy is a file of 854 KB on a 1792 KB filesystem. The next
+  update over the air removes it to make room and saves the running one again.
+  `update from-file` leaves the file it was given where it is, so there is not room for
+  both, and it says so and carries on without a rollback copy. Restoring a saved copy
+  (`update rollback`) and the automatic restore after failed boots have not been run on a
+  board.
 - **Saved Wi-Fi passwords are sealed, not unbreakable.** They are stored
   encrypted under a per-device key (`/os/device.key`, left out of backups), so a
   copy of the registry, a backup or a support dump no longer shows them, and an

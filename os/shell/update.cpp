@@ -327,14 +327,33 @@ static int do_install(bool force, bool yes) {
     // Before the download rather than part way through it. The filesystem stops
     // accepting writes at 98% full, and a transfer that reaches that point fails
     // at the last few kilobytes with no hint of why.
+    //
+    // The copy of the previous firmware saved by the last update is an image-sized
+    // file, and on a 1.8 MB filesystem it leaves no room for the next image. The
+    // one this update saves replaces it anyway, but the download arrives first, so
+    // without this the second update over the air fails at the door. When the
+    // download will not fit and would once that copy is gone, the copy goes: the
+    // RUNNING firmware is saved again before anything is written, and that is the
+    // copy this update needs.
     if (e.size && !storage_would_fit((uint32_t)e.size)) {
-        out_err("Not enough room for the %lu KB download: %lu KB free, %u%% used.",
-                (unsigned long)(e.size / 1024),
-                (unsigned long)(storage_free_bytes() / 1024),
-                (unsigned)storage_used_percent());
-        out_multi("  The filesystem stops accepting writes at 98%% full. 'df' shows what is");
-        out_multi("  using it, and 'rm' clears space.");
-        return 1;
+        bool is_dir = false; uint32_t saved = 0;
+        bool have = storage_stat(ROLLBACK_IMG, &is_dir, &saved) && !is_dir && saved;
+        uint32_t need = (have && e.size > saved) ? (uint32_t)e.size - saved : (uint32_t)e.size;
+        if (have && storage_would_fit(need)) {
+            out_warn("Removing the saved copy of the previous firmware (%lu KB) to make room.",
+                     (unsigned long)(saved / 1024));
+            out_multi("  %sThe running firmware is saved again before anything is written.%s",
+                      C_GRAY, C_RESET);
+            rollback_forget();
+        } else {
+            out_err("Not enough room for the %lu KB download: %lu KB free, %u%% used.",
+                    (unsigned long)(e.size / 1024),
+                    (unsigned long)(storage_free_bytes() / 1024),
+                    (unsigned)storage_used_percent());
+            out_multi("  The filesystem stops accepting writes at 98%% full. 'df' shows what is");
+            out_multi("  using it, and 'rm' clears space.");
+            return 1;
+        }
     }
 
     out_info("Downloading %s (%lu KB)...", e.ver, (unsigned long)(e.size / 1024));
