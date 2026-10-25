@@ -425,7 +425,9 @@ static int cmd_mv(int argc, char **argv) {
 static int cmd_cp(int argc, char **argv) {
     if (argc < 3) { out_multi("Usage: cp <from> <to>"); return 1; }
     char a[128], b[128];
-    if (!resolve_change(argv[1], a, sizeof(a)) || !resolve_change(argv[2], b, sizeof(b))) return 1;
+    // The source is only read, so a protected source is refused as "cannot read",
+    // not as "cannot change"; the destination is what gets written.
+    if (!resolve_read(argv[1], a, sizeof(a)) || !resolve_change(argv[2], b, sizeof(b))) return 1;
     if (!storage_copy(a, b)) { out_err("Could not copy %s", a); return 1; }
     return 0;
 }
