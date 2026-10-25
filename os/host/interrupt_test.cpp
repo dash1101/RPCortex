@@ -324,6 +324,48 @@ int main(void) {
     ck(intr_check(), "the flag still works without a poll function");
     intr_clear();
 
+    // --- only the shell's task reads the wire ---------------------------------
+    //
+    // Background tasks reach intr_check through fw_task_should_stop (Nova D1's
+    // input and display tasks do, continuously). If they read the wire they take
+    // keystrokes meant for whoever is at the prompt: a password typed at the
+    // login screen arrived with characters missing, and a pasted line lost its
+    // middle. They must still see the flag and a kill request, and the shell's
+    // own task must still see Ctrl+C.
+    //
+    // Last in the file because marking the shell is permanent, and every section
+    // above reads the wire as whatever task happens to be current.
+    intr_set_poll(fake_poll);
+    intr_clear(); intr_stash_clear();
+    task_init("console-owner");
+    task_mark_shell();
+    feed("abc");
+    g_polls = 0;
+    ck(!intr_check(), "the shell's own task reads the wire");
+    ck(g_polls >= 3, "and takes what is there");
+    ck(intr_stashed() == 'a', "which waits for the line editor, in order");
+    intr_stash_clear();
+
+    feed("\x03");
+    ck(intr_check(), "the shell's own task still sees Ctrl+C");
+    intr_clear();
+
+    task_init("background");                  // somebody else is current now
+    intr_clear(); intr_stash_clear();
+    feed("hunter2");
+    g_polls = 0;
+    ck(!intr_check(), "another task does not read the wire");
+    ck(g_polls == 0, "not a single byte of it");
+    ck(intr_stashed() < 0, "so nothing of what was typed lands in the stash");
+    feed("\x03");
+    ck(!intr_check(), "and a Ctrl+C on the wire is not its to see");
+    g_polls = 0;
+    ck(g_polls == 0, "(the byte is still there for the owner)");
+    intr_raise();
+    ck(intr_check(), "but the flag, once raised, still reaches it");
+    intr_clear();
+    intr_stash_clear();
+
     printf("  interrupt: %d checks, %d failed\n", checks, fails);
     return fails ? 1 : 0;
 }

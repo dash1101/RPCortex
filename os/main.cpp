@@ -67,6 +67,10 @@ static int shell_task(void *) {
     // thing to do to a board on a desk — rebuilt its own filesystem.
     kboot_succeeded();
 
+    // This task owns the console from here on, the login prompt included. It used
+    // to be marked only when the shell loop started, after the first login.
+    task_mark_shell();
+
     net_autoconnect();       // rejoin a saved network, if one is set to auto
     session_boot();          // first-run setup, then login
 

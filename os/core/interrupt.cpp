@@ -155,6 +155,18 @@ bool intr_check(void) {
 
     if (g_pending) return true;
     if (!g_poll) return false;
+    // Only the shell's own task reads the wire. It is the task that runs every
+    // command, a foreground package included, so a command polling for Ctrl+C
+    // still sees it. Any other task — a service, a background job, Nova D1's input
+    // and display tasks, all of which call this through fw_task_should_stop — would
+    // be taking keystrokes meant for whoever is at the prompt, and with nowhere to
+    // put them but the stash. A password typed at the login prompt came through
+    // with characters missing; a pasted line of 130 bytes lost some in the middle.
+    // They still see the flag and a kill request above, which is all a background
+    // task wants from this call. Before the shell exists (early boot) there is no
+    // one to defer to.
+    int shell = task_shell_pid();
+    if (shell && task_self() != shell) return false;
     // Somebody else is reading the console as DATA. Taking bytes off it here
     // would be taking them out of their file — see intr_input_claim. The flag
     // and the stop request above still work, which is everything a background
