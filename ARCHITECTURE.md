@@ -700,3 +700,65 @@ reads that and returns `PREEMPT_DEFER`, so preemption on that core was off for
 the rest of the boot. It is now counted per task. `cur()` gained a per-core memo
 in the same change, since the critical check runs on every lock acquire and a
 full-screen redraw takes the output lock hundreds of times.
+
+## Console input has one reader, and the loader believes nothing
+
+Two changes from the first beta pass on a board, recorded together because the same
+discipline sits under both: a number or a byte that arrived from outside is not
+believed until it has been checked against the thing it claims to describe.
+
+### One task reads the wire
+
+`intr_check` is how a long-running command notices Ctrl+C: it reads what is waiting on
+the console, looks for 0x03, and sets everything else aside in a stash that the line
+editor drains first. It is also what `fw_task_should_stop` calls, so every background
+package that polls for a stop request was a second reader of the console. Nova D1's
+input and display tasks poll continuously.
+
+That showed up three ways, all as lost keystrokes. A pasted line of about 130 bytes
+lost characters from the middle (bytes n-129 of it, starting at the eighth, because the
+stash held 127 and dropped the oldest). A block pasted behind a command that polls for
+Ctrl+C lost its first lines and ran the rest. And a password typed at the login prompt
+arrived with characters missing, because the login prompt neither held the console nor
+read the stash. Stopping the two Nova tasks made every one of them go away.
+
+The rule now: only the shell's task reads the wire in `intr_check`. The shell task runs
+every command, a foreground package included, so a command polling for Ctrl+C still
+sees it. Any other task sees the flag and its kill request, which is all it wants. The
+stash is 512 bytes and, when it fills, the check stops reading and leaves the rest in
+the USB buffer, which pushes back on the host; nothing is dropped to make room. The
+line editor also holds the console claim while it waits for keys, and the login prompt
+drains the stash as the editor does. The cost: a Ctrl+C typed behind a full stash of
+type-ahead (about 500 bytes) is seen when the command ends.
+
+Confirmed on the Pico 2 W: bursts of 100 to 300 bytes arrive intact with the Nova tasks
+running, a 2,000-byte paste of forty commands ran all forty, and five consecutive
+logouts and logins with the Nova tasks active entered the eight-character password
+correctly every time.
+
+### The loader and the numbers in the file
+
+The package loader reads an ELF object somebody else built. Every number in it
+(a relocation's offset, a section's size and alignment, a name's offset into the name
+table, the index of the name table itself) is the package's, and the loader runs with
+the OS's own privileges. Four of them were believed without being checked, and mutation
+fuzzing of the loader found all four:
+
+| Believed | What it allowed | Now |
+|---|---|---|
+| `r_offset` of a relocation | a write wherever it pointed; a misaligned access, which faults on the RP2040 | must lie inside its section, and be even for a Thumb instruction |
+| a section-name offset, the name-table index | a read of whatever followed the table | the table is read with a NUL after it; an offset past the end is the empty string |
+| a section's size and alignment, summed in 32 bits | a wrapped total, a small block, and a section filled into it at its claimed length | 16 MB ceiling, power-of-two alignment up to a page; refused as `LOAD_ERR_BAD_SECTION` |
+| offset plus length in `read_exact` | the same wrap, in the read | summed in 64 bits |
+
+The checks live in `reloc_site_ok`, `layout_add`, `names_ok` and `section_name`, one
+each, used by the copy loader, the flash-slot installer's page pass and the writable-data
+fixups. That last one matters most: those sites are recorded at install and applied by
+`app_pic_load` with no second look, so the check at install is the whole defence.
+
+`host/fuzz_loader_test.cpp` seeds from the packages `build.sh` produces and aims its
+damage at the structures the loader walks. Every allocation has an inaccessible page on
+both sides and must have been given back after each input, failure paths included. A
+second part builds the exact edges (a relocation one byte past its section, an odd Thumb
+offset, a name table with no final NUL, an alignment that is not a power of two). Twelve
+of the thirteen removed fixes are caught; the thirteenth is defence in depth.

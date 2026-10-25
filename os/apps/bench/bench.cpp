@@ -109,8 +109,10 @@ static uint32_t bench_fs(void) {
 }
 
 // Fixed work over elapsed time, so higher is faster. The reference figures are
-// the matching bench.py timings on a v1.0 Pico 2 W at stock clock, which is what
-// makes a score mean "this many times v1.0" instead of an arbitrary constant.
+// the matching bench.py timings on a v1.0 Pico 2 W with its clock set to about
+// 230 MHz (v1's boot-clock setting was not reliable, so it was set by hand),
+// which is what makes a score mean "this many times v1.0" instead of an arbitrary
+// constant. v2 starts at 150 MHz, so compare at the same clock: `pulse set 230`.
 static uint32_t score_of(uint32_t ms, uint32_t reference_ms) {
     if (ms == 0) ms = 1;
     return (reference_ms * 200) / ms;

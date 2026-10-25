@@ -19,6 +19,7 @@ STR_ITER   = 2000
 FS_ITER    = 20
 
 # The same reference figures the C++ side uses, so both print comparable scores.
+# They were taken with the clock set to about 230 MHz; run this at the same clock.
 REF = {
     'integer': 18700,
     'memory':   9400,

@@ -21,13 +21,14 @@ component.
 
 ### The headline
 
-**No interpreter.** On a Pico 2 W at its stock 150 MHz, RPCMark scores about
-**700,000** against a v1 device's 5,000–6,000: over a hundred times as fast, at the
-same clock. That is not a typo and it is not a projection — `bench` runs the same
-workload as `tools/bench.py` does on v1, same iteration counts, so the two numbers
-are the same measurement taken twice. The score follows the clock almost exactly:
-about 900,000 at 200 MHz and 1.1 million at 250 MHz (`pulse set`, or `pulse boot`
-to keep it).
+**No interpreter.** At 230 MHz, the clock v1's score of 5,000–6,000 was taken at (v1's
+boot-clock setting was not reliable, so it was set by hand), a Pico 2 W scores about
+**1.05 million** on RPCMark: roughly 190 times as fast, on the same workload at the same
+clock. That is not a typo and it is not a projection — `bench` runs the same workload as
+`tools/bench.py` does on v1, same iteration counts, so the two numbers are the same
+measurement taken twice. At the 150 MHz v2 starts at it scores about 700,000, and the score
+follows the clock almost exactly: 900,000 at 200 MHz, 1.1 million at 250 MHz (`pulse set`,
+or `pulse boot` to keep it).
 
 **A bad package costs a command, not the device.** This is the part with no
 equivalent in v1 at all. On RP2350 a package runs unprivileged, with the memory
@@ -134,10 +135,13 @@ updates itself.
   alignment that wrapped the 32-bit layout total allocated a small block and then
   filled it at the claimed size. Each is now a refusal with a reason. The packages
   `build.sh` produces load exactly as before.
-- **Pastes arrive whole.** Anything typed or pasted while a command runs waits in
-  a 512-byte stash, then in the USB buffer, which holds the rest back from the
-  host when it fills. The line editor holds the console while it waits for keys,
-  so a background package polling for a stop request cannot take bytes from it.
+- **Pastes and passwords arrive whole.** Only the shell's own task reads the
+  console, so a background package polling for a stop request cannot take
+  keystrokes meant for the prompt (it used to: pasted lines lost characters and a
+  password typed at the login prompt arrived short). Anything typed while a
+  command runs waits in a 512-byte stash, then in the USB buffer, which holds
+  the rest back from the host when it fills. The login prompt and the line editor
+  both read the stash first.
 - **PIO, SPI and I2C for packages**, which is what makes drivers possible
   without touching the firmware.
 - **It puts itself back together.** Settings and accounts are written twice, so
@@ -180,10 +184,10 @@ byte for byte against the original escape sequences.
 
 | Board | Image | Filesystem | Sandbox | Card |
 |---|---|---|---|---|
-| Pico 2 W | 850 KB | 2 MB | yes | yes |
-| Pico 2 | 347 KB | 3 MB | yes | yes |
-| Pico W | 801 KB | 384 KB | no | no |
-| Pico | 293 KB | 1.25 MB | no | no |
+| Pico 2 W | 855 KB | 2 MB | yes | yes |
+| Pico 2 | 352 KB | 3 MB | yes | yes |
+| Pico W | 805 KB | 384 KB | no | no |
+| Pico | 297 KB | 1.25 MB | no | no |
 
 The image figures are the shipped `.bin` sizes, and the development build is the
 largest one gets, so it is what every flash slot is sized against; the table they come from is
@@ -193,8 +197,8 @@ slot, which is built for the RP2350 boards only.
 The RP2350 images build the scheduler, the sandbox and the package-call path at
 -O3, and everything that waits on a serial line, a radio or a flash write (the
 shell commands, the Bluetooth, TLS and TCP/IP stacks, littlefs and the USB and
-FAT code) at -Os. That took the Pico 2 W image from 1009 KB to 850 KB, leaving
-173 KB of its 1024 KB slot free; `-DRPC_COLD_SIZE=OFF` builds the old way to
+FAT code) at -Os. That took the Pico 2 W image from 1009 KB to 855 KB, leaving
+169 KB of its 1024 KB slot free; `-DRPC_COLD_SIZE=OFF` builds the old way to
 compare. The RP2040 images were already built at -Os.
 
 **The RP2040 images have not been booted.** They build, both image checks pass
