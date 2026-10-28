@@ -158,7 +158,14 @@ updates itself.
   failing, it restores the saved firmware. Only when there is nothing left to
   restore does it rebuild the filesystem, which is the step that actually costs
   something. v1 had none of this: a device that would not boot needed another
-  computer.
+  computer. Confirmed on a Pico 2 W (`failboot 2` and `failboot 3` stand in for the
+  failed starts): the third start loads nothing, and the fourth verifies the saved
+  image, writes it back and comes up on the older build. Getting there found that
+  the ladder had never been reachable: the start count lived in a watchdog scratch
+  register that the SDK's own watchdog setup overwrites before the count is read,
+  so every start counted as the first. It is kept in a register nothing else
+  touches now. A restart that is not a failure (a hang the watchdog ended, a
+  crash) counts once and is cleared when the shell comes up.
 
 ### What matches v1
 
@@ -231,8 +238,9 @@ have — and packages there run with the OS's own privileges.
   update over the air removes it to make room and saves the running one again.
   `update from-file` leaves the file it was given where it is, so there is not room for
   both, and it says so and carries on without a rollback copy. Restoring a saved copy
-  (`update rollback`) and the automatic restore after failed boots have not been run on a
-  board.
+  (`update rollback --now`, and the automatic restore after failed starts) has been run on a
+  Pico 2 W in both directions, 483 to 481 by hand and 486 to 481 by the ladder; the restored
+  image is the one that was saved, checked against its recorded SHA-256 before it is written.
 - **A filesystem that reads 100% full with a saved firmware copy on it.** Seen twice on a
   Pico 2 W, once after `update from-file` and once after an update over the air: `df`
   reported 0 KB free of 1792 KB with about 1.3 MB of files on it, every write was refused
