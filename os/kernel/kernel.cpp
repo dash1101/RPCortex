@@ -67,21 +67,36 @@ uint32_t heap_free(void) {
     return heap_total() - (uint32_t)mi.uordblks;
 }
 
+// WHERE THE BOOT-STRIKE COUNT LIVES, and why it is not scratch[4].
+//
+// scratch[4] is the obvious register and it is wrong, twice over. The SDK's
+// watchdog_enable() writes its own marker there unconditionally, and
+// task_watchdog_start() runs BEFORE kboot() reads the count — so the count
+// read back as the SDK's constant on every boot, was never recognised, and
+// started again from one. watchdog_reboot() with no address clears the same
+// register, which is why `failboot` could not set it either. The ladder below
+// compiled, passed its host tests and could not be reached on a board.
+//
+// scratch[6] belongs to the bootrom only when scratch[4] holds the
+// reboot-to-address magic, which nothing here ever sets. No SDK call that this
+// OS makes writes it, and it survives a watchdog reset like the others.
+#define STRIKES (watchdog_hw->scratch[6])
+
 // Called once the shell is running. Until then every boot counts as a failure,
 // which is what makes the three-strikes rebuild safe.
-void kboot_succeeded(void) { watchdog_hw->scratch[4] = 0; }
+void kboot_succeeded(void) { STRIKES = 0; }
 
 // Same register, different meaning, and worth its own name. A rollback resets
 // the count deliberately: the restored firmware has not failed anything, and
 // letting it inherit a counter already at three would have it rebuild the
 // filesystem on the first boot after being brought in to help.
-void kboot_clear_strikes(void) { watchdog_hw->scratch[4] = 0; }
+void kboot_clear_strikes(void) { STRIKES = 0; }
 
 // For proving the recovery ladder works without breaking a device to do it.
 // Sets the count to one short of the threshold, so the next boot is the one
 // that triggers.
 void kboot_force_strikes(uint32_t n) {
-    watchdog_hw->scratch[4] = 0x52504300u | (n & 0xFFu);
+    STRIKES = 0x52504300u | (n & 0xFFu);
 }
 
 // --- a restart that was asked for -------------------------------------------
@@ -167,10 +182,10 @@ bool kboot(void) {
     // at all is worse, and that is the situation this exists to end.
     const uint32_t BOOT_MAGIC = 0x52504300u;
     uint32_t attempts = 0;
-    if ((watchdog_hw->scratch[4] & 0xFFFFFF00u) == BOOT_MAGIC)
-        attempts = watchdog_hw->scratch[4] & 0xFFu;
+    if ((STRIKES & 0xFFFFFF00u) == BOOT_MAGIC)
+        attempts = STRIKES & 0xFFu;
     attempts++;
-    watchdog_hw->scratch[4] = BOOT_MAGIC | (attempts & 0xFFu);
+    STRIKES = BOOT_MAGIC | (attempts & 0xFFu);
 
     if (attempts >= 3)
         klog(LOG_ERROR, "Boot attempt %u without reaching a shell.", (unsigned)attempts);
