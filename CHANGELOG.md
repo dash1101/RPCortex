@@ -233,6 +233,14 @@ have — and packages there run with the OS's own privileges.
   both, and it says so and carries on without a rollback copy. Restoring a saved copy
   (`update rollback`) and the automatic restore after failed boots have not been run on a
   board.
+- **A filesystem that reads 100% full with a saved firmware copy on it.** Seen twice on a
+  Pico 2 W, once after `update from-file` and once after an update over the air: `df`
+  reported 0 KB free of 1792 KB with about 1.3 MB of files on it, every write was refused
+  ("Could not write"), and `fscheck` found nothing wrong. Removing the large saved image
+  (`rm /os/rollback.img`, or `rm` of the file given to `update from-file`) gave back
+  1164 KB at once. It has not been reproduced since (75 hours of uptime on the next build
+  and a second update over the air were normal), and the cause is not known. The updater
+  now drops the saved copy and measures the room again when a download does not fit.
 - **Saved Wi-Fi passwords are sealed, not unbreakable.** They are stored
   encrypted under a per-device key (`/os/device.key`, left out of backups), so a
   copy of the registry, a backup or a support dump no longer shows them, and an
