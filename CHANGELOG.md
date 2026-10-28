@@ -184,8 +184,8 @@ byte for byte against the original escape sequences.
 
 | Board | Image | Filesystem | Sandbox | Card |
 |---|---|---|---|---|
-| Pico 2 W | 855 KB | 2 MB | yes | yes |
-| Pico 2 | 352 KB | 3 MB | yes | yes |
+| Pico 2 W | 855 KB | 1.75 MB | yes | yes |
+| Pico 2 | 352 KB | 2.75 MB | yes | yes |
 | Pico W | 805 KB | 384 KB | no | no |
 | Pico | 297 KB | 1.25 MB | no | no |
 
