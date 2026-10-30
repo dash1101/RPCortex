@@ -168,7 +168,7 @@ static int cmd_compat(int argc, char **argv) {
 static int cmd_diag(int, char **) {
     out_info("Diagnostics");
 
-    out_multi("  %sVersion%s   %s %s", C_CYAN, C_RESET, RPC_OS_VERSION, RPC_OS_CODENAME);
+    out_multi("  %sVersion%s   %s %s", C_CYAN, C_RESET, RPC_OS_LONG, RPC_OS_CODENAME);
     out_multi("  %sUptime%s    %lu s", C_CYAN, C_RESET, (unsigned long)(task_now_ms() / 1000));
     out_multi("  %sClock%s     %u MHz", C_CYAN, C_RESET,
               (unsigned)(clock_get_hz(clk_sys) / 1000000u));

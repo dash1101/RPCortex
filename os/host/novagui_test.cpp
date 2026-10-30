@@ -954,24 +954,25 @@ static void test_update_versions(void) {
 
 // --- Updates: reading `update check` ----------------------------------------------
 //
-// The OS version is frozen at v2.0.0 for the whole beta and what moves is the
-// build number, so the command's VERDICT is read rather than recomputed.
+// The printed version is the same for every build of an iteration and what
+// differs is the build number, so the command's VERDICT is read rather than
+// recomputed.
 static void test_update_os_reading(void) {
     using namespace nova::screens;
     static const char *kCurrent =
-        "  Installed  v2.0.0 (build 315)\n"
-        "  Available  2.0.0.315\n"
+        "  Installed  v2.0-beta (build 315)\n"
+        "  Available  2.0.315\n"
         "  Size       955 KB\n"
         "[@] Already up to date.\n";
     static const char *kNewer =
-        "  Installed  v2.0.0 (build 315)\n"
-        "  Available  2.0.0.316\n"
+        "  Installed  v2.0-beta (build 315)\n"
+        "  Available  2.0.316\n"
         "  Size       955 KB\n"
         "[:] An update is available. 'update install' to fetch and apply it.\n";
     static const char *kRefused =
-        "  Installed  v2.0.0 (build 315)\n"
-        "  Available  2.0.0.316\n"
-        "[?] This device already rolled back from 2.0.0.316.\n"
+        "  Installed  v2.0-beta (build 315)\n"
+        "  Available  2.0.316\n"
+        "[?] This device already rolled back from 2.0.316.\n"
         "  It was installed and would not start, so the previous version\n"
         "  was put back. 'update install --force' installs it anyway.\n";
     static const char *kNoNet = "[!] No network. Connect first.\n";
@@ -985,18 +986,22 @@ static void test_update_os_reading(void) {
     char row[48], v[20];
     ok(upd_os_row(kNewer, "Installed", row, sizeof(row)), "the Installed row is found");
     upd_os_compact(row, v, sizeof(v));
-    ok(!strcmp(v, "2.0.0.315"), "and reads as the build the firmware actually compares");
+    ok(!strcmp(v, "2.0.315"), "and reads as the build the firmware actually compares");
     ok(upd_os_row(kNewer, "Available", row, sizeof(row)), "the Available row is found");
     upd_os_compact(row, v, sizeof(v));
-    ok(!strcmp(v, "2.0.0.316"), "and needs no rewriting");
+    ok(!strcmp(v, "2.0.316"), "and needs no rewriting");
+    upd_os_compact("v2.0.0 (build 315)", v, sizeof(v));
+    ok(!strcmp(v, "2.0.0.315"), "the older printed shape still reads as it did");
+    upd_os_compact("v2.11 (build 1203)", v, sizeof(v));
+    ok(!strcmp(v, "2.11.1203"), "a released iteration has no suffix to drop");
     ok(!upd_os_row(kNoNet, "Installed", row, sizeof(row)),
        "a check that failed printed no rows to read");
 
     // The trap the compacting exists for: the two rows AS PRINTED disagree,
     // because the leading 'v' reads as a zeroth component and loses every time.
-    eq(upd_state("v2.0.0 (build 315)", "2.0.0.315"), UPD_NEWER,
+    eq(upd_state("v2.0-beta (build 315)", "2.0.315"), UPD_NEWER,
        "comparing the printed rows would claim an update forever");
-    eq(upd_state("2.0.0.315", "2.0.0.315"), UPD_CURRENT,
+    eq(upd_state("2.0.315", "2.0.315"), UPD_CURRENT,
        "and the compacted ones agree with the OS");
 }
 

@@ -160,8 +160,8 @@ static const char *fake_shell(const char *line) {
     if (!strncmp(line, "whoami", 6))
         return "root  (admin)\n";
     if (!strncmp(line, "update check", 12))
-        return "  Installed  v2.0.0 (build 315)\n"
-               "  Available  2.0.0.315\n"
+        return "  Installed  v2.0-beta (build 315)\n"
+               "  Available  2.0.315\n"
                "  Size       955 KB\n"
                "[@] Already up to date.\n";
     if (!strncmp(line, "safeboot", 8))

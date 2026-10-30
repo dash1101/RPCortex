@@ -1232,10 +1232,10 @@ static const char *upd_row_ver(const char *name) {
 // --- the OS half, which is read only -------------------------------------------------
 //
 // `update check`'s VERDICT is read rather than recomputed, and that is not
-// laziness. The OS version is frozen at v2.0.0 for the whole beta and what
-// moves is a build number, so the firmware compares "2.0.0.<build>" — while the
-// row it prints for the installed side reads "v2.0.0 (build 315)", with a
-// leading v that any numeric comparison reads as a zeroth component. Comparing
+// laziness. The firmware compares "MAJOR.ITER.BUILD" — "2.0.486" — while the
+// row it prints for the installed side reads "v2.0-beta (build 486)", with a
+// leading v that any numeric comparison reads as a zeroth component and a
+// pre-release suffix that is not a number at all. Comparing
 // the two strings as printed reports an update forever. The command already did
 // the comparison correctly; this reads its answer.
 
@@ -1247,7 +1247,7 @@ static int upd_os_state(const char *text) {
     return UPD_UNKNOWN;
 }
 
-// The value on a "  Installed  v2.0.0 (build 315)" row, terminated and trimmed.
+// The value on a "  Installed  v2.0-beta (build 486)" row, terminated and trimmed.
 static bool upd_os_row(const char *text, const char *label, char *out, unsigned cap) {
     out[0] = 0;
     const unsigned ll = (unsigned)strlen(label);
@@ -1267,8 +1267,9 @@ static bool upd_os_row(const char *text, const char *label, char *out, unsigned 
     return false;
 }
 
-// "v2.0.0 (build 315)" as "2.0.0.315", which is the form the firmware actually
-// compares and the same shape as the Available row underneath it. Two rows that
+// "v2.0-beta (build 486)" as "2.0.486", which is the form the firmware actually
+// compares and the same shape as the Available row underneath it. The suffix is
+// dropped; the older "v2.0.0 (build 315)" still reads as "2.0.0.315". Two rows that
 // line up are worth the dozen lines it takes; one reading as prose beside a
 // version number reads as two unrelated facts.
 static void upd_os_compact(const char *row, char *out, unsigned cap) {
@@ -1277,7 +1278,7 @@ static void upd_os_compact(const char *row, char *out, unsigned cap) {
     while (*p == ' ') p++;
     if (*p == 'v' || *p == 'V') p++;
     unsigned n = 0;
-    while (p[n] && p[n] != ' ' && n + 1 < cap) n++;
+    while (p[n] && p[n] != ' ' && p[n] != '-' && n + 1 < cap) n++;
     memcpy(out, p, n);
     out[n] = 0;
 

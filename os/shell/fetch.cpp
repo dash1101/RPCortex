@@ -85,7 +85,7 @@ static int cmd_fetch(int, char **) {
     const char *user = session_user();
     const char *host = reg_get("System.Device_ID", "vela");
 
-    add("OS",     "RPCortex %s %s", RPC_OS_VERSION, RPC_OS_CODENAME);
+    add("OS",     "RPCortex %s %s", RPC_OS_LONG, RPC_OS_CODENAME);
     add("Host",   "%s (%s)", PICO_BOARD, FETCH_ARCH);
     add("Kernel", "C++ native  -  GCC %s", __VERSION__);
 

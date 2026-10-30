@@ -188,7 +188,7 @@ bool rollback_capture(bool announce) {
     char cfg[320];
     int n = snprintf(cfg, sizeof(cfg),
                      "ver=%s\nboard=%s\nsize=%lu\nreserve=%lu\nsha=%s\n",
-                     RPC_OS_VERSION, PICO_BOARD,
+                     RPC_OS_LONG, PICO_BOARD,
                      (unsigned long)size, (unsigned long)storage_reserve_bytes(), hex);
 
     void *csink = storage_open_sink(ROLLBACK_CFG);
@@ -202,9 +202,9 @@ bool rollback_capture(bool announce) {
     }
 
     if (announce) out_ok("Rollback copy saved: %s (%lu KB).",
-                         RPC_OS_VERSION, (unsigned long)(size / 1024));
+                         RPC_OS_LONG, (unsigned long)(size / 1024));
     log_addf(LOG_K_OK, "rollback: saved %s (%lu bytes)",
-             RPC_OS_VERSION, (unsigned long)size);
+             RPC_OS_LONG, (unsigned long)size);
     return true;
 }
 
@@ -268,7 +268,7 @@ bool rollback_apply(bool at_boot) {
     // announce that as its good news on the very boot that undid it.
     reg_set("System.Update_From", "");
     reg_set("System.Update_To", "");
-    reg_set("System.Rollback_From", RPC_OS_VERSION);
+    reg_set("System.Rollback_From", RPC_OS_LONG);
     reg_set("System.Rollback_To", info.ver);
 
     // And remember WHICH version was rejected, which is a different fact with a
@@ -283,7 +283,7 @@ bool rollback_apply(bool at_boot) {
     // simply not matching it. And a note, not a block: `--force` still works,
     // because a version that failed once on one device is not a version nobody
     // may ever install.
-    reg_set("System.Rollback_Refused", RPC_OS_VERSION);
+    reg_set("System.Rollback_Refused", RPC_OS_BUILDVER);
     persist_save_registry();
 
     // Used once, and marked used BEFORE the write rather than after — because
@@ -296,7 +296,7 @@ bool rollback_apply(bool at_boot) {
     storage_remove("/os/rollback.used");
     storage_rename(ROLLBACK_CFG, "/os/rollback.used");
 
-    log_addf(LOG_K_WARN, "rollback: restoring %s over %s", info.ver, RPC_OS_VERSION);
+    log_addf(LOG_K_WARN, "rollback: restoring %s over %s", info.ver, RPC_OS_LONG);
 
     if (at_boot) {
         // The restored firmware deserves its own three attempts. Without this it
@@ -306,7 +306,7 @@ bool rollback_apply(bool at_boot) {
     }
 
     out_blank();
-    out_warn("Restoring %s over %s.", info.ver, RPC_OS_VERSION);
+    out_warn("Restoring %s over %s.", info.ver, RPC_OS_LONG);
 
     // Does not return when it works.
     if (update_apply_file(ROLLBACK_IMG, info.ver, at_boot)) return true;
@@ -354,7 +354,7 @@ static void show(void) {
     RollbackInfo info;
     out_info("=== Firmware rollback ===");
     out_blank();
-    out_multi("  Running    %s %s", RPC_OS_VERSION, RPC_OS_CODENAME);
+    out_multi("  Running    %s %s", RPC_OS_LONG, RPC_OS_CODENAME);
 
     if (!rollback_read(&info)) {
         bool d = false; uint32_t orphan = 0;
@@ -428,7 +428,7 @@ int rollback_command(int argc, char **argv) {
             out_err("There is nothing saved to go back to.");
             return 1;
         }
-        out_warn("This replaces %s with %s.", RPC_OS_VERSION, info.ver);
+        out_warn("This replaces %s with %s.", RPC_OS_LONG, info.ver);
         out_multi("  Files and settings are untouched; only the firmware changes.");
         if (!session_confirm("  Continue?")) { out_info("Cancelled."); return 0; }
         return rollback_apply(/*at_boot*/false) ? 0 : 1;

@@ -214,8 +214,8 @@ class Report:
 
 def check_version(b, r):
     out = b.send("ver")
-    m = re.search(r"RPCortex v(\d+\.\d+\.\d+)", out)
-    build = re.search(r"Build:\s*(\d+)", out)
+    m = re.search(r"RPCortex v(\d+\.\d+(?:-[\w.]+)?)", out)
+    build = re.search(r"\(build\s*(\d+)\)", out)
     plat = re.search(r"Platform:\s*(\S+)", out)
     if not m:
         r.fail("ver reports a version", out.replace("\n", " | ")[:90])

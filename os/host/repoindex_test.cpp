@@ -65,6 +65,14 @@ int main(void) {
     ok(repo_version_cmp("1.1rc1", "1.0") > 0,    "version: the number still decides before any suffix");
     ok(repo_version_cmp("1.0", "1.1rc1") < 0,    "version: and the other way round");
     ok(repo_version_cmp("2.0.0.463", "2.0.0.462") > 0, "version: the build number is a fourth component");
+    // vMAJOR.ITER with the build as the third number: "2.11.1203".
+    ok(repo_version_cmp("2.0.486", "2.0.485") > 0,      "version: a later build of one iteration is newer");
+    ok(repo_version_cmp("2.0.486", "2.0.0.483") > 0,   "version: the new form is newer than any build of the old one");
+    ok(repo_version_cmp("2.0.0.483", "2.0.486") < 0,   "version: and an old manifest never beats a new device");
+    ok(repo_version_cmp("2.11.1203", "2.9.2000") > 0,  "version: the iteration compares as a number, not as text");
+    ok(repo_version_cmp("2.10.5", "2.9.99") > 0,       "version: v2.10 follows v2.9");
+    ok(repo_version_cmp("3.0.1", "2.99.9999") > 0,     "version: a new generation beats every iteration of the last");
+    ok(repo_version_cmp("2.0.486", "2.0.486") == 0,    "version: the same build is the same");
     ok(repo_version_cmp("99999999999999999999", "1") > 0, "version: a huge number saturates instead of wrapping");
     ok(repo_version_cmp("1", "99999999999999999999") < 0, "version: and the other way round");
     // 2^32 + 1: wrapped to 32 bits it would read as 1 and sort below 2.

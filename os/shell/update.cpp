@@ -557,7 +557,7 @@ bool update_apply_file(const char *path, const char *to_version, bool at_boot) {
     // keys, and the boot after the one that reported the rollback would cheerily
     // announce having been updated to the version it had just undone.
     if (strcmp(path, ROLLBACK_IMG) != 0) {
-        reg_set("System.Update_From", RPC_OS_VERSION);
+        reg_set("System.Update_From", RPC_OS_LONG);
         reg_set("System.Update_To", to_version ? to_version : "a local image");
         // Installing it on purpose withdraws the objection to it. Whoever typed
         // --force has been told and has decided, and leaving the note behind
@@ -690,7 +690,7 @@ void update_report_boot(void) {
                   back_from[0] ? back_from : "The previous firmware");
         out_multi("  Files and settings were not touched.");
         log_addf(LOG_K_WARN, "rollback: now running %s (was %s)",
-                 RPC_OS_VERSION, back_from);
+                 RPC_OS_LONG, back_from);
 
         reg_set("System.Rollback_To", "");
         reg_set("System.Rollback_From", "");
@@ -712,8 +712,8 @@ void update_report_boot(void) {
     const char *from = reg_get("System.Update_From", "");
 
     out_ok("Updated from %s to %s.", from[0] ? from : "an earlier build", to);
-    out_multi("  Now running %s %s.", RPC_OS_VERSION, RPC_OS_CODENAME);
-    log_addf(LOG_K_OK, "update: now running %s (was %s)", RPC_OS_VERSION, from);
+    out_multi("  Now running %s %s.", RPC_OS_LONG, RPC_OS_CODENAME);
+    log_addf(LOG_K_OK, "update: now running %s (was %s)", RPC_OS_LONG, from);
 
     reg_set("System.Update_To", "");
     reg_set("System.Update_From", "");

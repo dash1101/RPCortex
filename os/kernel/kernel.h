@@ -11,31 +11,45 @@
 // Single source of truth for version + codename, as v1 kept them in
 // RPCortex.py. The banner and `ver` both read these.
 //
-// THE VERSION DOES NOT MOVE UNTIL v2.0.0 SHIPS. It is in beta, and everything
-// between pre-releases is a new BUILD of v2.0.0 rather than a new version.
-// Treating each fix as a release walked this to v2.2.2 in a few days, which
-// made a beta read as three shipped versions and made the published
-// pre-release look abandoned. It also quietly discouraged large changes, on
-// the grounds that a big change "needs" a version — exactly backwards for a
-// beta, where the build number is free and the version is not.
+// THE SCHEME: vMAJOR.ITER, with a build number beside it.
 //
-// Bump RPC_OS_BUILD as often as there are builds. Change this line at release.
-#define RPC_OS_VERNUM   "2.0.0"                  // no 'v': what comparisons use
-#define RPC_OS_VERSION  "v" RPC_OS_VERNUM        // what people read
-#define RPC_OS_CODENAME "Vela II"
+//     v2.11 (build 1203)       the eleventh iteration of the second generation
+//     v2.0-beta (build 486)    a pre-release of the first one
+//
+// MAJOR is a generation, the only thing with a codename, and it changes when the
+// platform does: a new kernel, a new package ABI, a new architecture. ITER counts
+// the releases within a generation from zero and has no ceiling, so v2.9 is
+// followed by v2.10. An iteration is a patch release and never breaks packages;
+// a change that would is a new MAJOR. RPC_OS_SUFFIX marks a pre-release and is
+// empty once the version ships.
+//
+// The build number is the commit count and rises on its own, so nobody has to
+// remember to move it and it cannot disagree with the image. It is kept out of
+// tags and shown next to the version wherever two builds of one version could
+// be confused for each other.
+#define RPC_OS_MAJOR    "2"
+#define RPC_OS_ITER     "0"
+#define RPC_OS_SUFFIX   "-beta"                  // "" once released
+#define RPC_OS_CODENAME "Vela II"                // a generation's name, on its .0 and after
+#define RPC_OS_VERNUM   RPC_OS_MAJOR "." RPC_OS_ITER      // no 'v': what comparisons use
+#define RPC_OS_VERSION  "v" RPC_OS_VERNUM RPC_OS_SUFFIX   // what people read
 
 // The build number, set by CMake from the commit count so it rises on its own
-// and no one has to remember. "0" keeps a host build compiling — those do not
+// and no one has to remember. "0" keeps a host build compiling; those do not
 // run CMake's git step.
 #ifndef RPC_OS_BUILD
 #define RPC_OS_BUILD "0"
 #endif
 
-// What the updater compares: the version with the build as a fourth component.
-// repo_version_cmp counts a missing component as zero, so "2.0.0.57" beats
-// "2.0.0" and a later build beats an earlier one — a frozen version needs no
-// special case. The git sha is deliberately NOT in here: it carries a '+' when
-// the tree was dirty, which is not a number and would not compare.
+// What people read where the build matters: "v2.0-beta (build 486)".
+#define RPC_OS_LONG     RPC_OS_VERSION " (build " RPC_OS_BUILD ")"
+
+// What the updater compares: the version with the build as a third component,
+// "2.0.486". repo_version_cmp counts a missing component as zero and compares
+// number by number, so a later build beats an earlier one and an older device's
+// "2.0.0.483" is still older than any build of the new form. The git sha is
+// deliberately NOT in here: it carries a '+' when the tree was dirty, which is
+// not a number and would not compare.
 #define RPC_OS_BUILDVER RPC_OS_VERNUM "." RPC_OS_BUILD
 
 enum LogLevel { LOG_INFO = 0, LOG_WARN = 1, LOG_ERROR = 2 };

@@ -230,7 +230,7 @@ static int cmd_meminfo(int, char **) {
 }
 
 static int cmd_ver(int, char **) {
-    out_multi("RPCortex %s  —  %s", RPC_OS_VERSION, RPC_OS_CODENAME);
+    out_multi("RPCortex %s (build %s)  —  %s", RPC_OS_VERSION, RPC_OS_BUILD, RPC_OS_CODENAME);
     // The COMMIT, baked at build time, not a registry key.
     //
     // This read System.Build, which defaults to "1" and which nothing ever
@@ -243,7 +243,7 @@ static int cmd_ver(int, char **) {
     // image exactly, including the '+' that says it was built from a dirty
     // tree. Two images from the same commit count are not necessarily the same
     // image, which is the whole reason the sha stays.
-    out_multi("Build: %s  %s  (%s)  [C++ native]", RPC_OS_BUILD, RPC_BUILD_ID,
+    out_multi("Commit: %s  (%s)  [C++ native]", RPC_BUILD_ID,
               reg_get("System.Stage", "dev"));
     out_multi("GCC %s   Platform: %s (%s)", __VERSION__, PICO_BOARD, RPC_ARCH);
     return 0;
