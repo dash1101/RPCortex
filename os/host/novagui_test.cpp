@@ -2572,6 +2572,21 @@ static void test_help_wraps_and_scrolls(void) {
     ok(h->on_event(EV_BACK) == ui::ACT_BACK, "BACK leaves it");
     gui::go_home();
 
+    // A notice longer than the panel is readable to its end: turning scrolls it, SELECT dismisses.
+    ui::notice("Long", "One. Two two two. Three three three. Four four four four. Five five five five five. Six six six six six six. "
+                       "Seven seven seven seven. Eight eight eight eight. Nine nine nine. Ten ten. Eleven. Twelve twelve twelve twelve.");
+    ui::Screen *nt = gui::top();
+    uint8_t n0[128 * 8], n1[128 * 8];
+    gui::canvas().clear(0); nt->draw(gui::canvas()); memcpy(n0, gui::canvas().buffer(), sizeof(n0));
+    for (int i = 0; i < 4; i++) ok(nt->on_event(EV_ROT_CW) == ui::ACT_STAY && gui::top() == nt, "a turn on a long notice scrolls it instead of dismissing it");
+    gui::canvas().clear(0); nt->draw(gui::canvas()); memcpy(n1, gui::canvas().buffer(), sizeof(n1));
+    ok(memcmp(n0, n1, sizeof(n0)) != 0, "and later lines come into view");
+    ok(nt->on_event(EV_SELECT) == ui::ACT_BACK, "SELECT dismisses it");
+    gui::pop();
+    ui::notice("Short", "Done.");
+    ok(gui::top()->on_event(EV_ROT_CW) == ui::ACT_BACK, "a short notice still goes on any gesture, a turn included");
+    gui::pop();
+
     // A message in ui::text_block wraps at spaces rather than being cut.
     gui::canvas().clear(0);
     int n = ui::text_block(gui::canvas(), 2, ui::TOP, "Point a remote at the receiver and press a button.", 4);

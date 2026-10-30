@@ -375,7 +375,7 @@ void confirm(const char *question, const char *yes_label, VoidFn yes, void *ctx)
 // It also means what the device last said is readable, which is what lets a
 // host test check that a confirmation reported the right thing — a screen that
 // says "Clock set." for a clock it did not set is a bug no compiler can see.
-static char g_notice_body[128];
+static char g_notice_body[320];
 
 const char *last_notice(void) { return g_notice_body; }
 
@@ -384,27 +384,46 @@ public:
     void begin(const char *title, const char *body) {
         title_ = title;
         copy(g_notice_body, sizeof(g_notice_body), body ? body : "");
+        top_ = 0;
+        n_ = -1;
+        rows_ = 6;
     }
 
     const char *title(void) const override { return title_; }
 
+    // A message longer than the panel has to be readable to its end. It used to stop at five lines and
+    // a hundred characters, silently, and any gesture (a turn included) dismissed it, so a reason that
+    // ran over was a reason nobody saw. It wraps without that limit now and TURNING scrolls it when it
+    // does not fit; SELECT or BACK dismisses, as before.
     void draw(Canvas &c) override {
-        static char store[128];
-        const char *lines[5];
-        int n = wrap(g_notice_body, c.cols() - 1, store, sizeof(store), lines, 5);
-        for (int i = 0; i < n; i++) c.text(2, TOP + i * ROWH, lines[i], 1);
+        if (n_ < 0) n_ = wrap(g_notice_body, c.cols() - 2, g_store, sizeof(g_store), g_lines, 24);
+        const int rows = rows_ = rows_for(c);
+        if (top_ > n_ - rows) top_ = n_ - rows;
+        if (top_ < 0) top_ = 0;
+        for (int i = 0; i < rows && top_ + i < n_; i++) c.text(2, TOP + i * ROWH, g_lines[top_ + i], 1);
+        if (n_ > rows) c.scrollbar(c.width() - SB_W, TOP, rows * ROWH, top_, rows, n_);
     }
 
-    // Any gesture dismisses it. A notice that needs the right button pressed is
-    // a question wearing a notice's clothes.
+    // A notice that needs the right button pressed is a question wearing a notice's clothes, so a
+    // short one still goes on any gesture. Only turning, on one that does not fit, is spent scrolling.
     Action on_event(Event e) override {
         if (e == EV_NONE) return ACT_STAY;
+        if ((e == EV_ROT_CW || e == EV_ROT_CCW) && n_ > rows_) {
+            top_ += (e == EV_ROT_CW) ? 1 : -1;
+            if (top_ < 0) top_ = 0;
+            return ACT_STAY;
+        }
         return ACT_BACK;
     }
 
 private:
     const char *title_;
+    int         top_, n_, rows_;
+    static char        g_store[512];
+    static const char *g_lines[24];
 };
+char        NoticeScreen::g_store[512];
+const char *NoticeScreen::g_lines[24];
 
 void notice(const char *title, const char *body) {
     NoticeScreen *s = gui::push<NoticeScreen>();
