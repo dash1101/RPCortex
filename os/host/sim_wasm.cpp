@@ -261,11 +261,11 @@ int fw_net_rssi(void) { return g_sim_net ? -52 : 0; }
 int fw_net_scan(FwNetAp *out, unsigned max) {
     static const struct { const char *ssid; int rssi, ch, sec; } aps[] = {
         { "Nova",             -52,  6, 1 },
-        { "HomeNet-5G",       -61, 36, 1 },
+        { "HomeNet",          -61,  1, 1 },
         { "Pixel_4A2F",       -66, 11, 1 },
         { "TP-Link_9F2A",     -72,  1, 1 },
         { "Cafe Guest",       -74,  6, 0 },
-        { "Neighborhood-Mesh-Network-5GHz-Guest", -77, 40, 1 },
+        { "Neighborhood-Mesh-Network-Guest", -77, 11, 1 },
         { "NETGEAR47",        -79,  9, 1 },
         { "Linksys00421",     -83,  3, 1 },
     };
@@ -280,17 +280,18 @@ int fw_net_scan(FwNetAp *out, unsigned max) {
 }
 
 // The same neighbourhood as the radios it has, which is not the same list: one network is on two
-// radios (as a router with two bands is), and one has no name. Addresses are made up.
+// radios (a mesh node and its neighbour), and one has no name. Addresses are made up. Channels stay
+// within 1-13: the Pico 2 W's radio is 2.4 GHz only and could not hear anything else.
 int fw_net_scan2(FwNetAp2 *out, unsigned max) {
     static const struct { uint8_t mac5; const char *ssid; int rssi, ch, sec; } aps[] = {
         { 0x10, "Nova",             -52,  6, 4 },
-        { 0x11, "Nova",             -58, 36, 4 },
-        { 0x20, "HomeNet-5G",       -61, 36, 4 },
+        { 0x11, "Nova",             -58, 11, 4 },
+        { 0x20, "HomeNet",          -61,  1, 4 },
         { 0x30, "Pixel_4A2F",       -66, 11, 4 },
         { 0x40, "TP-Link_9F2A",     -72,  1, 6 },
         { 0x50, "Cafe Guest",       -74,  6, 0 },
         { 0x60, "",                 -75,  3, 4 },
-        { 0x70, "Neighborhood-Mesh-Network-5GHz-Guest", -77, 40, 4 },
+        { 0x70, "Neighborhood-Mesh-Network-Guest", -77, 11, 4 },
         { 0x80, "NETGEAR47",        -79,  9, 4 },
         { 0x90, "Linksys00421",     -83,  3, 1 },
     };

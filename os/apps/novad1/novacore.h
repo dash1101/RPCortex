@@ -106,6 +106,13 @@ bool csv_remove(char *csv, unsigned cap, const char *field);
 // Make the storage tree if it is not there. Cheap to call at every boot.
 void paths_init(void);
 
+// A UART is one thing and more than one screen can want it: the GPS screen reads it, and so does a
+// survey that is still finishing its last scan after BACK. The first claim opens the port and the
+// last release closes it, so one letting go cannot shut it under the other. Counted per bus, bus 0 or 1.
+// Not atomic: the two owners are a screen and a worker, and they claim seconds apart, never together.
+void uart_claim(unsigned bus, unsigned tx, unsigned rx, unsigned baud);
+void uart_release(unsigned bus);
+
 // Build "/nova/codes/<cat>/<name>" and friends without every call site doing its
 // own snprintf and getting the separator wrong on one of them.
 void path_join(char *out, unsigned cap, const char *a, const char *b);

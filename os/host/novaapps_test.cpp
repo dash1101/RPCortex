@@ -112,6 +112,8 @@ int  fw_reg_has(const char *k) { char b[4]; return fw_reg_get(k, b, sizeof(b)); 
 void fw_reg_save(void) {}
 int  fw_file_exists(const char *) { return 1; }
 int  fw_mkdir(const char *) { return 1; }
+int  fw_uart_init(unsigned, unsigned, unsigned, unsigned) { return 0; }
+int  fw_uart_deinit(unsigned) { return 0; }
 int  fw_time_get(struct FwTime *out) { (void)out; return 0; }
 
 // The module table comes along for category_name() alone, and it probes for

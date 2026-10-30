@@ -232,6 +232,18 @@ void paths_init(void) {
         if (!fw_file_exists(dirs[i])) fw_mkdir(dirs[i]);
 }
 
+static volatile int g_uart_claims[2];
+
+void uart_claim(unsigned bus, unsigned tx, unsigned rx, unsigned baud) {
+    if (bus > 1) return;
+    if (g_uart_claims[bus]++ == 0) fw_uart_init(bus, tx, rx, baud);
+}
+
+void uart_release(unsigned bus) {
+    if (bus > 1 || g_uart_claims[bus] <= 0) return;
+    if (--g_uart_claims[bus] == 0) fw_uart_deinit(bus);
+}
+
 // --- time -------------------------------------------------------------------
 
 // Howard Hinnant's day arithmetic, on a signed day count from 1970-01-01.

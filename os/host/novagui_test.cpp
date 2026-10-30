@@ -3307,7 +3307,7 @@ static void test_wardrive(void) {
 
     // --- four radios: two of one network, one with no name, one open and with a comma in its name.
     wd_radio(0, 1, "Home",  -60,  6, 4);
-    wd_radio(1, 2, "Home",  -70, 36, 4);
+    wd_radio(1, 2, "Home",  -70, 11, 4);
     wd_radio(2, 3, "",      -80,  1, 4);
     wd_radio(3, 4, "a,b",   -50, 11, 0);
     g_scan2_n = 4;
@@ -3318,7 +3318,7 @@ static void test_wardrive(void) {
     eq(wd_lines(f), 6, "the header's two lines and four radios");
     ok(!strncmp(f, head, strlen(head)), "the file opens with the WiGLE header");
     ok(strstr(f, "1c:4b:d6:00:ab:01,Home,[WPA2-PSK],2026-10-30 18:04:05,6,-60,,,,,WIFI\n"), "the first radio is a full row");
-    ok(strstr(f, "1c:4b:d6:00:ab:02,Home,[WPA2-PSK],2026-10-30 18:04:05,36,-70,,,,,WIFI\n"),
+    ok(strstr(f, "1c:4b:d6:00:ab:02,Home,[WPA2-PSK],2026-10-30 18:04:05,11,-70,,,,,WIFI\n"),
        "and the second radio of the same network is its own row");
     ok(strstr(f, "1c:4b:d6:00:ab:03,,[WPA2-PSK],2026-10-30 18:04:05,1,-80,,,,,WIFI\n"), "a hidden network is kept, with no name");
     ok(strstr(f, "1c:4b:d6:00:ab:04,\"a,b\",[OPEN],2026-10-30 18:04:05,11,-50,,,,,WIFI\n"), "a comma in a name is quoted");
@@ -3389,6 +3389,18 @@ static void test_wardrive(void) {
     ok(strstr(wd_read("/nova/logs/wardrive-1.csv"), "1c:4b:d6:00:ab:0d,Sky,[WPA2-PSK],2094-03-23 12:35:19,11,-47,48.117300,11.516670,545.4,,WIFI\n"),
        "with no clock set, the module's date and time stamp the row");
     wd_gps_close();
+    uart_feed("");
+
+    // --- the GPS screen and a survey both hold the port. The survey's last scan can end after BACK,
+    // with the GPS screen already open, and its letting go must not close the port under the screen.
+    wd_gps_open();
+    uart_feed("");
+    ui::Screen *gs = open_app("gps");
+    wd_gps_close();
+    uart_feed(both);
+    for (int i = 0; i < 6; i++) gs->tick(33);
+    ok(g_gps_have, "the GPS screen still reads after a survey that shared its port has finished");
+    gui::go_home();
     uart_feed("");
 
     // --- the flash filling up ends the survey, and says why; a nearly full one only warns.

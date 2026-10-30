@@ -1,8 +1,8 @@
 // Access points found by one Wi-Fi scan, kept one per radio.
 //
 // The driver reports every beacon it hears, so one access point arrives many
-// times, and a network with several radios (a mesh, a campus, any router with
-// two bands) arrives under one name from several addresses. The shell's own
+// times, and a network with several radios (a mesh, a range extender, a campus)
+// arrives under one name from several addresses. The shell's own
 // list merges by NAME, which is right for choosing something to join and wrong
 // for anything that wants to know what is in the air: two radios are two rows.
 // This list is keyed by BSSID, the radio's own address.

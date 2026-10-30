@@ -811,12 +811,12 @@ static void wd_gps_open(void) {
     g_wd_gps_wired = (tx != board::PIN_NONE && rx != board::PIN_NONE);
     if (g_wd_gps_wired) {
         g_wd_gps_bus = gps::uart_bus(rx);
-        fw_uart_init(g_wd_gps_bus, (unsigned)tx, (unsigned)rx, 9600);
+        uart_claim(g_wd_gps_bus, (unsigned)tx, (unsigned)rx, 9600);
     }
 }
 
 static void wd_gps_close(void) {
-    if (g_wd_gps_wired) fw_uart_deinit(g_wd_gps_bus);
+    if (g_wd_gps_wired) uart_release(g_wd_gps_bus);
     g_wd_gps_wired = false;
 }
 
@@ -953,8 +953,10 @@ static bool wd_pass(void) {
     // carries on rather than ending on one bad pass.
     if (n < 0) nova::copy(g_wd_msg, sizeof(g_wd_msg), "Scan refused");
     // The position AFTER the scan, which took seconds: a drive moves a long way in that time, and
-    // the later fix is the closer one to where the strongest sighting was.
-    wd_gps_pump();
+    // the later fix is the closer one to where the strongest sighting was. Not once the survey has
+    // been told to stop: the scan can outlast the screen, and the GPS screen may be open by now and
+    // wants the bytes for itself.
+    if (g_wd_run) wd_gps_pump();
 
     char ts[24];
     wd_stamp(ts, sizeof(ts));

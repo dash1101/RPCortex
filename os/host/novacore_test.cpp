@@ -53,6 +53,10 @@ int  fw_reg_has(const char *k) { char b[4]; return fw_reg_get(k, b, sizeof(b)); 
 void fw_reg_save(void) {}
 int  fw_file_exists(const char *) { return 1; }
 int  fw_mkdir(const char *) { return 1; }
+// Counted, so the claim/release rule can be checked: the port opens once and closes once.
+static int g_uart_inits, g_uart_deinits;
+int  fw_uart_init(unsigned, unsigned, unsigned, unsigned) { g_uart_inits++; return 0; }
+int  fw_uart_deinit(unsigned) { g_uart_deinits++; return 0; }
 // Always "the clock was never set", which is the case worth pinning: everything
 // that formats a time has to render something honest rather than 00:00.
 int  fw_time_get(struct FwTime *out) { (void)out; return 0; }
@@ -219,7 +223,33 @@ static void test_listing_index(void) {
        "a match cannot straddle two rows");
 }
 
+// Two owners of one port: the first claim opens it, the last release closes it, and a surplus release
+// closes nothing. This is the rule that stops a survey finishing under an open GPS screen.
+static void test_uart_claims(void) {
+    g_uart_inits = g_uart_deinits = 0;
+    nova::uart_claim(1, 4, 5, 9600);
+    nova::uart_claim(1, 4, 5, 9600);
+    ok(g_uart_inits == 1, "a second claim does not open the port again");
+    nova::uart_release(1);
+    ok(g_uart_deinits == 0, "a release with another owner left does not close it");
+    nova::uart_release(1);
+    ok(g_uart_deinits == 1, "the last release closes it");
+    nova::uart_release(1);
+    ok(g_uart_deinits == 1, "a release with no claim closes nothing");
+    nova::uart_claim(1, 4, 5, 9600);
+    ok(g_uart_inits == 2, "and a later claim opens it afresh");
+    nova::uart_release(1);
+    nova::uart_claim(0, 0, 1, 9600);
+    nova::uart_release(1);
+    ok(g_uart_deinits == 2, "the buses are counted separately");
+    nova::uart_release(0);
+    nova::uart_claim(2, 0, 1, 9600);
+    nova::uart_release(2);
+    ok(g_uart_inits == 3 && g_uart_deinits == 3, "a bus that does not exist is ignored");
+}
+
 int main(void) {
+    test_uart_claims();
     test_copy();
     test_csv_has();
     test_csv_add();

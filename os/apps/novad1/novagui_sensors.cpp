@@ -431,11 +431,11 @@ public:
             bus_ = gps::uart_bus(rx);
             // NEO-M8N ships at 9600 baud until told otherwise; nothing here
             // reconfigures a module, only listens at its default rate.
-            fw_uart_init(bus_, (unsigned)tx, (unsigned)rx, 9600);
+            uart_claim(bus_, (unsigned)tx, (unsigned)rx, 9600);
         }
     }
 
-    void leave(void) override { if (wired_) fw_uart_deinit(bus_); }
+    void leave(void) override { if (wired_) uart_release(bus_); }
 
     bool tick(uint32_t) override {
         if (!wired_) return false;

@@ -664,9 +664,13 @@ static void uart_feed(const char *s) {
     memcpy(g_uart_in, s, n);
     g_uart_in_n = n; g_uart_in_pos = 0;
 }
-int fw_uart_init(unsigned, unsigned, unsigned, unsigned) { return 0; }
+// A closed port reads nothing, as the real one does. Without that a screen that closed the port under
+// another's feet is invisible here, which is how it was missed once.
+static int g_uart_open;
+int fw_uart_init(unsigned, unsigned, unsigned, unsigned) { g_uart_open = 1; return 0; }
 int fw_uart_write(unsigned, const void *, unsigned len) { return (int)len; }
 int fw_uart_read(unsigned, void *buf, unsigned len, unsigned) {
+    if (!g_uart_open) return 0;
     unsigned avail = g_uart_in_n - g_uart_in_pos;
     unsigned n = len < avail ? len : avail;
     if (n) memcpy(buf, g_uart_in + g_uart_in_pos, n);
@@ -674,7 +678,7 @@ int fw_uart_read(unsigned, void *buf, unsigned len, unsigned) {
     return (int)n;
 }
 int fw_uart_available(unsigned) { return (int)(g_uart_in_n - g_uart_in_pos) > 0 ? 1 : 0; }
-int fw_uart_deinit(unsigned) { return 0; }
+int fw_uart_deinit(unsigned) { g_uart_open = 0; return 0; }
 
 // --- the network, faked ------------------------------------------------------------
 //
