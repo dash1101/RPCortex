@@ -35,16 +35,18 @@
 #define PN532_CMD_FIRMWARE  0x02   // GetFirmwareVersion,   § 7.2.2,  p: 73
 #define PN532_CMD_SAMCONFIG 0x14   // SAMConfiguration,     § 7.2.10, p: 89
 #define PN532_CMD_LISTTARGET 0x4A  // InListPassiveTarget,  § 7.3.5,  p: 115
+#define PN532_CMD_DATAEX     0x40  // InDataExchange,       § 7.3.8
 
 // The frame identifier byte, UM0701-02 § 6.2.1.1: 0xD4 on the way to the chip,
 // 0xD5 on the way back.
 #define PN532_TFI_HOST 0xD4
 #define PN532_TFI_CHIP 0xD5
 
-// Longest command this driver sends is SAMConfiguration at four body bytes;
-// seven bytes of framing on top of that. Rounded up so a caller does not have
-// to think about it.
-#define PN532_FRAME_MAX 32
+// The longest command this driver sends is an InDataExchange carrying up to
+// PN532_EXCHANGE_MAX bytes: three bytes of header on top of that, then seven of
+// framing. Rounded up so a caller does not have to think about it.
+#define PN532_EXCHANGE_MAX 24
+#define PN532_FRAME_MAX    48
 
 // Build a normal information frame around `body` (which starts with the TFI).
 //
@@ -125,6 +127,41 @@ struct NfcTarget {
 // well-formed first target. Only the first is parsed out; MaxTg is 1 in every
 // call this driver makes.
 int pn532_target(const uint8_t *payload, uint32_t len, NfcTarget *out);
+
+// --- InDataExchange: talking to a card that is already selected -------------------------
+//
+// UM0701-02 § 7.3.8:   in  D4 40 Tg DataOut[]      out  D5 41 Status DataIn[]
+//
+// Tg is the logical number InListPassiveTarget gave the card (1 for the first). DataOut
+// is whatever the card's own protocol wants - for a Mifare Classic that is the
+// authentication or read command, with the chip doing the Crypto1 work itself, and for an
+// NTAG or Ultralight it is the raw command. The chip adds and checks the card-side CRC.
+
+// The body (TFI first) of an InDataExchange to target `tg`. Returns its length, or 0 when
+// it would not fit `cap` or `n` is over PN532_EXCHANGE_MAX.
+uint32_t pn532_dataex_body(uint8_t tg, const uint8_t *tx, uint32_t n, uint8_t *body, uint32_t cap);
+
+// The answer's payload (what pn532_response hands back for PN532_CMD_DATAEX) is
+//
+//   Status  DataIn[]
+//
+// Status is a byte of its own: bits 5-0 are an error code, with 0 meaning none; bit 6 says
+// more data is waiting (MI) and bit 7 that a NAD follows. `*status` is the byte WHOLE, so a
+// caller can see all three; `(*status & 0x3F)` is the error. Returns how many data bytes
+// follow, or -1 when the payload is empty. `*data` points at them.
+//
+// A non-zero error code comes with whatever data the chip had, which is usually none; it
+// is the caller's to refuse, not this function's, because "authentication error" and
+// "timeout" call for different things.
+int pn532_dataex_result(const uint8_t *payload, uint32_t len, uint8_t *status, const uint8_t **data);
+
+// The error code of a status byte: its six low bits.
+inline uint8_t pn532_status_error(uint8_t status) { return (uint8_t)(status & 0x3F); }
+
+// UM0701-02 § 6.2.1.5, the application-level error frame the chip answers with when it
+// could not make sense of a command: 00 00 FF 01 FF 7F 81 00. pn532_response steps over it
+// (it answers no command), so without this a rejected command looks like silence.
+bool pn532_is_error_frame(const uint8_t *buf, uint32_t len);
 
 // What kind of card that is, from SAK and ATQA.
 //

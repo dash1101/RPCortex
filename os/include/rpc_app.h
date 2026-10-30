@@ -23,7 +23,7 @@ extern "C" {
 // MINOR: a symbol added — older-minor apps still run (everything they want is
 //        present); newer-minor apps refused (they may want something absent).
 #define RPC_API_MAJOR 1
-#define RPC_API_MINOR 26
+#define RPC_API_MINOR 27
 
 typedef struct {
     uint32_t magic;          // RPC_APP_MAGIC
@@ -637,6 +637,52 @@ struct FwNetAp2 {
 // however large `max` is), or negative if the radio could not be used. Takes
 // seconds, and uses the same one-owner lock as fw_net_scan.
 int fw_net_scan2(FwNetAp2 *out, unsigned max);
+
+// --- a contact reader: PN532 over I2C (API 1.27) -----------------------------------------
+//
+// Two calls, and nothing more than the chip's own two verbs: find a card, and talk to the one
+// found. What to SAY to a card is the package's business - a Mifare Classic wants an
+// authentication then a read, an NTAG wants a raw READ - so the firmware does the part that
+// needs a bus and a handshake and leaves the protocol to the caller. That is also what lets the
+// protocol be tested on a host against a model of the card.
+//
+// STATELESS. Each call takes the I2C block to the 400 kHz the chip is specified for, does its
+// work under the bus lock, and puts the block back exactly as it found it; nothing stays open
+// between calls, so a package that stops or is stopped leaves nothing behind. The pins come with
+// every call because the firmware has no business knowing where a reader was wired.
+//
+// A card stays selected between calls only as long as nothing else talks to the chip, so do not
+// run the `nfc` command at the same moment.
+
+struct FwNfcTag {
+    uint8_t uid[10];
+    uint8_t uid_len;         // 4, 7 or 10
+    uint8_t atqa[2];         // SENS_RES in the order the chip sends it
+    uint8_t sak;
+};
+
+#define FW_NFC_NOCHIP   (-1) // nothing answered at the reader's address, or it stopped answering
+#define FW_NFC_BADPINS  (-2) // not a pin pair an I2C block can use
+#define FW_NFC_STOPPED  (-3) // the user interrupted it
+// A reply that carried the chip's or card's own error: -(256 + code). 0x14 is a Mifare
+// authentication error, 0x01 a timeout (a card that did not answer, or answered with a NAK).
+#define FW_NFC_STATUS(code)   (-(256 + (int)(code)))
+#define FW_NFC_IS_STATUS(ret) ((ret) <= -256)
+#define FW_NFC_CODE(ret)      (-(ret) - 256)
+
+// Poll for an ISO14443-A card for up to `timeout_ms` (clamped to 50..30000) and select it.
+// 1: one is selected and `out` is filled. 0: none arrived. Negative: FW_NFC_*.
+int fw_nfc_select(unsigned sda, unsigned scl, FwNfcTag *out, unsigned timeout_ms);
+
+// InDataExchange to the selected card: send `tx` (at most 24 bytes) and take what comes back
+// into `rx`. The chip adds and checks the card-side CRC, and for a Mifare Classic does the
+// Crypto1 itself, so an authentication is just the command bytes: 60|61, block, six key bytes,
+// four UID bytes. Returns the byte count (an answer longer than `rx_cap` is cut to it), or a
+// negative FW_NFC_* value.
+//
+// A failed Mifare authentication leaves the card halted; select it again before the next try.
+int fw_nfc_exchange(unsigned sda, unsigned scl, const void *tx, unsigned tx_len,
+                    void *rx, unsigned rx_cap);
 
 // Resolve a hostname. Returns the length written to `ip_out`, or negative.
 int fw_net_resolve(const char *host, char *ip_out, unsigned cap);

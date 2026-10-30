@@ -46,6 +46,7 @@
 #include "sha256.h"
 #include "framebuf.h"
 #include "arena.h"
+#include "i2clock.h"
 #include <time.h>
 #include "hardware/clocks.h"
 
@@ -816,6 +817,7 @@ extern "C" int fw_i2c_write(unsigned bus, unsigned addr, const void *data,
     i2c_inst_t *i = i2c_of(bus);
     if (!i || !g_i2c_ready[bus] || addr > 0x7f) return -1;
     task_alive();
+    I2cTxn txn(bus);        // one transfer at a time on the block; see core/i2clock.h
     return i2c_write_blocking(i, (uint8_t)addr, (const uint8_t *)data, len, nostop != 0);
 }
 
@@ -825,6 +827,7 @@ extern "C" int fw_i2c_read(unsigned bus, unsigned addr, void *buf,
     if (!i || !g_i2c_ready[bus] || addr > 0x7f) return -1;
     task_alive();
     if (!ok_w(buf, len)) return -1;
+    I2cTxn txn(bus);
     return i2c_read_blocking(i, (uint8_t)addr, (uint8_t *)buf, len, nostop != 0);
 }
 
@@ -1177,6 +1180,8 @@ extern "C" int fw_time_set(const struct FwTime *in) {
 
 int net_pkg_scan(FwNetAp *out, unsigned max);
 int net_pkg_scan2(FwNetAp2 *out, unsigned max);
+int nfc_pkg_select(unsigned sda, unsigned scl, FwNfcTag *out, unsigned timeout_ms);
+int nfc_pkg_exchange(unsigned sda, unsigned scl, const uint8_t *tx, unsigned tx_len, uint8_t *rx, unsigned rx_cap);
 int net_pkg_ssid(char *out, unsigned cap);
 int net_pkg_ip(char *out, unsigned cap);
 int net_pkg_resolve(const char *host, char *out, unsigned cap);
@@ -1209,6 +1214,17 @@ extern "C" int fw_net_scan2(FwNetAp2 *out, unsigned max) {
     if (!ok_w(out, max * sizeof(FwNetAp2))) return -1;
     task_alive();
     return net_pkg_scan2(out, max);
+}
+extern "C" int fw_nfc_select(unsigned sda, unsigned scl, FwNfcTag *out, unsigned timeout_ms) {
+    if (!ok_w(out, sizeof(FwNfcTag))) return -1;
+    task_alive();
+    return nfc_pkg_select(sda, scl, out, timeout_ms);
+}
+extern "C" int fw_nfc_exchange(unsigned sda, unsigned scl, const void *tx, unsigned tx_len,
+                               void *rx, unsigned rx_cap) {
+    if (!ok_r(tx, tx_len) || !ok_w(rx, rx_cap)) return -1;
+    task_alive();
+    return nfc_pkg_exchange(sda, scl, (const uint8_t *)tx, tx_len, (uint8_t *)rx, rx_cap);
 }
 extern "C" int fw_net_resolve(const char *host, char *out, unsigned cap) {
     if (!ok_s(host) || !ok_w(out, cap)) return -1;
@@ -1978,6 +1994,10 @@ static const ApiSymbol kSymbols[] = {
 
     // API 1.26 — a scan that keeps every radio.
     SYM(fw_net_scan2),
+
+    // API 1.27 — a contact reader a package can talk to.
+    SYM(fw_nfc_select),
+    SYM(fw_nfc_exchange),
 };
 static const uint32_t kSymbolCount = sizeof(kSymbols) / sizeof(kSymbols[0]);
 

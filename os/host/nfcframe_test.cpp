@@ -219,6 +219,81 @@ int main(void) {
         ck(pn532_target(zero, sizeof(zero), &t) < 0, "a zero-length UID is refused");
     }
 
+    // --- InDataExchange ---------------------------------------------------------
+    {
+        // A Mifare read of block 4 to target 1, as a frame. The bytes are worked out from the
+        // manual's frame layout (§ 6.2.1.1) rather than copied from a capture.
+        uint8_t body[PN532_FRAME_MAX];
+        const uint8_t read4[] = { 0x30, 0x04 };
+        uint32_t nb = pn532_dataex_body(1, read4, sizeof(read4), body, sizeof(body));
+        const uint8_t want_body[] = { 0xD4, 0x40, 0x01, 0x30, 0x04 };
+        ck(nb == sizeof(want_body) && memcmp(body, want_body, nb) == 0, "InDataExchange's body is D4 40 Tg data");
+        uint32_t n = pn532_frame(body, nb, f, sizeof(f));
+        const uint8_t want[] = { 0x00, 0x00, 0xFF, 0x05, 0xFB, 0xD4, 0x40, 0x01, 0x30, 0x04, 0xB7, 0x00 };
+        ck(n == sizeof(want) && memcmp(f, want, n) == 0, "and frames to twelve bytes with the right checksums");
+
+        // The longest it will carry fits the frame buffer it is sized for.
+        uint8_t big[PN532_EXCHANGE_MAX];
+        memset(big, 0xA5, sizeof(big));
+        nb = pn532_dataex_body(1, big, sizeof(big), body, sizeof(body));
+        ck(nb == PN532_EXCHANGE_MAX + 3, "a full-length exchange builds");
+        uint8_t fb[PN532_FRAME_MAX];
+        ck(pn532_frame(body, nb, fb, sizeof(fb)) == nb + 7, "and its frame fits PN532_FRAME_MAX");
+        ck(pn532_dataex_body(1, big, PN532_EXCHANGE_MAX + 1, body, sizeof(body)) == 0, "one byte more is refused");
+        ck(pn532_dataex_body(1, read4, 2, body, 4) == 0, "a short buffer is refused");
+        ck(pn532_dataex_body(1, nullptr, 2, body, sizeof(body)) == 0, "a null payload with a length is refused");
+        ck(pn532_dataex_body(1, nullptr, 0, body, sizeof(body)) == 3, "an empty exchange is the three-byte header");
+        pn532_dataex_body(2, read4, 2, body, sizeof(body));
+        ck(body[2] == 2, "and the target number is the caller's");
+    }
+    {
+        // The answer: Status then the data. A Mifare block read comes back with sixteen bytes.
+        uint8_t data[17];
+        data[0] = 0x00;
+        for (int i = 0; i < 16; i++) data[1 + i] = (uint8_t)(0xA0 + i);
+        uint32_t n = reply(0x41, data, sizeof(data), f);
+        const uint8_t *p = nullptr;
+        int plen = pn532_response(f, n, PN532_CMD_DATAEX, &p);
+        ck(plen == 17, "a block read's answer has seventeen payload bytes");
+        uint8_t st = 0xEE;
+        const uint8_t *d = nullptr;
+        ck(pn532_dataex_result(p, (uint32_t)plen, &st, &d) == 16, "sixteen of them are data");
+        ck(st == 0x00 && d && d[0] == 0xA0 && d[15] == 0xAF, "after a status of zero");
+
+        // An authentication failure: just the status.
+        const uint8_t autherr[] = { 0x14 };
+        n = reply(0x41, autherr, 1, f);
+        plen = pn532_response(f, n, PN532_CMD_DATAEX, &p);
+        ck(plen == 1, "an authentication error is a one-byte answer");
+        ck(pn532_dataex_result(p, (uint32_t)plen, &st, &d) == 0, "with no data behind it");
+        ck(st == 0x14 && pn532_status_error(st) == 0x14, "and the status says 14");
+
+        // The status bits other than the error code are kept and told apart.
+        const uint8_t more[] = { 0x40 };
+        n = reply(0x41, more, 1, f);
+        plen = pn532_response(f, n, PN532_CMD_DATAEX, &p);
+        pn532_dataex_result(p, (uint32_t)plen, &st, &d);
+        ck(st == 0x40 && pn532_status_error(st) == 0, "MI is not an error");
+
+        ck(pn532_dataex_result(nullptr, 0, &st, &d) == -1 && d == nullptr, "no payload is not an answer");
+        ck(pn532_dataex_result(data, 0, &st, &d) == -1, "and neither is an empty one");
+        // A reply to a different command is not a data exchange's answer.
+        n = reply(0x03, ver_payload, sizeof(ver_payload), f);
+        ck(pn532_response(f, n, PN532_CMD_DATAEX, nullptr) < 0, "a firmware version is not an exchange");
+    }
+    {
+        // § 6.2.1.5: the chip's own "I could not read that".
+        const uint8_t err[] = { 0x00, 0x00, 0xFF, 0x01, 0xFF, 0x7F, 0x81, 0x00 };
+        ck(pn532_is_error_frame(err, sizeof(err)), "the application-level error frame is recognised");
+        const uint8_t live[] = { 0x01, 0x00, 0x00, 0xFF, 0x01, 0xFF, 0x7F, 0x81, 0x00, 0x00 };
+        ck(pn532_is_error_frame(live, sizeof(live)), "and found behind the I2C status byte");
+        ck(pn532_response(live, sizeof(live), PN532_CMD_DATAEX, nullptr) < 0, "pn532_response does not read it as an answer");
+        const uint8_t ack[] = { 0x00, 0x00, 0xFF, 0x00, 0xFF, 0x00 };
+        ck(!pn532_is_error_frame(ack, sizeof(ack)), "an ACK is not an error frame");
+        ck(!pn532_is_error_frame(err, 5), "half of one is not one");
+        ck(!pn532_is_error_frame(nullptr, 0), "and nothing is not one");
+    }
+
     // --- naming a card --------------------------------------------------------
     {
         const uint8_t classic[2] = { 0x00, 0x04 };

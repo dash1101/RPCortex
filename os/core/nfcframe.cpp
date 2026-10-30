@@ -122,6 +122,33 @@ int pn532_target(const uint8_t *payload, uint32_t len, NfcTarget *out) {
     return (int)nbtg;
 }
 
+uint32_t pn532_dataex_body(uint8_t tg, const uint8_t *tx, uint32_t n, uint8_t *body, uint32_t cap) {
+    if (!body || (n && !tx) || n > PN532_EXCHANGE_MAX || cap < n + 3) return 0;
+    body[0] = PN532_TFI_HOST;
+    body[1] = PN532_CMD_DATAEX;
+    body[2] = tg;
+    if (n) memcpy(body + 3, tx, n);
+    return n + 3;
+}
+
+int pn532_dataex_result(const uint8_t *payload, uint32_t len, uint8_t *status, const uint8_t **data) {
+    if (data) *data = nullptr;
+    if (!payload || len < 1) return -1;
+    if (status) *status = payload[0];
+    if (data) *data = payload + 1;
+    return (int)len - 1;
+}
+
+bool pn532_is_error_frame(const uint8_t *buf, uint32_t len) {
+    // The start code, LEN 01 and its checksum FF, the TFI 7F, and the data checksum 81. As with
+    // the ACK, the preamble and postamble around them are optional.
+    static const uint8_t kErr[6] = { 0x00, 0xFF, 0x01, 0xFF, 0x7F, 0x81 };
+    if (!buf || len < sizeof(kErr)) return false;
+    for (uint32_t i = 0; i + sizeof(kErr) <= len; i++)
+        if (memcmp(buf + i, kErr, sizeof(kErr)) == 0) return true;
+    return false;
+}
+
 const char *nfc_type_name(uint8_t sak, const uint8_t *atqa) {
     // SAK values from the MicroPython suite's _CLASSIC_BY_SAK, which is what has
     // been read off real cards with this reader.

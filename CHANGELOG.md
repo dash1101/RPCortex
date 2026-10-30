@@ -18,6 +18,11 @@ Summary: The boot recovery ladder now works on hardware, and releases are number
 - Package API 1.25, `fw_time_set`: a package can set the clock. The Nova D1's GPS screen uses it to set the time from the satellites.
 - Package API 1.26, `fw_net_scan2`: a Wi-Fi scan that keeps every radio. The older `fw_net_scan` merges beacons by name and drops networks with no name; this one reports one row per BSSID, hidden networks included, with the channel and the security the beacon declared. Wardrive on the Nova D1 uses it to write a WiGLE file.
 - `subghz tx @<file>` sends the timings in a file, so a saved `.sub` can be replayed.
+- Package API 1.27, `fw_nfc_select` and `fw_nfc_exchange`: a package can find a card on a PN532 reader and talk to it (InDataExchange), leaving the protocol to the package. The Nova D1's NFC app uses them to dump Mifare Classic and NTAG cards. Not yet run against a reader.
+
+### Fixed (unreleased)
+
+- Two tasks could be inside I2C transfers on the same block at once (the display flush and a PN532 exchange), which the SDK's transfer calls do not allow. Every transfer, and every change of bus speed, now takes a per-block lock.
 
 ### Changed
 

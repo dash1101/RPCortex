@@ -1,10 +1,12 @@
 // NFC — a PN532 over I2C, as a shell command.
 //
-// The pattern is bt.cpp's: the driver lives in the firmware and the Nova D1
-// package reaches it through fw_shell_run and reads the text back. There is no
-// NFC call in the package ABI and there is not going to be one, because the
-// chip needs a bus, a timing-sensitive handshake and a frame parser, and none
-// of that belongs on the far side of a sandbox boundary.
+// Two doors onto the same driver. The `nfc` command below is for a person at a
+// terminal. The two calls at the bottom (fw_nfc_select, fw_nfc_exchange) are for a
+// package, and they are deliberately only the chip's own two verbs - find a card, talk
+// to the one found - because the chip needs a bus, a timing-sensitive handshake and a
+// frame parser, and none of that belongs on the far side of a sandbox boundary, while
+// what to SAY to a card (a Mifare authentication, an NTAG read) is protocol, which is
+// better kept where it can be tested against a model of the card.
 //
 // Everything about the FRAMES is in core/nfcframe.cpp, where it can be given a
 // deliberately broken response and checked on a host. What is left here is the
@@ -46,6 +48,9 @@
 #include "logring.h"
 #include "interrupt.h"
 #include "nfcframe.h"
+#include "i2clock.h"
+#include "lock.h"
+#include "rpc_app.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -131,6 +136,7 @@ static bool bus_claim(NfcBus *b) {
     if (!bus_live(b->bus))
         return fw_i2c_init(b->bus, b->sda, b->scl, PN532_I2C_MAX_HZ) == 0;
 
+    I2cTxn txn(b->bus);     // never inside somebody else's transfer
     i2c_hw_t *hw = i2c_get_hw(i);
     b->hcnt     = hw->fs_scl_hcnt;
     b->lcnt     = hw->fs_scl_lcnt;
@@ -145,6 +151,7 @@ static void bus_release(const NfcBus &b) {
     if (!b.saved) return;
     i2c_inst_t *i = i2c_of(b.bus);
     if (!i) return;
+    I2cTxn txn(b.bus);
     // The same order i2c_set_baudrate uses: disable, write the counts, enable.
     // The block will not take these while it is running.
     i2c_hw_t *hw = i2c_get_hw(i);
@@ -162,10 +169,13 @@ static void bus_release(const NfcBus &b) {
 // worker task the UI is waiting on.
 #define NFC_XFER_US 50000
 
+// Each transfer takes the bus lock (core/i2clock.h): the display is flushed by another task on
+// this same block, and two transfers overlapping corrupt each other without either failing loudly.
 static int bus_write(const NfcBus &b, const uint8_t *d, unsigned n) {
     i2c_inst_t *i = i2c_of(b.bus);
     if (!i) return -1;
     task_alive();
+    I2cTxn txn(b.bus);
     return i2c_write_timeout_us(i, PN532_I2C_ADDR, d, n, false, NFC_XFER_US);
 }
 
@@ -173,6 +183,7 @@ static int bus_read(const NfcBus &b, uint8_t *d, unsigned n) {
     i2c_inst_t *i = i2c_of(b.bus);
     if (!i) return -1;
     task_alive();
+    I2cTxn txn(b.bus);
     return i2c_read_timeout_us(i, PN532_I2C_ADDR, d, n, false, NFC_XFER_US);
 }
 
@@ -284,7 +295,7 @@ static bool pn532_sam_normal(const NfcBus &b) {
 
 enum ReadResult { NFC_GOT, NFC_NONE, NFC_NOCHIP, NFC_STOPPED };
 
-static ReadResult poll_tag(const NfcBus &b, unsigned seconds, NfcTarget *out) {
+static ReadResult poll_tag(const NfcBus &b, unsigned ms, NfcTarget *out) {
     // InListPassiveTarget, § 7.3.5 p: 115. MaxTg 1 — one card is what a reader
     // screen shows and asking for two only makes the answer longer. BrTy 0x00
     // is "106 kbps type A (ISO/IEC14443 Type A)", which is every card this is
@@ -314,7 +325,7 @@ static ReadResult poll_tag(const NfcBus &b, unsigned seconds, NfcTarget *out) {
     // not a loop of commands. v1 re-sent the poll on every pass because it had
     // no better way to keep the panel alive; here the wait is on a worker task
     // and the screen is already free.
-    const uint32_t until = task_now_ms() + seconds * 1000u;
+    const uint32_t until = task_now_ms() + ms;
     while ((int32_t)(task_now_ms() - until) < 0) {
         if (intr_check()) { pn532_abort(b); return NFC_STOPPED; }
         uint8_t st = 0;
@@ -478,7 +489,7 @@ static int cmd_nfc(int argc, char **argv) {
 
         NfcTarget t;
         memset(&t, 0, sizeof(t));
-        const ReadResult r = poll_tag(b, secs, &t);
+        const ReadResult r = poll_tag(b, secs * 1000u, &t);
         bus_release(b);
 
         switch (r) {
@@ -516,6 +527,121 @@ static int cmd_nfc(int argc, char **argv) {
               (unsigned)(PN532_I2C_MAX_HZ / 1000));
     out_multi("  maximum - and put back exactly as it was afterwards.");
     return argc > 1 ? 1 : 0;
+}
+
+// --- what packages see ---------------------------------------------------------------
+//
+// Stateless by design: each call claims the bus, works, and gives it back, so nothing is left
+// open if the package that asked is stopped. The one thing kept between calls is whether the
+// chip has been put in normal mode, which survives for as long as the chip has power and is
+// forgotten the moment it stops answering.
+//
+// DEVICE-UNCONFIRMED, as the rest of this file is: no PN532 has been attached. The framing is
+// proven in nfcframe_test; the choreography around it is the part that has never run.
+
+static RpcLock g_nfc_op;        // one conversation with the chip at a time
+static bool    g_sam_done;
+
+static bool pkg_bus(NfcBus *b, unsigned sda, unsigned scl) {
+    memset(b, 0, sizeof(*b));
+    // A pin pair is only usable if both pins sit on the same I2C block. On RP2 SDA is an even GPIO
+    // and SCL an odd one, and the block alternates every two pins: SDA 0, 4, 8.. and SCL 1, 5, 9..
+    // are I2C0; SDA 2, 6, 10.. and SCL 3, 7, 11.. are I2C1. Any SDA and SCL of the same block will
+    // do, which is wider than "SCL is the next pin" - and still refuses the pairs that cannot work.
+    if (sda > 29 || scl > 29 || (sda & 1u) || !(scl & 1u) || bus_of_sda(sda) != bus_of_sda(scl - 1u))
+        return false;
+    b->sda = sda;
+    b->scl = scl;
+    b->bus = bus_of_sda(sda);
+    return true;
+}
+
+int nfc_pkg_select(unsigned sda, unsigned scl, FwNfcTag *out, unsigned timeout_ms) {
+    if (!out) return FW_NFC_NOCHIP;
+    LockGuard own(&g_nfc_op);
+    NfcBus b;
+    if (!pkg_bus(&b, sda, scl)) return FW_NFC_BADPINS;
+    if (timeout_ms < 50) timeout_ms = 50;
+    if (timeout_ms > 30000) timeout_ms = 30000;
+    if (!bus_claim(&b)) return FW_NFC_BADPINS;
+
+    int rc;
+    if (!addr_acks(b)) {
+        g_sam_done = false;
+        rc = FW_NFC_NOCHIP;
+    } else {
+        // Asked for and not insisted on - see the note on pn532_sam_normal.
+        if (!g_sam_done) g_sam_done = pn532_sam_normal(b);
+        NfcTarget t;
+        memset(&t, 0, sizeof(t));
+        switch (poll_tag(b, timeout_ms, &t)) {
+            case NFC_GOT:
+                memset(out, 0, sizeof(*out));
+                memcpy(out->uid, t.uid, t.uid_len);
+                out->uid_len = t.uid_len;
+                out->atqa[0] = t.atqa[0];
+                out->atqa[1] = t.atqa[1];
+                out->sak     = t.sak;
+                rc = 1;
+                break;
+            case NFC_STOPPED: rc = FW_NFC_STOPPED; break;
+            case NFC_NOCHIP:  g_sam_done = false; rc = FW_NFC_NOCHIP; break;
+            default:          rc = 0; break;
+        }
+    }
+    bus_release(b);
+    return rc;
+}
+
+int nfc_pkg_exchange(unsigned sda, unsigned scl, const uint8_t *tx, unsigned tx_len,
+                     uint8_t *rx, unsigned rx_cap) {
+    if (tx_len > PN532_EXCHANGE_MAX || (tx_len && !tx) || (rx_cap && !rx)) return FW_NFC_NOCHIP;
+    LockGuard own(&g_nfc_op);
+    NfcBus b;
+    if (!pkg_bus(&b, sda, scl)) return FW_NFC_BADPINS;
+    if (!bus_claim(&b)) return FW_NFC_BADPINS;
+
+    // Target 1: the one fw_nfc_select left selected, since it only ever asks for one.
+    uint8_t body[PN532_FRAME_MAX];
+    const uint32_t nb = pn532_dataex_body(1, tx, tx_len, body, sizeof(body));
+    int rc = FW_NFC_NOCHIP;
+    if (nb) {
+        // Zeroed so that, when no read happened at all, the error-frame check below cannot find
+        // anything in it.
+        uint8_t raw[64];
+        memset(raw, 0, sizeof(raw));
+        const uint8_t *payload = nullptr;
+        // Two seconds of patience: a card that is slow to answer a Crypto1 step is still an
+        // answer, and a chip that is gone is told by the first ready-poll giving out.
+        const int plen = pn532_call(b, body, nb, PN532_CMD_DATAEX, raw, sizeof(raw), &payload, 400);
+        if (plen >= 0) {
+            uint8_t status = 0;
+            const uint8_t *data = nullptr;
+            const int n = pn532_dataex_result(payload, (uint32_t)plen, &status, &data);
+            if (n < 0) {
+                rc = FW_NFC_NOCHIP;
+            } else if (pn532_status_error(status)) {
+                rc = FW_NFC_STATUS(pn532_status_error(status));
+            } else {
+                const unsigned take = (unsigned)n < rx_cap ? (unsigned)n : rx_cap;
+                if (take) memcpy(rx, data, take);
+                rc = (int)take;
+            }
+        } else if (pn532_is_error_frame(raw, sizeof(raw))) {
+            // The chip understood nothing of the command. Reported as a status rather than as
+            // silence, so a package can tell "refused" from "gone": 0x01 is what the chip's own
+            // error table calls a timeout and the nearest honest code for "no answer from the card".
+            rc = FW_NFC_STATUS(0x01);
+        } else {
+            // No answer at all. The chip may still be holding the command, so tell it to let go:
+            // left armed it answers into the buffer later, and the next exchange would take that
+            // answer for its own.
+            pn532_abort(b);
+            g_sam_done = false;
+        }
+    }
+    bus_release(b);
+    return rc;
 }
 
 void nfc_register(void) {
