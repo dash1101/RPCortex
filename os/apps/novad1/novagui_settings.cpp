@@ -833,7 +833,7 @@ class SetTimeScreen : public Screen {
 public:
     void begin(void) {
         FwTime t;
-        if (fw_time_get(&t) == 1 && t.year >= 2000) {
+        if (nova::time_local(&t) && t.year >= 2000) {          // local, because that is what is being edited
             v_[F_Y] = t.year; v_[F_MO] = t.month; v_[F_D] = t.day;
             v_[F_H] = t.hour; v_[F_MI] = t.minute;
         } else {
@@ -934,8 +934,15 @@ private:
 
     Action commit(void) {
         char line[40], out[80];
+        // What was typed is LOCAL time and the RTC takes UTC, so the offset comes back off
+        // on the way in. Without this a person in UTC-5 who typed 09:00 had the clock say
+        // 14:00 as soon as the offset was added on the way out.
+        FwTime utc = {};
+        utc.year = v_[F_Y]; utc.month = v_[F_MO]; utc.day = v_[F_D];
+        utc.hour = v_[F_H]; utc.minute = v_[F_MI];
+        nova::time_local_to_utc(&utc);
         snprintf(line, sizeof(line), "date set %04d-%02d-%02d %02d:%02d:00",
-                 v_[F_Y], v_[F_MO], v_[F_D], v_[F_H], v_[F_MI]);
+                 utc.year, utc.month, utc.day, utc.hour, utc.minute);
         // Zeroed first, and the STATUS is what decides the wording.
         //
         // It used to report whatever was in the buffer, and "Clock set." when

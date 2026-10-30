@@ -2487,6 +2487,61 @@ static void test_small_apps(void) {
     gui::go_home();
 }
 
+// --- the clocks follow the timezone --------------------------------------------------------------
+//
+// The RTC holds UTC and the shell's `date` adds System.TZ_Offset when it prints. The panel's
+// clocks read the RTC raw, so the Timezone setting - which says it moves every clock on the
+// device - moved none of the ones this package draws, and Set Time wrote what was typed as
+// UTC. Both directions now go through the offset.
+static void test_clocks_follow_the_timezone(void) {
+    using namespace nova;
+    gui::go_home();
+    shell_says(nullptr, nullptr);
+    fw_reg_set("Apps.NovaD1_Clock24", "true");
+    g_fake_time_ok = true;
+
+    char hhmm[16], date[24];
+    fw_reg_set("System.TZ_Offset", "0");
+    g_fake_time = FwTime{ 2026, 6, 30, 23, 30, 0, 2 };
+    time_hhmm(hhmm, sizeof(hhmm)); time_date(date, sizeof(date));
+    streq_(hhmm, "23:30", "with no offset the panel shows the RTC");
+    streq_(date, "Tue 30 Jun", "and its date");
+
+    fw_reg_set("System.TZ_Offset", "2");
+    time_hhmm(hhmm, sizeof(hhmm)); time_date(date, sizeof(date));
+    streq_(hhmm, "01:30", "UTC+2 moves 23:30 on the 30th to 01:30");
+    streq_(date, "Wed 1 Jul", "and carries into the next day and the next month");
+
+    fw_reg_set("System.TZ_Offset", "-5");
+    g_fake_time = FwTime{ 2026, 1, 1, 2, 0, 0, 4 };
+    time_hhmm(hhmm, sizeof(hhmm)); time_date(date, sizeof(date));
+    streq_(hhmm, "21:00", "UTC-5 moves 02:00 back to 21:00");
+    streq_(date, "Wed 31 Dec", "and into the previous year, on the right weekday");
+
+    fw_reg_set("System.TZ_Offset", "99");
+    time_hhmm(hhmm, sizeof(hhmm));
+    streq_(hhmm, "02:00", "an offset outside -12..14 is not an offset, and is ignored");
+
+    // Set Time: the typed time is local and the RTC is given UTC. At UTC-5 with the clock reading
+    // 07:00 local (12:00 UTC), confirming the fields unchanged must send 12:00 UTC back.
+    fw_reg_set("System.TZ_Offset", "-5");
+    g_fake_time = FwTime{ 2026, 6, 30, 12, 0, 0, 2 };
+    open_by_key("set_system");
+    input().inject(EV_SELECT); frame();                 // Clock
+    input().inject(EV_SELECT); frame();                 // Set Time
+    streq_(gui::top()->title(), "Set Time", "Set Time opens");
+    g_run_spawned = 1;
+    shell_says("date set", "[@] Clock set.\n", 0);
+    for (int i = 0; i < 5; i++) { input().inject(EV_SELECT); frame(); }
+    g_run_spawned = 0;
+    streq_(g_last_shell, "date set 2026-06-30 12:00:00", "it starts from the local time and sends UTC back");
+
+    shell_says(nullptr, nullptr);
+    fw_reg_set("System.TZ_Offset", "0");
+    g_fake_time_ok = false;
+    gui::go_home();
+}
+
 // --- the sweep: a command that failed must not report success ---------------------
 static void test_set_time_reports_the_truth(void) {
     using namespace nova;
@@ -3244,6 +3299,7 @@ int main(void) {
     STAGE(test_subghz_library);
     STAGE(test_brightness_is_kept);
     STAGE(test_small_apps);
+    STAGE(test_clocks_follow_the_timezone);
     STAGE(test_lora_messages);
     STAGE(test_badusb);
     STAGE(test_battery);

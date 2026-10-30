@@ -234,9 +234,60 @@ void paths_init(void) {
 
 // --- time -------------------------------------------------------------------
 
+// Howard Hinnant's day arithmetic, on a signed day count from 1970-01-01.
+static int days_from_civil(int y, int m, int d) {
+    y -= m <= 2;
+    const int era = (y >= 0 ? y : y - 399) / 400;
+    const unsigned yoe = (unsigned)(y - era * 400);
+    const unsigned doy = (unsigned)((153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1);
+    const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    return era * 146097 + (int)doe - 719468;
+}
+
+static void civil_from_days(int z, int *y, int *m, int *d) {
+    z += 719468;
+    const int era = (z >= 0 ? z : z - 146096) / 146097;
+    const unsigned doe = (unsigned)(z - era * 146097);
+    const unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    const int yy = (int)yoe + era * 400;
+    const unsigned doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    const unsigned mp = (5 * doy + 2) / 153;
+    *d = (int)(doy - (153 * mp + 2) / 5 + 1);
+    *m = (int)(mp < 10 ? mp + 3 : mp - 9);
+    *y = yy + (*m <= 2);
+}
+
+// Move a calendar time by whole seconds, carrying into the date.
+static void time_shift(FwTime *t, int seconds) {
+    int days = days_from_civil(t->year, t->month, t->day);
+    int s = t->hour * 3600 + t->minute * 60 + t->second + seconds;
+    while (s < 0)      { s += 86400; days--; }
+    while (s >= 86400) { s -= 86400; days++; }
+    civil_from_days(days, &t->year, &t->month, &t->day);
+    t->hour = s / 3600;
+    t->minute = (s % 3600) / 60;
+    t->second = s % 60;
+    t->weekday = (((days % 7) + 11) % 7);          // 1970-01-01 was a Thursday
+}
+
+bool time_local(FwTime *out) {
+    const bool ok = fw_time_get(out) != 0;
+    if (!ok) return false;
+    int off = reg_int("System.TZ_Offset", 0);
+    if (off < -12 || off > 14) off = 0;            // the setting's own range; anything else is not an offset
+    if (off) time_shift(out, off * 3600);
+    return true;
+}
+
+void time_local_to_utc(FwTime *t) {
+    int off = reg_int("System.TZ_Offset", 0);
+    if (off < -12 || off > 14) off = 0;
+    if (off) time_shift(t, -off * 3600);
+}
+
 bool time_hhmm(char *out, unsigned cap) {
     FwTime t;
-    if (!fw_time_get(&t)) { copy(out, cap, "--:--"); return false; }
+    if (!time_local(&t)) { copy(out, cap, "--:--"); return false; }
     if (reg_bool("Apps.NovaD1_Clock24", true)) {
         snprintf(out, cap, "%02d:%02d", t.hour, t.minute);
     } else {
@@ -252,7 +303,7 @@ bool time_date(char *out, unsigned cap) {
     static const char *month[] = { "Jan", "Feb", "Mar", "Apr", "May", "Jun",
                                    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
     FwTime t;
-    if (!fw_time_get(&t)) { copy(out, cap, "-- --- ----"); return false; }
+    if (!time_local(&t)) { copy(out, cap, "-- --- ----"); return false; }
     int wd = t.weekday >= 0 && t.weekday < 7 ? t.weekday : 0;
     int mo = t.month >= 1 && t.month <= 12 ? t.month - 1 : 0;
     snprintf(out, cap, "%s %d %s", dow[wd], t.day, month[mo]);

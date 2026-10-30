@@ -970,7 +970,7 @@ void SysCheckScreen::run_check(int i) {
         }
         case 4: {   // Clock — set, or running from nothing
             FwTime t;
-            if (fw_time_get(&t)) {
+            if (nova::time_local(&t)) {
                 res_[i] = C_GOOD;
                 snprintf(d, cap, "%02d:%02d %d-%02d-%02d", t.hour, t.minute,
                          t.year, t.month, t.day);

@@ -120,6 +120,19 @@ void path_join3(char *out, unsigned cap, const char *a, const char *b, const cha
 bool time_hhmm(char *out, unsigned cap);
 bool time_date(char *out, unsigned cap);
 
+// THE CLOCK AS A PERSON READS IT. The RTC holds UTC - `ntp sync` sets it from the server
+// as is, and the shell's own `date` adds System.TZ_Offset only when it prints - so every
+// clock this package draws has to add the offset too, or the Timezone setting moves the
+// shell's clock and not the one on the panel. Whole hours, as the setting is.
+//
+// time_local fills `out` with the RTC plus the offset (date, weekday and all, so a late
+// evening in UTC can be tomorrow here) and returns what fw_time_get returned. The other
+// direction, time_local_to_utc, is for a person TYPING a time: Set Time takes local and
+// the RTC has to be given UTC. Anything that wants UTC itself (a one-time code, a
+// timestamp in a file another tool reads) calls fw_time_get and does not use these.
+bool time_local(FwTime *out);
+void time_local_to_utc(FwTime *t);
+
 }  // namespace nova
 
 #endif  // NOVA_CORE_H
