@@ -752,6 +752,18 @@ int fw_time_get(struct FwTime *out) {
     return 1;
 }
 
+// Setting the clock: kept, so a test can read back what a package set. Validated the way the real
+// one is, so a bad date is refused here too.
+static int g_time_set_calls;
+int fw_time_set(const struct FwTime *in) {
+    if (!in || in->year < 2000 || in->year > 2099 || in->month < 1 || in->month > 12 || in->day < 1 || in->day > 31 ||
+        in->hour < 0 || in->hour > 23 || in->minute < 0 || in->minute > 59 || in->second < 0 || in->second > 59) return 0;
+    g_fake_time = *in;
+    g_fake_time_ok = true;
+    g_time_set_calls++;
+    return 1;
+}
+
 // The screens that arrived with the settings, wireless, files and operations
 // groups reach further into the ABI than the runner alone ever did.
 int fw_unique_id(char *out, unsigned cap) { snprintf(out, cap, "E6614104037A5E2F"); return 1; }

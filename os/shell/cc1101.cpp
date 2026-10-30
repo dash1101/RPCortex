@@ -262,6 +262,8 @@ static int cc_parse_file_timings(const char *text, uint16_t *out, int cap) {
 #include "hardware/spi.h"
 #include "hardware/gpio.h"
 
+const char *fs_cwd(void);       // the shell's working directory (fs.cpp)
+
 // --- pins -------------------------------------------------------------------
 //
 // This is firmware and novaboard (the package's pin map) is not linkable from

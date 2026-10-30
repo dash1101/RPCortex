@@ -302,6 +302,44 @@ for sec in secrets:
 w("};\n#define TOTP_N (sizeof(kTotp) / sizeof(kTotp[0]))\n")
 
 # ----------------------------------------------------------------------------------------------
+# GPS: the MicroPython screen's own NMEA coordinate conversion (a pure function inside novagui_radios.py)
+# ----------------------------------------------------------------------------------------------
+import re as _re
+rsrc = open(os.path.join(args.novad1, "novagui_radios.py")).read()
+m = _re.search(r"def _nmea_dec\(v, hemi\):.*?\n\n\n", rsrc, _re.S)
+gns = {}
+exec(m.group(0), gns)
+nmea_dec = gns["_nmea_dec"]
+import random as _random
+rng = _random.Random(6238)
+gps_cases = []
+fixed = [("4807.038", "N"), ("01131.000", "E"), ("3745.5000", "S"), ("12218.9988", "W"), ("0000.0000", "N"), ("17959.9999", "E"),
+         ("8959.9999", "N"), ("0001.0000", "S"), ("5130.1234", "N"), ("00007.4321", "W"), ("4000.5", "N"), ("4000.50000", "S")]
+for v, h in fixed:
+    gps_cases.append((v, h))
+while len(gps_cases) < 70:
+    if rng.random() < 0.5:
+        deg = rng.randrange(0, 90); lat = True
+    else:
+        deg = rng.randrange(0, 180); lat = False
+    minutes = rng.randrange(0, 600000) / 10000.0
+    v = ("%02d" % deg if lat else "%03d" % deg) + "%07.4f" % minutes
+    gps_cases.append((v, rng.choice("NS" if lat else "EW")))
+w("struct GpsCase { const char *v; const char *hemi; const char *expect; };\n")
+w("static const GpsCase kGps[] = {\n")
+kept = 0
+for v, h in gps_cases:
+    exp = nmea_dec(v, h)
+    # A tie at the fifth decimal is where a float and an integer can round differently; such a case proves nothing.
+    mins = v[v.index(".") - 2:]
+    me4 = int(round(float(mins) * 10000))
+    if len(mins.split(".")[1]) <= 4 and me4 % 6 == 3:
+        continue
+    kept += 1
+    w("    { %s, %s, %s },\n" % (cstr(v), cstr(h), cstr(exp)))
+w("};\n#define GPS_N (sizeof(kGps) / sizeof(kGps[0]))\n")
+
+# ----------------------------------------------------------------------------------------------
 # OUI
 # ----------------------------------------------------------------------------------------------
 oui_cases = []

@@ -1146,6 +1146,28 @@ extern "C" int fw_time_get(struct FwTime *out) {
     return 1;
 }
 
+extern "C" int fw_time_set(const struct FwTime *in) {
+    if (!ok_r(in, sizeof(struct FwTime))) return 0;
+    if (!in) return 0;
+    // A real date, and a year the clock can hold. The calendar API would refuse some of these itself;
+    // this refuses all of them the same way, so a package is told 0 and not left to guess.
+    static const int kDays[] = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+    if (in->year < 2000 || in->year > 2099 || in->month < 1 || in->month > 12) return 0;
+    int dim = kDays[in->month - 1];
+    if (in->month == 2 && ((in->year % 4 == 0 && in->year % 100 != 0) || in->year % 400 == 0)) dim = 29;
+    if (in->day < 1 || in->day > dim) return 0;
+    if (in->hour < 0 || in->hour > 23 || in->minute < 0 || in->minute > 59 || in->second < 0 || in->second > 59) return 0;
+    struct tm t;
+    memset(&t, 0, sizeof(t));
+    t.tm_year = in->year - 1900; t.tm_mon = in->month - 1; t.tm_mday = in->day;
+    t.tm_hour = in->hour; t.tm_min = in->minute; t.tm_sec = in->second;
+    t.tm_isdst = 0;
+    if (!aon_timer_set_time_calendar(&t)) return 0;
+    reg_set("System.Clock_Set", "true");
+    clock_persist();
+    return 1;
+}
+
 // --- network ----------------------------------------------------------------
 //
 // Every one of these is a door into something the OS already does, opened for
@@ -1941,6 +1963,9 @@ static const ApiSymbol kSymbols[] = {
 
     // API 1.24 — a package can ask a question. Same rule as above: the end.
     SYM(fw_line_read),
+
+    // API 1.25 — a package can set the clock.
+    SYM(fw_time_set),
 };
 static const uint32_t kSymbolCount = sizeof(kSymbols) / sizeof(kSymbols[0]);
 

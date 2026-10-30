@@ -12,6 +12,7 @@
 #include "../apps/novad1/novanfc.cpp"
 #include "../apps/novad1/novaoui.cpp"
 #include "../apps/novad1/novatotp.cpp"
+#include "../apps/novad1/novagps.cpp"
 
 #include <stdio.h>
 #include <string.h>
@@ -388,6 +389,79 @@ static void test_totp(void) {
     CHECK(totp::unix_from_civil(2000, 3, 1, 0, 0, 0) == 951868800u, "a day after a leap February");
 }
 
+// --- GPS ---------------------------------------------------------------------------------------
+
+static void nmea(char *out, const char *body) {
+    unsigned x = 0;
+    for (const char *p = body; *p; p++) x ^= (unsigned char)*p;
+    sprintf(out, "$%s*%02X", body, x);
+}
+
+static void test_gps(void) {
+    using namespace nova;
+    char sent[160];
+
+    // The sentences from the NMEA 0183 documentation's worked examples (the checksums are theirs).
+    const char *gga = "$GPGGA,123519,4807.038,N,01131.000,E,1,08,0.9,545.4,M,46.9,M,,*47";
+    const char *rmc = "$GPRMC,123519,A,4807.038,N,01131.000,E,022.4,084.4,230394,003.1,W*6A";
+    CHECK(gps::checksum_ok(gga) && gps::checksum_ok(rmc), "the documented sentences have the documented checksums");
+    CHECK(!gps::checksum_ok("$GPGGA,123519,4807.038,N,01131.000,E,1,08,0.9,545.4,M,46.9,M,,*48"), "a wrong checksum is refused");
+    CHECK(!gps::checksum_ok("GPGGA,1*00") && !gps::checksum_ok("$GPGGA,1") && !gps::checksum_ok("$GPGGA,1*0"), "a sentence with no frame is refused");
+
+    gps::Fix f;
+    memset(&f, 0, sizeof(f));
+    CHECK(gps::consume(&f, gga), "GGA is understood");
+    CHECK(f.have && f.fixed, "and says there is a fix");
+    CHECK(f.lat_e5 == 4811730 && f.lon_e5 == 1151667, "at 48.11730, 11.51667 (got %d, %d)", (int)f.lat_e5, (int)f.lon_e5);
+    CHECK(f.alt_dm == 5454 && f.sats_used == 8 && f.hdop_x10 == 9, "545.4 m, 8 satellites, HDOP 0.9 (got %d, %d, %d)", (int)f.alt_dm, f.sats_used, f.hdop_x10);
+    CHECK(f.has_time && f.hh == 12 && f.mm == 35 && f.ss == 19, "at 12:35:19 UTC");
+    CHECK(!strcmp(f.last, "GGA"), "and remembers what it last read");
+
+    CHECK(gps::consume(&f, rmc), "RMC is understood");
+    CHECK(f.speed_dkmh == 415, "22.4 knots is 41.5 km/h (got %d)", (int)f.speed_dkmh);
+    CHECK(f.has_date && f.dd == 23 && f.mo == 3 && f.yy == 94, "on 23/03/94");
+
+    // A receiver with no fix says so in the same sentence, and keeps what it knew.
+    nmea(sent, "GPGGA,123520,,,,,0,00,99.99,,,,,,");
+    CHECK(gps::consume(&f, sent) && !f.fixed, "a GGA with fix quality 0 is not a fix");
+    nmea(sent, "GPRMC,123520,V,,,,,,,230394,,,N");
+    CHECK(gps::consume(&f, sent) && !f.fixed, "an RMC with status V is not a fix");
+
+    // South and west are negative.
+    nmea(sent, "GPGGA,010203,3745.5000,S,12218.9988,W,2,09,1.1,12.0,M,0.0,M,,");
+    memset(&f, 0, sizeof(f));
+    CHECK(gps::consume(&f, sent) && f.lat_e5 == -3775833 && f.lon_e5 == -12231665, "south and west are negative (got %d, %d)", (int)f.lat_e5, (int)f.lon_e5);
+
+    // Satellites in view, and a sentence that is only proof of life.
+    nmea(sent, "GPGSV,3,1,11,03,03,111,00,04,15,270,00,06,01,010,00,13,06,292,00");
+    CHECK(gps::consume(&f, sent) && f.sats_view == 11, "GSV gives satellites in view");
+    nmea(sent, "GPVTG,054.7,T,034.4,M,005.5,N,010.2,K");
+    CHECK(!gps::consume(&f, sent) && f.have, "a sentence of a kind it does not read still counts as a receiver talking");
+    CHECK(!gps::consume(&f, "$GPGGA,garbage*00"), "and noise changes nothing");
+
+    // Coordinates, against the MicroPython conversion.
+    int bad = 0;
+    for (unsigned i = 0; i < GPS_N; i++) {
+        int32_t e5;
+        char out[16];
+        if (!gps::coord_e5(kGps[i].v, kGps[i].hemi, &e5)) { bad++; printf("    gps coord '%s' refused\n", kGps[i].v); continue; }
+        gps::format_deg(e5, out, sizeof(out));
+        if (strcmp(out, kGps[i].expect)) { if (bad++ < 5) printf("    gps '%s' %s: got %s, want %s\n", kGps[i].v, kGps[i].hemi, out, kGps[i].expect); }
+    }
+    CHECK(bad == 0, "%d of %u coordinates differ from the MicroPython conversion", bad, (unsigned)GPS_N);
+    int32_t e;
+    CHECK(!gps::coord_e5("", "N", &e) && !gps::coord_e5("48", "N", &e) && !gps::coord_e5("4860.000", "N", &e) && !gps::coord_e5("48a7.038", "N", &e),
+          "things that are not coordinates are refused (a minute count of 60 included)");
+
+    char out[16];
+    gps::format_deg(-5, out, sizeof(out));
+    CHECK(!strcmp(out, "-0.00005"), "a small negative keeps its sign (got %s)", out);
+    gps::format_tenths(5454, out, sizeof(out));
+    CHECK(!strcmp(out, "545.4"), "tenths print with one decimal");
+    gps::format_tenths(-12, out, sizeof(out));
+    CHECK(!strcmp(out, "-1.2"), "and a sign");
+}
+
 static void test_helpers(void) {
     Buf b; buf_init(&b);
     codec::put_fixed6(sink_of(&b), 330000);
@@ -410,6 +484,7 @@ int main() {
     test_helpers();
     test_oui();
     test_totp();
+    test_gps();
     test_sub_encode();
     test_sub_parse();
     test_sub_write();

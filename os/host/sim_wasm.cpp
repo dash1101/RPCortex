@@ -50,6 +50,7 @@
 #define fw_net_rssi          fakefw_net_rssi_unused
 #define fw_net_scan          fakefw_net_scan_unused
 #define fw_time_get          fakefw_time_get_unused
+#define fw_time_set          fakefw_time_set_unused
 #define fw_shell_run         fakefw_shell_run_unused
 #define fw_dir_count         fakefw_dir_count_unused
 #define fw_dir_entry         fakefw_dir_entry_unused
@@ -67,6 +68,7 @@
 #undef fw_net_rssi
 #undef fw_net_scan
 #undef fw_time_get
+#undef fw_time_set
 #undef fw_shell_run
 #undef fw_dir_count
 #undef fw_dir_entry
@@ -214,6 +216,25 @@ extern "C" int fw_time_get(struct FwTime *out) {
     out->minute  = (int)((rem % 3600) / 60);
     out->second  = (int)(rem % 60);
     out->weekday = (int)(((days % 7) + 11) % 7);       // 1970-01-01 was a Thursday
+    return 1;
+}
+
+// Days since 1970-01-01 from a civil date (Howard Hinnant's algorithm), the inverse of the above.
+static int64_t days_from_civil(int y, int m, int d) {
+    y -= m <= 2;
+    const int64_t era = (y >= 0 ? y : y - 399) / 400;
+    const unsigned yoe = (unsigned)(y - era * 400);
+    const unsigned doy = (unsigned)((153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1);
+    return era * 146097 + (int64_t)(yoe * 365 + yoe / 4 - yoe / 100 + doy) - 719468;
+}
+
+// A package setting the clock moves the page's clock to match: from then on it runs from there.
+extern "C" int fw_time_set(const struct FwTime *in) {
+    if (!in || in->year < 2000 || in->year > 2099 || in->month < 1 || in->month > 12 || in->day < 1 || in->day > 31 ||
+        in->hour < 0 || in->hour > 23 || in->minute < 0 || in->minute > 59 || in->second < 0 || in->second > 59) return 0;
+    g_clock_base_s  = days_from_civil(in->year, in->month, in->day) * 86400 + in->hour * 3600 + in->minute * 60 + in->second;
+    g_clock_base_ms = g_sim_ms;
+    g_clock_set     = true;
     return 1;
 }
 

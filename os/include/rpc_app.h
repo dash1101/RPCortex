@@ -23,7 +23,7 @@ extern "C" {
 // MINOR: a symbol added — older-minor apps still run (everything they want is
 //        present); newer-minor apps refused (they may want something absent).
 #define RPC_API_MAJOR 1
-#define RPC_API_MINOR 24
+#define RPC_API_MINOR 25
 
 typedef struct {
     uint32_t magic;          // RPC_APP_MAGIC
@@ -569,6 +569,16 @@ struct FwTime {
     int weekday;   // 0 = Sunday
 };
 int fw_time_get(struct FwTime *out);
+
+// Set the wall clock (API 1.25). The fields are UTC, because that is what the clock holds: the
+// time zone is an offset applied when it is shown, never when it is stored. Returns 1 when the
+// clock was set, 0 when the fields are not a real date and time (the year must be 2000 to 2099)
+// or the clock refused. Setting it does what the shell's `date set` does: it marks the clock as
+// trustworthy, which is what turns file timestamps on, and remembers it for a cold boot.
+//
+// For a package that KNOWS the time better than the device does: a GPS receiver, an RTC chip, a
+// time server of its own. weekday is ignored.
+int fw_time_set(const struct FwTime *in);
 
 // --- network ----------------------------------------------------------------
 //
