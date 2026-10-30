@@ -30,7 +30,8 @@
         ],
         "limitations": [
           "The Pico 2 and both RP2040 images (Pico, Pico W) have never run on hardware.",
-          "The boot recovery ladder, restoring a saved rollback copy and Bluetooth have only been tested on the host.",
+          "Restoring a saved rollback copy and Bluetooth have only been tested on the host.",
+          "The boot recovery ladder does not work in this build: after repeated failed starts it should load nothing, then restore the saved firmware, but its failure count was overwritten before it was read, so it never triggers. Fixed in the next release.",
           "HTTPS needs about 45 KB of free memory.",
           "A saved rollback copy takes 854 KB of the Pico 2 W's 1792 KB filesystem; the next update removes it to make room.",
           "A filesystem was twice seen to read 100% full with a saved firmware copy on it (`rm /os/rollback.img` fixes it); the cause is not found."

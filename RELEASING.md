@@ -33,7 +33,7 @@ steady and the work per release small: the unit of work is the changelog entry, 
 lands, not a release per commit.
 
 The version in `os/kernel/kernel.h` is the one the **next** release will carry. `tools/release.py label
-beta|rc|final` changes the label (counting release candidates for you), `bump iter` and `bump major
+beta|rc|final` changes the label (counting release candidates automatically), `bump iter` and `bump major
 "Name"` change the number, and cutting a release steps `kernel.h` to the following number by itself.
 
 ## Writing the notes as the work happens
