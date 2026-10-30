@@ -1079,7 +1079,7 @@ public:
         const char *gs;
         if (!g_wd_live) {
             gs = (board::pin(board::PIN_GPS_TX) != board::PIN_NONE && board::pin(board::PIN_GPS_RX) != board::PIN_NONE)
-                     ? "module set" : "no pins";
+                     ? "pins set" : "no pins";
             snprintf(v, sizeof(v), "%s", gs);
         } else if (!g_wd_gps_wired) {
             snprintf(v, sizeof(v), "no pins");
