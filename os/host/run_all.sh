@@ -135,6 +135,10 @@ declare -A SRC=(
     # exported entry points the page uses (sim_init / sim_key / sim_frame): it boots,
     # every app opens by key and draws something, and no worker is left queued.
     [sim_wasm_test]=""
+    # The .sub / .ir / .nfc codecs, held byte for byte to what the MicroPython modules
+    # that wrote those files first answered. codec_vectors.inc is generated from them
+    # (gen_codec_vectors.py) and committed, so this needs only a compiler.
+    [novacodec_test]=""
     # The USB personality stack, in its three pure pieces: the ASCII->keycode
     # map (a wrong entry types the wrong letter with no error), the DuckyScript
     # reader (a typo must never become keystrokes), and the mode arithmetic that
