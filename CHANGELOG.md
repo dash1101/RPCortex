@@ -15,6 +15,9 @@ Summary: The boot recovery ladder now works on hardware, and releases are number
 - Versions are written `vMAJOR.ITER` with the build number beside them, with two digits for the iteration. Every release published takes the next number, and a label says how finished it is: `v2.00-beta` was the first, then `v2.01-beta`, release candidates as `-rc`, `-rc2` and so on, and no label once it is final. Only a new generation gets a name. `ver`, `update` and the rollback messages show the build.
 - `tools/release.py`: one command to cut a release, and `tools/soak.py` to leave a board running and write down what it does.
 - `releases/releases.json` and `releases/boards.json`: the release history and per-board status that the websites read.
+- Package API 1.25, `fw_time_set`: a package can set the clock. The Nova D1's GPS screen uses it to set the time from the satellites.
+- Package API 1.26, `fw_net_scan2`: a Wi-Fi scan that keeps every radio. The older `fw_net_scan` merges beacons by name and drops networks with no name; this one reports one row per BSSID, hidden networks included, with the channel and the security the beacon declared. Wardrive on the Nova D1 uses it to write a WiGLE file.
+- `subghz tx @<file>` sends the timings in a file, so a saved `.sub` can be replayed.
 
 ### Changed
 
