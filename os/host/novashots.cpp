@@ -63,6 +63,7 @@
 #include "../apps/novad1/novaoui.cpp"
 #include "../apps/novad1/novatotp.cpp"
 #include "../apps/novad1/novagps.cpp"
+#include "../apps/novad1/novawigle.cpp"
 #include "../apps/novad1/novagui_codes.cpp"
 #include "../apps/novad1/novagui_extras.cpp"
 #include "../apps/novad1/novagui_radios.cpp"

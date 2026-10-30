@@ -102,6 +102,19 @@ static void take_time(Fix *f, const char *t) {
     f->has_time = true;
 }
 
+bool line_push(LineBuf *b, char ch, const char **out) {
+    if (ch == '\r' || ch == '\n') {
+        if (b->n <= 0) return false;
+        b->line[b->n] = 0;
+        b->n = 0;
+        *out = b->line;
+        return true;
+    }
+    if (b->n + 1 < (int)sizeof(b->line)) b->line[b->n++] = ch;
+    else b->n = 0;                  // too long to be real NMEA: resync at the next newline
+    return false;
+}
+
 bool consume(Fix *f, const char *s) {
     if (!checksum_ok(s)) return false;
     f->have = true;

@@ -1016,3 +1016,66 @@ static const OuiByteCase kOuiBytes[] = {
     { 6, { 184, 39, 235, 1, 2, 3 }, "Raspberry Pi", "computer" },
 };
 #define OUI_BYTE_CASES_N (sizeof(kOuiBytes) / sizeof(kOuiBytes[0]))
+struct WigleSecCase { unsigned bits; const char *text; };
+static const WigleSecCase kWigleSec[] = {
+    { 0, "OPEN" },
+    { 1, "WEP" },
+    { 2, "WPA-PSK" },
+    { 3, "WPA-PSK" },
+    { 4, "WPA2-PSK" },
+    { 5, "WPA2-PSK" },
+    { 6, "WPA/WPA2-PSK" },
+    { 7, "WPA/WPA2-PSK" },
+    { 8, "WPA?" },
+    { 16, "WPA?" },
+    { 36, "WPA2-PSK" },
+};
+#define WIGLE_SEC_N (sizeof(kWigleSec) / sizeof(kWigleSec[0]))
+struct WigleHeaderCase { const char *model; const char *text; };
+static const WigleHeaderCase kWigleHeader[] = {
+    { "NovaD1", "WigleWifi-1.4,appRelease=novad1,model=NovaD1,release=1.0,device=NovaD1,display=,board=rp2350,brand=NovaLabs\nMAC,SSID,AuthMode,FirstSeen,Channel,RSSI,CurrentLatitude,CurrentLongitude,AltitudeMeters,AccuracyMeters,Type\n" },
+    { "Nova D1 (proto)", "WigleWifi-1.4,appRelease=novad1,model=Nova D1 (proto),release=1.0,device=NovaD1,display=,board=rp2350,brand=NovaLabs\nMAC,SSID,AuthMode,FirstSeen,Channel,RSSI,CurrentLatitude,CurrentLongitude,AltitudeMeters,AccuracyMeters,Type\n" },
+    { "", "WigleWifi-1.4,appRelease=novad1,model=,release=1.0,device=NovaD1,display=,board=rp2350,brand=NovaLabs\nMAC,SSID,AuthMode,FirstSeen,Channel,RSSI,CurrentLatitude,CurrentLongitude,AltitudeMeters,AccuracyMeters,Type\n" },
+};
+#define WIGLE_HEADER_N (sizeof(kWigleHeader) / sizeof(kWigleHeader[0]))
+struct WigleFieldCase { const char *in; const char *out; };
+static const WigleFieldCase kWigleField[] = {
+    { "Home", "Home" },
+    { "", "" },
+    { "a,b", "\"a,b\"" },
+    { "say \"hi\"", "\"say \"\"hi\"\"\"" },
+    { "both, \"x\"", "\"both, \"\"x\"\"\"" },
+    { "line\nbreak", "\"line\nbreak\"" },
+    { ",", "\",\"" },
+    { "\"", "\"\"\"\"" },
+    { "Cafe Guest", "Cafe Guest" },
+    { "O'Brien", "O'Brien" },
+    { "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" },
+    { "tab\there", "tab\there" },
+    { "semi;colon", "semi;colon" },
+    { " lead and trail ", " lead and trail " },
+};
+#define WIGLE_FIELD_N (sizeof(kWigleField) / sizeof(kWigleField[0]))
+struct WigleRowCase { unsigned char bssid[6]; const char *ssid; unsigned sec; const char *time; int channel; int rssi; int pos; int lat_e5; int lon_e5; int has_alt; int alt_dm; const char *row; };
+static const WigleRowCase kWigleRow[] = {
+    { { 28, 75, 214, 0, 171, 205 }, "Home", 4, "2026-10-30 18:04:05", 6, -61, 1, 4807038, 1131000, 1, 5454, "1c:4b:d6:00:ab:cd,Home,[WPA2-PSK],2026-10-30 18:04:05,6,-61,48.070380,11.310000,545.4,,WIFI\n" },
+    { { 222, 173, 190, 239, 0, 1 }, "Cafe Guest", 0, "2026-10-30 18:04:05", 11, -74, 1, -3745500, -12218999, 1, -3, "de:ad:be:ef:00:01,Cafe Guest,[OPEN],2026-10-30 18:04:05,11,-74,-37.455000,-122.189990,-0.3,,WIFI\n" },
+    { { 2, 0, 0, 0, 0, 9 }, "", 6, "2026-01-02 03:04:05", 1, -90, 0, 0, 0, 1, 0, "02:00:00:00:00:09,,[WPA/WPA2-PSK],2026-01-02 03:04:05,1,-90,,,0.0,,WIFI\n" },
+    { { 255, 255, 255, 255, 255, 255 }, "a,b", 1, "", 13, -1, 1, 0, 0, 1, 0, "ff:ff:ff:ff:ff:ff,\"a,b\",[WEP],,13,-1,0.000000,0.000000,0.0,,WIFI\n" },
+    { { 0, 0, 0, 0, 0, 0 }, "say \"hi\"", 2, "2000-01-01 00:00:00", 36, -100, 1, 7, -7, 1, 100000, "00:00:00:00:00:00,\"say \"\"hi\"\"\",[WPA-PSK],2000-01-01 00:00:00,36,-100,0.000070,-0.000070,10000.0,,WIFI\n" },
+    { { 170, 187, 204, 1, 2, 3 }, "Net", 8, "2026-12-31 23:59:59", 149, -55, 1, 8999999, 17999999, 1, 12345, "aa:bb:cc:01:02:03,Net,[WPA?],2026-12-31 23:59:59,149,-55,89.999990,179.999990,1234.5,,WIFI\n" },
+    { { 170, 187, 204, 1, 2, 4 }, "NoAlt", 4, "2026-06-06 06:06:06", 6, -40, 1, 100000, -100000, 0, 0, "aa:bb:cc:01:02:04,NoAlt,[WPA2-PSK],2026-06-06 06:06:06,6,-40,1.000000,-1.000000,,,WIFI\n" },
+    { { 16, 32, 48, 64, 80, 96 }, "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX", 2, "2026-10-30 18:04:05", 3, -83, 1, 1, -1, 1, -5000, "10:20:30:40:50:60,XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX,[WPA-PSK],2026-10-30 18:04:05,3,-83,0.000010,-0.000010,-500.0,,WIFI\n" },
+};
+#define WIGLE_ROW_N (sizeof(kWigleRow) / sizeof(kWigleRow[0]))
+struct WiglePass { unsigned n; unsigned char id[8]; unsigned char fresh[8]; };
+static const WiglePass kWiglePass[] = {
+    { 3, { 1, 2, 3, 0, 0, 0, 0, 0 }, { 1, 1, 1, 0, 0, 0, 0, 0 } },
+    { 3, { 2, 3, 4, 0, 0, 0, 0, 0 }, { 0, 0, 1, 0, 0, 0, 0, 0 } },
+    { 0, { 0, 0, 0, 0, 0, 0, 0, 0 }, { 0, 0, 0, 0, 0, 0, 0, 0 } },
+    { 4, { 1, 2, 3, 4, 0, 0, 0, 0 }, { 0, 0, 0, 0, 0, 0, 0, 0 } },
+    { 3, { 5, 5, 6, 0, 0, 0, 0, 0 }, { 1, 0, 1, 0, 0, 0, 0, 0 } },
+    { 8, { 7, 1, 8, 9, 2, 6, 3, 4 }, { 1, 0, 1, 1, 0, 0, 0, 0 } },
+};
+#define WIGLE_PASS_N (sizeof(kWiglePass) / sizeof(kWiglePass[0]))
+static const unsigned kWigleSessionTotal = 9;

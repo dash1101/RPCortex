@@ -3,7 +3,7 @@
 
     gen_codec_vectors.py [--novad1 DIR] [--tests DIR] [-o codec_vectors.inc]
 
-The Nova D1 codecs (.sub, .ir, .nfc) were written in MicroPython first, and those
+The Nova D1 codecs (.sub, .ir, .nfc, WiGLE) were written in MicroPython first, and those
 modules are the oracle: this runs them under CPython on a spread of inputs and writes
 what they returned as C++ data. novacodec_test then runs the C++ ports on the same
 inputs and compares. The output is committed, so the test needs nothing but a C++
@@ -28,7 +28,7 @@ sys.path.insert(0, os.path.abspath(args.tests))
 import _shims  # noqa: E402
 _shims.install()
 sys.path.insert(0, os.path.abspath(args.novad1))
-import novacc, novair, novanfc, novaoui  # noqa: E402
+import novacc, novair, novanfc, novaoui, novawardrive  # noqa: E402
 
 
 def cstr(s):
@@ -364,6 +364,82 @@ for m in byte_macs:
     v, c = novaoui.lookup(m)
     w("    { %d, { %s }, %s, %s },\n" % (len(m), ", ".join(str(x) for x in (list(m) + [0] * 6)[:6]), cstr(v) if v else "nullptr", cstr(c) if c else "nullptr"))
 w("};\n#define OUI_BYTE_CASES_N (sizeof(kOuiBytes) / sizeof(kOuiBytes[0]))\n")
+
+# ----------------------------------------------------------------------------------------------
+# WiGLE: novawardrive.py's header, CSV field, row and BSSID-deduping Session
+# ----------------------------------------------------------------------------------------------
+wd = novawardrive
+
+def sec_code(bits):
+    """The scan's three security bits (1 WEP, 2 WPA, 4 WPA2) as the MicroPython scan's security code
+    that sec_str() takes: the strongest named bit wins, and a bit nobody named is the unknown -1."""
+    if bits == 0: return 0
+    if bits & 4 and bits & 2: return 4
+    if bits & 4: return 3
+    if bits & 2: return 2
+    if bits & 1: return 1
+    return -1
+
+w("struct WigleSecCase { unsigned bits; const char *text; };\n")
+w("static const WigleSecCase kWigleSec[] = {\n")
+for bits in (0, 1, 2, 3, 4, 5, 6, 7, 8, 16, 0x24):
+    w("    { %d, %s },\n" % (bits, cstr(wd.sec_str(sec_code(bits)))))
+w("};\n#define WIGLE_SEC_N (sizeof(kWigleSec) / sizeof(kWigleSec[0]))\n")
+
+w("struct WigleHeaderCase { const char *model; const char *text; };\n")
+w("static const WigleHeaderCase kWigleHeader[] = {\n")
+for model in ("NovaD1", "Nova D1 (proto)", ""):
+    w("    { %s, %s },\n" % (cstr(model), cstr(wd.wigle_header(model))))
+w("};\n#define WIGLE_HEADER_N (sizeof(kWigleHeader) / sizeof(kWigleHeader[0]))\n")
+
+w("struct WigleFieldCase { const char *in; const char *out; };\n")
+w("static const WigleFieldCase kWigleField[] = {\n")
+for f in ("Home", "", "a,b", 'say "hi"', 'both, "x"', "line\nbreak", ",", '"', "Cafe Guest", "O'Brien", "x" * 32,
+          "tab\there", "semi;colon", " lead and trail "):
+    w("    { %s, %s },\n" % (cstr(f), cstr(wd._csv_field(f))))
+w("};\n#define WIGLE_FIELD_N (sizeof(kWigleField) / sizeof(kWigleField[0]))\n")
+
+w("struct WigleRowCase { unsigned char bssid[6]; const char *ssid; unsigned sec; const char *time; int channel; int rssi;"
+  " int pos; int lat_e5; int lon_e5; int has_alt; int alt_dm; const char *row; };\n")
+w("static const WigleRowCase kWigleRow[] = {\n")
+rows = [
+    # bssid, ssid, bits, time, channel, rssi, pos, lat_e5, lon_e5, alt_dm
+    ((0x1c, 0x4b, 0xd6, 0x00, 0xab, 0xcd), "Home", 4, "2026-10-30 18:04:05", 6, -61, True, 4807038, 1131000, 5454),
+    ((0xde, 0xad, 0xbe, 0xef, 0x00, 0x01), "Cafe Guest", 0, "2026-10-30 18:04:05", 11, -74, True, -3745500, -12218999, -3),
+    ((0x02, 0x00, 0x00, 0x00, 0x00, 0x09), "", 6, "2026-01-02 03:04:05", 1, -90, False, 0, 0, 0),
+    ((0xff, 0xff, 0xff, 0xff, 0xff, 0xff), "a,b", 1, "", 13, -1, True, 0, 0, 0),
+    ((0x00, 0x00, 0x00, 0x00, 0x00, 0x00), 'say "hi"', 2, "2000-01-01 00:00:00", 36, -100, True, 7, -7, 100000),
+    ((0xaa, 0xbb, 0xcc, 0x01, 0x02, 0x03), "Net", 8, "2026-12-31 23:59:59", 149, -55, True, 8999999, 17999999, 12345),
+    ((0xaa, 0xbb, 0xcc, 0x01, 0x02, 0x04), "NoAlt", 4, "2026-06-06 06:06:06", 6, -40, True, 100000, -100000, None),
+    ((0x10, 0x20, 0x30, 0x40, 0x50, 0x60), "X" * 32, 2, "2026-10-30 18:04:05", 3, -83, True, 1, -1, -5000),
+]
+for b, ssid, bits, ts, ch, rssi, pos, lat, lon, alt in rows:
+    ap = {"bssid": wd.bssid_hex(b), "ssid": ssid, "sec": sec_code(bits), "channel": ch, "rssi": rssi}
+    row = wd.wigle_row(ap, ts, lat / 100000.0 if pos else None, lon / 100000.0 if pos else None,
+                       None if alt is None else alt / 10.0)
+    w("    { { %s }, %s, %d, %s, %d, %d, %d, %d, %d, %d, %d, %s },\n" % (
+        ", ".join(str(x) for x in b), cstr(ssid), bits, cstr(ts), ch, rssi, 1 if pos else 0, lat, lon,
+        0 if alt is None else 1, alt or 0, cstr(row)))
+w("};\n#define WIGLE_ROW_N (sizeof(kWigleRow) / sizeof(kWigleRow[0]))\n")
+
+# The Session: a radio is logged on the pass it first appears and never again. Radios are 02:00:00:00:00:<id>.
+w("struct WiglePass { unsigned n; unsigned char id[8]; unsigned char fresh[8]; };\n")
+w("static const WiglePass kWiglePass[] = {\n")
+sess = wd.Session()
+for ids in ([1, 2, 3], [2, 3, 4], [], [1, 2, 3, 4], [5, 5, 6], [7, 1, 8, 9, 2, 6, 3, 4]):
+    aps = [{"bssid": wd.bssid_hex(bytes([2, 0, 0, 0, 0, i])), "ssid": "n%d" % i} for i in ids]
+    before = set(sess.seen)
+    rows_out = sess.add(aps, "t")
+    # Which entries of this pass were new, in order: the rows come back in the same order.
+    fresh, seen_here = [], set(before)
+    for ap in aps:
+        fresh.append(0 if ap["bssid"] in seen_here else 1)
+        seen_here.add(ap["bssid"])
+    assert sum(fresh) == len(rows_out)
+    w("    { %d, { %s }, { %s } },\n" % (len(ids), ", ".join(str(i) for i in (ids + [0] * 8)[:8]),
+                                      ", ".join(str(i) for i in (fresh + [0] * 8)[:8])))
+w("};\n#define WIGLE_PASS_N (sizeof(kWiglePass) / sizeof(kWiglePass[0]))\n")
+w("static const unsigned kWigleSessionTotal = %d;\n" % sess.total)
 
 with open(args.out, "w") as f:
     f.write("".join(lines))

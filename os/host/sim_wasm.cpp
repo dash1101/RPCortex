@@ -49,6 +49,7 @@
 #define fw_net_ip            fakefw_net_ip_unused
 #define fw_net_rssi          fakefw_net_rssi_unused
 #define fw_net_scan          fakefw_net_scan_unused
+#define fw_net_scan2         fakefw_net_scan2_unused
 #define fw_time_get          fakefw_time_get_unused
 #define fw_time_set          fakefw_time_set_unused
 #define fw_shell_run         fakefw_shell_run_unused
@@ -67,6 +68,7 @@
 #undef fw_net_ip
 #undef fw_net_rssi
 #undef fw_net_scan
+#undef fw_net_scan2
 #undef fw_time_get
 #undef fw_time_set
 #undef fw_shell_run
@@ -273,6 +275,35 @@ int fw_net_scan(FwNetAp *out, unsigned max) {
         out[n].rssi    = aps[i].rssi;
         out[n].channel = aps[i].ch;
         out[n].secured = aps[i].sec;
+    }
+    return (int)n;
+}
+
+// The same neighbourhood as the radios it has, which is not the same list: one network is on two
+// radios (as a router with two bands is), and one has no name. Addresses are made up.
+int fw_net_scan2(FwNetAp2 *out, unsigned max) {
+    static const struct { uint8_t mac5; const char *ssid; int rssi, ch, sec; } aps[] = {
+        { 0x10, "Nova",             -52,  6, 4 },
+        { 0x11, "Nova",             -58, 36, 4 },
+        { 0x20, "HomeNet-5G",       -61, 36, 4 },
+        { 0x30, "Pixel_4A2F",       -66, 11, 4 },
+        { 0x40, "TP-Link_9F2A",     -72,  1, 6 },
+        { 0x50, "Cafe Guest",       -74,  6, 0 },
+        { 0x60, "",                 -75,  3, 4 },
+        { 0x70, "Neighborhood-Mesh-Network-5GHz-Guest", -77, 40, 4 },
+        { 0x80, "NETGEAR47",        -79,  9, 4 },
+        { 0x90, "Linksys00421",     -83,  3, 1 },
+    };
+    unsigned n = 0;
+    for (unsigned i = 0; i < sizeof(aps) / sizeof(aps[0]) && n < max; i++, n++) {
+        memset(&out[n], 0, sizeof(out[n]));
+        const uint8_t mac[6] = { 0x02, 0x5a, 0x4e, 0x00, 0x00, aps[i].mac5 };
+        memcpy(out[n].bssid, mac, 6);
+        snprintf(out[n].ssid, sizeof(out[n].ssid), "%s", aps[i].ssid);
+        out[n].rssi    = (int16_t)aps[i].rssi;
+        out[n].channel = (uint16_t)aps[i].ch;
+        out[n].sec     = (uint8_t)aps[i].sec;
+        out[n].hidden  = aps[i].ssid[0] == 0;
     }
     return (int)n;
 }

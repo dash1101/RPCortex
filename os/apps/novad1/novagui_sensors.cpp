@@ -384,13 +384,6 @@ private:
 // sentences this file builds itself; nothing here has listened to a real
 // NEO-M8N.
 
-// The GPIO -> UART peripheral mapping is a fixed property of the RP2040 and
-// RP2350, not a board choice, so it is derived here with its own formula
-// rather than reaching into novaboard for one — the same shape i2c_present()
-// in novamodtab.cpp already uses for I2C. Matches novaboard.cpp's own
-// uart_ctrl(), which the `d1 pins check` report is built on.
-static unsigned gps_uart_bus(int gpio) { return (unsigned)(((gpio / 4) + 1) >> 1) & 1u; }
-
 // What the receiver has told us, kept outside the screen instance so a host test can read it back
 // (a free function needs somewhere to leave its answer, and a private member is out of reach).
 static gps::Fix g_gps_fix;
@@ -419,7 +412,7 @@ public:
     }
 
     void enter(void) override {
-        line_n_ = 0;
+        gps::line_reset(&lb_);
         // The FIRST time only. enter() runs again whenever a question or a keyboard pops back to this
         // screen, and a fix thrown away by being asked "set the clock?" is a screen that forgets where
         // it is the moment it is used.
@@ -435,7 +428,7 @@ public:
         int tx = board::pin(board::PIN_GPS_TX), rx = board::pin(board::PIN_GPS_RX);
         wired_ = (tx != board::PIN_NONE && rx != board::PIN_NONE);
         if (wired_) {
-            bus_ = gps_uart_bus(rx);
+            bus_ = gps::uart_bus(rx);
             // NEO-M8N ships at 9600 baud until told otherwise; nothing here
             // reconfigures a module, only listens at its default rate.
             fw_uart_init(bus_, (unsigned)tx, (unsigned)rx, 9600);
@@ -452,17 +445,8 @@ public:
         int n = fw_uart_read(bus_, chunk, sizeof(chunk), 0);
         if (n <= 0) return changed;
         for (int i = 0; i < n; i++) {
-            char ch = chunk[i];
-            if (ch == '\r' || ch == '\n') {
-                if (line_n_ > 0) {
-                    line_[line_n_] = 0;
-                    if (consume(line_)) changed = true;
-                    line_n_ = 0;
-                }
-                continue;
-            }
-            if (line_n_ + 1 < (int)sizeof(line_)) line_[line_n_++] = ch;
-            else line_n_ = 0;          // a line too long to be real NMEA: resync
+            const char *ln;
+            if (gps::line_push(&lb_, chunk[i], &ln) && consume(ln)) changed = true;
         }
         return changed;
     }
@@ -582,8 +566,7 @@ private:
     bool     started_;
     bool     wired_;
     unsigned bus_;
-    char     line_[96];
-    int      line_n_;
+    gps::LineBuf lb_;
     char     msg_[20];
 };
 

@@ -55,6 +55,7 @@
 #include "../apps/novad1/novaoui.cpp"
 #include "../apps/novad1/novatotp.cpp"
 #include "../apps/novad1/novagps.cpp"
+#include "../apps/novad1/novawigle.cpp"
 #include "../apps/novad1/novagui_codes.cpp"
 #include "../apps/novad1/novagui_extras.cpp"
 #include "../apps/novad1/novagui_radios.cpp"
@@ -3264,6 +3265,212 @@ static void test_climate(void) {
     gui::go_home();
 }
 
+// --- Wardrive: WiGLE rows, one per radio, tagged with where and when ----------------------------------
+static void wd_radio(int slot, int last, const char *ssid, int rssi, int ch, int sec) {
+    FwNetAp2 &a = g_scan2_aps[slot];
+    memset(&a, 0, sizeof(a));
+    const uint8_t mac[6] = { 0x1c, 0x4b, 0xd6, 0x00, 0xab, (uint8_t)last };
+    memcpy(a.bssid, mac, 6);
+    a.rssi = (int16_t)rssi; a.channel = (uint16_t)ch; a.sec = (uint8_t)sec; a.hidden = ssid[0] == 0;
+    snprintf(a.ssid, sizeof(a.ssid), "%s", ssid);
+}
+static const char *wd_read(const char *path) {
+    FakeFile *f = fakefs_find(path);
+    return f && f->data ? (const char *)f->data : "";
+}
+static int wd_lines(const char *text) {
+    int n = 0;
+    for (; *text; text++) if (*text == '\n') n++;
+    return n;
+}
+
+static void test_wardrive(void) {
+    using namespace nova;
+    using namespace nova::screens;
+    gui::go_home();
+    fakefs_reset();
+    g_fake_time_ok = true;
+    g_fake_time = FwTime{ 2026, 10, 30, 18, 4, 5, 5 };
+    g_fake_flash_free_kb = 1788;
+    g_scan2_refuse = 0;
+    uart_feed("");
+    board::set(board::PIN_GPS_TX, board::PIN_NONE);
+
+    char head[400];
+    {
+        struct H { char *b; unsigned n; } h = { head, 0 };
+        auto put = [](void *c, const char *s, unsigned n) { H *x = (H *)c; memcpy(x->b + x->n, s, n); x->n += n; x->b[x->n] = 0; return true; };
+        codec::Sink k = { put, &h };
+        head[0] = 0;
+        wigle::put_header(k, "NovaD1");
+    }
+
+    // --- four radios: two of one network, one with no name, one open and with a comma in its name.
+    wd_radio(0, 1, "Home",  -60,  6, 4);
+    wd_radio(1, 2, "Home",  -70, 36, 4);
+    wd_radio(2, 3, "",      -80,  1, 4);
+    wd_radio(3, 4, "a,b",   -50, 11, 0);
+    g_scan2_n = 4;
+    ok(wd_begin(), "a survey begins");
+    wd_gps_open();
+    ok(wd_pass(), "a pass runs");
+    const char *f = wd_read("/nova/logs/wardrive-0.csv");
+    eq(wd_lines(f), 6, "the header's two lines and four radios");
+    ok(!strncmp(f, head, strlen(head)), "the file opens with the WiGLE header");
+    ok(strstr(f, "1c:4b:d6:00:ab:01,Home,[WPA2-PSK],2026-10-30 18:04:05,6,-60,,,,,WIFI\n"), "the first radio is a full row");
+    ok(strstr(f, "1c:4b:d6:00:ab:02,Home,[WPA2-PSK],2026-10-30 18:04:05,36,-70,,,,,WIFI\n"),
+       "and the second radio of the same network is its own row");
+    ok(strstr(f, "1c:4b:d6:00:ab:03,,[WPA2-PSK],2026-10-30 18:04:05,1,-80,,,,,WIFI\n"), "a hidden network is kept, with no name");
+    ok(strstr(f, "1c:4b:d6:00:ab:04,\"a,b\",[OPEN],2026-10-30 18:04:05,11,-50,,,,,WIFI\n"), "a comma in a name is quoted");
+    eq((int)g_wd_aps, 4, "four radios counted");
+
+    // --- the same four again, and then one more: only the new one is written.
+    unsigned len_before = (unsigned)strlen(f);
+    ok(wd_pass(), "a second pass runs");
+    eq((int)strlen(wd_read("/nova/logs/wardrive-0.csv")), (int)len_before, "nothing is written for radios already met");
+    eq((int)g_wd_pass, 2, "but the pass is counted");
+    wd_radio(4, 5, "Newcomer", -66, 3, 2);
+    g_scan2_n = 5;
+    ok(wd_pass(), "a third pass runs");
+    f = wd_read("/nova/logs/wardrive-0.csv");
+    eq(wd_lines(f), 7, "and one new radio is one new row");
+    ok(strstr(f, "1c:4b:d6:00:ab:05,Newcomer,[WPA-PSK],2026-10-30 18:04:05,3,-66,,,,,WIFI\n"), "WPA reads as WPA-PSK");
+
+    // --- a refused scan is said, not fatal.
+    g_scan2_refuse = 1;
+    ok(wd_pass(), "a refused scan does not end the survey");
+    streq_(g_wd_msg, "Scan refused", "and says so");
+    g_scan2_refuse = 0;
+
+    // --- an unset clock leaves the time blank rather than stamping a wrong minute.
+    g_fake_time_ok = false;
+    wd_radio(5, 6, "NoClock", -55, 9, 4);
+    g_scan2_n = 6;
+    wd_pass();
+    ok(strstr(wd_read("/nova/logs/wardrive-0.csv"), "1c:4b:d6:00:ab:06,NoClock,[WPA2-PSK],,9,-55,,,,,WIFI\n"),
+       "a clock that was never set gives a blank time");
+
+    // --- a GPS module with a fix: rows say where.
+    board::clear(board::PIN_GPS_TX);
+    board::clear(board::PIN_GPS_RX);
+    g_fake_time_ok = true;
+    char a[160], b[160], both[320];
+    nmea_make(a, "GPGGA,123519,4807.038,N,01131.000,E,1,08,0.9,545.4,M,46.9,M,,");
+    nmea_make(b, "GPRMC,123519,A,4807.038,N,01131.000,E,022.4,084.4,230394,003.1,W");
+    snprintf(both, sizeof(both), "%s%s", a, b);
+    ok(wd_begin(), "a second survey begins");
+    eq(strcmp(g_wd_path, "/nova/logs/wardrive-1.csv"), 0, "in the next file, not over the last");
+    wd_gps_open();
+    uart_feed(both);
+    wd_radio(0, 11, "Placed", -48, 6, 4);
+    g_scan2_n = 1;
+    ok(wd_pass(), "a pass with a fix runs");
+    ok(strstr(wd_read("/nova/logs/wardrive-1.csv"),
+              "1c:4b:d6:00:ab:0b,Placed,[WPA2-PSK],2026-10-30 18:04:05,6,-48,48.117300,11.516670,545.4,,WIFI\n"),
+       "a row carries the position, to six places, and the altitude");
+    ok(wd_pos_fresh(), "the position is current");
+
+    // --- a module that goes quiet: the last fix is not where the device is any more.
+    g_ms += WD_FIX_FRESH_MS + 1000;
+    wd_radio(1, 12, "Moved", -49, 6, 4);
+    g_scan2_n = 2;
+    wd_pass();
+    ok(!wd_pos_fresh(), "a fix that stopped being refreshed is stale");
+    ok(strstr(wd_read("/nova/logs/wardrive-1.csv"), "1c:4b:d6:00:ab:0c,Moved,[WPA2-PSK],2026-10-30 18:04:05,6,-49,,,,,WIFI\n"),
+       "and the row is written without it");
+
+    // --- no system clock, a fix: the satellites' time stands in.
+    g_fake_time_ok = false;
+    uart_feed(both);
+    g_ms += 100;
+    wd_radio(2, 13, "Sky", -47, 11, 4);
+    g_scan2_n = 3;
+    wd_pass();
+    ok(strstr(wd_read("/nova/logs/wardrive-1.csv"), "1c:4b:d6:00:ab:0d,Sky,[WPA2-PSK],2094-03-23 12:35:19,11,-47,48.117300,11.516670,545.4,,WIFI\n"),
+       "with no clock set, the module's date and time stamp the row");
+    wd_gps_close();
+    uart_feed("");
+
+    // --- the flash filling up ends the survey, and says why; a nearly full one only warns.
+    g_fake_time_ok = true;
+    board::set(board::PIN_GPS_TX, board::PIN_NONE);
+    ok(wd_begin(), "a third survey begins");
+    g_fake_flash_free_kb = 2048 - 1943;        // 94% used: nothing to say yet
+    wd_radio(0, 20, "Plenty", -50, 6, 4);
+    g_scan2_n = 1;
+    ok(wd_pass(), "a flash with room logs");
+    streq_(g_wd_msg, "", "and says nothing");
+    g_fake_flash_free_kb = 2048 - 1946;        // 95% used: the warning starts exactly here
+    wd_radio(1, 23, "Edge", -50, 6, 4);
+    g_scan2_n = 2;
+    ok(wd_pass(), "a flash at the warning line still logs");
+    streq_(g_wd_msg, "Flash 95% full", "and says so");
+    g_fake_flash_free_kb = 2048 - 1967;        // 96% used
+    wd_radio(2, 21, "Warned", -50, 6, 4);
+    g_scan2_n = 3;
+    ok(wd_pass(), "a nearly full flash still logs");
+    streq_(g_wd_msg, "Flash 96% full", "and the figure follows it");
+    g_fake_flash_free_kb = 2048 - 2008;        // 98% used
+    wd_radio(3, 22, "Refused", -50, 6, 4);
+    g_scan2_n = 4;
+    ok(!wd_pass(), "a full flash ends the survey");
+    streq_(g_wd_msg, "Flash 98% - stopped", "and says why");
+    ok(!strstr(wd_read("/nova/logs/wardrive-2.csv"), "Refused"), "without writing the row it would not have room for");
+    g_fake_flash_free_kb = 1788;
+
+    // --- a write that fails ends it too, and does not claim success.
+    ok(wd_begin(), "a fourth survey begins");
+    wd_radio(0, 31, "Lost", -50, 6, 4);
+    g_scan2_n = 1;
+    g_write_fails = 1;
+    ok(!wd_pass(), "a refused append ends the survey");
+    streq_(g_wd_msg, "Write failed", "and says so");
+    g_write_fails = 0;
+
+    // --- a long survey rolls into the next file at the size bound, each part opening with the header.
+    ok(wd_begin(), "a fifth survey begins");
+    char first[40]; snprintf(first, sizeof(first), "%s", g_wd_path);
+    const int first_part = g_wd_part;
+    for (int pass = 0; pass < 40 && g_wd_part == first_part; pass++) {
+        g_scan2_n = 48;
+        for (int i = 0; i < 48; i++) {
+            const uint8_t mac[6] = { 0x1c, 0x4b, 0xd6, (uint8_t)(pass + 1), 0xab, (uint8_t)i };
+            FwNetAp2 &ap = g_scan2_aps[i];
+            memset(&ap, 0, sizeof(ap));
+            memcpy(ap.bssid, mac, 6);
+            ap.rssi = -60; ap.channel = 6; ap.sec = 4;
+            snprintf(ap.ssid, sizeof(ap.ssid), "A fairly long access point name %d-%d", pass, i);
+        }
+        ok(wd_pass(), "a big pass runs");
+    }
+    ok(g_wd_part == first_part + 1, "enough rows rolled the survey into a second file");
+    FakeFile *p0 = fakefs_find(first);
+    ok(p0 && p0->len <= WD_PART_MAX, "the first part stays within its bound");
+    ok(p0 && p0->len > WD_PART_MAX - 4096, "and was filled before the next was started");
+    ok(!strncmp(wd_read(g_wd_path), head, strlen(head)), "the next part opens with the header too");
+    ok(wd_flush(), "what is held is written");
+    eq(wd_lines(wd_read(first)) - 2 + wd_lines(wd_read(g_wd_path)) - 2, (int)g_wd_aps,
+       "and every radio is in exactly one of the two files");
+    // --- the screen: starts, shows its state, and stops.
+    fakefs_reset();
+    g_scan2_n = 4;
+    g_wd_run = false; g_wd_live = false;
+    ui::Screen *s = open_app("wardrive");
+    ok(s && !strcmp(s->title(), "Wardrive"), "the Wardrive screen opens");
+    int idle_pixels = lit_pixels();
+    ok(idle_pixels > 12, "and draws");
+    s->on_event(EV_SELECT);
+    ok(g_wd_run, "SELECT starts a survey");
+    ok(fakefs_find("/nova/logs/wardrive-0.csv") != nullptr, "and its file exists from the first moment");
+    s->on_event(EV_SELECT);
+    ok(!g_wd_run, "SELECT again stops it");
+    g_wd_live = false;
+    gui::go_home();
+    board::clear(board::PIN_GPS_TX);
+    g_fake_time_ok = false;
+    g_scan2_n = 0;
+}
+
 static void test_gps(void) {
     using namespace nova;
     using namespace nova::screens;
@@ -3426,6 +3633,7 @@ int main(void) {
     STAGE(test_clocks_follow_the_timezone);
     STAGE(test_help_wraps_and_scrolls);
     STAGE(test_gps_position);
+    STAGE(test_wardrive);
     STAGE(test_lora_messages);
     STAGE(test_badusb);
     STAGE(test_battery);

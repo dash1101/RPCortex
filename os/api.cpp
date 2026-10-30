@@ -1176,6 +1176,7 @@ extern "C" int fw_time_set(const struct FwTime *in) {
 // that has not been made safe.
 
 int net_pkg_scan(FwNetAp *out, unsigned max);
+int net_pkg_scan2(FwNetAp2 *out, unsigned max);
 int net_pkg_ssid(char *out, unsigned cap);
 int net_pkg_ip(char *out, unsigned cap);
 int net_pkg_resolve(const char *host, char *out, unsigned cap);
@@ -1200,6 +1201,14 @@ extern "C" int fw_net_scan(FwNetAp *out, unsigned max) {
     if (!ok_w(out, max * sizeof(FwNetAp))) return -1;
     task_alive();
     return net_pkg_scan(out, max);
+}
+extern "C" int fw_net_scan2(FwNetAp2 *out, unsigned max) {
+    // Clamped before it is multiplied, so a wild count cannot wrap the length
+    // the pointer check is given into something small.
+    if (max > 64) max = 64;
+    if (!ok_w(out, max * sizeof(FwNetAp2))) return -1;
+    task_alive();
+    return net_pkg_scan2(out, max);
 }
 extern "C" int fw_net_resolve(const char *host, char *out, unsigned cap) {
     if (!ok_s(host) || !ok_w(out, cap)) return -1;
@@ -1966,6 +1975,9 @@ static const ApiSymbol kSymbols[] = {
 
     // API 1.25 — a package can set the clock.
     SYM(fw_time_set),
+
+    // API 1.26 — a scan that keeps every radio.
+    SYM(fw_net_scan2),
 };
 static const uint32_t kSymbolCount = sizeof(kSymbols) / sizeof(kSymbols[0]);
 

@@ -477,6 +477,23 @@ int fw_net_scan(FwNetAp *out, unsigned max) {
     return (int)n;
 }
 
+// The same list, with an address made up from the position in it: this harness has no use for the
+// per-radio detail, only for the call to exist and to agree with fw_net_scan about how many.
+int fw_net_scan2(FwNetAp2 *out, unsigned max) {
+    if (!out || !max) return -1;
+    unsigned n = g_n_aps < max ? g_n_aps : max;
+    for (unsigned i = 0; i < n; i++) {
+        memset(&out[i], 0, sizeof(out[i]));
+        out[i].bssid[0] = 0x02; out[i].bssid[5] = (uint8_t)i;
+        out[i].rssi = (int16_t)g_aps[i].rssi;
+        out[i].channel = (uint16_t)g_aps[i].channel;
+        out[i].sec = g_aps[i].secured ? 4 : 0;
+        out[i].hidden = g_aps[i].ssid[0] == 0;
+        snprintf(out[i].ssid, sizeof(out[i].ssid), "%s", g_aps[i].ssid);
+    }
+    return (int)n;
+}
+
 int fw_net_resolve(const char *host, char *out, unsigned cap) {
     if (!host || !out || !cap) return -1;
     if (!g_net_up) return -1;

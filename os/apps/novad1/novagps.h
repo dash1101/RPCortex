@@ -31,6 +31,23 @@ struct Fix {
     char    last[4];        // the type of the last sentence read: "GGA", "RMC", ...
 };
 
+// The GPIO -> UART peripheral mapping is a fixed property of the RP2040 and RP2350, not a board
+// choice, so it is derived from the pin. Matches novaboard.cpp's own uart_ctrl().
+inline unsigned uart_bus(int gpio) { return (unsigned)(((gpio / 4) + 1) >> 1) & 1u; }
+
+// Bytes off a UART into whole lines. A line ends at CR or LF, either or both; one too long to be NMEA
+// is dropped and the next newline resynchronises, which is also what a receiver at the wrong baud
+// rate looks like. Used by every screen that listens to the module, so the rule is in one place.
+struct LineBuf {
+    char line[96];
+    int  n;
+};
+
+inline void line_reset(LineBuf *b) { b->n = 0; }
+
+// Feed one byte. True when it completed a line, which is then at *out (terminated) until the next call.
+bool line_push(LineBuf *b, char ch, const char **out);
+
 // NMEA's checksum: every byte between '$' and '*' XORed, as two hex digits after the '*'. Any
 // sentence whose sum is right is a real receiver talking, whatever it says.
 bool checksum_ok(const char *sentence);

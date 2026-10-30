@@ -4,6 +4,9 @@
 #include "novagui.h"
 #include "novakeys.h"
 #include "novacore.h"
+#include "novaboard.h"
+#include "novagps.h"
+#include "novawigle.h"
 
 #include "rpc_app.h"
 #include <stdio.h>
@@ -753,171 +756,264 @@ void open_networks(void) { gui::push<NetworksScreen>(); }
 
 // --- Wardrive ---------------------------------------------------------------------------
 //
-// A rolling survey: scan, log what is new, wait, scan again. Scan-based and not
-// packet capture, exactly as the MicroPython one was — there is no monitor mode
-// here either.
+// A rolling survey: scan, log what is new, wait, scan again. Scan-based and not packet
+// capture, exactly as the MicroPython one was - there is no monitor mode here either.
 //
-// WHAT A PACKAGE CAN SEE IS LESS THAN WHAT THE MICROPYTHON ONE COULD, and the
-// difference is in the firmware rather than in this file. The scan behind
-// fw_net_scan already merges every beacon with the same name into one entry and
-// drops a beacon with no name at all, so a package cannot see individual radios
-// or hidden networks — there is no BSSID to key on and nothing hidden to log.
-// The survey therefore keys on the NAME, which loses nothing further: the two
-// access points were one row before this file ever saw them.
+// The file is WiGLE-1.4 CSV: one row per RADIO, keyed on its BSSID, with the channel, the
+// signal, the security the beacon declared, the time (UTC) and - when a GPS module has a fix -
+// where. That is fw_net_scan2's doing: the older scan merges every beacon with one name into one
+// entry and drops those with no name, so two radios of one network were one row and a hidden one
+// was none, and a file written from it could not honestly claim to be WiGLE's.
 //
-// A row is consequently not a WiGLE row and the file does not claim to be one. A
-// WiGLE upload is keyed on the MAC, and a file that says WigleWifi-1.4 with an
-// empty MAC column is one that gets rejected with nothing to explain why.
+// It goes to flash. The memory card is read-only in this OS, so there is no choosing a card, and
+// the MicroPython one's rule for a full disk is kept: warn near 95%, stop at 98%.
+//
+// DEVICE-UNCONFIRMED: the rows are proven against the MicroPython writer and the scan against a
+// fake. Nothing here has been uploaded to WiGLE, and the GPS side has not listened to a real
+// module.
 
 #define WD_INTERVAL_MS 4000     // between scans, as the MicroPython survey used
-#define WD_SEEN_MAX     128     // names remembered across the session
-#define WD_BUF         4096     // one part file, held in RAM
+#define WD_AP_MAX        48     // what fw_net_scan2 keeps of one scan
+#define WD_BUF         1536     // rows held before they are appended
+#define WD_PART_MAX  (96 * 1024)    // one file, so each is a size WiGLE's uploader takes
 #define WD_PARTS         20     // and how many of them a survey may write
-
-static const char *const kWdHeader = "SSID,Security,FirstSeen,Channel,RSSI\n";
+#define WD_FIX_FRESH_MS 5000    // a position older than this is not where the device is
+#define WD_FLASH_WARN    95
+#define WD_FLASH_BLOCK   98
 
 static volatile bool g_wd_run;      // the worker should keep going
 static volatile bool g_wd_live;     // and it is still there
-static volatile int  g_wd_aps;      // unique names logged
+static volatile int  g_wd_aps;      // radios logged
 static volatile int  g_wd_pass;     // scans completed
-static uint32_t      g_wd_seen[WD_SEEN_MAX];
-static int           g_wd_seen_n;
+static FwNetAp2      g_wd_scan[WD_AP_MAX];
+static wigle::Seen   g_wd_seen;
 static char          g_wd_buf[WD_BUF];
-static unsigned      g_wd_len;
+static unsigned      g_wd_len;      // held in g_wd_buf, not yet appended
+static unsigned      g_wd_bytes;    // in the current file
 static char          g_wd_path[40];
 static int           g_wd_part;
 static char          g_wd_msg[24];
 
-// A 32-bit hash of the name rather than the name itself. A hundred and
-// twenty-eight names in full is four kilobytes of a package that is counting
-// them; this is five hundred, and at that many entries the chance of two names
-// colliding — one row silently not written — is about two in a million.
-static uint32_t name_hash(const char *s) {
-    uint32_t h = 2166136261u;
-    while (*s) { h ^= (uint8_t)*s++; h *= 16777619u; }
-    return h ? h : 1u;
+// The GPS module, read by the worker rather than by the screen: the survey carries on under a
+// notice that has been opened over it, and a screen that is covered is not ticked, so a position
+// read from tick() would go stale exactly when the device was left alone to get on with it.
+static bool          g_wd_gps_wired;
+static unsigned      g_wd_gps_bus;
+static gps::Fix      g_wd_fix;
+static gps::LineBuf  g_wd_lb;
+static uint32_t      g_wd_fix_ms;   // when the last sentence that was understood arrived
+
+static void wd_gps_open(void) {
+    memset(&g_wd_fix, 0, sizeof(g_wd_fix));
+    gps::line_reset(&g_wd_lb);
+    g_wd_fix_ms = 0;
+    int tx = board::pin(board::PIN_GPS_TX), rx = board::pin(board::PIN_GPS_RX);
+    g_wd_gps_wired = (tx != board::PIN_NONE && rx != board::PIN_NONE);
+    if (g_wd_gps_wired) {
+        g_wd_gps_bus = gps::uart_bus(rx);
+        fw_uart_init(g_wd_gps_bus, (unsigned)tx, (unsigned)rx, 9600);
+    }
 }
 
-static bool wd_seen(const char *ssid) {
-    uint32_t h = name_hash(ssid);
-    for (int i = 0; i < g_wd_seen_n; i++) if (g_wd_seen[i] == h) return true;
-    if (g_wd_seen_n < WD_SEEN_MAX) g_wd_seen[g_wd_seen_n++] = h;
-    return false;
+static void wd_gps_close(void) {
+    if (g_wd_gps_wired) fw_uart_deinit(g_wd_gps_bus);
+    g_wd_gps_wired = false;
 }
 
-// The clock, or nothing. A device that has never seen a time server would
-// otherwise stamp every row with the same confident wrong minute, and a blank
-// column is the honest version of not knowing.
+// Everything the module has said since last asked. Bounded, so a module that never stops talking
+// cannot hold the survey here.
+static void wd_gps_pump(void) {
+    if (!g_wd_gps_wired) return;
+    char chunk[64];
+    for (int round = 0; round < 8; round++) {
+        int n = fw_uart_read(g_wd_gps_bus, chunk, sizeof(chunk), 0);
+        if (n <= 0) break;
+        for (int i = 0; i < n; i++) {
+            const char *ln;
+            if (gps::line_push(&g_wd_lb, chunk[i], &ln) && gps::consume(&g_wd_fix, ln))
+                g_wd_fix_ms = fw_millis();
+        }
+    }
+}
+
+// Is there a position worth writing down? A fix that was true a minute ago is not, and a module
+// that was unplugged leaves its last fix behind forever.
+static bool wd_pos_fresh(void) {
+    return g_wd_gps_wired && g_wd_fix.fixed &&
+           (uint32_t)(fw_millis() - g_wd_fix_ms) <= WD_FIX_FRESH_MS;
+}
+
+// The clock, then the satellites' clock, then nothing. A device that has never seen a time server
+// would otherwise stamp every row with the same confident wrong minute, and a blank column is the
+// honest version of not knowing.
 static void wd_stamp(char *out, unsigned cap) {
     FwTime t;
-    if (!fw_time_get(&t)) { out[0] = 0; return; }
-    snprintf(out, cap, "%04d-%02d-%02d %02d:%02d:%02d",
-             t.year, t.month, t.day, t.hour, t.minute, t.second);
-}
-
-// An SSID is not a safe CSV field: it can hold a comma or a quote, and a row
-// that splits into the wrong number of columns is worse than one that is
-// missing. Quoted and doubled, which is what every CSV reader expects.
-static void wd_field(char *out, unsigned cap, const char *s) {
-    if (!strchr(s, ',') && !strchr(s, '"')) { nova::copy(out, cap, s); return; }
-    unsigned n = 0;
-    if (n + 1 < cap) out[n++] = '"';
-    for (const char *p = s; *p && n + 2 < cap; p++) {
-        if (*p == '"' && n + 3 < cap) out[n++] = '"';
-        out[n++] = *p;
+    if (fw_time_get(&t)) {
+        snprintf(out, cap, "%04d-%02d-%02d %02d:%02d:%02d",
+                 t.year, t.month, t.day, t.hour, t.minute, t.second);
+        return;
     }
-    if (n + 1 < cap) out[n++] = '"';
-    out[n] = 0;
+    const gps::Fix &f = g_wd_fix;
+    if (wd_pos_fresh() && f.has_time && f.has_date) {
+        snprintf(out, cap, "%04d-%02d-%02d %02d:%02d:%02d", 2000 + f.yy, f.mo, f.dd, f.hh, f.mm, f.ss);
+        return;
+    }
+    out[0] = 0;
 }
 
-static bool wd_flush(void) {
-    if (!g_wd_len) return true;
-    return fw_file_write(g_wd_path, g_wd_buf, g_wd_len) != 0;
+struct WdOut { char *b; unsigned n, cap; };
+static bool wd_put(void *ctx, const char *s, unsigned n) {
+    WdOut *o = (WdOut *)ctx;
+    if (o->n + n >= o->cap) return false;
+    memcpy(o->b + o->n, s, n);
+    o->n += n;
+    o->b[o->n] = 0;
+    return true;
 }
 
-// Name the next part that does not exist yet, so a second survey never lands on
-// the first one's file. Bounded rather than open-ended: a fixed number of
-// bounded files is the disk guard the MicroPython survey had, arrived at from
-// the other end — it read the filesystem's free space, and a package cannot.
+// How full the flash is, in percent; 0 when it will not say.
+static int wd_flash_pct(void) {
+    FwStorageRoot r[2];
+    int n = fw_storage_roots(r, 2);
+    for (int i = 0; i < n; i++) {
+        if (r[i].kind != FW_ROOT_FLASH || !r[i].total_kb) continue;
+        uint32_t used = r[i].total_kb > r[i].free_kb ? r[i].total_kb - r[i].free_kb : 0;
+        return (int)((used * 100u) / r[i].total_kb);
+    }
+    return 0;
+}
+
+// Name the next part that does not exist yet, so a second survey never lands on the first one's
+// file, and write its header straight away: the file exists from the moment the survey starts
+// rather than at the first radio, which is also what stops the next part landing on the same name.
 static bool wd_open_part(void) {
     for (int i = g_wd_part; i < WD_PARTS; i++) {
         snprintf(g_wd_path, sizeof(g_wd_path), NOVA_LOGS "/wardrive-%d.csv", i);
         if (fw_file_exists(g_wd_path)) continue;
         g_wd_part = i + 1;
-        g_wd_len  = (unsigned)nova::copy(g_wd_buf, WD_BUF, kWdHeader);
-        // Written straight away, header and all, so the file exists from the
-        // moment the survey starts rather than at the first access point —
-        // which is also what stops the next part landing on the same name.
-        return wd_flush();
+        WdOut o = { g_wd_buf, 0, WD_BUF };
+        o.b[0] = 0;
+        codec::Sink k = { wd_put, &o };
+        if (!wigle::put_header(k, "NovaD1")) return false;
+        g_wd_bytes = o.n;
+        g_wd_len   = 0;
+        return fw_file_write(g_wd_path, g_wd_buf, o.n) != 0;
     }
     nova::copy(g_wd_msg, sizeof(g_wd_msg), "Logs full - clear them");
     return false;
 }
 
-static bool wd_add(const char *row) {
-    unsigned len = (unsigned)strlen(row);
-    // No append in the ABI: fw_file_write replaces a file, so a part is held
-    // whole in RAM and rewritten. When it will not take another row the survey
-    // rolls to the next file rather than stopping — the same continuity the
-    // MicroPython one had from appending, within a bound it did not need.
-    if (g_wd_len + len + 1 >= WD_BUF) {
-        if (!wd_flush()) return false;
-        if (!wd_open_part()) return false;
+// Append what is held. The flash is looked at first, because append refuses a full filesystem
+// but cannot say it is nearly full.
+static bool wd_flush(void) {
+    if (!g_wd_len) return true;
+    int pct = wd_flash_pct();
+    if (pct >= WD_FLASH_BLOCK) {
+        snprintf(g_wd_msg, sizeof(g_wd_msg), "Flash %d%% - stopped", pct);
+        return false;
     }
-    memcpy(g_wd_buf + g_wd_len, row, len);
-    g_wd_len += len;
-    g_wd_buf[g_wd_len] = 0;
+    if (pct >= WD_FLASH_WARN) snprintf(g_wd_msg, sizeof(g_wd_msg), "Flash %d%% full", pct);
+    if (!fw_file_append(g_wd_path, g_wd_buf, g_wd_len)) {
+        nova::copy(g_wd_msg, sizeof(g_wd_msg), "Write failed");
+        return false;
+    }
+    g_wd_bytes += g_wd_len;
+    g_wd_len = 0;
     return true;
+}
+
+// One row onto the held text. When it will not fit the held text goes out first; when the file is
+// as long as one part may be, the survey carries on in the next - the same continuity the
+// MicroPython one got from appending to a single file, within a bound it did not need.
+static bool wd_add(const wigle::Row &row) {
+    for (int attempt = 0; attempt < 2; attempt++) {
+        WdOut o = { g_wd_buf + g_wd_len, 0, WD_BUF - g_wd_len };
+        o.b[0] = 0;
+        codec::Sink k = { wd_put, &o };
+        if (wigle::put_row(k, row) && g_wd_bytes + g_wd_len + o.n <= WD_PART_MAX) {
+            g_wd_len += o.n;
+            return true;
+        }
+        // Does not fit: send what is held, and if the file itself is full start the next.
+        if (!wd_flush()) return false;
+        if (g_wd_bytes + 256 > WD_PART_MAX && !wd_open_part()) return false;
+    }
+    return false;
 }
 
 static bool survey_live(void) { return g_wd_live; }
 
+// One pass: read the module, scan, and write down every radio not met before. False when the
+// survey cannot go on (the flash is full, a write failed), with the reason in g_wd_msg.
+static bool wd_pass(void) {
+    wd_gps_pump();
+    int n = fw_net_scan2(g_wd_scan, WD_AP_MAX);
+    g_wd_pass++;
+    // A refusal is usually the radio being busy elsewhere for a moment, so the survey says so and
+    // carries on rather than ending on one bad pass.
+    if (n < 0) nova::copy(g_wd_msg, sizeof(g_wd_msg), "Scan refused");
+    // The position AFTER the scan, which took seconds: a drive moves a long way in that time, and
+    // the later fix is the closer one to where the strongest sighting was.
+    wd_gps_pump();
+
+    char ts[24];
+    wd_stamp(ts, sizeof(ts));
+    const bool pos = wd_pos_fresh();
+    bool wrote = false;
+    for (int i = 0; i < n; i++) {
+        const FwNetAp2 &ap = g_wd_scan[i];
+        if (wigle::seen_note(&g_wd_seen, ap.bssid)) continue;
+        wigle::Row row = {};
+        row.bssid = ap.bssid; row.ssid = ap.ssid; row.sec = ap.sec; row.time = ts;
+        row.channel = ap.channel; row.rssi = ap.rssi;
+        row.has_pos = pos; row.lat_e5 = g_wd_fix.lat_e5; row.lon_e5 = g_wd_fix.lon_e5;
+        row.has_alt = pos; row.alt_dm = g_wd_fix.alt_dm;
+        if (!wd_add(row)) return false;
+        g_wd_aps++;
+        wrote = true;
+    }
+    // Written when there is something new, which is also what keeps a stationary survey from
+    // touching the flash every four seconds.
+    return !wrote || wd_flush();
+}
+
 static int wardrive_worker(void *) {
     g_wd_live = true;
+    wd_gps_open();
     while (g_wd_run && !fw_task_should_stop()) {
-        int n = fw_net_scan(g_aps, AP_MAX);
-        g_wd_pass++;
-        // A refusal is usually the radio being busy elsewhere for a moment, so
-        // the survey says so and carries on rather than ending on one bad pass.
-        if (n < 0) nova::copy(g_wd_msg, sizeof(g_wd_msg), "Scan refused");
-
-        bool wrote = false;
-        char ts[24];
-        wd_stamp(ts, sizeof(ts));
-        for (int i = 0; i < n; i++) {
-            if (!g_aps[i].ssid[0] || wd_seen(g_aps[i].ssid)) continue;
-            char name[70];
-            wd_field(name, sizeof(name), g_aps[i].ssid);
-            char row[128];
-            snprintf(row, sizeof(row), "%s,%s,%s,%d,%d\n", name,
-                     g_aps[i].secured ? "secured" : "open", ts,
-                     g_aps[i].channel, g_aps[i].rssi);
-            if (!wd_add(row)) { g_wd_run = false; break; }
-            g_wd_aps++;
-            wrote = true;
-        }
-        // Written when there is something new, which is also what keeps a
-        // stationary survey from rewriting the same file every four seconds.
-        if (wrote && !wd_flush()) {
-            nova::copy(g_wd_msg, sizeof(g_wd_msg), "Write failed");
-            g_wd_run = false;
-        }
+        if (!wd_pass()) g_wd_run = false;
         gui::invalidate();
-
-        // The wait, in tenths, so stopping is felt at once rather than up to
-        // four seconds later.
-        for (int i = 0; i < WD_INTERVAL_MS / 100 && g_wd_run && !fw_task_should_stop(); i++)
+        // The wait, in tenths, so stopping is felt at once rather than up to four seconds later.
+        // The module is read in it too, so its output does not queue up behind the scan.
+        for (int i = 0; i < WD_INTERVAL_MS / 100 && g_wd_run && !fw_task_should_stop(); i++) {
+            wd_gps_pump();
             fw_task_sleep_ms(100);
+        }
     }
-    // The CLOSING flush, carrying everything logged since the last new
-    // network. Its result was the one of four that went unchecked, so a card
-    // that filled up at the end lost the tail of the survey with the screen
+    // The CLOSING flush, carrying everything logged since the last one. Its result is checked: a
+    // flash that filled up at the end would otherwise lose the tail of the survey with the screen
     // still reading "idle".
-    if (!wd_flush()) nova::copy(g_wd_msg, sizeof(g_wd_msg), "Write failed");
+    if (!wd_flush() && !g_wd_msg[0]) nova::copy(g_wd_msg, sizeof(g_wd_msg), "Write failed");
+    wd_gps_close();
     g_wd_run  = false;
     g_wd_live = false;
     gui::invalidate();
     return 0;
+}
+
+// Everything a survey starts from, and the first file. Apart from the screen so a test can begin
+// one without a worker.
+static bool wd_begin(void) {
+    nova::paths_init();
+    g_wd_msg[0]  = 0;
+    wigle::seen_reset(&g_wd_seen);
+    g_wd_aps     = 0;
+    g_wd_pass    = 0;
+    g_wd_part    = 0;
+    g_wd_len     = 0;
+    g_wd_bytes   = 0;
+    g_wd_path[0] = 0;
+    return wd_open_part();
 }
 
 class WardriveScreen : public Screen {
@@ -925,18 +1021,21 @@ public:
     const char *title(void) const override { return "Wardrive"; }
 
     int help(const char **out, int max) const override {
-        if (max < 4) return 0;
+        if (max < 7) return 0;
         out[0] = "SELECT starts and stops.";
-        out[1] = "Each name is logged once,";
-        out[2] = "to /nova/logs/wardrive-N.csv.";
-        out[3] = "BACK ends the survey.";
-        return 4;
+        out[1] = "Each radio is logged once,";
+        out[2] = "to /nova/logs/wardrive-N.csv";
+        out[3] = "in WiGLE format.";
+        out[4] = "A GPS module on its pins";
+        out[5] = "adds where; without one the";
+        out[6] = "position columns stay blank.";
+        return 7;
     }
 
     void enter(void) override { poll_ = 0; }
 
     // leave() ALSO RUNS WHEN A CHILD IS PUSHED over this screen, not only when
-    // this one goes — the pool calls it on the way past. The two are told apart
+    // this one goes - the pool calls it on the way past. The two are told apart
     // by who is on top: on a real pop the slot has already been handed back, so
     // this screen is no longer it. Without the distinction, opening a notice
     // over a running survey would quietly end it; with only the BACK gesture
@@ -975,6 +1074,24 @@ public:
         c.text(vx, y, v, 1);
         y += ui::ROWH;
 
+        // Whether rows are being tagged with a place. Only meaningful while the worker owns the
+        // module, so an idle screen says what a start would do rather than what it last saw.
+        const char *gs;
+        if (!g_wd_live) {
+            gs = (board::pin(board::PIN_GPS_TX) != board::PIN_NONE && board::pin(board::PIN_GPS_RX) != board::PIN_NONE)
+                     ? "module set" : "no pins";
+            snprintf(v, sizeof(v), "%s", gs);
+        } else if (!g_wd_gps_wired) {
+            snprintf(v, sizeof(v), "no pins");
+        } else if (wd_pos_fresh()) {
+            snprintf(v, sizeof(v), "fix %02d sats", g_wd_fix.sats_used);
+        } else {
+            snprintf(v, sizeof(v), g_wd_fix.have ? "no fix" : "silent");
+        }
+        c.text(0, y, "GPS", 1);
+        c.text(vx, y, v, 1);
+        y += ui::ROWH;
+
         c.text(0, y, "Log", 1);
         // The file's name only. The directory is in the help, and the whole path
         // would push the part number off the panel to say what never changes.
@@ -999,15 +1116,7 @@ private:
 
     void start(void) {
         if (op_busy()) { nova::copy(g_wd_msg, sizeof(g_wd_msg), "Radio busy"); return; }
-        nova::paths_init();
-        g_wd_msg[0]  = 0;
-        g_wd_seen_n  = 0;
-        g_wd_aps     = 0;
-        g_wd_pass    = 0;
-        g_wd_part    = 0;
-        g_wd_len     = 0;
-        g_wd_path[0] = 0;
-        if (!wd_open_part()) return;
+        if (!wd_begin()) return;
         g_wd_run = true;
         if (fw_task_spawn("novawardrive", wardrive_worker, nullptr, 3072) >= 0) return;
         g_wd_run = false;

@@ -31,6 +31,7 @@
 #include "blackbox.h"
 #include "joinguard.h"
 #include "netown.h"
+#include "scanlist.h"
 #include "rpc_app.h"
 
 #include <stdio.h>
@@ -695,9 +696,9 @@ static int scan_cb(void *, const cyw43_ev_scan_result_t *r) {
 // CYW43_AUTH_* values (0x00400004 and friends) are what you pass to JOIN. They
 // are different encodings and comparing one against the other silently mislabels
 // every secured network as "open".
-#define SEC_WEP  0x01
-#define SEC_WPA  0x02
-#define SEC_WPA2 0x04
+#define SEC_WEP  SCAN_SEC_WEP
+#define SEC_WPA  SCAN_SEC_WPA
+#define SEC_WPA2 SCAN_SEC_WPA2
 
 static const char *auth_text(uint8_t sec) {
     if (sec == 0)                             return "open";
@@ -723,18 +724,34 @@ static uint32_t auth_for(const char *ssid) {
     return CYW43_AUTH_WPA2_MIXED_PSK;
 }
 
-static int scan_collect(bool quiet = false) {
+// Per-radio results for packages, beside the name-merged list above and never
+// mixed with it: that one is what the join code reads, and it is merged by name
+// on purpose.
+#define SCAN2_MAX 48
+static ScanRec  g_scan2_store[SCAN2_MAX];
+static ScanList g_scan2;
+
+static int scan2_cb(void *, const cyw43_ev_scan_result_t *r) {
+    if (!r) return 0;
+    scanlist_add(&g_scan2, r->bssid, r->ssid, r->ssid_len, r->rssi, r->channel,
+                 r->auth_mode);
+    return 0;
+}
+
+// Start a scan reporting into `cb` and wait for it to finish. 0 once it has run
+// to the end or to the deadline; 1 if the radio is off or the scan would not
+// start. What was heard is in whichever table `cb` fills.
+static int scan_run(bool quiet, int (*cb)(void *, const cyw43_ev_scan_result_t *)) {
     // A scan is a driver operation, so it takes ownership too. Recursive, so a
     // caller that already holds it (autoconnect, which scans then joins) is
     // not blocked by itself.
     LockGuard _own(&g_net_op);
     if (!radio_up()) return 1;
-    g_scan.n = 0;
     cyw43_wifi_scan_options_t opts;
     memset(&opts, 0, sizeof(opts));
     if (!quiet) out_info("Scanning...");
     join_phase("scan start");
-    if (cyw43_wifi_scan(&cyw43_state, &opts, nullptr, scan_cb) != 0) {
+    if (cyw43_wifi_scan(&cyw43_state, &opts, nullptr, cb) != 0) {
         out_err("Could not start a scan.");
         return 1;
     }
@@ -754,6 +771,16 @@ static int scan_collect(bool quiet = false) {
         task_sleep_ms(20);
     }
     if (!quiet) out_progress_done();
+    return 0;
+}
+
+static int scan_collect(bool quiet = false) {
+    LockGuard _own(&g_net_op);
+    // Checked before the table is cleared, as it always was, so a scan refused
+    // because the radio is off leaves the last list for "connect N" to use.
+    if (!radio_up()) return 1;
+    g_scan.n = 0;
+    if (scan_run(quiet, scan_cb) != 0) return 1;
     if (!g_scan.n) { if (!quiet) out_warn("No networks found."); return 1; }
 
     // Strongest first — insertion sort over at most SCAN_MAX entries.
@@ -1574,6 +1601,29 @@ int net_pkg_scan(FwNetAp *out, unsigned max) {
     return (int)n;
 }
 
+int net_pkg_scan2(FwNetAp2 *out, unsigned max) {
+    if (!out || max == 0) return -1;
+    // Held across the copy as well as the scan: the table is shared, and a
+    // second package task scanning between the two would hand this one the
+    // other's list.
+    LockGuard _own(&g_net_op);
+    scanlist_init(&g_scan2, g_scan2_store, SCAN2_MAX);
+    if (scan_run(/*quiet*/true, scan2_cb) != 0) return -1;
+    scanlist_sort(&g_scan2);
+
+    unsigned n = g_scan2.n < max ? g_scan2.n : max;
+    for (unsigned i = 0; i < n; i++) {
+        const ScanRec &r = g_scan2.rec[i];
+        memcpy(out[i].bssid, r.bssid, 6);
+        out[i].rssi    = r.rssi;
+        out[i].channel = r.channel;
+        out[i].sec     = r.sec;
+        out[i].hidden  = r.hidden;
+        snprintf(out[i].ssid, sizeof(out[i].ssid), "%s", r.ssid);
+    }
+    return (int)n;
+}
+
 int net_pkg_ssid(char *out, unsigned cap) {
     if (!out || cap == 0) return 0;
     int n = snprintf(out, cap, "%s", g_status.connected ? g_status.ssid : "");
@@ -1741,6 +1791,7 @@ const char *signal_bars(int) { return "____"; }
 const char *signal_word(int) { return "no radio"; }
 bool radio_locked(void) { return false; }   // nothing to lock
 int  net_pkg_scan(FwNetAp *, unsigned) { return -1; }
+int  net_pkg_scan2(FwNetAp2 *, unsigned) { return -1; }
 int  net_pkg_ssid(char *out, unsigned cap) { if (out && cap) out[0] = 0; return 0; }
 int  net_pkg_ip(char *out, unsigned cap)   { if (out && cap) out[0] = 0; return 0; }
 void net_autoconnect(void) {}

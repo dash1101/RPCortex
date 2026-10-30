@@ -476,7 +476,7 @@ static bool fakefs_put(const char *path, const void *data, uint32_t len, bool ap
     FakeFile *f = fakefs_make(path);
     if (!f) return false;
     uint32_t at = append ? f->len : 0;
-    if (at + len > 65536) return false;
+    if (at + len > 262144) return false;
     uint8_t *d = (uint8_t *)realloc(f->data, at + len + 1);
     if (!d) return false;
     f->data = d;
@@ -777,6 +777,18 @@ int fw_net_scan(FwNetAp *out, unsigned max) {
     for (int i = 0; i < n; i++) out[i] = g_scan_aps[i];
     return n;
 }
+// The radios a per-BSSID scan finds, and whether it refuses. Separate from the list above because
+// the two scans disagree about what a radio is, and a test that fed one table to both could not
+// tell them apart.
+static FwNetAp2 g_scan2_aps[64];
+static int      g_scan2_n;
+static int      g_scan2_refuse;
+int fw_net_scan2(FwNetAp2 *out, unsigned max) {
+    if (g_scan2_refuse) return -1;
+    int n = g_scan2_n < (int)max ? g_scan2_n : (int)max;
+    for (int i = 0; i < n; i++) out[i] = g_scan2_aps[i];
+    return n;
+}
 // --- a little music library -------------------------------------------------------
 //
 // PATH-KEYED, deliberately. Every directory answered zero before and the file
@@ -1021,13 +1033,14 @@ uint32_t fw_file_read_at(const char *path, uint32_t off, void *buf, uint32_t cap
 // row. The music library above lives under /nova/music; the roots browse "/" and
 // "/sd", which are empty here, which is the correct picture for the Files shot.
 static bool g_fake_sd = true;
+static uint32_t g_fake_flash_free_kb = 1788;
 int fw_storage_roots(FwStorageRoot *out, int max) {
     if (!out || max < 1) return -1;
     memset(out, 0, sizeof(*out) * (unsigned)(max < 2 ? max : 2));
     snprintf(out[0].label, sizeof(out[0].label), "On-Board");
     snprintf(out[0].path, sizeof(out[0].path), "/");
     out[0].kind = FW_ROOT_FLASH; out[0].present = 1;
-    out[0].total_kb = 2048; out[0].free_kb = 1788;
+    out[0].total_kb = 2048; out[0].free_kb = g_fake_flash_free_kb;
     if (max < 2) return 1;
     snprintf(out[1].label, sizeof(out[1].label), "SD");
     snprintf(out[1].path, sizeof(out[1].path), "/sd");

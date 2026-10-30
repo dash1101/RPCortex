@@ -23,7 +23,7 @@ extern "C" {
 // MINOR: a symbol added — older-minor apps still run (everything they want is
 //        present); newer-minor apps refused (they may want something absent).
 #define RPC_API_MAJOR 1
-#define RPC_API_MINOR 25
+#define RPC_API_MINOR 26
 
 typedef struct {
     uint32_t magic;          // RPC_APP_MAGIC
@@ -614,6 +614,29 @@ int fw_net_ip(char *out, unsigned cap);
 // Scan for access points, strongest first. Returns how many were written, or
 // negative if the radio could not be used. Takes seconds.
 int fw_net_scan(FwNetAp *out, unsigned max);
+
+// A scan that keeps every radio, which fw_net_scan does not: that one merges
+// beacons by NAME, drops networks with no name, and has no address to tell two
+// radios of one network apart. This one is one row per BSSID, hidden networks
+// included, with the radio's own address and the security the beacon declared.
+//
+// `sec` is the beacon's three-bit summary, not a join constant: 0x01 WEP, 0x02
+// WPA, 0x04 WPA2, zero for open. `hidden` is set when the name was not heard;
+// `ssid` is then empty. A network that answers a probe later in the same scan
+// is reported under its name.
+struct FwNetAp2 {
+    uint8_t  bssid[6];
+    int16_t  rssi;
+    uint16_t channel;
+    uint8_t  sec;
+    uint8_t  hidden;
+    char     ssid[FW_NET_SSID_MAX];
+};
+
+// Strongest first. Returns how many were written (at most `max`, and at most 64
+// however large `max` is), or negative if the radio could not be used. Takes
+// seconds, and uses the same one-owner lock as fw_net_scan.
+int fw_net_scan2(FwNetAp2 *out, unsigned max);
 
 // Resolve a hostname. Returns the length written to `ip_out`, or negative.
 int fw_net_resolve(const char *host, char *ip_out, unsigned cap);

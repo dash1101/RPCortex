@@ -13,6 +13,7 @@
 #include "../apps/novad1/novaoui.cpp"
 #include "../apps/novad1/novatotp.cpp"
 #include "../apps/novad1/novagps.cpp"
+#include "../apps/novad1/novawigle.cpp"
 
 #include <stdio.h>
 #include <string.h>
@@ -480,11 +481,131 @@ static void test_helpers(void) {
     CHECK(!codec::parse_hex("xyz", "xyz" + 3, &h), "parse_hex refuses a non-hex digit");
 }
 
+// Bytes off a UART into lines: CR, LF and CRLF all end one, an empty line is nothing, a line too long
+// to be NMEA is dropped whole, and a sentence may arrive in any number of pieces.
+static void test_gps_lines(void) {
+    gps::LineBuf lb;
+    gps::line_reset(&lb);
+    const char *ln = nullptr;
+    const char *stream = "$GPGGA,1*00\r\n$GPRMC,2*00\n\n\r$GPGSV,3*00\r";
+    const char *want[] = { "$GPGGA,1*00", "$GPRMC,2*00", "$GPGSV,3*00" };
+    unsigned got = 0;
+    for (const char *p = stream; *p; p++)
+        if (gps::line_push(&lb, *p, &ln)) {
+            CHECK(got < 3 && !strcmp(ln, want[got]), "line %u: got '%s'", got, ln);
+            got++;
+        }
+    CHECK(got == 3, "three lines out of CRLF, LF LF CR and a bare CR (got %u)", got);
+
+    // The same bytes one at a time with a reset between, and then in the middle of a line.
+    gps::line_reset(&lb);
+    got = 0;
+    for (const char *p = "$ABC"; *p; p++) CHECK(!gps::line_push(&lb, *p, &ln), "no line before the newline");
+    CHECK(gps::line_push(&lb, '\n', &ln) && !strcmp(ln, "$ABC"), "completed by the newline");
+
+    // 200 bytes with no newline: dropped, and the line after the next newline is clean.
+    gps::line_reset(&lb);
+    bool spurious = false;
+    for (int i = 0; i < 200; i++) if (gps::line_push(&lb, 'x', &ln)) spurious = true;
+    CHECK(!spurious, "a line too long is not handed over");
+    gps::line_push(&lb, '\n', &ln);
+    bool clean = false;
+    for (const char *p = "$OK\n"; *p; p++) if (gps::line_push(&lb, *p, &ln)) clean = !strcmp(ln, "$OK");
+    CHECK(clean, "and the next line is read whole");
+}
+
+// --- WiGLE ---------------------------------------------------------------------------------
+
+static void test_wigle(void) {
+    for (unsigned i = 0; i < WIGLE_SEC_N; i++)
+        CHECK(!strcmp(wigle::sec_text(kWigleSec[i].bits), kWigleSec[i].text),
+              "security bits %u: got '%s', want '%s'", kWigleSec[i].bits,
+              wigle::sec_text(kWigleSec[i].bits), kWigleSec[i].text);
+
+    for (unsigned i = 0; i < WIGLE_HEADER_N; i++) {
+        Buf b; buf_init(&b);
+        CHECK(wigle::put_header(sink_of(&b), kWigleHeader[i].model), "header %u written", i);
+        CHECK(!strcmp(b.b, kWigleHeader[i].text), "header %u matches the oracle (got '%s')", i, b.b);
+    }
+    for (unsigned i = 0; i < WIGLE_FIELD_N; i++) {
+        Buf b; buf_init(&b);
+        CHECK(wigle::put_field(sink_of(&b), kWigleField[i].in), "field %u written", i);
+        CHECK(!strcmp(b.b, kWigleField[i].out), "field '%s': got '%s', want '%s'", kWigleField[i].in, b.b,
+              kWigleField[i].out);
+    }
+    for (unsigned i = 0; i < WIGLE_ROW_N; i++) {
+        const WigleRowCase &c = kWigleRow[i];
+        wigle::Row r = {};
+        r.bssid = c.bssid; r.ssid = c.ssid; r.sec = c.sec; r.time = c.time;
+        r.channel = c.channel; r.rssi = c.rssi;
+        r.has_pos = c.pos != 0; r.lat_e5 = c.lat_e5; r.lon_e5 = c.lon_e5;
+        r.has_alt = c.has_alt != 0; r.alt_dm = c.alt_dm;
+        Buf b; buf_init(&b);
+        CHECK(wigle::put_row(sink_of(&b), r), "row %u written", i);
+        CHECK(!strcmp(b.b, c.row), "row %u: got '%s' want '%s'", i, b.b, c.row);
+    }
+
+    // The session: a radio is a row on the pass it first appears and never again.
+    wigle::Seen seen;
+    wigle::seen_reset(&seen);
+    unsigned total = 0;
+    for (unsigned p = 0; p < WIGLE_PASS_N; p++) {
+        for (unsigned k = 0; k < kWiglePass[p].n; k++) {
+            uint8_t mac[6] = { 2, 0, 0, 0, 0, kWiglePass[p].id[k] };
+            bool fresh = !wigle::seen_note(&seen, mac);
+            CHECK(fresh == (kWiglePass[p].fresh[k] != 0), "pass %u entry %u: fresh=%d, oracle says %d", p, k,
+                  (int)fresh, (int)kWiglePass[p].fresh[k]);
+            if (fresh) total++;
+        }
+    }
+    CHECK(total == kWigleSessionTotal, "%u unique radios, oracle says %u", total, kWigleSessionTotal);
+
+    // What the oracle could not be asked, because its set never ran out: a full table forgets the
+    // OLDEST radio, not the newest, so a long drive keeps logging new ones.
+    wigle::seen_reset(&seen);
+    for (unsigned i = 0; i < WIGLE_SEEN_MAX + 10; i++) {
+        uint8_t mac[6] = { 0x0a, 0, 0, 0, (uint8_t)(i >> 8), (uint8_t)i };
+        CHECK(!wigle::seen_note(&seen, mac), "radio %u is new", i);
+    }
+    CHECK(seen.n == WIGLE_SEEN_MAX, "the table stays at its bound");
+    {
+        uint8_t newest[6] = { 0x0a, 0, 0, 0, (uint8_t)((WIGLE_SEEN_MAX + 9) >> 8), (uint8_t)(WIGLE_SEEN_MAX + 9) };
+        uint8_t kept[6]   = { 0x0a, 0, 0, 0, 0, 10 };      // the first one not yet overwritten
+        CHECK(wigle::seen_note(&seen, newest), "the newest radio is still remembered");
+        CHECK(wigle::seen_note(&seen, kept), "one that was not the oldest is still remembered");
+        // The ten overwritten were the ten oldest, one after another - not the same slot ten times.
+        // Asked after the two above, because asking about a forgotten radio remembers it again.
+        for (unsigned i = 0; i < 10; i++) {
+            uint8_t gone[6] = { 0x0a, 0, 0, 0, 0, (uint8_t)i };
+            CHECK(!wigle::seen_note(&seen, gone), "radio %u was forgotten, and so counts as new again", i);
+        }
+    }
+
+    // A sink that fills must stop the writer and say so, at every length.
+    {
+        const uint8_t mac[6] = { 1, 2, 3, 4, 5, 6 };
+        wigle::Row r = {};
+        r.bssid = mac; r.ssid = "Full,House"; r.sec = 4; r.time = "2026-10-30 18:04:05";
+        r.channel = 6; r.rssi = -60; r.has_pos = true; r.lat_e5 = 4807038; r.lon_e5 = -1131000;
+        r.has_alt = true; r.alt_dm = 5454;
+        Buf whole; buf_init(&whole);
+        wigle::put_row(sink_of(&whole), r);
+        bool all_stop = true;
+        for (unsigned cap = 1; cap <= whole.n; cap++) {
+            Buf b; buf_init(&b, cap);
+            if (wigle::put_row(sink_of(&b), r)) all_stop = false;
+        }
+        CHECK(all_stop, "a row that does not fit is refused at every shorter length");
+    }
+}
+
 int main() {
     test_helpers();
     test_oui();
     test_totp();
     test_gps();
+    test_gps_lines();
+    test_wigle();
     test_sub_encode();
     test_sub_parse();
     test_sub_write();
