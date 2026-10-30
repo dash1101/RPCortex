@@ -13,27 +13,29 @@
 //
 // THE SCHEME: vMAJOR.ITER, with a build number beside it.
 //
-//     v2.00                    the release of the second generation, with its codename
-//     v2.11 (build 1203)       the eleventh patch release of it
-//     v2.00-beta (build 486)   a pre-release of the first one
+//     v2.00-beta (build 483)   the first release of the generation, a beta
+//     v2.01-beta               the next one published, still a beta
+//     v2.03-rc, v2.04-rc2      release candidates, counted
+//     v2.05                    no longer a beta: the label is simply dropped
 //
 // MAJOR is a generation, the only thing with a codename, and it changes when the
-// platform does: a new kernel, a new package ABI, a new architecture. ITER counts
-// the patch releases within a generation from zero, written with two digits, and
-// has no ceiling (v2.99 is followed by v2.100). A patch is cut on a schedule when
-// there is enough to say, not for every build; the builds between two releases
-// are not releases and are told apart by the build number. A patch never breaks
-// packages; a change that would is a new MAJOR. RPC_OS_SUFFIX marks a pre-release
-// and is empty once the version ships.
+// platform does: a new kernel, a new package ABI, a new architecture. ITER is the
+// number of the release, written with two digits, and has no ceiling (v2.99 is
+// followed by v2.100). EVERY release published takes the next number whatever it is
+// labelled, so a number is never reused and a later number is always newer; the
+// label (RPC_OS_SUFFIX: "-beta", "-rc", "-rc2", or none) says how finished it is.
+// A release never breaks packages; a change that would is a new MAJOR.
 //
-// The build number is the commit count and rises on its own, so nobody has to
-// remember to move it and it cannot disagree with the image. It is kept out of
-// tags and shown next to the version wherever two builds of one version could
-// be confused for each other.
+// The version written here is the one the NEXT release will carry. tools/release.py
+// moves it: `label` changes the suffix and cutting a release steps ITER forward.
+// Builds between two releases are not releases; they are told apart by the build
+// number, which is the commit count, so nobody has to remember to move it and it
+// cannot disagree with the image. It is shown next to the version wherever two
+// builds of one version could be confused for each other.
 #define RPC_OS_MAJOR    "2"
-#define RPC_OS_ITER     "00"                     // two digits; compared as a number
-#define RPC_OS_SUFFIX   "-beta"                  // "" once released
-#define RPC_OS_CODENAME "Vela II"                // a generation's name, on its .0 and after
+#define RPC_OS_ITER     "01"                     // two digits; compared as a number
+#define RPC_OS_SUFFIX   "-beta"                  // "-beta", "-rc", "-rc2", ... or "" when final
+#define RPC_OS_CODENAME "Vela II"                // the generation's name
 #define RPC_OS_VERNUM   RPC_OS_MAJOR "." RPC_OS_ITER      // no 'v': what comparisons use
 #define RPC_OS_VERSION  "v" RPC_OS_VERNUM RPC_OS_SUFFIX   // what people read
 
@@ -44,15 +46,14 @@
 #define RPC_OS_BUILD "0"
 #endif
 
-// What people read where the build matters: "v2.00-beta (build 486)".
+// What people read where the build matters: "v2.01-beta (build 486)".
 #define RPC_OS_LONG     RPC_OS_VERSION " (build " RPC_OS_BUILD ")"
 
 // What the updater compares: the version with the build as a third component,
-// "2.00.486". repo_version_cmp counts a missing component as zero and compares
+// "2.01.486". repo_version_cmp counts a missing component as zero and compares
 // number by number, so "2.10" follows "2.09", "00" is zero, a later build beats an
 // earlier one, and an older device's "2.0.0.483" is still older than any build of
-// the new form. The git sha is
-// deliberately NOT in here: it carries a '+' when the tree was dirty, which is
+// the new form. The label is not in it. The git sha is deliberately NOT in here: it carries a '+' when the tree was dirty, which is
 // not a number and would not compare.
 #define RPC_OS_BUILDVER RPC_OS_VERNUM "." RPC_OS_BUILD
 

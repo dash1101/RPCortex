@@ -5,13 +5,14 @@
     tools/release.py notes                the release notes as GitHub will show them
     tools/release.py cut                  dry run: every step is printed, nothing changes
     tools/release.py cut --publish        build, write, commit, tag, push, create the release
+    tools/release.py label beta|rc|final  what the next release is called: v2.01-beta, v2.03-rc, v2.05
     tools/release.py bump iter            v2.11 -> v2.12   (edits os/kernel/kernel.h)
     tools/release.py bump major "Name"    v2.11 -> v3.00   (new codename)
-    tools/release.py bump ship            drop the -beta suffix
 
 WHERE THINGS COME FROM
 ----------------------
-  version    os/kernel/kernel.h  (RPC_OS_MAJOR, RPC_OS_ITER, RPC_OS_SUFFIX, RPC_OS_CODENAME)
+  version    os/kernel/kernel.h  (RPC_OS_MAJOR, RPC_OS_ITER, RPC_OS_SUFFIX, RPC_OS_CODENAME):
+             the number and label the NEXT release will carry
   build      the commit count at the time the images are built
   notes      the `## Unreleased` section of CHANGELOG.md
   boards     releases/boards.json (hand edited: which boards have run which build)
@@ -24,7 +25,10 @@ WHAT IT WRITES
   CHANGELOG.md             `## Unreleased` becomes a dated section; a new empty one is added
   out/release-<tag>/       versioned copies of the images and SHA256SUMS, uploaded to GitHub
 
-Pre-releases are tagged `v2.00-beta.<build>`; a stable release is `v2.11`. A tag is
+EVERY release published takes the next number, whatever its label: v2.01-beta, then v2.02-beta,
+then v2.03-rc, v2.04-rc2, then v2.05 once it is no longer a beta. The tag is the version as written,
+so there is no build in a tag; the build is in the title and the notes. After a release is cut, kernel.h
+is stepped to the next number (an rc counts up to rc2, rc3, ...) and that is committed. A tag is
 never moved or deleted by this tool.
 
 Only the standard library is needed, so it runs on a fresh checkout.
@@ -69,10 +73,9 @@ def display(v):
     return "v%s.%s%s" % (v["major"], v["iter"], v["suffix"])
 
 
-def tag_for(v, build):
-    """Pre-releases are told apart by build; a stable release by its version."""
-    return "v%s.%s%s.%s" % (v["major"], v["iter"], v["suffix"], build) if v["suffix"] \
-        else "v%s.%s" % (v["major"], v["iter"])
+def tag_for(v, build=None):
+    """The tag is the version as written. Every release takes a new number, so it is unique."""
+    return display(v)
 
 
 def comparable(v, build):
@@ -81,11 +84,7 @@ def comparable(v, build):
 
 
 def title_for(v, build):
-    if v["suffix"]:
-        return "RPCortex %s (build %s)" % (display(v), build)
-    if int(v["iter"]) == 0:
-        return "RPCortex %s — %s" % (display(v), v["codename"])
-    return "RPCortex %s" % display(v)
+    return "RPCortex %s (build %s)" % (display(v), build)
 
 
 def bump(v, what, name=None):
@@ -96,9 +95,37 @@ def bump(v, what, name=None):
         if not name:
             raise SystemExit("a new major needs its codename: bump major \"Name\"")
         v["major"], v["iter"], v["codename"] = str(int(v["major"]) + 1), "00", name
-    elif what == "ship":
-        v["suffix"] = ""
     return v
+
+
+def rc_after(suffix):
+    """The label of the release candidate that follows one labelled `suffix` ('' if it was not an rc)."""
+    m = re.match(r"^-rc(\d*)$", suffix or "")
+    if not m:
+        return "-rc"
+    return "-rc%d" % ((int(m.group(1)) if m.group(1) else 1) + 1)
+
+
+def relabel(v, what, last_published=None):
+    """What the next release is called. `last_published` is the label of the one before it, for counting rcs."""
+    v = dict(v)
+    if what == "beta":
+        v["suffix"] = "-beta"
+    elif what == "final":
+        v["suffix"] = ""
+    elif what == "rc":
+        v["suffix"] = rc_after(last_published) if (last_published or "").startswith("-rc") else "-rc"
+    else:
+        raise SystemExit("a label is beta, rc or final")
+    return v
+
+
+def next_after(v):
+    """The version to carry once `v` has been published: the next number, and the next rc if it was one."""
+    n = bump(v, "iter")
+    if (v["suffix"] or "").startswith("-rc"):
+        n["suffix"] = rc_after(v["suffix"])
+    return n
 
 
 def write_version(v):
@@ -205,6 +232,15 @@ def load_json(path, default):
     return json.load(open(path)) if os.path.exists(path) else default
 
 
+def last_label(hist=None):
+    """The label of the most recently published release ('' for a final, None if nothing is published)."""
+    hist = hist if hist is not None else load_json(os.path.join(RELEASES, "releases.json"), {"releases": []})
+    if not hist["releases"]:
+        return None
+    m = re.match(r"^v\d+\.\d+(-.*)?$", hist["releases"][0]["display"])
+    return (m.group(1) or "") if m else ""
+
+
 def plan(msg, dry):
     print(("  would: " if dry else "  doing: ") + msg)
 
@@ -216,7 +252,8 @@ def cmd_status(_a):
     build = build_number()
     notes = parse_unreleased(open(CHANGELOG).read())
     print("version   %s   codename %s   build %s (the commit count now)" % (display(v), v["codename"], build))
-    print("tag       %s" % tag_for(v, build))
+    print("tag       %s   (the next release; the last published was %s)" % (
+        tag_for(v, build), (load_json(os.path.join(RELEASES, "releases.json"), {"releases": []})["releases"] or [{"display": "none"}])[0]["display"]))
     print("device    compares %s" % comparable(v, build))
     print("notes     %d added, %d changed, %d fixed, %d limitations" %
           tuple(len(notes[k]) for k in ("added", "changed", "fixed", "limitations")))
@@ -252,6 +289,14 @@ def cmd_bump(a):
     print("kernel.h updated. Review it, then commit.")
 
 
+def cmd_label(a):
+    v = read_version()
+    nv = relabel(v, a.what, last_label())
+    print("%s -> %s" % (display(v), display(nv)))
+    write_version(nv)
+    print("kernel.h updated. Review it, then commit.")
+
+
 def cmd_cut(a):
     dry = not a.publish
     v = read_version()
@@ -276,6 +321,9 @@ def cmd_cut(a):
           (title, tag, build, commit[:8], comparable(v, build)))
     if out(["git", "tag", "--list", tag]):
         raise SystemExit("tag %s already exists; a tag is never moved" % tag)
+    hist0 = load_json(os.path.join(RELEASES, "releases.json"), {"releases": []})
+    if any(r["display"] == display(v) for r in hist0["releases"]):
+        raise SystemExit("%s is already in releases.json; bump the number" % display(v))
 
     # 1. images
     if a.skip_build:
@@ -372,6 +420,14 @@ def cmd_cut(a):
     sh(gh + files)
     print("\npublished %s\n%s" % (tag, entry["url"]))
 
+    # the next release carries the next number
+    nxt = next_after(v)
+    write_version(nxt)
+    sh(["git", "add", KERNEL_H])
+    sh(["git", "commit", "-q", "-m", "version: the next release is %s" % display(nxt)])
+    sh(["git", "push", "origin", "main"])
+    print("kernel.h is now %s" % display(nxt))
+
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0],
@@ -384,10 +440,13 @@ def main():
     c.add_argument("--skip-build", action="store_true", help="use the images already in out/")
     c.set_defaults(fn=cmd_cut)
     b = sub.add_parser("bump")
-    b.add_argument("what", choices=("iter", "major", "ship"))
+    b.add_argument("what", choices=("iter", "major"))
     b.add_argument("name", nargs="?", help="the codename, for a new major")
     b.add_argument("--yes", action="store_true")
     b.set_defaults(fn=cmd_bump)
+    lb = sub.add_parser("label")
+    lb.add_argument("what", choices=("beta", "rc", "final"))
+    lb.set_defaults(fn=cmd_label)
     a = ap.parse_args()
     a.fn(a)
 

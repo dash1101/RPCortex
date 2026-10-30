@@ -22,6 +22,7 @@ WHAT IT LOOKS FOR
                  logged beside it.
   * LOGIN        the board is asking for a password. The soak stops; it does not
                  hold one and will not guess.
+  * END          the run finished, or was stopped early; the line says which.
   * NEW [!]      a new warning or error line in the log ring.
 
 It does not cover what soak.py cannot see from the console: a package that is
@@ -37,6 +38,7 @@ port is held for the whole run, so nothing else can use it meanwhile.
 import argparse
 import os
 import re
+import signal
 import sys
 import time
 
@@ -206,6 +208,12 @@ class Soak:
             self.log.block("NO HTTPS  heap free before: {} KB".format(free), out[-800:])
 
     def run(self):
+        # Stopped early (SIGTERM, or Ctrl+C): say so in the log rather than just stopping.
+        def stop(signum, _frame):
+            self.log.line("END  stopped early (signal %d)" % signum)
+            sys.exit(0)
+        signal.signal(signal.SIGTERM, stop)
+        signal.signal(signal.SIGINT, stop)
         self.connect()
         t0 = time.time()
         end = t0 + self.a.hours * 3600

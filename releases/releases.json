@@ -1,0 +1,108 @@
+{
+  "schema": 1,
+  "releases": [
+    {
+      "tag": "v2.0.0",
+      "display": "v2.00-beta",
+      "version": "2.00",
+      "build": 483,
+      "commit": "bf33812c68d64a5532337ef133fe2047217003a0",
+      "codename": "Vela II",
+      "date": "2026-10-28",
+      "prerelease": true,
+      "title": "RPCortex v2.00-beta (build 483)",
+      "summary": "The v2 beta, replacing the August pre-release: sealed Wi-Fi passwords, curl with all of v1's flags, a package loader that no longer trusts the numbers in a file, and console input that no longer drops characters.",
+      "notes": {
+        "added": [
+          "Saved Wi-Fi passwords are sealed under a per-device key, and the registry, user list and device key are closed to non-admin accounts.",
+          "`curl` takes all of v1's flags, the shell understands single quotes as v1's did, `update` takes `--yes` and `--force`, and idle logout and `pulse boot` work as in v1.",
+          "A crash report is saved to flash at the next start.",
+          "Over-the-air updates keep a rollback copy of the running firmware; three updates in a row (476 to 479, 479 to 481, 481 to 483) were confirmed on a Pico 2 W."
+        ],
+        "changed": [
+          "Smaller images on the RP2350: the Pico 2 W image went from 1009 KB to 855 KB.",
+          "Only the shell's task reads the console, so background packages no longer take keystrokes."
+        ],
+        "fixed": [
+          "The package loader no longer believes the numbers in the file: fuzzing found four faults in it, including an unchecked relocation offset that was a write wherever it pointed.",
+          "Pastes of up to 2,000 bytes and passwords typed at the login prompt arrive whole.",
+          "Package versions with a suffix (`1.0-beta`) are no longer reported as newer than themselves."
+        ],
+        "limitations": [
+          "The Pico 2 and both RP2040 images (Pico, Pico W) have never run on hardware.",
+          "The boot recovery ladder, restoring a saved rollback copy and Bluetooth have only been tested on the host.",
+          "HTTPS needs about 45 KB of free memory.",
+          "A saved rollback copy takes 854 KB of the Pico 2 W's 1792 KB filesystem; the next update removes it to make room.",
+          "A filesystem was twice seen to read 100% full with a saved firmware copy on it (`rm /os/rollback.img` fixes it); the cause is not found."
+        ]
+      },
+      "assets": [
+        {
+          "board": "pico2_w",
+          "kind": "bin",
+          "file": "rpcortex-v2-pico2_w.bin",
+          "size": 875572,
+          "sha256": "9fdef3843739efc8adefb29b50975f99287d617b5e2e5e8f6b55aac6a51ba5a9",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.0/rpcortex-v2-pico2_w.bin"
+        },
+        {
+          "board": "pico2_w",
+          "kind": "uf2",
+          "file": "rpcortex-v2-pico2_w.uf2",
+          "size": 1752064,
+          "sha256": "3e2dee4997d5ecf4bd306c57b9a317c1d2e9b28c82be6b3c9fb9487a2b25bd2d",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.0/rpcortex-v2-pico2_w.uf2"
+        },
+        {
+          "board": "pico_w",
+          "kind": "bin",
+          "file": "rpcortex-v2-pico_w.bin",
+          "size": 824908,
+          "sha256": "ecc681bcf0591fc39faf82849c9823cc4aa7943c80b8c8772c068e3df3e77879",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.0/rpcortex-v2-pico_w.bin"
+        },
+        {
+          "board": "pico_w",
+          "kind": "uf2",
+          "file": "rpcortex-v2-pico_w.uf2",
+          "size": 1650176,
+          "sha256": "3978c43ea5d84e6bddd36e41115adfd846f2479766d933dd3297b8df08b4af86",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.0/rpcortex-v2-pico_w.uf2"
+        },
+        {
+          "board": "pico2",
+          "kind": "bin",
+          "file": "rpcortex-v2-pico2.bin",
+          "size": 360484,
+          "sha256": "c1eaf5402aaee41b162dad5df19de1fa1581b5136a6659c079b76b6558f4c9b1",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.0/rpcortex-v2-pico2.bin"
+        },
+        {
+          "board": "pico2",
+          "kind": "uf2",
+          "file": "rpcortex-v2-pico2.uf2",
+          "size": 721920,
+          "sha256": "916ad7b5b5990166fa1a2ab8133280a243bbe7818418bd6856a735ca3a820be3",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.0/rpcortex-v2-pico2.uf2"
+        },
+        {
+          "board": "pico",
+          "kind": "bin",
+          "file": "rpcortex-v2-pico.bin",
+          "size": 304488,
+          "sha256": "3e6878bc9511ee905b4ef535462d681cf6025d5bc92d289c1add3f13b38c814c",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.0/rpcortex-v2-pico.bin"
+        },
+        {
+          "board": "pico",
+          "kind": "uf2",
+          "file": "rpcortex-v2-pico.uf2",
+          "size": 609280,
+          "sha256": "e52f4dcefa14ba80868d03474ff7a85287231540cf3eeec4e1d0b1deb6c96e17",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.0/rpcortex-v2-pico.uf2"
+        }
+      ],
+      "url": "https://github.com/dash1101/RPCortex/releases/tag/v2.0.0"
+    }
+  ]
+}

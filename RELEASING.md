@@ -6,25 +6,35 @@ its commands.
 
 ## Versions
 
-`vMAJOR.ITER`, with the build number beside it: `v2.11 (build 1203)`.
+`vMAJOR.ITER`, with the build number beside it: `v2.01-beta (build 520)`.
 
 - **MAJOR** is a generation. It is the only thing with a codename (v1 Vela, v2 Vela II) and it
-  changes when the platform does: a new kernel, a new package ABI, a new architecture. The first
-  release of a generation is `v2.00`.
-- **ITER** counts the patch releases within a generation, from zero, written with two digits, with
-  no ceiling. v2.09 is followed by v2.10. A patch never breaks packages. A change that would is a
-  new MAJOR.
-- **-beta** marks a pre-release: `v2.00-beta (build 486)`. It is dropped when the version ships.
+  changes when the platform does: a new kernel, a new package ABI, a new architecture.
+- **ITER** is the number of the release, written with two digits, with no ceiling. **Every release
+  published to GitHub takes the next number, whatever it is labelled.** A number is never reused and
+  a later number is always newer.
+- **The label** says how finished a release is:
+
+  | Release | Meaning |
+  |---|---|
+  | `v2.00-beta` | The first release of v2: the beta published on GitHub on 2026-10-28 (tag `v2.0.0`). |
+  | `v2.01-beta` | The next one published, still a beta. |
+  | `v2.03-rc`, `v2.04-rc2`, `v2.05-rc3` | Release candidates; each further one counts up. |
+  | `v2.06` | No longer a beta: the label is dropped, and the number keeps counting. |
+
 - **The build number** is the commit count when the images were built. It rises on its own and is
-  never typed by hand. Devices compare `MAJOR.ITER.BUILD` (`2.00.486`), so a later build always
-  beats an earlier one.
+  never typed by hand. Devices compare `MAJOR.ITER.BUILD` (`2.01.520`), so a later release, and a
+  later build of the same release, always beats an earlier one. The label is not part of the comparison.
+- A release never breaks packages. A change that would is a new MAJOR.
 
-**Builds are not releases.** A patch is cut on a schedule, when there is enough to say, and the
-builds in between are not published. That keeps the schedule steady and the work per release small:
-the unit of work is the changelog entry, written as the change lands, not a release per commit.
+**Builds are not releases.** A release is cut on a schedule, when there is enough to say, and the
+builds in between are not published; `ver` tells them apart by build number. That keeps the schedule
+steady and the work per release small: the unit of work is the changelog entry, written as the change
+lands, not a release per commit.
 
-The version lives in one place, `os/kernel/kernel.h`. `tools/release.py bump iter`,
-`bump major "Name"` and `bump ship` edit it.
+The version in `os/kernel/kernel.h` is the one the **next** release will carry. `tools/release.py label
+beta|rc|final` changes the label (counting release candidates for you), `bump iter` and `bump major
+"Name"` change the number, and cutting a release steps `kernel.h` to the following number by itself.
 
 ## Writing the notes as the work happens
 
@@ -73,7 +83,8 @@ Guidelines for an entry:
    - writes versioned copies and `SHA256SUMS` for the GitHub release,
    - turns Unreleased into a dated section of `CHANGELOG.md` and adds a fresh one,
    - adds the release to `releases/releases.json`, which the websites read,
-   - commits, tags (`v2.11`, or `v2.00-beta.486` for a pre-release), pushes, and creates the GitHub release.
+   - commits, tags (the version as written: `v2.01-beta`, `v2.06`), pushes, and creates the GitHub release,
+   - then steps `kernel.h` to the next number and commits that (an rc becomes the next rc).
 
 A tag is never moved or deleted by the tool. A mistake in a release is fixed by the next one.
 
@@ -100,8 +111,7 @@ A tag is never moved or deleted by the tool. A mistake in a release is fixed by 
 
 - `releases/releases.json` and `releases/latest.json` are generated. Fix the notes in
   `CHANGELOG.md` and the code, not the generated files.
-- A pre-release is cut as often as is useful; each gets its own tag. There is no moving "latest
-  beta" tag.
+- Each release gets its own tag, named by its version. There is no moving "latest beta" tag.
 - A release is cut from a commit that passes CI. The tool refuses a dirty tree.
-- Retiring the old `v2.0.0` pre-release tag, which predates this scheme, is a separate step:
-  `gh release delete v2.0.0 --cleanup-tag`, done once the first new-scheme release is published.
+- The first release, `v2.00-beta`, was published before this tool existed, under the tag `v2.0.0`. It is
+  in `releases/releases.json` as `v2.00-beta`, and the tag stays as it is.
