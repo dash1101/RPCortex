@@ -756,7 +756,15 @@ int fw_time_get(struct FwTime *out) {
 // groups reach further into the ABI than the runner alone ever did.
 int fw_unique_id(char *out, unsigned cap) { snprintf(out, cap, "E6614104037A5E2F"); return 1; }
 uint32_t fw_clock_hz(void) { return 150000000u; }
-int fw_net_scan(FwNetAp *out, unsigned max) { (void)out; (void)max; return 0; }
+// The access points a scan finds: none, unless a harness fills the list. Empty is a device with
+// nothing around it, which is what every test written before this assumed.
+static FwNetAp g_scan_aps[8];
+static int     g_scan_n;
+int fw_net_scan(FwNetAp *out, unsigned max) {
+    int n = g_scan_n < (int)max ? g_scan_n : (int)max;
+    for (int i = 0; i < n; i++) out[i] = g_scan_aps[i];
+    return n;
+}
 // --- a little music library -------------------------------------------------------
 //
 // PATH-KEYED, deliberately. Every directory answered zero before and the file

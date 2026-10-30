@@ -242,6 +242,7 @@ int fw_net_scan(FwNetAp *out, unsigned max) {
         { "Pixel_4A2F",       -66, 11, 1 },
         { "TP-Link_9F2A",     -72,  1, 1 },
         { "Cafe Guest",       -74,  6, 0 },
+        { "Neighborhood-Mesh-Network-5GHz-Guest", -77, 40, 1 },
         { "NETGEAR47",        -79,  9, 1 },
         { "Linksys00421",     -83,  3, 1 },
     };

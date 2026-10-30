@@ -147,8 +147,9 @@ private:
     int      h_;
     int      pages_;
     uint32_t now_ms_;           // set by the runner
-    uint32_t marq_t0_;          // when the current ticker started, so it begins at its beginning
-    uint32_t marq_key_;         // which text that was: a change of text or place restarts it
+    uint32_t marq_t0_[3];       // when each ticker started, so it begins at its beginning
+    uint32_t marq_key_[3];      // which text that was: a change of text or place restarts it
+    uint8_t  marq_next_;        // the slot to give up when a fourth wants one
     bool     marq_seen_;
     bool     clip_on_;          // a horizontal window the ticker draws inside
     int      clip0_, clip1_;

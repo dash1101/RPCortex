@@ -324,14 +324,14 @@ public:
             c.text(2, y, "No DHT11.", 1);
             y += ui::ROWH;
             if (note_[0]) {
-                c.text_fit(2, y, note_, 1, c.width() - 4, false);
+                c.text_scroll(2, y, note_, 1, c.width() - 4, false);
                 y += ui::ROWH;
             }
         }
 
         char foot[26];
         status(foot, sizeof(foot));
-        c.text_fit(2, c.height() - ui::FH, foot, 1, c.width() - 4, false);
+        c.text_scroll(2, c.height() - ui::FH, foot, 1, c.width() - 4, false);
     }
 
     Action on_event(Event e) override {
@@ -512,7 +512,7 @@ public:
         y += ui::ROWH;
         if (g_gps_fixed) snprintf(line, sizeof(line), "Fix%s%s", g_gps_sats[0] ? " - " : "", g_gps_sats);
         else             nova::copy(line, sizeof(line), "Searching for a fix...");
-        c.text_fit(2, y, line, 1, c.width() - 4, false);
+        c.text_scroll(2, y, line, 1, c.width() - 4, false);
     }
 
 private:

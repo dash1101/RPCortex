@@ -738,14 +738,14 @@ public:
             c.text(4, ty, "listening...", 1);
         } else {
             snprintf(line, sizeof(line), "%d dBm  %s", level_ / 10, hint());
-            c.text_fit(4, ty, line, 1, c.width() - 6, false);
+            c.text_scroll(4, ty, line, 1, c.width() - 6, false);
             ty += ui::ROWH;
             snprintf(line, sizeof(line), "best %d dBm", (int)best_);
             c.text(4, ty, line, 1);
         }
 
         scan_status(line, sizeof(line), 3, true);
-        c.text_fit(2, c.height() - ui::FH, line, 1, c.width() - 4, false);
+        c.text_scroll(2, c.height() - ui::FH, line, 1, c.width() - 4, false);
     }
 
 private:
@@ -854,14 +854,14 @@ public:
                               d->classic ? "BR" : "LE", (int)d->rssi, age);
         else         snprintf(line, sizeof(line), "%s  seen %s",
                               d->classic ? "BR" : "LE", age);
-        c.text_fit(2, y, line, 1, c.width() - 4, false);
+        c.text_scroll(2, y, line, 1, c.width() - 4, false);
         y += ui::ROWH;
 
         char held[8];
         age_str(fw_millis() - d->first_ms, held, sizeof(held));
         snprintf(line, sizeof(line), "here %s  x%u%s", held, (unsigned)d->count,
                  d->random ? "  random" : "");
-        c.text_fit(2, y, line, 1, c.width() - 4, false);
+        c.text_scroll(2, y, line, 1, c.width() - 4, false);
         y += ui::ROWH;
 
         // The actions, as buttons rather than list rows: there are two of them,
@@ -1005,7 +1005,7 @@ public:
         // The footer says what this is and, while live, how to stop it.
         const char *foot = advertising() ? "BACK stops it"
                                          : "pairing popup beacon";
-        c.text_fit(2, c.height() - ui::FH, foot, 1, c.width() - 4, false);
+        c.text_scroll(2, c.height() - ui::FH, foot, 1, c.width() - 4, false);
     }
 
     Action on_event(Event e) override {
@@ -1138,7 +1138,7 @@ public:
 
         // This screen scans once and stops, so it never promises a next one.
         scan_status(line, sizeof(line), 5, false);
-        c.text_fit(2, c.height() - ui::FH, line, 1, c.width() - 4, false);
+        c.text_scroll(2, c.height() - ui::FH, line, 1, c.width() - 4, false);
         if (g_ble_busy) c.spinner(c.width() - 9, c.height() - ui::FH, phase_ / BLE_SPIN_MS, 1);
     }
 
@@ -1330,7 +1330,7 @@ public:
         char line[32];
         if (g_ble_busy || g_state != SC_OK) scan_status(line, sizeof(line), 5, true);
         else snprintf(line, sizeof(line), "%d %s", g_nidx, kFilterName[filter_]);
-        c.text_fit(2, c.height() - ui::FH, line, 1, c.width() - 12, false);
+        c.text_scroll(2, c.height() - ui::FH, line, 1, c.width() - 12, false);
         if (g_ble_busy) c.spinner(c.width() - 9, c.height() - ui::FH, phase_ / BLE_SPIN_MS, 1);
     }
 
@@ -1434,7 +1434,7 @@ public:
             scan_status(line, sizeof(line), 5, true);
         else
             snprintf(line, sizeof(line), "%d watched", n);
-        c.text_fit(2, c.height() - ui::FH, line, 1, c.width() - 12, false);
+        c.text_scroll(2, c.height() - ui::FH, line, 1, c.width() - 12, false);
         if (g_ble_busy) c.spinner(c.width() - 9, c.height() - ui::FH, phase_ / BLE_SPIN_MS, 1);
     }
 

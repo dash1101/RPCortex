@@ -809,7 +809,7 @@ public:
             c.text_fit(0, y2, meta_.artist, 1, c.width(), true);
         } else if (stem_[0]) {
             media_format_line(line, sizeof(line), meta_);
-            c.text_fit(0, y2, line, 1, c.width(), true);
+            c.text_scroll(0, y2, line, 1, c.width(), true);
         }
 
         // Position in the queue on the left, volume on the right, and the state
@@ -1151,7 +1151,7 @@ public:
         const int dy = c.height() - ui::ROWH;
         c.hline(0, dy - 1, c.width(), 1);
         detail(sel_);
-        c.text_fit(2, dy, detail_, 1, c.width() - 4, true);
+        c.text_scroll(2, dy, detail_, 1, c.width() - 4, true);
     }
 
     Action on_event(Event e) override {
@@ -1577,7 +1577,7 @@ public:
         if (g_media_linked && g_media_peer[0]) snprintf(line, sizeof(line), "%s", g_media_peer);
         else if (saved[0])                     snprintf(line, sizeof(line), "%s (saved)", saved);
         else                                   snprintf(line, sizeof(line), "none set");
-        c.text_fit(24, ui::TOP, line, 1, c.width() - 24, true);
+        c.text_scroll(24, ui::TOP, line, 1, c.width() - 24, true);
 
         const int y2 = ui::TOP + ui::ROWH;
         c.text(0, y2, "Now", 1);
@@ -1585,7 +1585,7 @@ public:
             snprintf(line, sizeof(line), "%s", media_base(g_media_now));
         else if (!g_media_known) snprintf(line, sizeof(line), "--");
         else                     snprintf(line, sizeof(line), "nothing playing");
-        c.text_fit(24, y2, line, 1, c.width() - 24, true);
+        c.text_scroll(24, y2, line, 1, c.width() - 24, true);
 
         const int ry = y2 + ui::ROWH - 1;
         c.hline(0, ry, c.width(), 1);

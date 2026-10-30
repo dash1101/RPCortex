@@ -227,7 +227,7 @@ public:
         else if (have_mode_)         snprintf(line, sizeof(line), "USB: %s", usb::mode_name(mode_));
         else if (pending_ == P_MODE) nova::copy(line, sizeof(line), "USB: checking...");
         else                         nova::copy(line, sizeof(line), "USB: unknown");
-        c.text_fit(2, y, line, 1, c.width() - 12, false);
+        c.text_scroll(2, y, line, 1, c.width() - 12, false);
         if (g_usb_busy) c.spinner(c.width() - 9, y, phase_ / 140, 1);
         y += ui::ROWH;
 
@@ -252,7 +252,7 @@ public:
                          : (unavailable_ ? "usbmode/badusb not found"
                                          : (g_usb_n ? "SELECT runs payload"
                                                     : "no payloads in /nova/badusb"));
-        c.text_fit(2, c.height() - ui::FH, foot, 1, c.width() - 4, false);
+        c.text_scroll(2, c.height() - ui::FH, foot, 1, c.width() - 4, false);
     }
 
     Action on_event(Event e) override {

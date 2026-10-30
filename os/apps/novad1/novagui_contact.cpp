@@ -342,7 +342,7 @@ public:
         // free to say something true.
         char foot[26];
         status(foot, sizeof(foot));
-        c.text_fit(2, c.height() - ui::FH, foot, 1, c.width() - 4, false);
+        c.text_scroll(2, c.height() - ui::FH, foot, 1, c.width() - 4, false);
     }
 
     Action on_event(Event e) override {

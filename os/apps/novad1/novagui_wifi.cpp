@@ -439,7 +439,7 @@ public:
         else                       draw_status(c);
 
         if (op_busy()) c.spinner(c.width() - 8, c.height() - ui::FH, fw_millis() / 120, 1);
-        if (g_w.msg[0]) c.text_fit(0, c.height() - ui::FH, g_w.msg, 1, c.width() - 10, false);
+        if (g_w.msg[0]) c.text_scroll(0, c.height() - ui::FH, g_w.msg, 1, c.width() - 10, false);
     }
 
     Action on_event(Event e) override {
@@ -703,7 +703,7 @@ public:
             }
         }
         if (op_busy()) c.spinner(c.width() - 8, c.height() - ui::FH, fw_millis() / 120, 1);
-        if (msg_[0]) c.text_fit(0, c.height() - ui::FH, msg_, 1, c.width() - 10, false);
+        if (msg_[0]) c.text_scroll(0, c.height() - ui::FH, msg_, 1, c.width() - 10, false);
     }
 
     Action on_event(Event e) override {
@@ -982,7 +982,7 @@ public:
         while (name > g_wd_path && name[-1] != '/') name--;
         c.text_fit(vx, y, g_wd_path[0] ? name : "not started", 1, c.width() - vx, false);
 
-        if (g_wd_msg[0]) c.text_fit(0, c.height() - ui::FH, g_wd_msg, 1, c.width(), false);
+        if (g_wd_msg[0]) c.text_scroll(0, c.height() - ui::FH, g_wd_msg, 1, c.width(), false);
     }
 
     Action on_event(Event e) override {
@@ -1363,7 +1363,7 @@ public:
         // over whatever the list had there rather than beside it.
         if (g_lan_run) c.spinner(c.width() - 8, c.height() - ui::FH, fw_millis() / 120, 1);
         if (g_lan_msg[0])
-            c.text_fit(0, c.height() - ui::FH, g_lan_msg, 1, c.width() - 10, false);
+            c.text_scroll(0, c.height() - ui::FH, g_lan_msg, 1, c.width() - 10, false);
     }
 
     Action on_event(Event e) override {

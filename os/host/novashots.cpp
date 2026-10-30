@@ -244,8 +244,35 @@ static int shot_here(const char *what, bool dump) {
 // Walk each app the way a person would: turn through its rows, open what is under the cursor, look
 // there too, come back. Every state it reaches is audited, so a long value that only appears on
 // the fourth row of a settings page is found as well as the ones on the first screen.
+static void stress_data(void) {
+    // Long, because that is what a real neighbourhood, a real card and a real phone have: a 32-character
+    // network name, a 29-character Bluetooth name, file and app names near the limit.
+    g_net_up = 1;
+    g_net_ssid_s = "Definitely-Not-The-FBI-Van-5GHz!!";
+    static const char *aps[] = { "Definitely-Not-The-FBI-Van-5GHz!!", "xfinitywifi-guest-network-9F2A41", "NETGEAR47-with-a-name-this-long" };
+    for (int i = 0; i < 3; i++) {
+        snprintf(g_scan_aps[i].ssid, sizeof(g_scan_aps[i].ssid), "%s", aps[i]);
+        g_scan_aps[i].rssi = -50 - 8 * i; g_scan_aps[i].channel = 1 + 5 * i; g_scan_aps[i].secured = i & 1;
+    }
+    g_scan_n = 3;
+    shell_says("bt ", "[:] 3 devices\n"
+               "  D9:33:36:32:1B:59  LE    -78 dBm  Anna's Pixel Buds Pro Case (left)\n"
+               "  37:96:7B:89:C2:EB  LE    -80 dBm  Govee_H6199_1B59_with_a_long_tail\n"
+               "  53:0A:FB:D0:FF:87  LE    -92 dBm  Meta Quest 3S Controller (Right)\n");
+    static const char *files[] = {
+        "/nova/music/an-unreasonably-long-track-name-here.wav", "/nova/codes/subghz/garage-door-opener-left-bay-twice.sub",
+        "/nova/scripts/nightly-backup-and-reboot-sequence.rps", "/nova/badusb/open-calculator-and-type-hello-world.txt",
+        "/nova/logs/wardrive-with-a-name-that-just-keeps-going.csv", "/nova/apps/long.napp" };
+    for (const char *f : files) fw_file_write(f, "x", 1);
+    const char *app = "app.name: A Very Long Application Name Here\napp.category: Tools\nRun the first thing = ps\n"
+                      "Run the second thing with a long label = df\n";
+    fw_file_write("/nova/apps/long.napp", app, (uint32_t)strlen(app));
+}
+
 static void explore_all(void) {
     using namespace nova;
+    stress_data();
+    g_run_spawned = 1;                                  // workers finish at once, so scans have results to show
     const unsigned n = gui::app_total();
     for (unsigned i = 0; i < n; i++) {
         const gui::App &a = *gui::app_at(i);
@@ -261,7 +288,9 @@ static void explore_all(void) {
             audit_report(a.key);
             input().inject(EV_ROT_CW);
             gui::drain_input();
-            if (step % 3 == 2) {
+            // Not these: their workers loop until stopped, and the fake never stops anything.
+            const bool loops = !strcmp(a.key, "wardrive") || !strcmp(a.key, "lan") || !strcmp(a.key, "shell");
+            if (step % 3 == 2 && !loops) {
                 input().inject(EV_SELECT);
                 gui::drain_input();
                 if (gui::depth() > base) {
@@ -274,6 +303,7 @@ static void explore_all(void) {
             if (!gui::top() || gui::depth() < base) break;
         }
     }
+    g_run_spawned = 0;
     gui::go_home();
 }
 

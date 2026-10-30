@@ -18,7 +18,9 @@ void Canvas::attach(uint8_t *buf, int w, int h) {
     w_     = w;
     h_     = h;
     pages_ = (h + 7) / 8;
-    now_ms_ = marq_t0_ = marq_key_ = 0;
+    now_ms_ = 0;
+    for (int i = 0; i < 3; i++) marq_t0_[i] = marq_key_[i] = 0;
+    marq_next_ = 0;
     marq_seen_ = clip_on_ = false;
     clip0_ = clip1_ = 0;
 }
@@ -358,11 +360,15 @@ void Canvas::marquee(int x, int y, const char *s, int colour, int max_px, bool n
     uint32_t key = 2166136261u;
     for (const char *p = s; *p; p++) key = (key ^ (uint8_t)*p) * 16777619u;
     key ^= (uint32_t)(x * 131 + y * 7919);
-    if (key != marq_key_) { marq_key_ = key; marq_t0_ = now_ms_; }
+    // A screen can have a status line and a footer both too long, and they must not take turns
+    // resetting one slot: each keeps its own place. A fourth evicts the oldest.
+    int slot = -1;
+    for (int i = 0; i < 3; i++) if (marq_key_[i] == key) { slot = i; break; }
+    if (slot < 0) { slot = marq_next_; marq_next_ = (uint8_t)((marq_next_ + 1) % 3); marq_key_[slot] = key; marq_t0_[slot] = now_ms_; }
 
     const uint32_t HOLD = 900, SPEED = 28;                         // milliseconds, and pixels a second
     const uint32_t slide = (uint32_t)over * 1000u / SPEED;
-    uint32_t t = (now_ms_ - marq_t0_) % (HOLD + slide + HOLD);
+    uint32_t t = (now_ms_ - marq_t0_[slot]) % (HOLD + slide + HOLD);
     int off = t < HOLD ? 0 : (t < HOLD + slide ? (int)((t - HOLD) * SPEED / 1000u) : over);
     if (off > over) off = over;
 

@@ -55,7 +55,7 @@ public:
         if (linked_) {
             snprintf(line, sizeof(line), "%s", ssid_);
             c.text(0, y, "Link", 1);
-            c.text_fit(30, y, line, 1, c.width() - 30, false);
+            c.text_scroll(30, y, line, 1, c.width() - 30, false);
             y += ui::ROWH;
             c.text(0, y, "IP", 1);
             c.text(30, y, ip_, 1);

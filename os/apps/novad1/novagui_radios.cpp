@@ -640,11 +640,11 @@ public:
         else if (have_status_)           nova::copy(line, sizeof(line), "CC1101: absent");
         else if (pending_ == P_STATUS)   nova::copy(line, sizeof(line), "CC1101: checking...");
         else                             nova::copy(line, sizeof(line), "CC1101: unknown");
-        c.text_fit(2, y, line, 1, c.width() - 12, false);
+        c.text_scroll(2, y, line, 1, c.width() - 12, false);
         if (g_rf_busy) c.spinner(c.width() - 9, y, phase_ / RF_SPIN_MS, 1);
         y += ui::ROWH;
 
-        if (note_[0])      c.text_fit(2, y, note_, 1, c.width() - 4, false);
+        if (note_[0])      c.text_scroll(2, y, note_, 1, c.width() - 4, false);
         else if (g_sub_n)  { snprintf(line, sizeof(line), "Captured %u pulses", g_sub_n); c.text(2, y, line, 1); }
         else               c.text(2, y, "No capture yet", 1);
         y += ui::ROWH;
@@ -811,7 +811,7 @@ public:
 
     void draw(Canvas &c) override {
         codes::draw(c, "Nothing saved yet.\nCapture, then Save.");
-        if (g_fire_note[0]) c.text_fit(2, c.height() - ui::FH, fire_note(), 1, c.width() - 14, false);
+        if (g_fire_note[0]) c.text_scroll(2, c.height() - ui::FH, fire_note(), 1, c.width() - 14, false);
         if (g_rf_busy) c.spinner(c.width() - 9, c.height() - ui::FH, phase_ / RF_SPIN_MS, 1);
     }
 
@@ -933,14 +933,14 @@ public:
         else if (have_status_)           nova::copy(line, sizeof(line), "SX1276: absent");
         else if (pending_ == P_STATUS)   nova::copy(line, sizeof(line), "SX1276: checking...");
         else                             nova::copy(line, sizeof(line), "SX1276: unknown");
-        c.text_fit(2, y, line, 1, c.width() - 12, false);
+        c.text_scroll(2, y, line, 1, c.width() - 12, false);
         if (g_rf_busy) c.spinner(c.width() - 9, y, phase_ / RF_SPIN_MS, 1);
         y += ui::ROWH;
 
-        if (st_.present && st_.detail[0]) c.text_fit(2, y, st_.detail, 1, c.width() - 4, false);
+        if (st_.present && st_.detail[0]) c.text_scroll(2, y, st_.detail, 1, c.width() - 4, false);
         y += ui::ROWH;
 
-        if (note_[0]) c.text_fit(2, y, note_, 1, c.width() - 4, false);
+        if (note_[0]) c.text_scroll(2, y, note_, 1, c.width() - 4, false);
         y += ui::ROWH + 1;
 
         static const char *const kAct[2] = { "Send", "Listen" };
@@ -1163,7 +1163,7 @@ public:
         else if (have_status_)             nova::copy(line, sizeof(line), "No SX1276 - needs one");
         else if (pending_ == P_STATUS)     nova::copy(line, sizeof(line), "SX1276: checking...");
         else                               nova::copy(line, sizeof(line), "SX1276: unknown");
-        c.text_fit(2, y, line, 1, c.width() - 12, false);
+        c.text_scroll(2, y, line, 1, c.width() - 12, false);
         if (g_rf_busy) c.spinner(c.width() - 9, y, phase_ / RF_SPIN_MS, 1);
         y += ui::ROWH;
 
@@ -1176,11 +1176,11 @@ public:
             } else if (i == 0) {
                 nova::copy(line, sizeof(line), "no messages yet");
             } else line[0] = 0;
-            if (line[0]) c.text_fit(2, y, line, 1, c.width() - 4, false);
+            if (line[0]) c.text_scroll(2, y, line, 1, c.width() - 4, false);
             y += ui::ROWH;
         }
 
-        if (note_[0]) c.text_fit(2, y, note_, 1, c.width() - 4, false);
+        if (note_[0]) c.text_scroll(2, y, note_, 1, c.width() - 4, false);
         y += ui::ROWH;
 
         static const char *const kAct[2] = { "Send", "Listen" };
