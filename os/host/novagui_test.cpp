@@ -54,6 +54,7 @@
 #include "../apps/novad1/novanfc.cpp"
 #include "../apps/novad1/novaoui.cpp"
 #include "../apps/novad1/novatotp.cpp"
+#include "../apps/novad1/novagps.cpp"
 #include "../apps/novad1/novagui_codes.cpp"
 #include "../apps/novad1/novagui_extras.cpp"
 #include "../apps/novad1/novagui_radios.cpp"
@@ -2595,6 +2596,76 @@ static void test_help_wraps_and_scrolls(void) {
     gui::canvas().clear(0);
 }
 
+// --- GPS: a position, a speed, waypoints and the clock ---------------------------------------------
+static void nmea_make(char *out, const char *body) {
+    unsigned x = 0;
+    for (const char *p = body; *p; p++) x ^= (unsigned char)*p;
+    sprintf(out, "$%s*%02X\r\n", body, x);
+}
+
+static void test_gps_position(void) {
+    using namespace nova;
+    using namespace nova::screens;
+    gui::go_home();
+    fakefs_reset();
+    g_fake_time_ok = false;
+    shell_says(nullptr, nullptr);
+
+    ui::Screen *s = open_app("gps");
+    char both[320], a[160], b[160];
+    nmea_make(a, "GPGGA,123519,4807.038,N,01131.000,E,1,08,0.9,545.4,M,46.9,M,,");
+    nmea_make(b, "GPRMC,123519,A,4807.038,N,01131.000,E,022.4,084.4,230394,003.1,W");
+    snprintf(both, sizeof(both), "%s%s", a, b);
+    uart_feed(both);
+    for (int i = 0; i < 6; i++) s->tick(33);             // the screen reads 64 bytes at a time
+    ok(g_gps_fixed, "a fix is read");
+    eq((int)g_gps_fix.lat_e5, 4811730, "the latitude is decoded");
+    eq((int)g_gps_fix.lon_e5, 1151667, "and the longitude");
+    eq((int)g_gps_fix.speed_dkmh, 415, "and the speed in tenths of km/h");
+    ok(g_gps_fix.has_date && g_gps_fix.yy == 94, "and the date");
+    streq_(g_gps_sats, "08", "and the satellites used");
+    ok(lit_pixels() > 100, "the position is drawn");
+
+    // SELECT saves a waypoint: where, how high, and when.
+    s->on_event(EV_SELECT);
+    char back[160];
+    uint32_t n = fw_file_read("/nova/waypoints.txt", back, sizeof(back) - 1);
+    back[n] = 0;
+    streq_(back, "48.11730,11.51667,545.4,2094-03-23 12:35:19\n", "a waypoint is a line of position, altitude and the satellites' time");
+    s->on_event(EV_SELECT);
+    n = fw_file_read("/nova/waypoints.txt", back, sizeof(back) - 1);
+    back[n] = 0;
+    ok(strchr(back, '\n') != strrchr(back, '\n'), "a second waypoint is appended, not written over the first");
+
+    // Holding SELECT offers to set the clock from the satellites' time, and only on a yes.
+    g_time_set_calls = 0;
+    s->on_event(EV_SELECT_HOLD);
+    streq_(gui::top()->title(), "Confirm", "holding SELECT asks first");
+    eq(g_time_set_calls, 0, "and sets nothing until it is answered");
+    gui::pop();
+    gps_clock_yes(nullptr);
+    s->tick(33);
+    eq(g_time_set_calls, 1, "a yes sets the clock");
+    ok(g_fake_time.year == 2094 && g_fake_time.month == 3 && g_fake_time.day == 23 && g_fake_time.hour == 12 && g_fake_time.minute == 35,
+       "from the satellites' UTC, with the date");
+
+    // No fix: nothing to save, and no clock to set.
+    nmea_make(a, "GPGGA,123520,,,,,0,00,99.99,,,,,,");
+    uart_feed(a);
+    for (int i = 0; i < 3; i++) s->tick(33);
+    ok(!g_gps_fixed, "a receiver that has lost the fix says so");
+    long before = g_writes;
+    s->on_event(EV_SELECT);
+    eq((int)g_writes, (int)before, "and a waypoint is not saved without one");
+    g_time_set_calls = 0;
+    s->on_event(EV_SELECT_HOLD);
+    ok(gui::top() == s && g_time_set_calls == 0, "nor is the clock offered");
+
+    uart_feed("");
+    fakefs_reset();
+    gui::go_home();
+}
+
 // --- the sweep: a command that failed must not report success ---------------------
 static void test_set_time_reports_the_truth(void) {
     using namespace nova;
@@ -3213,15 +3284,15 @@ static void test_gps(void) {
     char sent[80];
     snprintf(sent, sizeof(sent), "%s*%02X\r\n", body, x);
 
-    ok(nmea_checksum_ok(sent), "a sentence built with the matching XOR checks out");
+    ok(gps::checksum_ok(sent), "a sentence built with the matching XOR checks out");
     char fq[4], sats[4];
-    ok(nmea_field(sent, 6, fq, sizeof(fq)) && !strcmp(fq, "1"), "field 6 is the fix quality");
-    ok(nmea_field(sent, 7, sats, sizeof(sats)) && !strcmp(sats, "07"), "field 7 is the satellite count");
+    ok(gps::field(sent, 6, fq, sizeof(fq)) && !strcmp(fq, "1"), "field 6 is the fix quality");
+    ok(gps::field(sent, 7, sats, sizeof(sats)) && !strcmp(sats, "07"), "field 7 is the satellite count");
 
     char corrupt[80];
     snprintf(corrupt, sizeof(corrupt), "%s", sent);
     corrupt[10] ^= 0x20;                              // one flipped byte in the payload
-    ok(!nmea_checksum_ok(corrupt), "and a single flipped byte is rejected");
+    ok(!gps::checksum_ok(corrupt), "and a single flipped byte is rejected");
 
     // --- no pin at all.
     board::set(board::PIN_GPS_TX, board::PIN_NONE);
@@ -3354,6 +3425,7 @@ int main(void) {
     STAGE(test_small_apps);
     STAGE(test_clocks_follow_the_timezone);
     STAGE(test_help_wraps_and_scrolls);
+    STAGE(test_gps_position);
     STAGE(test_lora_messages);
     STAGE(test_badusb);
     STAGE(test_battery);

@@ -28,6 +28,8 @@
 #include "novacore.h"
 #include "novaboard.h"
 #include "novapower.h"
+#include "novagps.h"
+#include "novakeys.h"
 
 #include "rpc_app.h"
 #include <stdio.h>
@@ -389,70 +391,47 @@ private:
 // uart_ctrl(), which the `d1 pins check` report is built on.
 static unsigned gps_uart_bus(int gpio) { return (unsigned)(((gpio / 4) + 1) >> 1) & 1u; }
 
-// NMEA 0183: every byte between '$' and '*' XORed together, printed as two
-// upper-case hex digits after the '*'. Any sentence whose sum is right is a
-// real GPS talking, whatever it is saying — that is the whole presence test.
-static int nmea_hex_nibble(char c) {
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-    return -1;
-}
-
-static bool nmea_checksum_ok(const char *s) {
-    if (!s || s[0] != '$') return false;
-    unsigned x = 0;
-    const char *p = s + 1;
-    for (; *p && *p != '*'; p++) x ^= (unsigned char)*p;
-    if (*p != '*') return false;
-    int hi = nmea_hex_nibble(p[1]), lo = nmea_hex_nibble(p[2]);
-    if (hi < 0 || lo < 0) return false;
-    return (unsigned)((hi << 4) | lo) == x;
-}
-
-// The Nth comma-separated token, counting the sentence id itself as token 0 —
-// "GPGGA,150000,..." has the id at 0 and the fix quality at 6. `out` is
-// emptied and false is returned when the sentence runs out first.
-static bool nmea_field(const char *s, int n, char *out, unsigned cap) {
-    const char *p = s + 1;             // past '$'
-    while (n > 0 && *p && *p != '*') {
-        if (*p == ',') n--;
-        p++;
-    }
-    if (cap) out[0] = 0;
-    if (n > 0 || !*p || *p == '*') return false;
-    unsigned i = 0;
-    while (*p && *p != ',' && *p != '*' && i + 1 < cap) out[i++] = *p++;
-    out[i] = 0;
-    return true;
-}
-
-// What the last sentence amounted to, kept OUT of the screen instance — a
-// free function needs somewhere to leave its answer, and a host test needs to
-// read it back without a way into a private member. The same shape g_ct_state
-// and g_msg_n already use for the same reason.
+// What the receiver has told us, kept outside the screen instance so a host test can read it back
+// (a free function needs somewhere to leave its answer, and a private member is out of reach).
+static gps::Fix g_gps_fix;
 static bool g_gps_have;         // a checksum has ever added up
 static bool g_gps_fixed;
 static char g_gps_type[4];      // "GGA" / "RMC"
 static char g_gps_sats[4];
+
+// A request made by a confirmation's yes, acted on by the screen's next tick: the callback runs while
+// the question is still on top, and must not be where the clock is set.
+static bool g_gps_clock_req;
+static void gps_clock_yes(void *) { g_gps_clock_req = true; }
 
 class GpsScreen : public Screen {
 public:
     const char *title(void) const override { return "GPS"; }
 
     int help(const char **out, int max) const override {
-        if (max < 2) return 0;
+        if (max < 5) return 0;
         out[0] = "Needs sky. A fix can take";
         out[1] = "a minute or more, outdoors.";
-        return 2;
+        out[2] = "SELECT saves the position";
+        out[3] = "to /nova/waypoints.txt.";
+        out[4] = "Hold SELECT sets the clock.";
+        return 5;
     }
 
     void enter(void) override {
         line_n_ = 0;
-        g_gps_have = false;
-        g_gps_fixed = false;
-        g_gps_type[0] = 0;
-        g_gps_sats[0] = 0;
+        // The FIRST time only. enter() runs again whenever a question or a keyboard pops back to this
+        // screen, and a fix thrown away by being asked "set the clock?" is a screen that forgets where
+        // it is the moment it is used.
+        if (!started_) {
+            started_ = true;
+            memset(&g_gps_fix, 0, sizeof(g_gps_fix));
+            g_gps_have = false;
+            g_gps_fixed = false;
+            g_gps_type[0] = 0;
+            g_gps_sats[0] = 0;
+            msg_[0] = 0;
+        }
         int tx = board::pin(board::PIN_GPS_TX), rx = board::pin(board::PIN_GPS_RX);
         wired_ = (tx != board::PIN_NONE && rx != board::PIN_NONE);
         if (wired_) {
@@ -467,10 +446,11 @@ public:
 
     bool tick(uint32_t) override {
         if (!wired_) return false;
+        bool changed = false;
+        if (g_gps_clock_req) { g_gps_clock_req = false; set_clock(); changed = true; }
         char chunk[64];
         int n = fw_uart_read(bus_, chunk, sizeof(chunk), 0);
-        if (n <= 0) return false;
-        bool changed = false;
+        if (n <= 0) return changed;
         for (int i = 0; i < n; i++) {
             char ch = chunk[i];
             if (ch == '\r' || ch == '\n') {
@@ -506,43 +486,105 @@ public:
             return;
         }
 
-        char line[32];
-        snprintf(line, sizeof(line), "%s answering", g_gps_type);
+        const gps::Fix &f = g_gps_fix;
+        char line[32], num[16];
+        if (!f.fixed) {
+            c.text(2, y, "Searching for a fix", 1); y += ui::ROWH;
+            snprintf(line, sizeof(line), "in view   %d", f.sats_view);
+            c.text(2, y, line, 1); y += ui::ROWH;
+            snprintf(line, sizeof(line), "used      %d", f.sats_used);
+            c.text(2, y, line, 1); y += ui::ROWH;
+            ui::text_block(c, 2, y, "It needs a clear view of the sky.", 2);
+            footer(c);
+            return;
+        }
+        snprintf(line, sizeof(line), "FIX  sats %02d", f.sats_used);
+        c.text(2, y, line, 1); y += ui::ROWH;
+        gps::format_deg(f.lat_e5, num, sizeof(num));
+        snprintf(line, sizeof(line), "Lat  %s", num);
+        c.text(2, y, line, 1); y += ui::ROWH;
+        gps::format_deg(f.lon_e5, num, sizeof(num));
+        snprintf(line, sizeof(line), "Lon  %s", num);
+        c.text(2, y, line, 1); y += ui::ROWH;
+        gps::format_tenths(f.alt_dm, num, sizeof(num));
+        snprintf(line, sizeof(line), "Alt  %s m", num);
+        c.text(2, y, line, 1); y += ui::ROWH;
+        gps::format_tenths(f.speed_dkmh, num, sizeof(num));
+        snprintf(line, sizeof(line), "Spd  %s km/h", num);
         c.text(2, y, line, 1);
-        y += ui::ROWH;
-        if (g_gps_fixed) snprintf(line, sizeof(line), "Fix%s%s", g_gps_sats[0] ? " - " : "", g_gps_sats);
-        else             nova::copy(line, sizeof(line), "Searching for a fix...");
-        c.text_scroll(2, y, line, 1, c.width() - 4, false);
+        footer(c);
+    }
+
+    Action on_event(Event e) override {
+        if (e == EV_SELECT) { save_waypoint(); return ui::ACT_STAY; }
+        if (e == EV_SELECT_HOLD) {
+            const gps::Fix &f = g_gps_fix;
+            if (!f.fixed || !f.has_time || !f.has_date) { nova::copy(msg_, sizeof(msg_), "no GPS time yet"); return ui::ACT_STAY; }
+            static char q[44];
+            snprintf(q, sizeof(q), "Set clock to %02d:%02d:%02d UTC?", f.hh, f.mm, f.ss);
+            ui::confirm(q, "Set clock", gps_clock_yes, nullptr);
+            return ui::ACT_STAY;
+        }
+        return Screen::on_event(e);
     }
 
 private:
-    bool consume(const char *s) {
-        if (!nmea_checksum_ok(s)) return false;
-        g_gps_have = true;
-
-        // s[0] is '$', s[1..2] the talker (GP, GN, GL, ...), s[3..5] the type.
-        char t[4] = { 0, 0, 0, 0 };
-        if (strlen(s) >= 6) { t[0] = s[3]; t[1] = s[4]; t[2] = s[5]; }
-        nova::copy(g_gps_type, sizeof(g_gps_type), t);
-
-        // Two sentence types answer "is there a fix", which is the one thing
-        // worth surfacing without decoding a position — see the file note on
-        // why lat/lon stop here.
-        if (!strcmp(t, "GGA")) {
-            char fq[4];
-            g_gps_fixed = nmea_field(s, 6, fq, sizeof(fq)) && fq[0] && fq[0] != '0';
-            nmea_field(s, 7, g_gps_sats, sizeof(g_gps_sats));
-        } else if (!strcmp(t, "RMC")) {
-            char st[4];
-            g_gps_fixed = nmea_field(s, 2, st, sizeof(st)) && st[0] == 'A';
+    // The last line of the screen: a message about what was just done, else the time the satellites say.
+    void footer(Canvas &c) const {
+        char line[32];
+        const gps::Fix &f = g_gps_fix;
+        if (msg_[0]) c.text_scroll(2, c.height() - ui::FH, msg_, 1, c.width() - 4, false);
+        else if (f.has_time) {
+            snprintf(line, sizeof(line), "%02d:%02d:%02d UTC", f.hh, f.mm, f.ss);
+            c.text(2, c.height() - ui::FH, line, 1);
         }
+    }
+
+    // One line in /nova/waypoints.txt: when, where, how high. The first two fields are what the
+    // MicroPython suite wrote, so a file from either reads in the same tools.
+    void save_waypoint(void) {
+        const gps::Fix &f = g_gps_fix;
+        if (!f.fixed) { nova::copy(msg_, sizeof(msg_), "no fix to save"); return; }
+        char when[24], la[16], lo[16], al[16], row[96];
+        when[0] = 0;
+        if (f.has_time && f.has_date)
+            snprintf(when, sizeof(when), "%04d-%02d-%02d %02d:%02d:%02d", 2000 + f.yy, f.mo, f.dd, f.hh, f.mm, f.ss);
+        gps::format_deg(f.lat_e5, la, sizeof(la));
+        gps::format_deg(f.lon_e5, lo, sizeof(lo));
+        gps::format_tenths(f.alt_dm, al, sizeof(al));
+        int n = snprintf(row, sizeof(row), "%s,%s,%s,%s\n", la, lo, al, when);
+        nova::paths_init();
+        nova::copy(msg_, sizeof(msg_), fw_file_append(NOVA_ROOT "/waypoints.txt", row, (uint32_t)n) ? "Saved waypoint" : "save failed");
+    }
+
+    void set_clock(void) {
+        const gps::Fix &f = g_gps_fix;
+        if (!f.fixed || !f.has_time || !f.has_date) { nova::copy(msg_, sizeof(msg_), "no GPS time yet"); return; }
+        FwTime t = {};
+        t.year = 2000 + f.yy; t.month = f.mo; t.day = f.dd; t.hour = f.hh; t.minute = f.mm; t.second = f.ss;
+        nova::copy(msg_, sizeof(msg_), fw_time_set(&t) ? "Clock set" : "clock refused");
+    }
+
+    bool consume(const char *s) {
+        if (!gps::consume(&g_gps_fix, s)) {
+            // A good checksum on a sentence of a kind this does not read still proves a receiver.
+            if (gps::checksum_ok(s)) { g_gps_have = true; return false; }
+            return false;
+        }
+        g_gps_have = true;
+        g_gps_fixed = g_gps_fix.fixed;
+        nova::copy(g_gps_type, sizeof(g_gps_type), g_gps_fix.last);
+        snprintf(g_gps_sats, sizeof(g_gps_sats), "%02d", g_gps_fix.sats_used);
+        msg_[0] = 0;                // whatever it said last is about a position that has moved on
         return true;
     }
 
+    bool     started_;
     bool     wired_;
     unsigned bus_;
     char     line_[96];
     int      line_n_;
+    char     msg_[20];
 };
 
 // --- IR --------------------------------------------------------------------------
