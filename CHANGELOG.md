@@ -12,7 +12,7 @@ Summary: The recovery ladder now works on hardware, and versions are written the
 
 ### Added
 
-- `v2.0-beta (build 486)`: versions are `vMAJOR.ITER` with the build number beside them, and only a new generation gets a name. `ver`, `update` and the rollback messages show the build.
+- Versions are written `vMAJOR.ITER` with the build number beside them, for example `v2.0-beta (build 486)`, and only a new generation gets a name. `ver`, `update` and the rollback messages show the build.
 - `tools/release.py`: one command to cut a release, and `tools/soak.py` to leave a board running and write down what it does.
 - `releases/releases.json` and `releases/boards.json`: the release history and per-board status that the websites read.
 
