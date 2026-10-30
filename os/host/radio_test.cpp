@@ -112,6 +112,25 @@ static void test_cc_hex_and_timings(void) {
     eqi(nh, 2, "cc hex->timings count");
     eqi(th[0], 0x016e, "cc hex->timing[0]");
     eqi(th[1], 0x02bc, "cc hex->timing[1]");
+
+    // `tx @file`: a plain list reads as it is, a Flipper RAW .sub reads only its
+    // RAW_Data lines (its Frequency and Version lines are numbers too), and the
+    // sign that marks a space is dropped.
+    uint16_t tf[16];
+    int nf = cc_parse_file_timings("350,700\n350 700\n", tf, 16);
+    eqi(nf, 4, "cc file: a plain list");
+    const char *sub =
+        "Filetype: Flipper SubGhz RAW File\nVersion: 1\nFrequency: 433920000\n"
+        "Preset: FuriHalSubGhzPresetOok650Async\nProtocol: RAW\n"
+        "RAW_Data: 350 -700 350 -700\nRAW_Data: 1400 -350\n";
+    nf = cc_parse_file_timings(sub, tf, 16);
+    eqi(nf, 6, "cc file: a .sub reads its RAW_Data lines and nothing else");
+    eqi(tf[0], 350, "cc file: first pulse");
+    eqi(tf[1], 700, "cc file: a negative value loses its sign");
+    eqi(tf[4], 1400, "cc file: the second RAW_Data line follows the first");
+    eqi(cc_parse_file_timings(sub, tf, 3), 3, "cc file: the cap is respected");
+    eqi(cc_parse_file_timings("Frequency: 433920000\n", tf, 16), 1, "cc file: with no RAW_Data it is just a list (the caller refuses one pulse)");
+    eqi(cc_parse_file_timings("", tf, 16), 0, "cc file: an empty file");
 }
 
 // --- SX1276 frequency maths -------------------------------------------------
@@ -236,6 +255,27 @@ static void test_screen_parse(void) {
         "subghz pulse count");
     eqi(parse_subghz_pulses("[:] Nothing captured.\n"), 0,
         "subghz nothing-captured -> 0 pulses");
+
+    // The durations themselves, for saving the capture: the screen keeps them as numbers.
+    uint32_t td[8];
+    const char *rxout = "[@] Captured 6 pulses at 433.92 MHz\n350,700,350,700,350,1400\n";
+    eqi((long)parse_subghz_timings(rxout, td, 8), 6, "subghz timings: count");
+    eqi((long)td[0], 350, "subghz timings: first");
+    eqi((long)td[5], 1400, "subghz timings: last");
+    eqi((long)parse_subghz_timings(rxout, td, 4), 4, "subghz timings: cap respected");
+    eqi((long)parse_subghz_timings("[:] Nothing captured.\n", td, 8), 0, "subghz timings: nothing");
+    ok(parse_subghz_capture_hz(rxout) == 433920000u, "subghz capture frequency");
+    ok(parse_subghz_capture_hz("[:] Nothing captured.\n") == 0, "subghz capture frequency absent");
+    ok(parse_mhz("433.92 MHz") == 433920000u, "mhz with a unit");
+    ok(parse_mhz("868.35") == 868350000u, "mhz plain");
+    ok(parse_mhz("315") == 315000000u, "mhz whole number");
+    ok(parse_mhz("915.000001") == 915000001u, "mhz to the hertz");
+    ok(parse_mhz("abc") == 0 && parse_mhz("") == 0, "mhz that is not a number");
+    char mh[16];
+    format_mhz(433920000u, mh, sizeof(mh));
+    eqs(mh, "433.92", "format mhz");
+    format_mhz(315000000u, mh, sizeof(mh));
+    eqs(mh, "315.00", "format mhz keeps two decimals");
 
     // LoRa status.
     parse_lora_status(

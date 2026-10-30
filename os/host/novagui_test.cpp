@@ -49,6 +49,11 @@
 #include "../apps/novad1/novagui_ble.cpp"
 #include "../apps/novad1/novagui_media.cpp"
 #include "../apps/novad1/novagui_contact.cpp"
+#include "../apps/novad1/novasub.cpp"
+#include "../apps/novad1/novair.cpp"
+#include "../apps/novad1/novanfc.cpp"
+#include "../apps/novad1/novaoui.cpp"
+#include "../apps/novad1/novagui_codes.cpp"
 #include "../apps/novad1/novagui_radios.cpp"
 #include "../apps/novad1/novagui_sensors.cpp"
 #include "../apps/novad1/novagui_usb.cpp"
@@ -2140,6 +2145,153 @@ static void test_radio_status_is_re_asked(void) {
     gui::go_home();
 }
 
+// --- Sub-GHz: capture, save, library, fire -------------------------------------------
+//
+// The whole saved-code flow against the fake firmware and its writable filesystem: a
+// capture is parsed into durations, saved as a Flipper .sub, listed, fired again (its
+// frequency set first, then sent as many times as the setting says), a decoded file is
+// encoded on the way out, and rename and delete move the file for real.
+static void test_subghz_library(void) {
+    using namespace nova;
+    using namespace nova::screens;
+    fakefs_reset();
+    gui::go_home();
+    shell_says(nullptr, nullptr);
+
+    // --- capture: the firmware prints the durations, the package keeps them
+    shell_says("subghz rx", "[@] Captured 6 pulses at 433.92 MHz\n350,700,350,700,350,1400\n");
+    g_run_spawned = 1;
+    open_by_key("cc1101");
+    ui::Screen *s = gui::top();
+    s->tick(33);                                    // the status reply
+    s->on_event(EV_SELECT);                         // row 0: Capture
+    s->tick(33);
+    g_run_spawned = 0;
+    eq((int)g_sub_n, 6, "a capture's durations are kept, not only counted");
+    eq((int)g_sub_t[5], 1400, "...in order");
+    ok(g_sub_hz == 433920000u, "...with the frequency it was taken at");
+
+    // --- save: the typed name becomes a file, and the file is a Flipper RAW .sub
+    ok(!fw_file_exists("/nova/codes/subghz/gate.sub"), "nothing is saved yet");
+    sub_save_typed(nullptr, "gate");
+    s->tick(33);
+    ok(fw_file_exists("/nova/codes/subghz/gate.sub"), "saving writes /nova/codes/subghz/<name>.sub");
+    static char text[1200];
+    uint32_t got = fw_file_read("/nova/codes/subghz/gate.sub", text, sizeof(text) - 1);
+    text[got] = 0;
+    ok(strstr(text, "Filetype: Flipper SubGhz RAW File") != nullptr, "it is a Flipper RAW file");
+    ok(strstr(text, "RAW_Data: 350 -700 350 -700 350 -1400") != nullptr, "marks keep their sign and spaces lose it, as a Flipper writes them");
+    ok(strstr(text, "Frequency: 433920000") != nullptr, "it names the frequency");
+
+    sub_save_typed(nullptr, "gate");                // the same name again must not overwrite
+    s->tick(33);
+    ok(fw_file_exists("/nova/codes/subghz/gate-2.sub"), "a second save under the same name is gate-2, not a clobber");
+    sub_save_typed(nullptr, "a/b:c");               // characters a filename must not have
+    s->tick(33);
+    ok(fw_file_exists("/nova/codes/subghz/a_b_c.sub"), "an unsafe name is made safe");
+    sub_save_typed(nullptr, "   ");
+    int files_before = fw_dir_count("/nova/codes/subghz");
+    s->tick(33);
+    eq(fw_dir_count("/nova/codes/subghz"), files_before, "a name with nothing in it saves nothing");
+
+    // --- the library lists them, in order, and the cursor can be moved
+    gui::go_home();
+    g_run_spawned = 1;                              // workers run inline, or the status request would stay "busy"
+    open_by_key("cc1101");
+    g_run_spawned = 0;
+    s = gui::top();
+    open_sublib();
+    s = gui::top();
+    streq_(s->title(), "Library", "the library opens");
+    eq(codes::list().n, 3, "it lists what is saved");
+    streq_(codes::list().names[0], "a_b_c", "alphabetically...");
+    streq_(codes::list().names[1], "gate", "...");
+    streq_(codes::list().names[2], "gate-2", "...");
+    int px = lit_pixels();
+    ok(px > 12, "and draws something");
+    s->on_event(EV_ROT_CW);
+    streq_(codes::selected(), "gate", "turning moves the cursor");
+
+    // --- fire: frequency first, then the send, as many times as the setting says
+    shell_log_reset();
+    fw_reg_set("Apps.NovaD1_SubRepeats", "3");
+    nova::copy(g_sublib_name, sizeof(g_sublib_name), "gate");
+    g_sublib_fire_req = true;
+    g_run_spawned = 1;
+    for (int i = 0; i < 8; i++) s->tick(33);
+    g_run_spawned = 0;
+    eq(shell_count("subghz freq 433.92"), 1, "firing a file sets its frequency once");
+    eq(shell_count("subghz tx @/nova/codes/subghz/gate.sub"), 3, "and sends the file the number of times the setting asks");
+    streq_(g_fire_note, "sent", "and says so");
+    ok(g_shell_log[0][7] == 'f', "the frequency is set BEFORE the first send");
+
+    // --- a decoded file is encoded here, written to a scratch file, and that is sent
+    const char *came = "Filetype: Flipper SubGhz Key File\nVersion: 1\nFrequency: 433920000\nProtocol: Princeton\n"
+                       "Bit: 24\nKey: 00 00 00 00 00 AB CD EF\nTE: 350\n";
+    fw_file_write("/nova/codes/subghz/came.sub", came, (uint32_t)strlen(came));
+    shell_log_reset();
+    nova::copy(g_sublib_name, sizeof(g_sublib_name), "came");
+    g_sublib_fire_req = true;
+    g_run_spawned = 1;
+    for (int i = 0; i < 8; i++) s->tick(33);
+    g_run_spawned = 0;
+    eq(shell_count("subghz tx @/nova/tx.tmp"), 3, "a decoded file is sent from a scratch file the encoder wrote");
+    got = fw_file_read("/nova/tx.tmp", text, sizeof(text) - 1);
+    text[got] = 0;
+    ok(strstr(text, "RAW_Data: 1050 -350") != nullptr, "...holding the Princeton frame (a 1 bit is 3 te high, 1 te low)");
+
+    // --- a protocol there is no encoder for is refused, and nothing is sent
+    const char *keeloq = "Filetype: Flipper SubGhz Key File\nFrequency: 433920000\nProtocol: KeeLoq\nBit: 64\nKey: 01 02 03 04 05 06 07 08\nTE: 400\n";
+    fw_file_write("/nova/codes/subghz/keeloq.sub", keeloq, (uint32_t)strlen(keeloq));
+    shell_log_reset();
+    nova::copy(g_sublib_name, sizeof(g_sublib_name), "keeloq");
+    g_sublib_fire_req = true;
+    g_run_spawned = 1;
+    for (int i = 0; i < 4; i++) s->tick(33);
+    g_run_spawned = 0;
+    streq_(g_fire_note, "protocol not supported", "a rolling-code protocol is refused out loud");
+    eq(shell_count("subghz tx"), 0, "and nothing is transmitted");
+
+    // --- rename and delete move the file
+    codes::ask_rename(codes::kSubGhz, "gate", sublib_changed, nullptr);
+    gui::pop();                                     // the keyboard it pushed; its callback is called directly
+    g_sublib_close = false;
+    codes::rename_typed(nullptr, "front door");
+    ok(fw_file_exists("/nova/codes/subghz/front door.sub") && !fw_file_exists("/nova/codes/subghz/gate.sub"),
+       "a rename moves the file");
+    ok(g_sublib_close, "and tells the menu to close");
+    codes::ask_rename(codes::kSubGhz, "gate-2", sublib_changed, nullptr);
+    gui::pop();
+    codes::rename_typed(nullptr, "front door");
+    ok(fw_file_exists("/nova/codes/subghz/gate-2.sub"), "a name that is taken is refused, and the file stays");
+    streq_(ui::last_notice(), "There is one with that name already.", "...with the reason");
+    gui::pop();
+
+    g_sublib_close = false;
+    codes::ask_delete(codes::kSubGhz, "front door", sublib_changed, nullptr);
+    gui::pop();                                     // the question
+    codes::delete_yes(nullptr);
+    ok(!fw_file_exists("/nova/codes/subghz/front door.sub"), "a delete removes the file");
+    ok(g_sublib_close, "and closes the menu");
+
+    // --- the frequency presets step through the CC1101's bands
+    gui::go_home();
+    shell_says(nullptr, nullptr);
+    shell_log_reset();
+    g_run_spawned = 1;
+    open_by_key("cc1101");
+    s = gui::top();
+    s->tick(33);
+    for (int i = 0; i < 4; i++) s->on_event(EV_ROT_CW);          // row 4: Freq
+    s->on_event(EV_SELECT);
+    s->tick(33);
+    g_run_spawned = 0;
+    eq(shell_count("subghz freq 868.35"), 1, "from 433.92 the next preset is 868.35");
+
+    fakefs_reset();
+    gui::go_home();
+}
+
 // --- the sweep: a command that failed must not report success ---------------------
 static void test_set_time_reports_the_truth(void) {
     using namespace nova;
@@ -2854,6 +3006,8 @@ static void test_ir(void) {
 }
 
 int main(void) {
+    // Line-buffered, so a failure printed before a sanitizer abort is not lost with the buffer.
+    setvbuf(stdout, nullptr, _IOLBF, 0);
     STAGE(test_single_instance);
     STAGE(test_one_detent_animates);
     STAGE(test_folders_open_themselves);
@@ -2892,6 +3046,7 @@ int main(void) {
     STAGE(test_menu_keeps_its_place);
     STAGE(test_list_keeps_its_place);
     STAGE(test_radio_status_is_re_asked);
+    STAGE(test_subghz_library);
     STAGE(test_lora_messages);
     STAGE(test_badusb);
     STAGE(test_battery);

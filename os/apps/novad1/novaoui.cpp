@@ -47,7 +47,7 @@ static Parse prefix_of(const char *s, uint32_t *key, unsigned *first, bool *key_
     return P_OK;
 }
 
-static int find(uint32_t key) {
+static int oui_find(uint32_t key) {
     int lo = 0, hi = (int)OUI_N - 1;
     while (lo <= hi) {
         int mid = (lo + hi) / 2;
@@ -62,7 +62,7 @@ static int find(uint32_t key) {
 static Result by_prefix(uint32_t key, unsigned first) {
     Result r = { nullptr, nullptr };
     if (first & 0x02) { r.klass = "random"; return r; }
-    int v = find(key);
+    int v = oui_find(key);
     if (v < 0 || v >= (int)OUI_VENDORS_N) return r;
     r.vendor = nth(kOuiVendors, (unsigned)v);
     r.klass  = nth(kOuiClassNames, kOuiVendorClass[v]);

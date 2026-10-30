@@ -7,7 +7,7 @@ namespace sub {
 
 using namespace codec;
 
-static void copy_span(char *dst, unsigned cap, const char *s, const char *e) {
+static void sub_copy_span(char *dst, unsigned cap, const char *s, const char *e) {
     unsigned n = 0;
     while (s < e && n + 1 < cap) dst[n++] = *s++;
     dst[n] = 0;
@@ -16,7 +16,7 @@ static void copy_span(char *dst, unsigned cap, const char *s, const char *e) {
 void parse(const char *text, File *out, uint32_t *raw, unsigned raw_cap,
            unsigned *raw_n, unsigned *raw_dropped) {
     out->freq_hz = 0;
-    copy_span(out->preset, sizeof(out->preset), SUB_PRESET_DEFAULT,
+    sub_copy_span(out->preset, sizeof(out->preset), SUB_PRESET_DEFAULT,
               SUB_PRESET_DEFAULT + sizeof(SUB_PRESET_DEFAULT) - 1);
     out->protocol[0] = 0;
     out->has_key = false;
@@ -44,9 +44,9 @@ void parse(const char *text, File *out, uint32_t *raw, unsigned raw_cap,
             int32_t v;
             if (parse_int(vs, ve, &v) && v >= 0) out->freq_hz = (uint32_t)v;
         } else if (eq_span(ks, ke, "Preset")) {
-            copy_span(out->preset, sizeof(out->preset), vs, ve);
+            sub_copy_span(out->preset, sizeof(out->preset), vs, ve);
         } else if (eq_span(ks, ke, "Protocol")) {
-            copy_span(out->protocol, sizeof(out->protocol), vs, ve);
+            sub_copy_span(out->protocol, sizeof(out->protocol), vs, ve);
         } else if (eq_span(ks, ke, "RAW_Data")) {
             const char *q = vs, *ts, *te;
             while (next_token(&q, ve, &ts, &te)) {
@@ -57,7 +57,7 @@ void parse(const char *text, File *out, uint32_t *raw, unsigned raw_cap,
             }
         } else if (eq_span(ks, ke, "Key")) {
             out->has_key = true;
-            copy_span(out->key, sizeof(out->key), vs, ve);
+            sub_copy_span(out->key, sizeof(out->key), vs, ve);
         } else if (eq_span(ks, ke, "Bit")) {
             int32_t v;
             if (parse_int(vs, ve, &v)) out->bits = (int32_t)v;
@@ -109,14 +109,14 @@ static uint64_t key_to_int(const char *key_hex) {
 }
 
 // A short list that stops being written to when it is full; the caller checks.
-struct Out {
+struct SubOut {
     uint32_t *t;
     unsigned  cap, n;
     bool      over;
     void push(uint32_t v) { if (n < cap) t[n++] = v; else over = true; }
 };
 
-static void princeton(Out &o, uint64_t val, int bits, uint32_t te) {
+static void princeton(SubOut &o, uint64_t val, int bits, uint32_t te) {
     for (int i = bits - 1; i >= 0; i--) {
         if ((val >> i) & 1) { o.push(te * 3); o.push(te); }
         else                { o.push(te);     o.push(te * 3); }
@@ -134,7 +134,7 @@ static uint32_t came_header_te(int bits) {
     }
 }
 
-static void came_like(Out &o, uint64_t val, int bits, uint32_t te, uint32_t header_te,
+static void came_like(SubOut &o, uint64_t val, int bits, uint32_t te, uint32_t header_te,
                       bool bit1_long_low) {
     const uint32_t te_long = te * 2;
     o.push(te);                                       // the start pulse
@@ -147,7 +147,7 @@ static void came_like(Out &o, uint64_t val, int bits, uint32_t te, uint32_t head
     o.push(te * header_te);                           // trailing: the next repeat's preamble
 }
 
-static void linear(Out &o, uint64_t val, int bits, uint32_t te) {
+static void linear(SubOut &o, uint64_t val, int bits, uint32_t te) {
     int last = 0;
     for (int i = bits - 1; i >= 0; i--) {
         last = (int)((val >> i) & 1);
@@ -166,7 +166,7 @@ unsigned encode_decoded(const char *protocol, const char *key_hex, int bits, int
     const char *e = p + strlen(p);
     trim(&p, &e);
 
-    Out o = { out, cap, 0, false };
+    SubOut o = { out, cap, 0, false };
     const uint32_t t = (uint32_t)te;
     if (ieq_span(p, e, "princeton"))                                         princeton(o, val, bits, t);
     else if (ieq_span(p, e, "came"))                                         came_like(o, val, bits, t, came_header_te(bits), true);

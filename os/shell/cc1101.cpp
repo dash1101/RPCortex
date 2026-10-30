@@ -14,6 +14,7 @@
 //   subghz rx [secs]         listen for one OOK/ASK burst and print its timing —
 //                            "capture a garage remote". Bounded by secs.
 //   subghz tx <timings|hex>  replay a captured fixed-code OOK burst
+//   subghz tx @<file>        the same from a file: a pulse list, or a Flipper RAW .sub
 //
 // FIXED-CODE OOK ONLY. Rolling codes (KeeLoq and the like) are deliberately NOT
 // implemented — replaying one does nothing useful and capturing one is a
@@ -147,6 +148,9 @@ static size_t cc_parse_hex(const char *s, uint8_t *out, size_t cap) {
 // the like are ~50-70 edges) is well under this; a rolling code or continuous
 // noise would overrun it, which is one more reason this only claims fixed codes.
 #define CC_CAP_MAX 128
+// The largest pulse file `tx @file` reads: 128 pulses of up to six digits, with room for a
+// Flipper header and several RAW_Data lines.
+#define CC_FILE_MAX 4096
 
 // Clamp one measured pulse into the stored range. Its own function so the bound
 // is defined in exactly one place and tested.
@@ -172,19 +176,23 @@ static unsigned cc_format_timings(char *out, unsigned cap, const uint16_t *t, in
 // "350,700,..." (or space-separated) -> timing list. Accepts commas, spaces and
 // newlines as separators so a .sub RAW_Data line drops straight in later. Returns
 // the count; stops at cap.
-static int cc_parse_timings(const char *s, uint16_t *out, int cap) {
+static int cc_parse_timings_span(const char *s, const char *end, uint16_t *out, int cap) {
     int n = 0;
     const char *p = s;
-    while (p && *p && n < cap) {
-        while (*p == ',' || *p == ' ' || *p == '\r' || *p == '\n' || *p == '\t') p++;
-        if (!*p) break;
+    while (p && p < end && *p && n < cap) {
+        while (p < end && (*p == ',' || *p == ' ' || *p == '\r' || *p == '\n' || *p == '\t')) p++;
+        if (p >= end || !*p) break;
         uint32_t v = 0;
         bool any = false;
-        while (*p >= '0' && *p <= '9') { v = v * 10 + (uint32_t)(*p - '0'); p++; any = true; }
-        if (!any) { if (*p) p++; continue; }    // skip a stray non-digit
+        while (p < end && *p >= '0' && *p <= '9') { v = v * 10 + (uint32_t)(*p - '0'); p++; any = true; }
+        if (!any) { if (p < end && *p) p++; continue; }    // skip a stray non-digit
         out[n++] = cc_clamp_pulse(v);
     }
     return n;
+}
+
+static int cc_parse_timings(const char *s, uint16_t *out, int cap) {
+    return s ? cc_parse_timings_span(s, s + strlen(s), out, cap) : 0;
 }
 
 // Is this argument the hex form or the timing form? The rule is unambiguous and
@@ -211,6 +219,27 @@ static int cc_hex_to_timings(const char *s, uint16_t *out, int cap) {
     return n;
 }
 
+// The timings in a FILE: either a plain list (cc_parse_timings reads it as it is) or a
+// Flipper RAW .sub, whose other lines (Frequency, Preset, ...) are numbers that must NOT
+// be mistaken for pulses. When the text has a "RAW_Data:" line only those lines are
+// read; negative values lose their sign in cc_parse_timings, which is what marks a space
+// there. This exists because a command line is 255 characters and a 128-pulse capture
+// is not (`subghz tx @/nova/codes/subghz/gate.sub`). Returns the count.
+static int cc_parse_file_timings(const char *text, uint16_t *out, int cap) {
+    if (!strstr(text, "RAW_Data:")) return cc_parse_timings(text, out, cap);
+    static const char kKey[] = "RAW_Data:";
+    int n = 0;
+    for (const char *p = text; p && *p && n < cap; ) {
+        const char *nl = strchr(p, '\n');
+        const char *line_end = nl ? nl : p + strlen(p);
+        if (line_end - p >= (int)sizeof(kKey) - 1 && !strncmp(p, kKey, sizeof(kKey) - 1))
+            n += cc_parse_timings_span(p + sizeof(kKey) - 1, line_end, out + n, cap - n);
+        if (!nl) break;
+        p = nl + 1;
+    }
+    return n;
+}
+
 #ifndef RADIO_HOST_TEST
 
 // ===========================================================================
@@ -222,6 +251,9 @@ static int cc_hex_to_timings(const char *s, uint16_t *out, int cap) {
 
 #include "command.h"
 #include "out.h"
+#include "path.h"
+#include "fsguard.h"
+#include "storage.h"
 #include "task.h"
 #include "registry.h"
 #include "interrupt.h"
@@ -641,6 +673,25 @@ static int sub_tx(const char *arg) {
         // the Nova D1 screen uses, so it never has to carry the timing list back.
         n = cc_last_n;
         if (n < 2) { out_err("No capture to replay. Run 'subghz rx' first."); return 1; }
+    } else if (arg[0] == '@') {
+        // A file of pulses, for a capture too long for a command line. Read it the
+        // way `badusb` reads a payload: resolved, allowed, bounded.
+        char full[160];
+        path_resolve(fs_cwd(), arg + 1, full, sizeof(full));
+        bool is_dir = false; uint32_t size = 0;
+        if (!fs_allow_read(full) || !storage_stat(full, &is_dir, &size) || is_dir) {
+            out_err("No such file: %s", arg + 1);
+            return 1;
+        }
+        if (size >= CC_FILE_MAX) { out_err("That file is %lu bytes; the limit is %d.", (unsigned long)size, CC_FILE_MAX); return 1; }
+        char *text = (char *)malloc(CC_FILE_MAX);
+        if (!text) { out_err("Not enough memory to read the file."); return 1; }
+        uint32_t got = storage_read_file(full, (uint8_t *)text, CC_FILE_MAX - 1);
+        text[got] = 0;
+        n = cc_parse_file_timings(text, cc_timings, CC_CAP_MAX);
+        free(text);
+        if (n < 2) { out_err("Nothing to send in %s.", arg + 1); return 1; }
+        cc_last_n = n;
     } else {
         if (cc_arg_is_hex(arg)) n = cc_hex_to_timings(arg, cc_timings, CC_CAP_MAX);
         else                    n = cc_parse_timings(arg, cc_timings, CC_CAP_MAX);
@@ -702,7 +753,7 @@ static int cmd_subghz(int argc, char **argv) {
     if (!strcmp(sub, "freq"))   return sub_freq(argc > 2 ? argv[2] : "");
     if (!strcmp(sub, "rx"))     return sub_rx(argc > 2 ? (unsigned)atoi(argv[2]) : 5);
     if (!strcmp(sub, "tx")) {
-        if (argc < 3) { out_err("Usage: subghz tx last | <timings> | <hex>"); return 1; }
+        if (argc < 3) { out_err("Usage: subghz tx last | <timings> | <hex> | @<file>"); return 1; }
         char tail[CC_CAP_MAX * 7 + 1];
         join_tail(argc, argv, 2, tail, sizeof(tail));
         return sub_tx(tail);
@@ -714,6 +765,7 @@ static int cmd_subghz(int argc, char **argv) {
     out_multi("  subghz rx [secs]           capture one OOK burst (fixed codes)");
     out_multi("  subghz tx last             replay the last capture");
     out_multi("  subghz tx <timings|hex>    replay 350,700,... (comma-separated) or hex");
+    out_multi("  subghz tx @<file>          replay a pulse list or a Flipper RAW .sub from a file");
     out_multi("  Fixed-code OOK only; rolling codes are not replayable.");
     return argc > 1 ? 1 : 0;
 }

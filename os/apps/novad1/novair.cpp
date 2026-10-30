@@ -9,7 +9,7 @@ using namespace codec;
 
 // --- encoders ------------------------------------------------------------------------------
 
-struct Out {
+struct IrOut {
     uint32_t *t;
     unsigned  cap, n;
     bool      over;
@@ -17,7 +17,7 @@ struct Out {
 };
 
 // Pulse-distance, the NEC family: bytes least-significant bit first.
-static void pulsedist(Out &o, const uint8_t *bytes, unsigned nb, uint32_t hdr_m,
+static void pulsedist(IrOut &o, const uint8_t *bytes, unsigned nb, uint32_t hdr_m,
                       uint32_t hdr_s, uint32_t bit, uint32_t one, uint32_t zero) {
     o.push(hdr_m);
     o.push(hdr_s);
@@ -34,7 +34,7 @@ static void pulsedist(Out &o, const uint8_t *bytes, unsigned nb, uint32_t hdr_m,
 // ends on a mark, which is what a transmitter expects.
 struct Level { uint8_t lv; uint32_t d; };
 
-static void merge_levels(Out &o, const Level *lv, unsigned n) {
+static void merge_levels(IrOut &o, const Level *lv, unsigned n) {
     Level m[96];
     unsigned k = 0;
     for (unsigned i = 0; i < n; i++) {
@@ -84,7 +84,7 @@ unsigned encode(const char *protocol, const char *address, const char *command,
     if (!na) { a[0] = 0; na = 1; }
     if (!nc) { c[0] = 0; nc = 1; }
 
-    Out o = { out, cap, 0, false };
+    IrOut o = { out, cap, 0, false };
     uint32_t f = 38000;
 
     if (is_proto(p, e, "NEC")) {

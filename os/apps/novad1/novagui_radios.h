@@ -27,6 +27,13 @@ void open_messages(void);   // SX1276: send/receive short text over LoRa
 namespace radios {
 bool text_to_hex(const char *text, char *out, unsigned cap);
 int  hex_to_text(const char *hex, char *out, unsigned cap);
+
+// The capture line of `subghz rx` output as durations, the frequency it names, and
+// the form a frequency is typed and printed in.
+unsigned parse_subghz_timings(const char *text, uint32_t *t, unsigned cap);
+uint32_t parse_subghz_capture_hz(const char *text);
+uint32_t parse_mhz(const char *s);
+void     format_mhz(uint32_t hz, char *out, unsigned cap);
 }
 
 }  // namespace screens

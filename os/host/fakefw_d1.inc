@@ -31,7 +31,7 @@
 // pieces a test wants to control exposed as globals.
 
 static uint32_t g_ms;
-static char     g_reg[32][2][128];
+static char     g_reg[64][2][128];
 static int      g_regn;
 static bool     g_panel_present = true;
 static int      g_spawned;
@@ -142,8 +142,27 @@ static void shell_says(const char *prefix, const char *reply, int rc = 0) {
 // not only what it did with the answer.
 static char g_last_shell[128];
 
+// Every line asked for since shell_log_reset(), for the tests that care HOW MANY times a
+// command ran (a replay sent three times) or in what order (frequency before send).
+#define SHELL_LOG_N 24
+static char g_shell_log[SHELL_LOG_N][128];
+static int  g_shell_logged;
+static void shell_log_reset(void) { g_shell_logged = 0; }
+static void shell_log_add(const char *line) {
+    if (g_shell_logged < SHELL_LOG_N) snprintf(g_shell_log[g_shell_logged], 128, "%s", line ? line : "");
+    g_shell_logged++;
+}
+// How many lines starting with `prefix` have been run since the reset.
+static int shell_count(const char *prefix) {
+    int n = 0;
+    for (int i = 0; i < g_shell_logged && i < SHELL_LOG_N; i++)
+        if (!strncmp(g_shell_log[i], prefix, strlen(prefix))) n++;
+    return n;
+}
+
 static const char *fake_shell(const char *line) {
     snprintf(g_last_shell, sizeof(g_last_shell), "%s", line ? line : "");
+    shell_log_add(line);
     if (g_shell_match && !strncmp(line, g_shell_match, strlen(g_shell_match)))
         return g_shell_reply ? g_shell_reply : "";
     // Copied from os/shell/pkgrepo.cpp do_update, os/shell/session.cpp
@@ -395,7 +414,7 @@ int  fw_reg_get(const char *k, char *out, uint32_t cap) {
 int fw_reg_set(const char *k, const char *v) {
     for (int i = 0; i < g_regn; i++)
         if (!strcmp(g_reg[i][0], k)) { snprintf(g_reg[i][1], 128, "%s", v); return 1; }
-    if (g_regn >= 32) return 0;
+    if (g_regn >= 64) return 0;
     snprintf(g_reg[g_regn][0], 128, "%s", k);
     snprintf(g_reg[g_regn][1], 128, "%s", v);
     g_regn++;
@@ -409,8 +428,78 @@ int32_t fw_reg_get_int(const char *k, int32_t d) {
 int  fw_reg_has(const char *k) { char b[4]; return fw_reg_get(k, b, sizeof(b)); }
 void fw_reg_save(void) {}
 
-int      fw_file_exists(const char *) { return 1; }
-int      fw_mkdir(const char *) { return 1; }
+// --- a writable filesystem, over the fixed table below ---------------------------------
+//
+// The table further down is what a device ships with: a few directories with the
+// files a test or a screenshot needs. On top of it sits a small writable overlay, so
+// a screen that SAVES something - a capture, a card, a log - can be driven and its
+// result read back, and a delete or a rename is seen by the next listing. Files are
+// kept in malloc'd buffers; nothing here touches the host's disk.
+//
+// A path exists if the overlay has it, the table has it and nothing has deleted it,
+// it was made with fw_mkdir, or it is the parent of something that does. That last
+// rule is what stops "/nova" needing a mkdir before the table's /nova/music is
+// reachable, and it is why this can replace "everything exists" without moving the
+// screens that asked.
+#define FAKEFS_MAX 48
+struct FakeFile { char path[96]; uint8_t *data; uint32_t len; bool used; };
+static FakeFile g_ffs[FAKEFS_MAX];
+static char     g_fdirs[16][96];            // directories made with fw_mkdir
+static char     g_ftomb[16][96];            // table entries that have been deleted
+
+static void fakefs_reset(void) {
+    for (FakeFile &f : g_ffs) { if (f.used) free(f.data); f = FakeFile(); }
+    memset(g_fdirs, 0, sizeof(g_fdirs));
+    memset(g_ftomb, 0, sizeof(g_ftomb));
+}
+static FakeFile *fakefs_find(const char *path) {
+    for (FakeFile &f : g_ffs) if (f.used && !strcmp(f.path, path)) return &f;
+    return nullptr;
+}
+static bool fakefs_tombed(const char *path) {
+    for (auto &t : g_ftomb) if (t[0] && !strcmp(t, path)) return true;
+    return false;
+}
+static FakeFile *fakefs_make(const char *path) {
+    FakeFile *f = fakefs_find(path);
+    if (f) return f;
+    for (FakeFile &x : g_ffs)
+        if (!x.used) {
+            x.used = true; x.data = nullptr; x.len = 0;
+            snprintf(x.path, sizeof(x.path), "%s", path);
+            for (auto &t : g_ftomb) if (t[0] && !strcmp(t, path)) t[0] = 0;   // a file written again is back
+            return &x;
+        }
+    return nullptr;
+}
+static bool fakefs_put(const char *path, const void *data, uint32_t len, bool append) {
+    FakeFile *f = fakefs_make(path);
+    if (!f) return false;
+    uint32_t at = append ? f->len : 0;
+    if (at + len > 65536) return false;
+    uint8_t *d = (uint8_t *)realloc(f->data, at + len + 1);
+    if (!d) return false;
+    f->data = d;
+    if (len && data) memcpy(d + at, data, len);
+    f->len = at + len;
+    d[f->len] = 0;
+    return true;
+}
+static bool fakefs_has_child(const char *dir) {
+    char pre[100];
+    snprintf(pre, sizeof(pre), "%s/", dir);
+    size_t n = strlen(pre);
+    for (FakeFile &f : g_ffs) if (f.used && !strncmp(f.path, pre, n)) return true;
+    for (auto &d : g_fdirs) if (d[0] && !strncmp(d, pre, n)) return true;
+    return false;
+}
+
+int      fw_mkdir(const char *path) {
+    if (!path) return 0;
+    for (auto &d : g_fdirs) if (d[0] && !strcmp(d, path)) return 1;
+    for (auto &d : g_fdirs) if (!d[0]) { snprintf(d, sizeof(d), "%s", path); return 1; }
+    return 1;
+}
 
 // Writes are KEPT rather than discarded. The Updates screen's whole product is
 // a file the next boot reads, so a test that could not see what was written
@@ -428,15 +517,30 @@ int fw_file_write(const char *path, const void *data, uint32_t len) {
     uint32_t n = len < sizeof(g_write_body) - 1 ? len : (uint32_t)sizeof(g_write_body) - 1;
     if (data) memcpy(g_write_body, data, n);
     g_write_body[n] = 0;
-    return 1;
+    return fakefs_put(path, data, len, false) ? 1 : 0;
+}
+int fw_file_append(const char *path, const void *data, uint32_t len) {
+    if (g_write_fails) { g_write_fails--; return 0; }
+    return fakefs_put(path, data, len, true) ? 1 : 0;
 }
 // A read is answered by the little filesystem further down, beside the media
 // library it grew out of.
 uint32_t fw_file_read(const char *path, void *buf, uint32_t cap);
 int      fw_file_remove(const char *p) {
     snprintf(g_removed, sizeof(g_removed), "%s", p ? p : "");
+    if (!p) return 1;
+    FakeFile *f = fakefs_find(p);
+    if (f) { free(f->data); *f = FakeFile(); }
+    for (auto &t : g_ftomb) if (!t[0]) { snprintf(t, sizeof(t), "%s", p); break; }
     return 1;
 }
+int fw_file_rename(const char *from, const char *to) {
+    FakeFile *f = fakefs_find(from);
+    if (!f || !to || fakefs_find(to)) return 0;
+    snprintf(f->path, sizeof(f->path), "%s", to);
+    return 1;
+}
+int fw_file_copy(const char *from, const char *to);      // after the table, which it reads from
 
 int fw_board(char *out, unsigned cap) { snprintf(out, cap, "pico2_w"); return 1; }
 unsigned fw_gpio_count(void) { return 30; }
@@ -713,6 +817,7 @@ static const FakeEntry g_fake_fs[] = {
 static const unsigned FAKE_FS_N = sizeof(g_fake_fs) / sizeof(g_fake_fs[0]);
 
 static const FakeEntry *fake_find(const char *path) {
+    if (fakefs_tombed(path)) return nullptr;
     for (unsigned i = 0; i < FAKE_FS_N; i++) {
         char full[160];
         snprintf(full, sizeof(full), "%s/%s", g_fake_fs[i].dir, g_fake_fs[i].name);
@@ -721,9 +826,57 @@ static const FakeEntry *fake_find(const char *path) {
     return nullptr;
 }
 
+// Everything in a directory, merged: the table's entries (less what has been
+// deleted), then the overlay's files, then the subdirectories that exist only
+// because something lives below them or fw_mkdir made them.
+static int fakefs_list(const char *dir, FwDirEntry *out, int max) {
+    int n = 0;
+    auto add = [&](const char *name, int is_dir, uint32_t size) {
+        for (int i = 0; i < n; i++) if (!strcmp(out[i].name, name)) return;
+        if (n < max) {
+            snprintf(out[n].name, FW_NAME_MAX, "%s", name);
+            out[n].is_dir = is_dir; out[n].size = size; n++;
+        }
+    };
+    size_t dl = strlen(dir);
+    for (unsigned i = 0; i < FAKE_FS_N; i++) {
+        if (strcmp(g_fake_fs[i].dir, dir)) continue;
+        char full[160];
+        snprintf(full, sizeof(full), "%s/%s", dir, g_fake_fs[i].name);
+        if (fakefs_tombed(full)) continue;
+        add(g_fake_fs[i].name, g_fake_fs[i].is_dir, g_fake_fs[i].body ? (uint32_t)strlen(g_fake_fs[i].body) : g_fake_fs[i].size);
+    }
+    auto child_of = [&](const char *path, const char **rest) {
+        if (dl == 1 && dir[0] == '/') { if (path[0] != '/') return false; *rest = path + 1; return true; }
+        if (strncmp(path, dir, dl) || path[dl] != '/') return false;
+        *rest = path + dl + 1; return true;
+    };
+    for (FakeFile &f : g_ffs) {
+        const char *rest;
+        if (!f.used || !child_of(f.path, &rest)) continue;
+        const char *slash = strchr(rest, '/');
+        if (!slash) add(rest, 0, f.len);
+        else { char nm[FW_NAME_MAX]; size_t k = (size_t)(slash - rest); if (k >= sizeof(nm)) k = sizeof(nm) - 1; memcpy(nm, rest, k); nm[k] = 0; add(nm, 1, 0); }
+    }
+    for (auto &d : g_fdirs) {
+        const char *rest;
+        if (!d[0] || !child_of(d, &rest) || !*rest) continue;
+        const char *slash = strchr(rest, '/');
+        char nm[FW_NAME_MAX]; size_t k = slash ? (size_t)(slash - rest) : strlen(rest); if (k >= sizeof(nm)) k = sizeof(nm) - 1; memcpy(nm, rest, k); nm[k] = 0;
+        add(nm, 1, 0);
+    }
+    return n;
+}
+
 // Files with a BODY read back; everything else reads as empty, which is what
-// this returned for every path before there was anything worth reading.
+// this returned for every path before there was anything worth reading. A file the
+// overlay holds comes first.
 uint32_t fw_file_read(const char *path, void *buf, uint32_t cap) {
+    if (FakeFile *f = fakefs_find(path)) {
+        uint32_t n = f->len < cap ? f->len : cap;
+        if (n) memcpy(buf, f->data, n);
+        return n;
+    }
     const FakeEntry *e = fake_find(path);
     if (!e || !e->body) return 0;
     uint32_t n = (uint32_t)strlen(e->body);
@@ -733,29 +886,51 @@ uint32_t fw_file_read(const char *path, void *buf, uint32_t cap) {
 }
 
 int fw_dir_count(const char *path) {
-    int n = 0;
-    for (unsigned i = 0; i < FAKE_FS_N; i++)
-        if (!strcmp(g_fake_fs[i].dir, path)) n++;
-    return n;
+    FwDirEntry all[64];
+    return fakefs_list(path, all, 64);
 }
 
 int fw_dir_entry(const char *path, unsigned index, FwDirEntry *out) {
-    unsigned n = 0;
+    FwDirEntry all[64];
+    int n = fakefs_list(path, all, 64);
+    if ((int)index >= n) return 0;
+    *out = all[index];
+    return 1;
+}
+
+uint32_t fw_file_size(const char *path) {
+    if (FakeFile *f = fakefs_find(path)) return f->len;
+    const FakeEntry *e = fake_find(path);
+    if (!e) return 0;
+    return e->body ? (uint32_t)strlen(e->body) : e->size;
+}
+
+// Does a path exist? See the note on the overlay: a file, a made directory, or the
+// parent of something.
+int fw_file_exists(const char *path) {
+    if (!path) return 0;
+    if (!strcmp(path, "/")) return 1;
+    if (fakefs_find(path)) return 1;
+    if (fake_find(path)) return 1;
+    for (auto &d : g_fdirs) if (d[0] && !strcmp(d, path)) return 1;
+    if (fakefs_has_child(path)) return 1;
     for (unsigned i = 0; i < FAKE_FS_N; i++) {
-        if (strcmp(g_fake_fs[i].dir, path)) continue;
-        if (n++ != index) continue;
-        snprintf(out->name, FW_NAME_MAX, "%s", g_fake_fs[i].name);
-        out->is_dir = g_fake_fs[i].is_dir;
-        out->size   = g_fake_fs[i].size;
-        return 1;
+        const char *d = g_fake_fs[i].dir;
+        size_t n = strlen(path);
+        if (!fakefs_tombed(path) && !strncmp(d, path, n) && (d[n] == 0 || d[n] == '/')) return 1;
     }
     return 0;
 }
 
-uint32_t fw_file_size(const char *path) {
-    const FakeEntry *e = fake_find(path);
-    if (!e) return 0;
-    return e->body ? (uint32_t)strlen(e->body) : e->size;
+int fw_file_copy(const char *from, const char *to) {
+    uint32_t n = fw_file_size(from);
+    if (!n && !fw_file_exists(from)) return 0;
+    uint8_t *tmp = (uint8_t *)malloc(n + 1);
+    if (!tmp) return 0;
+    uint32_t got = fw_file_read(from, tmp, n);
+    bool ok = fakefs_put(to, tmp, got, false);
+    free(tmp);
+    return ok ? 1 : 0;
 }
 
 // A REAL RIFF header, built byte for byte, because the media screens parse one
@@ -795,6 +970,12 @@ static uint32_t fake_wav_header(const FakeEntry *e, uint8_t *b, uint32_t cap) {
 }
 
 uint32_t fw_file_read_at(const char *path, uint32_t off, void *buf, uint32_t cap) {
+    if (FakeFile *f = fakefs_find(path)) {
+        if (off >= f->len) return 0;
+        uint32_t n = f->len - off < cap ? f->len - off : cap;
+        memcpy(buf, f->data + off, n);
+        return n;
+    }
     const FakeEntry *e = fake_find(path);
     if (!e || !e->rate) return 0;
     uint8_t head[256];

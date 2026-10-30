@@ -347,7 +347,10 @@ static LoadResult install_slot(const Bytes &img, bool also_load) {
     Src s{img.data(), (uint32_t)img.size(), false, 0};
     AppSource src{&s, src_read, (uint32_t)img.size()};
     loader_set_veneer_mode(LOADER_VENEER_SVC);
-    SlotBuf sb{nullptr, 160 * 1024};
+    // The size of a real slot (RPC_PKG_SLOT_BYTES). It was 160 KB, which was bigger than
+    // Nova D1 and stopped being once the package passed it: every install then failed
+    // with a read error, which the boundary cases below do not count as a refusal.
+    SlotBuf sb{nullptr, 256 * 1024};
     sb.buf = (uint8_t *)guarded_alloc(sb.cap);
     PicManifest m; memset(&m, 0, sizeof(m));
     LoadResult r = app_pic_install(src, slot_sink, &sb, &m);
