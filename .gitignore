@@ -109,3 +109,6 @@ emu/report.html
 emu/robot_output.xml
 emu/snapshots/
 emu/logs/
+
+# Python bytecode from the tools
+__pycache__/

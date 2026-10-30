@@ -221,6 +221,17 @@ else
     fail=$((fail+1))
 fi
 
+# The release tooling decides what a release is called and what it says, so it is
+# held to the same standard as the firmware.
+printf '  %-16s ' "release_py"
+if python3 ../../tools/test_release.py > "$OUT/release_py.out" 2>&1; then
+    echo "ok  $(grep -o 'Ran [0-9]* tests' "$OUT/release_py.out")"
+    pass=$((pass+1))
+else
+    echo "FAILED"; sed 's/^/      /' "$OUT/release_py.out" | tail -8
+    fail=$((fail+1))
+fi
+
 echo
 echo "  $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

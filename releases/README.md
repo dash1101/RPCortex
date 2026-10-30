@@ -1,27 +1,19 @@
 # Releases
 
-`latest.json` is the manifest a device reads for `update check`. It lists one
-entry per board, with the size and SHA-256 of the raw image.
+What a device and the websites read. Written by `tools/release.py`; nothing here is
+edited by hand except `boards.json`.
 
-The entries share their shape with a package index entry on purpose, so the same
-scanner reads both. A second format would be a second parser to get wrong.
+| File | Read by | What it is |
+|---|---|---|
+| `latest.json` | a device, for `update check` | One entry per board with the size and SHA-256 of the raw image. The entries share their shape with a package index entry on purpose, so the same scanner reads both. |
+| `rpcortex-v2-<board>.bin` | a device, for `update install` | The raw image, copied into flash directly. |
+| `rpcortex-v2-<board>.uf2` | the boot ROM | The same image wrapped so drag and drop works: every 256 bytes in a 512-byte block with a header. Pure overhead for an update, which is why both exist. |
+| `releases.json` | the websites | The history, newest first: version, build, date, summary, notes by section, and the assets with sizes and checksums. |
+| `boards.json` | the websites, the release notes | Which boards have run which build. Edited by hand when a board is tested. |
 
-`ver` is the frozen version with the build number as a fourth component —
-`2.0.0.<build>`, the same string `RPC_OS_BUILDVER` compiles into the image.
-`repo_version_cmp` counts a missing component as zero, so a later build beats an
-earlier one and a frozen version needs no special case. Given no argument,
-`make-release.py` derives that string from the commit count rather than asking
-for it; an explicit version on the command line overrides it.
+`ver` in `latest.json` is `MAJOR.ITER.BUILD`, for example `2.0.486`, the same string
+`RPC_OS_BUILDVER` compiles into the image. `repo_version_cmp` compares it number by number,
+so a later build beats an earlier one and `2.10` follows `2.9`. The build is the commit count
+at the time the images were built.
 
-BOTH FORMATS, for two different jobs.
-
-The `.bin` is the raw image and is what an over-the-air update writes: `latest.json`
-points at it, and the device copies it into flash directly.
-
-The `.uf2` is the same image wrapped so the boot ROM will accept it — every 256
-bytes in a 512-byte block with a header. That wrapping is exactly what makes
-drag-and-drop work and is pure overhead for an update, which is why both are
-here rather than one. The download picker on the site links to the `.uf2`; it
-linked here before either existed, and every button on that page was a 404.
-
-Rebuild the manifest after a release with `tools/make-release.py`.
+Release flow and how to write the notes: `RELEASING.md`.

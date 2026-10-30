@@ -1,6 +1,36 @@
 # Changelog
 
-## v2.0.0 — "Vela II"
+Newest first. Notes for the next release are written under **Unreleased** as the work
+happens: one `Summary:` line in plain words, then bullets under Added, Changed, Fixed and
+Known limitations. `tools/release.py cut` turns that section into a dated entry, builds
+the images, publishes the release, and updates the file the websites read. How to write
+good notes is in `RELEASING.md`.
+
+## Unreleased
+
+Summary: The recovery ladder now works on hardware, and versions are written the new way.
+
+### Added
+
+- `v2.0-beta (build 486)`: versions are `vMAJOR.ITER` with the build number beside them, and only a new generation gets a name. `ver`, `update` and the rollback messages show the build.
+- `tools/release.py`: one command to cut a release, and `tools/soak.py` to leave a board running and write down what it does.
+- `releases/releases.json` and `releases/boards.json`: the release history and per-board status that the websites read.
+
+### Changed
+
+- The update channel compares `MAJOR.ITER.BUILD`, for example `2.0.486`. An older device that compares `2.0.0.483` still updates into it.
+
+### Fixed
+
+- The boot recovery ladder (a maintenance start after three failed starts, then the saved firmware, then a rebuild) could never run on a board: the failure count was kept in a register the SDK overwrites before it is read. It is kept in one nothing else touches, and has been confirmed on a Pico 2 W along with `update rollback` in both directions.
+- A build this device rolled back from is now actually refused by `update check`; the marker it kept never matched the version in the manifest.
+
+### Known limitations
+
+- Only the Pico 2 W has run this build. The Pico 2, Pico W and Pico images build and pass the image checks and have never been booted.
+- A saved rollback copy takes most of a Pico 2 W's filesystem; the next update removes it to make room.
+
+## v2.0 — "Vela II" (beta)
 
 The rewrite. RPCortex was MicroPython for four versions; this one is C++, and
 almost everything underneath is different even though the shell is deliberately
@@ -11,11 +41,10 @@ web pages, and updates itself over the air — all confirmed on real hardware. I
 is also changing week to week, and the list of what is missing is at the bottom
 rather than buried.
 
-The version stays at v2.0.0 until it ships, so this one entry grows rather than
-splitting into a ladder of releases. What moves between builds is a build
-number, taken from the commit count so it cannot be forgotten and cannot
-disagree with the image; `ver` prints it and the updater compares it as a fourth
-component.
+This entry is the narrative for the first release of the generation and grows until it
+ships; what changed in each pre-release is in the dated sections above it. The version
+is `v2.0-beta` with the build number beside it, taken from the commit count so it
+cannot be forgotten and cannot disagree with the image.
 
 ---
 

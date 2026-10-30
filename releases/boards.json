@@ -1,0 +1,49 @@
+{
+  "schema": 1,
+  "boards": [
+    {
+      "id": "pico2_w",
+      "name": "Pico 2 W",
+      "chip": "RP2350",
+      "radio": "Wi-Fi and Bluetooth",
+      "filesystem_kb": 1792,
+      "sandbox": true,
+      "status": "verified",
+      "verified_build": 486,
+      "notes": "The board every hardware result comes from."
+    },
+    {
+      "id": "pico2",
+      "name": "Pico 2",
+      "chip": "RP2350",
+      "radio": "none",
+      "filesystem_kb": 2816,
+      "sandbox": true,
+      "status": "untested",
+      "verified_build": null,
+      "notes": "Builds and passes the image checks; never booted."
+    },
+    {
+      "id": "pico_w",
+      "name": "Pico W",
+      "chip": "RP2040",
+      "radio": "Wi-Fi and Bluetooth",
+      "filesystem_kb": 384,
+      "sandbox": false,
+      "status": "untested",
+      "verified_build": null,
+      "notes": "Builds and passes the image checks; never booted. No package sandbox: the protection regions cost more RAM than the board has."
+    },
+    {
+      "id": "pico",
+      "name": "Pico",
+      "chip": "RP2040",
+      "radio": "none",
+      "filesystem_kb": 1280,
+      "sandbox": false,
+      "status": "untested",
+      "verified_build": null,
+      "notes": "Builds and passes the image checks; never booted. No package sandbox."
+    }
+  ]
+}
