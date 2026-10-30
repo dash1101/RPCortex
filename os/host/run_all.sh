@@ -131,6 +131,10 @@ declare -A SRC=(
     # reworded is a test somebody turns off. Run it with no arguments to get the
     # frames as characters and actually look at a layout.
     [novashots]=""
+    # The simulator the website runs, built natively and driven through the same
+    # exported entry points the page uses (sim_init / sim_key / sim_frame): it boots,
+    # every app opens by key and draws something, and no worker is left queued.
+    [sim_wasm_test]=""
     # The USB personality stack, in its three pure pieces: the ASCII->keycode
     # map (a wrong entry types the wrong letter with no error), the DuckyScript
     # reader (a typo must never become keystrokes), and the mode arithmetic that

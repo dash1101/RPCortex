@@ -133,6 +133,12 @@ bool started(void);
 
 // The loop. Returns when stop() is called or the task is asked to end.
 void run(void);
+
+// One pass of that loop without its sleep, returning how many milliseconds the
+// loop would now sleep. run() is this in a while; the browser simulator calls it
+// once per animation frame and hands the result to the page's timer.
+// `last` is the loop's own "when did the previous frame start" cell.
+uint32_t frame_once(uint32_t *last);
 void stop(void);
 bool running(void);
 

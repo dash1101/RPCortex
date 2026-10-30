@@ -1095,6 +1095,105 @@ void frame_step(uint32_t now, bool had_input) {
     }
 }
 
+// One pass of the loop, minus the sleep: input, the top screen's tick, the
+// runner's housekeeping, and the draw. Returns how long to sleep before the next
+// pass. The device loop and the browser simulator both call exactly this, so what
+// the simulator shows is what the panel shows by construction rather than by two
+// copies of the loop agreeing.
+uint32_t frame_once(uint32_t *last) {
+    // No poll here. The input task samples the encoder at 2 ms because
+    // quadrature needs consecutive readings, and this loop sleeps up to
+    // 300 ms — see the note at the top of novainput.cpp.
+    //
+    // The whole of the dispatch is drain_input(), so the one rule the harness
+    // used to copy — and copied without the wake-consume — is now the runner's
+    // own, driven the same way by both.
+    bool had_input = drain_input();
+
+    uint32_t now = fw_millis();
+    uint32_t dt  = frame_dt(now, last, had_input);
+
+    Screen *s = top();
+    if (s && s->tick(dt)) g_dirty = true;
+    // RE-READ THE TOP. A screen may pop ITSELF from tick — the splash does
+    // exactly that when its animation ends — and the pointer taken before
+    // the call then refers to a slot that has been handed back. Drawing
+    // through it painted the splash again every frame, so the boot screen
+    // stayed up until a gesture arrived and pushed things along by another
+    // route. Nothing crashed, which is why it looked like a timing problem.
+    s = top();
+
+    // The status bar's self-refresh, the idle dim/off tiers, the auto-lock
+    // and the toast — the runner's own per-frame housekeeping, in one place
+    // both it and the harness call so a test drives the real sequence.
+    frame_step(now, had_input);
+
+    if (g_dirty && s) {
+        uint32_t t0 = fw_micros();
+        g_canvas.clear(0);
+        if (!s->fullscreen()) draw_status(g_canvas, s);
+        s->draw(g_canvas);
+        if (g_toast_until) draw_toast(g_canvas, g_toast_msg);   // last, so it is on top
+        uint32_t t1 = fw_micros();
+        display().show(g_canvas);
+        uint32_t t2 = fw_micros();
+
+        g_perf.draw_us = t1 - t0;
+        g_perf.push_us = t2 - t1;
+        if (g_perf.draw_us > g_perf.draw_us_max) g_perf.draw_us_max = g_perf.draw_us;
+        g_perf.pages = display().last_pages();
+        g_frame_count++;
+        g_dirty = false;
+    }
+
+    if (now - g_frame_second >= 1000) {
+        g_perf.frames = g_frame_count;
+        g_frame_count = 0;
+        g_frame_second = now;
+    }
+
+    // How long to sleep. A still screen must not be redrawn at sixty frames
+    // a second: the loop shares a device with a shell and background work,
+    // and the difference between napping 16 ms and 300 ms is the difference
+    // between a day of battery and an afternoon.
+    uint32_t nap;
+    // Still something queued means still turning. Holding the fast frame
+    // rate is what lets the one-step-per-frame rule keep up with a spin.
+    if      (input().pending())     nap = NAP_ANIMATING;
+    else if (s && s->animating())   nap = NAP_ANIMATING;
+    // A WINDOW, not a single frame. Holding the active rate for a short
+    // while after the last input is what makes a SECOND detent or press
+    // land promptly: without it the loop dropped to NAP_IDLE the very next
+    // frame, so anything done a moment later waited up to 140 ms to be seen
+    // even though the input task had already queued it. g_last_input is
+    // already kept for the dim/off timers; this reuses it. The window is far
+    // shorter than the dim timeout, so it cannot hold the panel awake.
+    else if (now - g_last_input < NAP_ACTIVE_MS) nap = NAP_ACTIVE;
+    // A banner is up: keep the active rate so it is snappy and a press over it
+    // is seen at once. This used to ride on the toast resetting g_last_input;
+    // it no longer does that (see update_level), so the banner names itself.
+    else if (g_toast_until && now < g_toast_until) nap = NAP_ACTIVE;
+    else if (g_level == LVL_OFF)    nap = NAP_OFF;
+    else if (g_level == LVL_DIM)    nap = NAP_DIM;
+    else                            nap = NAP_IDLE;
+    // PACE THE FRAME, do not just sleep after it.
+    //
+    // Sleeping the full nap AFTER the work means a 16 ms target actually
+    // takes 16 plus however long the frame took, and how long that is
+    // depends entirely on how much of the panel changed. Measured on a
+    // Pico 2 W: composing costs about 1.5 ms whatever happens, and the push
+    // costs 1.5 ms for the one page a settled screen touches and 11.6 ms
+    // for all eight.
+    //
+    // An ANIMATION is the eight-page case, every frame. So the "60 a
+    // second" animation rate was really 34, and a 90 ms slide got three
+    // frames. Three frames does not read as motion; it reads as a jump,
+    // which is exactly what a single detent looked like while a fast scroll
+    // — which queues enough steps to last — animated perfectly.
+    uint32_t spent = fw_millis() - now;
+    return spent >= nap ? 1 : nap - spent;
+}
+
 void run(void) {
     // Refuse a loop nobody claimed, and refuse a second one. Two tasks in here
     // is the same corruption from the other end, and a task arriving without a
@@ -1105,97 +1204,7 @@ void run(void) {
     uint32_t last = fw_millis();
 
     while (g_running && !fw_task_should_stop()) {
-        // No poll here. The input task samples the encoder at 2 ms because
-        // quadrature needs consecutive readings, and this loop sleeps up to
-        // 300 ms — see the note at the top of novainput.cpp.
-        //
-        // The whole of the dispatch is drain_input(), so the one rule the harness
-        // used to copy — and copied without the wake-consume — is now the runner's
-        // own, driven the same way by both.
-        bool had_input = drain_input();
-
-        uint32_t now = fw_millis();
-        uint32_t dt  = frame_dt(now, &last, had_input);
-
-        Screen *s = top();
-        if (s && s->tick(dt)) g_dirty = true;
-        // RE-READ THE TOP. A screen may pop ITSELF from tick — the splash does
-        // exactly that when its animation ends — and the pointer taken before
-        // the call then refers to a slot that has been handed back. Drawing
-        // through it painted the splash again every frame, so the boot screen
-        // stayed up until a gesture arrived and pushed things along by another
-        // route. Nothing crashed, which is why it looked like a timing problem.
-        s = top();
-
-        // The status bar's self-refresh, the idle dim/off tiers, the auto-lock
-        // and the toast — the runner's own per-frame housekeeping, in one place
-        // both it and the harness call so a test drives the real sequence.
-        frame_step(now, had_input);
-
-        if (g_dirty && s) {
-            uint32_t t0 = fw_micros();
-            g_canvas.clear(0);
-            if (!s->fullscreen()) draw_status(g_canvas, s);
-            s->draw(g_canvas);
-            if (g_toast_until) draw_toast(g_canvas, g_toast_msg);   // last, so it is on top
-            uint32_t t1 = fw_micros();
-            display().show(g_canvas);
-            uint32_t t2 = fw_micros();
-
-            g_perf.draw_us = t1 - t0;
-            g_perf.push_us = t2 - t1;
-            if (g_perf.draw_us > g_perf.draw_us_max) g_perf.draw_us_max = g_perf.draw_us;
-            g_perf.pages = display().last_pages();
-            g_frame_count++;
-            g_dirty = false;
-        }
-
-        if (now - g_frame_second >= 1000) {
-            g_perf.frames = g_frame_count;
-            g_frame_count = 0;
-            g_frame_second = now;
-        }
-
-        // How long to sleep. A still screen must not be redrawn at sixty frames
-        // a second: the loop shares a device with a shell and background work,
-        // and the difference between napping 16 ms and 300 ms is the difference
-        // between a day of battery and an afternoon.
-        uint32_t nap;
-        // Still something queued means still turning. Holding the fast frame
-        // rate is what lets the one-step-per-frame rule keep up with a spin.
-        if      (input().pending())     nap = NAP_ANIMATING;
-        else if (s && s->animating())   nap = NAP_ANIMATING;
-        // A WINDOW, not a single frame. Holding the active rate for a short
-        // while after the last input is what makes a SECOND detent or press
-        // land promptly: without it the loop dropped to NAP_IDLE the very next
-        // frame, so anything done a moment later waited up to 140 ms to be seen
-        // even though the input task had already queued it. g_last_input is
-        // already kept for the dim/off timers; this reuses it. The window is far
-        // shorter than the dim timeout, so it cannot hold the panel awake.
-        else if (now - g_last_input < NAP_ACTIVE_MS) nap = NAP_ACTIVE;
-        // A banner is up: keep the active rate so it is snappy and a press over it
-        // is seen at once. This used to ride on the toast resetting g_last_input;
-        // it no longer does that (see update_level), so the banner names itself.
-        else if (g_toast_until && now < g_toast_until) nap = NAP_ACTIVE;
-        else if (g_level == LVL_OFF)    nap = NAP_OFF;
-        else if (g_level == LVL_DIM)    nap = NAP_DIM;
-        else                            nap = NAP_IDLE;
-        // PACE THE FRAME, do not just sleep after it.
-        //
-        // Sleeping the full nap AFTER the work means a 16 ms target actually
-        // takes 16 plus however long the frame took, and how long that is
-        // depends entirely on how much of the panel changed. Measured on a
-        // Pico 2 W: composing costs about 1.5 ms whatever happens, and the push
-        // costs 1.5 ms for the one page a settled screen touches and 11.6 ms
-        // for all eight.
-        //
-        // An ANIMATION is the eight-page case, every frame. So the "60 a
-        // second" animation rate was really 34, and a 90 ms slide got three
-        // frames. Three frames does not read as motion; it reads as a jump,
-        // which is exactly what a single detent looked like while a fast scroll
-        // — which queues enough steps to last — animated perfectly.
-        uint32_t spent = fw_millis() - now;
-        fw_task_sleep_ms(spent >= nap ? 1 : nap - spent);
+        fw_task_sleep_ms(frame_once(&last));
     }
     g_running = false;
     g_loop_live = false;
