@@ -632,8 +632,14 @@ int fw_adc_read(unsigned ch) {
 unsigned fw_adc_temp_channel(void) { return 4; }
 
 int fw_i2c_init(unsigned, unsigned, unsigned, unsigned) { return 0; }
-int fw_i2c_write(unsigned, unsigned, const void *, unsigned, int) {
+// The last contrast the panel was told (command 0x81 and its argument), so a test can ask
+// what brightness the runner actually put on the glass. -1 until something sets one.
+static int g_panel_contrast = -1;
+int fw_i2c_write(unsigned, unsigned, const void *buf, unsigned len, int) {
     g_i2c_writes++;
+    const uint8_t *b = (const uint8_t *)buf;
+    if (b && len >= 3 && b[0] == 0x00)
+        for (unsigned i = 1; i + 1 < len; i++) if (b[i] == 0x81) { g_panel_contrast = b[i + 1]; break; }
     return g_panel_present ? 0 : -1;
 }
 int fw_i2c_read(unsigned, unsigned, void *, unsigned, int) { return -1; }
@@ -802,11 +808,13 @@ static const FakeEntry g_fake_fs[] = {
       "Storage = df\n"
       "Memory = free\n"
       "Packages = pkg list\n" },
-    { "/nova/apps", "dice.napp", 0, 0, 0, 0, nullptr, nullptr,
-      "app.name: Dice\n"
+    // Named for something the built-in apps do not already do (it was "Dice", which became
+    // one of them and put two identical icons in the Tools folder).
+    { "/nova/apps", "hexview.napp", 0, 0, 0, 0, nullptr, nullptr,
+      "app.name: Hex View\n"
       "app.kind: py\n"
       "app.category: Tools\n"
-      "Roll = nothing this build can run\n" },
+      "Dump = nothing this build can run\n" },
     // Not an app. It is here to prove the scan's filter does something rather
     // than merely compiling.
     { "/nova/apps", "readme.txt", 0, 0, 0, 0, nullptr, nullptr, "not an app" },

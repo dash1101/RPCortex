@@ -11,6 +11,7 @@
 #include "../apps/novad1/novair.cpp"
 #include "../apps/novad1/novanfc.cpp"
 #include "../apps/novad1/novaoui.cpp"
+#include "../apps/novad1/novatotp.cpp"
 
 #include <stdio.h>
 #include <string.h>
@@ -284,6 +285,109 @@ static void test_oui(void) {
     CHECK(missed == 0, "%d table prefixes were not found by their own lookup", missed);
 }
 
+// --- one-time passcodes ---------------------------------------------------------------------
+
+static unsigned from_hex(const char *h, uint8_t *out, unsigned cap) {
+    unsigned n = 0;
+    for (; h[0] && h[1] && n < cap; h += 2) {
+        uint64_t v;
+        codec::parse_hex(h, h + 2, &v);
+        out[n++] = (uint8_t)v;
+    }
+    return n;
+}
+static void to_hex(const uint8_t *b, unsigned n, char *out) {
+    static const char H[] = "0123456789abcdef";
+    for (unsigned i = 0; i < n; i++) { out[i * 2] = H[b[i] >> 4]; out[i * 2 + 1] = H[b[i] & 15]; }
+    out[n * 2] = 0;
+}
+
+static void test_totp(void) {
+    uint8_t d[20];
+    char hex[64];
+
+    // FIPS 180: the three published messages, and a million 'a' fed in pieces.
+    {
+        totp::Sha1 s; totp::sha1_begin(&s); totp::sha1_end(&s, d); to_hex(d, 20, hex);
+        CHECK(!strcmp(hex, "da39a3ee5e6b4b0d3255bfef95601890afd80709"), "sha1 of nothing (got %s)", hex);
+        totp::sha1_begin(&s); totp::sha1_add(&s, "abc", 3); totp::sha1_end(&s, d); to_hex(d, 20, hex);
+        CHECK(!strcmp(hex, "a9993e364706816aba3e25717850c26c9cd0d89d"), "sha1 of abc (got %s)", hex);
+        const char *two = "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq";
+        totp::sha1_begin(&s); totp::sha1_add(&s, two, (unsigned)strlen(two)); totp::sha1_end(&s, d); to_hex(d, 20, hex);
+        CHECK(!strcmp(hex, "84983e441c3bd26ebaae4aa1f95129e5e54670f1"), "sha1 of the 448-bit message (got %s)", hex);
+        totp::sha1_begin(&s);
+        char a[1000]; memset(a, 'a', sizeof(a));
+        for (int i = 0; i < 1000; i++) totp::sha1_add(&s, a, sizeof(a));
+        totp::sha1_end(&s, d); to_hex(d, 20, hex);
+        CHECK(!strcmp(hex, "34aa973cd4c4daa4f61eeb2bdbad27316534016f"), "sha1 of a million a (got %s)", hex);
+        // However the input is cut up, the answer is the same.
+        totp::sha1_begin(&s);
+        for (int i = 0; i < 100; i++) totp::sha1_add(&s, "abcdefghij", i % 11 > 10 ? 10 : (unsigned)(i % 11));
+        totp::Sha1 t; totp::sha1_begin(&t);
+        for (int i = 0; i < 100; i++) totp::sha1_add(&t, "abcdefghij", (unsigned)(i % 11));
+        uint8_t d2[20]; totp::sha1_end(&s, d); totp::sha1_end(&t, d2);
+        CHECK(!memcmp(d, d2, 20), "sha1 does not depend on how the input is cut");
+    }
+    for (unsigned i = 0; i < SHA1_N; i++) {
+        uint8_t in[400];
+        unsigned n = from_hex(kSha1[i].hex_in, in, sizeof(in));
+        totp::Sha1 s; totp::sha1_begin(&s); totp::sha1_add(&s, in, n); totp::sha1_end(&s, d); to_hex(d, 20, hex);
+        CHECK(n == kSha1[i].n && !strcmp(hex, kSha1[i].digest), "sha1 of %u bytes: %s, want %s", kSha1[i].n, hex, kSha1[i].digest);
+    }
+
+    // RFC 2202 HMAC-SHA1 test cases 1, 2 and 6 (the last has a key longer than a block).
+    {
+        uint8_t k1[20]; memset(k1, 0x0b, 20);
+        totp::hmac_sha1(k1, 20, (const uint8_t *)"Hi There", 8, d); to_hex(d, 20, hex);
+        CHECK(!strcmp(hex, "b617318655057264e28bc0b6fb378c8ef146be00"), "hmac RFC 2202 #1 (got %s)", hex);
+        totp::hmac_sha1((const uint8_t *)"Jefe", 4, (const uint8_t *)"what do ya want for nothing?", 28, d); to_hex(d, 20, hex);
+        CHECK(!strcmp(hex, "effcdf6ae5eb2fa2d27416d5f184df9c259a7c79"), "hmac RFC 2202 #2 (got %s)", hex);
+        uint8_t k6[80]; memset(k6, 0xaa, 80);
+        const char *m6 = "Test Using Larger Than Block-Size Key - Hash Key First";
+        totp::hmac_sha1(k6, 80, (const uint8_t *)m6, (unsigned)strlen(m6), d); to_hex(d, 20, hex);
+        CHECK(!strcmp(hex, "aa4ae5e15272d00e95705637ce8a3b55ed402112"), "hmac RFC 2202 #6 (got %s)", hex);
+    }
+    for (unsigned i = 0; i < HMAC_N; i++) {
+        uint8_t key[128], msg[128];
+        unsigned kn = from_hex(kHmac[i].key_hex, key, sizeof(key)), mn = from_hex(kHmac[i].msg_hex, msg, sizeof(msg));
+        totp::hmac_sha1(key, kn, msg, mn, d); to_hex(d, 20, hex);
+        CHECK(!strcmp(hex, kHmac[i].digest), "hmac case %u: %s, want %s", i, hex, kHmac[i].digest);
+    }
+
+    // RFC 4648 base32, and what the MicroPython decoder did with the rest.
+    uint8_t b[64];
+    unsigned n = totp::b32_decode("MZXW6YTBOI======", b, sizeof(b));
+    CHECK(n == 6 && !memcmp(b, "foobar", 6), "base32 of foobar");
+    for (unsigned i = 0; i < B32_N; i++) {
+        n = totp::b32_decode(kB32[i].text, b, sizeof(b)); to_hex(b, n, hex);
+        CHECK(n == kB32[i].n && !strcmp(hex, kB32[i].hex), "base32 '%s': %s, want %s", kB32[i].text, hex, kB32[i].hex);
+    }
+
+    // RFC 6238 appendix B, SHA-1, the 8-digit codes.
+    const uint8_t *k = (const uint8_t *)"12345678901234567890";
+    char c8[12];
+    static const struct { uint32_t t; const char *code; } rfc[] = {
+        { 59, "94287082" }, { 1111111109u, "07081804" }, { 1111111111u, "14050471" },
+        { 1234567890u, "89005924" }, { 2000000000u, "69279037" } };
+    for (auto &r : rfc) {
+        totp::code(k, 20, r.t, 30, 8, c8);
+        CHECK(!strcmp(c8, r.code), "RFC 6238 at %u: %s, want %s", r.t, c8, r.code);
+    }
+    for (unsigned i = 0; i < TOTP_N; i++) {
+        char c6[8];
+        bool ok = totp::code_b32(kTotp[i].secret, kTotp[i].t, c6);
+        CHECK(ok && !strcmp(c6, kTotp[i].code), "totp %s at %u: %s, want %s", kTotp[i].secret, kTotp[i].t, c6, kTotp[i].code);
+    }
+    char c6[8];
+    CHECK(!totp::code_b32("!!!", 59, c6), "a secret that decodes to nothing gives no code");
+
+    // The calendar, against a date the clock tests already know.
+    CHECK(totp::unix_from_civil(1970, 1, 1, 0, 0, 0) == 0u, "the epoch is zero");
+    CHECK(totp::unix_from_civil(2009, 2, 13, 23, 31, 30) == 1234567890u, "2009-02-13 23:31:30 is 1234567890");
+    CHECK(totp::unix_from_civil(2026, 6, 30, 12, 20, 0) == 1782822000u, "2026-06-30 12:20:00 is 1782822000");
+    CHECK(totp::unix_from_civil(2000, 3, 1, 0, 0, 0) == 951868800u, "a day after a leap February");
+}
+
 static void test_helpers(void) {
     Buf b; buf_init(&b);
     codec::put_fixed6(sink_of(&b), 330000);
@@ -305,6 +409,7 @@ static void test_helpers(void) {
 int main() {
     test_helpers();
     test_oui();
+    test_totp();
     test_sub_encode();
     test_sub_parse();
     test_sub_write();

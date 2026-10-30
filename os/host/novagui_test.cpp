@@ -53,7 +53,9 @@
 #include "../apps/novad1/novair.cpp"
 #include "../apps/novad1/novanfc.cpp"
 #include "../apps/novad1/novaoui.cpp"
+#include "../apps/novad1/novatotp.cpp"
 #include "../apps/novad1/novagui_codes.cpp"
+#include "../apps/novad1/novagui_extras.cpp"
 #include "../apps/novad1/novagui_radios.cpp"
 #include "../apps/novad1/novagui_sensors.cpp"
 #include "../apps/novad1/novagui_usb.cpp"
@@ -413,7 +415,7 @@ static void test_catalogue(void) {
 // it is provable by looking at any one piece.
 //
 // The fake filesystem carries two apps on purpose. devcheck.napp is written
-// correctly; dice.napp says `app.kind: py`, which is exactly what somebody
+// correctly; hexview.napp says `app.kind: py`, which is exactly what somebody
 // porting a MicroPython app writes, and it must be LISTED and must refuse to
 // run rather than disappearing.
 
@@ -495,10 +497,10 @@ static void test_installed_apps(void) {
     eq(napps::count_rows(), 4, "with its rows still loaded");
 
     // The one written the way a MicroPython app is written.
-    ui::Screen *d = open_app("app_dice");
+    ui::Screen *d = open_app("app_hexview");
     ok(d != nullptr, "a kind:py app is listed and opens");
     if (d) {
-        streq_(d->title(), "Dice", "under its own name");
+        streq_(d->title(), "Hex View", "under its own name");
         gui::canvas().clear(0);
         d->draw(gui::canvas());
         ok(lit_pixels() > 12, "and draws the reason it will not run");
@@ -531,7 +533,7 @@ static void test_installed_apps(void) {
         ui::Screen *last = gui::top();
         ok(last && last != flat_home, "and its last icon opens something");
         if (last && last != flat_home)
-            streq_(last->title(), "Dice", "which is the last installed app");
+            streq_(last->title(), "Hex View", "which is the last installed app");
     }
     fw_reg_set("Apps.NovaD1_HomeStyle", "folders");
     gui::go_home();
@@ -2292,6 +2294,199 @@ static void test_subghz_library(void) {
     gui::go_home();
 }
 
+// --- the panel keeps the brightness that was set ---------------------------------------------
+//
+// Display -> Brightness wrote the registry and moved the glass, and nothing else ever read
+// it: the runner woke the panel at a constant 0x80, so the setting was gone the first time
+// the panel dimmed, and at every boot. The runner puts the SETTING on the panel now.
+static void test_brightness_is_kept(void) {
+    using namespace nova;
+    gui::go_home();
+    fw_reg_set("Apps.NovaD1_DimSec", "30");
+    fw_reg_set("Apps.NovaD1_OffSec", "120");
+    fw_reg_set("Apps.NovaD1_Contrast", "200");
+
+    gui::request_wake(); gui::drain_input();
+    g_ms += 40000; gui::update_level(g_ms);                  // 40 s: dim, not off
+    eq(g_panel_contrast, 16, "a dimmed panel is a tenth of full, whatever the setting");
+    gui::request_wake(); gui::drain_input();
+    eq(g_panel_contrast, 200, "waking returns to the brightness that was SET, not a constant");
+
+    fw_reg_set("Apps.NovaD1_Contrast", "8");
+    g_ms += 40000; gui::update_level(g_ms);
+    eq(g_panel_contrast, 8, "dimming never brightens a panel that was already darker than the dim level");
+    fw_reg_set("Apps.NovaD1_Contrast", "0");
+    eq((int)gui::contrast_setting(), 1, "a setting of zero is not 'dark but on': it is the lowest lit level");
+    fw_reg_set("Apps.NovaD1_Contrast", "999");
+    eq((int)gui::contrast_setting(), 255, "and a value past the top is the top");
+
+    fw_reg_set("Apps.NovaD1_Contrast", "128");
+    gui::request_wake(); gui::drain_input();
+    gui::go_home();
+}
+
+// --- the small apps ----------------------------------------------------------------------------
+
+static void test_small_apps(void) {
+    using namespace nova;
+    using namespace nova::screens;
+    gui::go_home();
+    shell_says(nullptr, nullptr);
+    fakefs_reset();
+
+    // --- Dice: turn picks the die, SELECT rolls, the result is on that die
+    open_by_key("dice");
+    ui::Screen *s = gui::top();
+    streq_(s->title(), "Dice", "the dice app opens");
+    int sides_seen = 0;
+    for (int die = 0; die < 7; die++) {
+        for (int roll = 0; roll < 6; roll++) {
+            s->on_event(EV_SELECT);
+            ok(s->animating(), "a roll animates");
+            s->tick(500);
+            ok(!s->animating(), "and settles");
+            ok(g_dice_face >= 1 && g_dice_face <= g_dice_sides, "on a face the die has");
+        }
+        sides_seen += g_dice_sides;
+        s->on_event(EV_ROT_CW);
+    }
+    // 6 + 8 + 10 + 12 + 20 + 100 + 4 (it started on the d6 and went round once, back to the d6).
+    eq(sides_seen, 6 + 8 + 10 + 12 + 20 + 100 + 4, "turning steps through d4 to d100");
+    ok(lit_pixels() > 12, "the die draws");
+    s->on_event(EV_BACK);
+    gui::go_home();
+
+    // --- Counter: SELECT and turn count, a HOLD clears, a plain press never loses the count
+    open_by_key("counter");
+    s = gui::top();
+    int before = lit_pixels();
+    eq(g_counter_n, 0, "a counter opens at zero");
+    for (int i = 0; i < 5; i++) s->on_event(EV_SELECT);
+    s->on_event(EV_ROT_CCW);
+    int after = lit_pixels();
+    eq(g_counter_n, 4, "five presses and one turn down is four");
+    ok(after > 12 && after != before, "counting changes the screen");
+    s->on_event(EV_SELECT_HOLD);
+    lit_pixels();
+    eq(g_counter_n, 0, "holding SELECT clears it back to zero");
+    gui::go_home();
+
+    // --- Base Conv: the value wraps at 16 bits and the step cycles
+    open_by_key("baseconv");
+    s = gui::top();
+    lit_pixels();
+    eq(g_base_n, 0, "the converter opens at zero");
+    s->on_event(EV_ROT_CCW);                         // 0 - 1 wraps to 65535
+    lit_pixels();
+    eq(g_base_n, 65535, "turning down from zero wraps at 16 bits rather than stopping");
+    s->on_event(EV_ROT_CW);                          // back to 0
+    s->on_event(EV_SELECT);                          // step 16
+    s->on_event(EV_ROT_CW);
+    lit_pixels();
+    eq(g_base_n, 16, "SELECT makes the step 16");
+    s->on_event(EV_SELECT);                          // step 256
+    s->on_event(EV_ROT_CW);
+    s->on_event(EV_SELECT);                          // step 4096
+    s->on_event(EV_ROT_CW);
+    lit_pixels();
+    eq(g_base_n, 16 + 256 + 4096, "and then 256 and 4096");
+    s->on_event(EV_SELECT);                          // back to 1
+    s->on_event(EV_ROT_CW);
+    lit_pixels();
+    eq(g_base_n, 16 + 256 + 4096 + 1, "and round to 1 again");
+    gui::go_home();
+
+    // --- Timer: set, start, count down by ticks, finish with a notification
+    char drain[64];
+    while (notify::take_toast(drain, sizeof(drain))) {}
+    open_by_key("timer");
+    s = gui::top();
+    s->on_event(EV_ROT_CCW); s->on_event(EV_ROT_CCW);        // 60 -> 30 s
+    s->on_event(EV_SELECT);                                  // start
+    ok(s->animating(), "a running timer asks for frames");
+    for (int i = 0; i < 29; i++) s->tick(1000);
+    ok(s->animating(), "29 of 30 seconds in it is still running");
+    s->tick(1000);
+    ok(!s->animating(), "at zero it stops");
+    ok(notify::take_toast(drain, sizeof(drain)) && strstr(drain, "Timer done"), "and raises a notification");
+    s->on_event(EV_SELECT);                                  // any key clears DONE
+    s->on_event(EV_SELECT);                                  // start again from the set time
+    s->tick(1000);
+    s->on_event(EV_SELECT);                                  // pause
+    ok(!s->animating(), "SELECT pauses");
+    ok(s->on_event(EV_BACK) == ui::ACT_STAY && gui::top() == s, "BACK while paused stops it and stays");
+    ok(s->on_event(EV_BACK) == ui::ACT_BACK, "and BACK at rest leaves");
+    gui::go_home();
+
+    // --- Torch: the screen is the lamp, held lit, and restored on the way out
+    fw_reg_set("Apps.NovaD1_Contrast", "100");
+    g_panel_contrast = -1;
+    open_by_key("torch");
+    s = gui::top();
+    ok(!s->fullscreen(), "a torch that is off is an ordinary screen");
+    s->on_event(EV_SELECT);
+    ok(s->fullscreen(), "turned on it takes the whole panel");
+    eq(g_panel_contrast, 255, "at full brightness");
+    g_ms += 500000; gui::update_level(g_ms);                 // far past the off timeout
+    ok(gui::screen_active(), "and the panel is not allowed to dim or go off under it");
+    s->on_event(EV_ROT_CCW);
+    eq(g_panel_contrast, 229, "turning down lowers the contrast a tenth at a time (255 * 90%)");
+    s->on_event(EV_BACK);
+    ok(!s->fullscreen(), "BACK turns it off first");
+    eq(g_panel_contrast, 100, "and puts the brightness the person had set back");
+    gui::go_home();
+    g_ms += 500000; gui::update_level(g_ms);
+    ok(!gui::screen_active(), "once it is closed the panel dims on the usual schedule again");
+    gui::request_wake(); gui::drain_input();
+    fw_reg_set("Apps.NovaD1_Contrast", "128");
+
+    // --- TOTP: accounts are files, the code is the RFC's, and the clock must be set
+    g_fake_time_ok = false;
+    open_by_key("totp");
+    s = gui::top();
+    streq_(s->title(), "TOTP", "the one-time code app opens");
+    int empty_px = lit_pixels();
+    ok(empty_px > 12, "with no accounts it says how to add one");
+
+    // RFC 6238 appendix B: this secret at Unix time 59 gives 94287082, so six digits is 287082.
+    fw_mkdir("/nova"); fw_mkdir("/nova/codes"); fw_mkdir("/nova/codes/totp");
+    const char *acct = "Label: GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ\n";
+    fw_file_write("/nova/codes/totp/lab.txt", acct, (uint32_t)strlen(acct));
+    gui::go_home();
+    open_by_key("totp");
+    s = gui::top();
+    s->tick(33);
+    ok(lit_pixels() != empty_px, "an account changes the screen");
+    g_fake_time_ok = true;
+    g_fake_time = FwTime{ 1970, 1, 1, 0, 0, 59, 4 };
+    s->tick(33);
+    s->on_event(EV_ROT_CW);                                  // a one-account list wraps to itself; no crash
+    ok(lit_pixels() > 12, "with the clock set it shows a code");
+    streq_(g_totp_shown, "287082", "and it is the RFC 6238 one: the file was read, the label skipped, the secret decoded");
+    char c6[8];
+    ok(totp::code_b32("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ", 59, c6) && !strcmp(c6, "287082"), "that code is 287082, per RFC 6238");
+    g_fake_time_ok = false;
+
+    // Adding one through the two keyboards' callbacks.
+    totp_name_typed(nullptr, "mail");
+    gui::pop();                                              // the keyboard it pushed
+    totp_secret_typed(nullptr, "jbsw y3dp-ehpk 3pxp");
+    ok(fw_file_exists("/nova/codes/totp/mail.txt"), "a typed secret becomes mail.txt");
+    char back[64];
+    uint32_t n = fw_file_read("/nova/codes/totp/mail.txt", back, sizeof(back) - 1);
+    back[n] = 0;
+    streq_(back, "JBSWY3DPEHPK3PXP\n", "stored upper-case with the spaces and dash gone");
+    totp_name_typed(nullptr, "bad");
+    gui::pop();
+    totp_secret_typed(nullptr, "!!!");
+    ok(!fw_file_exists("/nova/codes/totp/bad.txt"), "text that is not base32 is refused, and nothing is written");
+    streq_(ui::last_notice(), "That is not a base32 secret.", "with the reason");
+    gui::pop();
+
+    fakefs_reset();
+    gui::go_home();
+}
+
 // --- the sweep: a command that failed must not report success ---------------------
 static void test_set_time_reports_the_truth(void) {
     using namespace nova;
@@ -3047,6 +3242,8 @@ int main(void) {
     STAGE(test_list_keeps_its_place);
     STAGE(test_radio_status_is_re_asked);
     STAGE(test_subghz_library);
+    STAGE(test_brightness_is_kept);
+    STAGE(test_small_apps);
     STAGE(test_lora_messages);
     STAGE(test_badusb);
     STAGE(test_battery);

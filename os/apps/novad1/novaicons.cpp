@@ -627,6 +627,83 @@ static void ic_led(Canvas &c, int cx, int cy, int r) {          // status LED
     }
 }
 
+
+// --- the small apps ----------------------------------------------------------------------
+
+static void ic_dice(Canvas &c, int cx, int cy, int r) {          // a die: a box and its five pips
+    rbox(c, cx - r, cy - r, 2 * r, 2 * r);
+    const int o = imax(2, r / 2), sz = r >= 9 ? 2 : 1;
+    const int pips[5][2] = { { -o, -o }, { o, -o }, { 0, 0 }, { -o, o }, { o, o } };
+    for (int i = 0; i < 5; i++) c.fill_rect(cx + pips[i][0] - sz / 2, cy + pips[i][1] - sz / 2, sz, sz, 1);
+}
+
+static void ic_tally(Canvas &c, int cx, int cy, int r) {         // four strokes and the one across them
+    const int span = 2 * r - 2, h = r - 1;
+    for (int i = 0; i < 4; i++) c.vline(cx - r + 1 + i * span / 3, cy - h, 2 * h, 1);
+    c.line(cx - r, cy + h / 2, cx + r, cy - h / 2, 1);
+}
+
+static void ic_hourglass(Canvas &c, int cx, int cy, int r) {
+    c.hline(cx - r + 1, cy - r, 2 * r - 2, 1);
+    c.hline(cx - r + 1, cy + r - 1, 2 * r - 2, 1);
+    c.line(cx - r + 2, cy - r, cx, cy, 1);
+    c.line(cx + r - 2, cy - r, cx, cy, 1);
+    c.line(cx, cy, cx - r + 2, cy + r - 1, 1);
+    c.line(cx, cy, cx + r - 2, cy + r - 1, 1);
+}
+
+static void ic_hash(Canvas &c, int cx, int cy, int r) {          // a number base: the # sign
+    const int a = imax(1, r / 3);
+    c.vline(cx - a, cy - r + 1, 2 * r - 2, 1);
+    c.vline(cx + a, cy - r + 1, 2 * r - 2, 1);
+    c.hline(cx - r + 1, cy - a, 2 * r - 2, 1);
+    c.hline(cx - r + 1, cy + a, 2 * r - 2, 1);
+}
+
+static void ic_torch(Canvas &c, int cx, int cy, int r) {         // a lamp with three rays
+    c.hline(cx - r / 2, cy - r / 4, r, 1);                       // the head
+    c.rect(cx - r / 3, cy - r / 4, imax(3, 2 * r / 3), r + r / 4, 1);
+    c.line(cx - r / 2, cy - r / 2, cx - r, cy - r, 1);
+    c.vline(cx, cy - r / 2 - 1, imax(2, r / 2), 1);
+    c.line(cx + r / 2, cy - r / 2, cx + r, cy - r, 1);
+}
+
+static void ic_pie(Canvas &c, int cx, int cy, int r) {           // one-time codes: a clock face being used up
+    c.circle(cx, cy, r - 1, 1);
+    const int rr = r - 2;
+    for (int dy = 0; dy <= rr; dy++) {
+        int w = 0;
+        while ((w + 1) * (w + 1) + dy * dy <= rr * rr) w++;
+        c.hline(cx, cy - dy, w, 1);
+    }
+}
+
+static void ic_usb(Canvas &c, int cx, int cy, int r) {            // BadUSB: a plug and its cable
+    rbox(c, cx - r / 2 - 1, cy - r, r + 3, r + 1);                // the connector
+    c.fill_rect(cx - r / 4 - 1, cy - r + 2, 2, 2, 1);             // its two contacts
+    c.fill_rect(cx + r / 4, cy - r + 2, 2, 2, 1);
+    c.vline(cx, cy + 1, r - 1, 1);                                // the cable
+    c.fill_circle(cx, cy + r - 1, 1, 1);
+}
+
+static void ic_tasks(Canvas &c, int cx, int cy, int r) {          // what is running: rows with a mark each
+    const int step = imax(3, (2 * r - 2) / 3);
+    for (int i = 0; i < 3; i++) {
+        const int y = cy - r + 1 + i * step;
+        c.fill_rect(cx - r, y, 2, 2, 1);
+        c.hline(cx - r + 4, y, 2 * r - 4, 1);
+    }
+}
+
+static void ic_update(Canvas &c, int cx, int cy, int r) {         // a download arrow onto a tray
+    c.vline(cx, cy - r, r + 1, 1);
+    c.line(cx - r / 2, cy - 1, cx, cy + r / 2 - 1, 1);
+    c.line(cx + r / 2, cy - 1, cx, cy + r / 2 - 1, 1);
+    c.hline(cx - r, cy + r, 2 * r, 1);
+    c.vline(cx - r, cy + r - 2, 3, 1);
+    c.vline(cx + r - 1, cy + r - 2, 3, 1);
+}
+
 // --- the map ------------------------------------------------------------------------
 
 typedef void (*IconFn)(Canvas &, int, int, int);
@@ -657,6 +734,15 @@ static const Entry kMap[] = {
     { "ir_rx",       ic_ir_rx },
     { "ir_tx",       ic_ir_tx },
     { "scripts",     ic_scroll },
+    { "dice",        ic_dice },
+    { "counter",     ic_tally },
+    { "timer",       ic_hourglass },
+    { "baseconv",    ic_hash },
+    { "torch",       ic_torch },
+    { "totp",        ic_pie },
+    { "badusb",      ic_usb },
+    { "tasks",       ic_tasks },
+    { "update",      ic_update },
     { "settings",    ic_gear },
     { "logs",        ic_doc },
     { "check",       ic_check },

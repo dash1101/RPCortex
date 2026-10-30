@@ -168,6 +168,17 @@ void update_level(uint32_t now);
 // affects whether a showing toast is dismissed early.
 void frame_step(uint32_t now, bool had_input);
 
+// The contrast the person chose in Display -> Brightness, 1..255. It is what "lit" means:
+// the runner writes it when the panel comes up and every time it wakes, and a dimmed
+// panel goes to a tenth of it at most. (It was written as a constant 0x80 before, so a
+// brightness set here was lost the first time the panel dimmed.)
+uint8_t contrast_setting(void);
+
+// Keep the panel lit - no dim, no off - while a screen needs to be seen without anyone
+// touching it. The torch is one: a light that dims after thirty seconds is not a light.
+// The screen that asks must ask again with false when it leaves.
+void hold_lit(bool on);
+
 // Ask the runner to bring the panel to full brightness at the top of its next
 // drain. For a headless driver — `novad1 tap` — whose injected gesture would
 // otherwise be spent waking a dimmed or dark panel instead of reaching the

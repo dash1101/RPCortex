@@ -19,6 +19,7 @@ import sys
 here = os.path.dirname(os.path.abspath(__file__))
 ap = argparse.ArgumentParser()
 ap.add_argument("--novad1", default=os.path.join(here, "..", "..", "..", "RPCortex-repo", "repo", "packages", "novad1"))
+ap.add_argument("--apps", default=os.path.join(here, "..", "..", "..", "RPCortex-repo", "repo", "novad1-apps"))
 ap.add_argument("--tests", default=os.path.join(here, "..", "..", "..", "RPCortex-repo", "repo", "tests", "novad1"))
 ap.add_argument("-o", "--out", default=os.path.join(here, "codec_vectors.inc"))
 args = ap.parse_args()
@@ -246,6 +247,59 @@ w("static const NfcCountCase kNfcCount[] = {\n")
 for mc in ("1K", "4K", "Mini", "Mifare Mini", "2K", ""):
     w("    { %s, %d },\n" % (cstr(mc), novanfc.classic_block_count(mc)))
 w("};\n#define NFC_COUNT_N (sizeof(kNfcCount) / sizeof(kNfcCount[0]))\n")
+
+# ----------------------------------------------------------------------------------------------
+# TOTP: the MicroPython app is a kind:py source that needs `ui`/`ev`/`nova` injected, so it is
+# exec'd the way the loader does, and its own SHA-1, HMAC and TOTP are the oracle. They are also
+# held to CPython's hashlib/hmac here, so a vector is only written when the oracle is itself right.
+# ----------------------------------------------------------------------------------------------
+import hashlib, hmac as _hmac, types
+tsrc = open(os.path.join(args.apps, "totp", "totp.py")).read()
+ns = {"ui": types.SimpleNamespace(Screen=object, _TOP=10, _ROWH=9, _ADV=6, _FH=7),
+      "ev": types.SimpleNamespace(ROT_CW=1, ROT_CCW=2, SELECT=3, BACK=4, HOME=5),
+      "nova": types.SimpleNamespace()}
+exec(compile(tsrc, "totp.py", "exec"), ns)
+
+def hexs(b): return "".join("%02x" % x for x in b)
+
+sha_msgs = [bytes((i * 7 + 3) & 255 for i in range(n)) for n in (0, 1, 3, 55, 56, 57, 63, 64, 65, 119, 120, 121, 127, 128, 129, 300)]
+w("struct Sha1Case { unsigned n; const char *hex_in; const char *digest; };\n")
+w("static const Sha1Case kSha1[] = {\n")
+for m in sha_msgs:
+    d = ns["_sha1"](m)
+    assert d == hashlib.sha1(m).digest(), "the MicroPython SHA-1 disagrees with hashlib"
+    w("    { %d, %s, %s },\n" % (len(m), cstr(hexs(m)), cstr(hexs(d))))
+w("};\n#define SHA1_N (sizeof(kSha1) / sizeof(kSha1[0]))\n")
+
+hm = []
+for klen in (0, 1, 10, 20, 63, 64, 65, 100):
+    key = bytes((i * 11 + 5) & 255 for i in range(klen))
+    for msg in (b"", b"Hi There", bytes(range(40))):
+        d = ns["_hmac_sha1"](key, msg)
+        assert d == _hmac.new(key, msg, hashlib.sha1).digest(), "the MicroPython HMAC disagrees with hmac"
+        hm.append((key, msg, d))
+w("struct HmacCase { const char *key_hex; const char *msg_hex; const char *digest; };\n")
+w("static const HmacCase kHmac[] = {\n")
+for key, msg, d in hm:
+    w("    { %s, %s, %s },\n" % (cstr(hexs(key)), cstr(hexs(msg)), cstr(hexs(d))))
+w("};\n#define HMAC_N (sizeof(kHmac) / sizeof(kHmac[0]))\n")
+
+b32 = ["MZXW6===", "mzxw6ytb", "MZXW 6YTB-OI======", "GEZDGNBVGY3TQOJQ", "JBSWY3DPEHPK3PXP", "", "!!!", "ab2", "AAAAAAAA", "77777777", "A", "KRSXG5A="]
+w("struct B32Case { const char *text; unsigned n; const char *hex; };\n")
+w("static const B32Case kB32[] = {\n")
+for t in b32:
+    d = ns["_b32decode"](t)
+    w("    { %s, %d, %s },\n" % (cstr(t), len(d), cstr(hexs(d))))
+w("};\n#define B32_N (sizeof(kB32) / sizeof(kB32[0]))\n")
+
+secrets = ["GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ", "JBSWY3DPEHPK3PXP", "MFRGGZDFMZTWQ2LK", "NB2W45DFOIZA", "KRSXG5CTMVRXEZLU"]
+times = [0, 29, 30, 59, 1111111109, 1234567890, 1782826800, 2000000000, 4000000000]
+w("struct TotpCase { const char *secret; unsigned t; const char *code; };\n")
+w("static const TotpCase kTotp[] = {\n")
+for sec in secrets:
+    for t in times:
+        w("    { %s, %du, %s },\n" % (cstr(sec), t, cstr(ns["totp"](sec, t))))
+w("};\n#define TOTP_N (sizeof(kTotp) / sizeof(kTotp[0]))\n")
 
 # ----------------------------------------------------------------------------------------------
 # OUI

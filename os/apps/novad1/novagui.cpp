@@ -12,6 +12,7 @@
 #include "novabootcheck.h"
 #include "novapower.h"
 #include "novagui_tools.h"
+#include "novagui_extras.h"
 #include "novagui_system.h"
 #include "novagui_files.h"
 #include "novagui_settings.h"
@@ -188,6 +189,14 @@ static const App kApps[] = {
     { "media",      "Media",      CAT_TOOLS,    screens::open_media,     "bt" },
     { "cmds",       "Commands",   CAT_TOOLS,    screens::open_commands,  nullptr },
     { "logs",       "Logs",       CAT_TOOLS,    screens::open_logs,      nullptr },
+    // The small apps the MicroPython store shipped as kind:py. Screens of this package now,
+    // because a package cannot run another's code; the home settings can hide any of them.
+    { "totp",       "TOTP",       CAT_TOOLS,    screens::open_totp,      nullptr },
+    { "timer",      "Timer",      CAT_TOOLS,    screens::open_timer,     nullptr },
+    { "torch",      "Torch",      CAT_TOOLS,    screens::open_torch,     nullptr },
+    { "dice",       "Dice",       CAT_TOOLS,    screens::open_dice,      nullptr },
+    { "counter",    "Counter",    CAT_TOOLS,    screens::open_counter,   nullptr },
+    { "baseconv",   "Base Conv",  CAT_TOOLS,    screens::open_baseconv,  nullptr },
     // Drives the USB HID firmware — list DuckyScript payloads, switch mode, run
     // one behind a confirmation. No module gate: whether usbmode/badusb exist is a
     // firmware question the screen asks itself, not a chip on a pin.
@@ -848,10 +857,21 @@ static uint32_t g_last_input;
 static uint32_t g_frame_count;
 static uint32_t g_frame_second;
 
+// What "lit" is: the brightness the person set, never zero (a panel at contrast 0 is dark
+// and "on", which is the state this exists to avoid).
+uint8_t contrast_setting(void) {
+    int v = nova::reg_int(NOVA_KEY_PREFIX "Contrast", 128);
+    return (uint8_t)(v < 1 ? 1 : (v > 255 ? 255 : v));
+}
+
+static bool g_hold_lit;
+void hold_lit(bool on) { g_hold_lit = on; }
+
 static void set_level(int lvl) {
     if (lvl == g_level) return;
     g_level = lvl;
-    uint8_t contrast = lvl == LVL_ACTIVE ? 0x80 : (lvl == LVL_DIM ? 0x10 : 0x00);
+    const uint8_t lit = contrast_setting();
+    uint8_t contrast = lvl == LVL_ACTIVE ? lit : (lvl == LVL_DIM ? (lit < 0x10 ? lit : 0x10) : 0x00);
     display().contrast(contrast);
     g_dirty = true;
 }
@@ -874,6 +894,7 @@ bool begin(void) {
     refresh_apps();
 
     bool panel = display().begin();
+    if (panel) display().contrast(contrast_setting());     // the brightness that was set, not the init sequence's
     if (input().begin()) input().start();
     modules_scan();
 
@@ -951,6 +972,8 @@ void update_level(uint32_t now) {
     // is the "screen-off works only sometimes" the runner was reported for: the
     // timer was fine, but every notification quietly wound it back to zero.
     if (g_toast_until && now < g_toast_until) { set_level(LVL_ACTIVE); return; }
+    // A screen that has to be seen with nobody touching it (the torch) holds the panel up.
+    if (g_hold_lit) { set_level(LVL_ACTIVE); return; }
 
     // Dim, then off, on their own timers. Both are contrast changes, so waking is
     // instant and nothing has to be re-initialised.
