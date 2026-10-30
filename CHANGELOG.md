@@ -12,13 +12,13 @@ Summary: The recovery ladder now works on hardware, and versions are written the
 
 ### Added
 
-- Versions are written `vMAJOR.ITER` with the build number beside them, for example `v2.0-beta (build 486)`, and only a new generation gets a name. `ver`, `update` and the rollback messages show the build.
+- Versions are written `vMAJOR.ITER` with the build number beside them, for example `v2.00-beta (build 486)`, and only a new generation gets a name. `ver`, `update` and the rollback messages show the build.
 - `tools/release.py`: one command to cut a release, and `tools/soak.py` to leave a board running and write down what it does.
 - `releases/releases.json` and `releases/boards.json`: the release history and per-board status that the websites read.
 
 ### Changed
 
-- The update channel compares `MAJOR.ITER.BUILD`, for example `2.0.486`. An older device that compares `2.0.0.483` still updates into it.
+- The update channel compares `MAJOR.ITER.BUILD`, for example `2.00.486`. An older device that compares `2.0.0.483` still updates into it.
 
 ### Fixed
 
@@ -30,7 +30,7 @@ Summary: The recovery ladder now works on hardware, and versions are written the
 - Only the Pico 2 W has run this build. The Pico 2, Pico W and Pico images build and pass the image checks and have never been booted.
 - A saved rollback copy takes most of a Pico 2 W's filesystem; the next update removes it to make room.
 
-## v2.0 — "Vela II" (beta)
+## v2.00 — "Vela II" (beta)
 
 The rewrite. RPCortex was MicroPython for four versions; this one is C++, and
 almost everything underneath is different even though the shell is deliberately
@@ -43,7 +43,7 @@ rather than buried.
 
 This entry is the narrative for the first release of the generation and grows until it
 ships; what changed in each pre-release is in the dated sections above it. The version
-is `v2.0-beta` with the build number beside it, taken from the commit count so it
+is `v2.00-beta` with the build number beside it, taken from the commit count so it
 cannot be forgotten and cannot disagree with the image.
 
 ---

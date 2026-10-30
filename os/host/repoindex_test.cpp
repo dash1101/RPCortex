@@ -73,6 +73,11 @@ int main(void) {
     ok(repo_version_cmp("2.10.5", "2.9.99") > 0,       "version: v2.10 follows v2.9");
     ok(repo_version_cmp("3.0.1", "2.99.9999") > 0,     "version: a new generation beats every iteration of the last");
     ok(repo_version_cmp("2.0.486", "2.0.486") == 0,    "version: the same build is the same");
+    // The minor is written with two digits: "2.00" is "2.0", and "2.10" follows "2.09".
+    ok(repo_version_cmp("2.00.486", "2.0.486") == 0,   "version: a zero-padded minor is the same number");
+    ok(repo_version_cmp("2.00.486", "2.0.0.483") > 0,  "version: the padded form is newer than the old four-part one");
+    ok(repo_version_cmp("2.10.1", "2.09.999") > 0,     "version: v2.10 follows v2.09");
+    ok(repo_version_cmp("2.01.5", "2.00.999") > 0,     "version: the first patch beats every build of the release");
     ok(repo_version_cmp("99999999999999999999", "1") > 0, "version: a huge number saturates instead of wrapping");
     ok(repo_version_cmp("1", "99999999999999999999") < 0, "version: and the other way round");
     // 2^32 + 1: wrapped to 32 bits it would read as 1 and sort below 2.

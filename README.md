@@ -16,7 +16,7 @@
 
 ---
 
-# RPCortex — Vela II — v2.0-beta
+# RPCortex — Vela II — v2.00-beta
 
 RPCortex is a CLI operating system for the **Raspberry Pi Pico series**
 (RP2040 / RP2350), written in **C++** and running natively on the metal. It turns
@@ -37,7 +37,7 @@ It runs on hardware with 264 KB of RAM. That constraint is still the point.
 > this file rather than buried.
 >
 > Versions are written `vMAJOR.ITER` with the build number beside them, for example
-> `v2.0-beta (build 486)`. The build is the commit count, so nobody has to remember
+> `v2.00-beta (build 486)`. The build is the commit count, so nobody has to remember
 > it; `ver` prints it alongside the commit the image was built from. How releases are
 > cut and where they show up is in [RELEASING.md](RELEASING.md).
 

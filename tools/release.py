@@ -6,7 +6,7 @@
     tools/release.py cut                  dry run: every step is printed, nothing changes
     tools/release.py cut --publish        build, write, commit, tag, push, create the release
     tools/release.py bump iter            v2.11 -> v2.12   (edits os/kernel/kernel.h)
-    tools/release.py bump major "Name"    v2.11 -> v3.0    (new codename)
+    tools/release.py bump major "Name"    v2.11 -> v3.00   (new codename)
     tools/release.py bump ship            drop the -beta suffix
 
 WHERE THINGS COME FROM
@@ -24,7 +24,7 @@ WHAT IT WRITES
   CHANGELOG.md             `## Unreleased` becomes a dated section; a new empty one is added
   out/release-<tag>/       versioned copies of the images and SHA256SUMS, uploaded to GitHub
 
-Pre-releases are tagged `v2.0-beta.<build>`; a stable release is `v2.11`. A tag is
+Pre-releases are tagged `v2.00-beta.<build>`; a stable release is `v2.11`. A tag is
 never moved or deleted by this tool.
 
 Only the standard library is needed, so it runs on a fresh checkout.
@@ -83,7 +83,7 @@ def comparable(v, build):
 def title_for(v, build):
     if v["suffix"]:
         return "RPCortex %s (build %s)" % (display(v), build)
-    if v["iter"] == "0":
+    if int(v["iter"]) == 0:
         return "RPCortex %s — %s" % (display(v), v["codename"])
     return "RPCortex %s" % display(v)
 
@@ -91,11 +91,11 @@ def title_for(v, build):
 def bump(v, what, name=None):
     v = dict(v)
     if what == "iter":
-        v["iter"] = str(int(v["iter"]) + 1)
+        v["iter"] = "%02d" % (int(v["iter"]) + 1)
     elif what == "major":
         if not name:
             raise SystemExit("a new major needs its codename: bump major \"Name\"")
-        v["major"], v["iter"], v["codename"] = str(int(v["major"]) + 1), "0", name
+        v["major"], v["iter"], v["codename"] = str(int(v["major"]) + 1), "00", name
     elif what == "ship":
         v["suffix"] = ""
     return v

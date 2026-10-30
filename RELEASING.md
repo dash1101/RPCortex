@@ -9,14 +9,19 @@ its commands.
 `vMAJOR.ITER`, with the build number beside it: `v2.11 (build 1203)`.
 
 - **MAJOR** is a generation. It is the only thing with a codename (v1 Vela, v2 Vela II) and it
-  changes when the platform does: a new kernel, a new package ABI, a new architecture.
-- **ITER** counts the releases within a generation, from zero, with no ceiling. v2.9 is followed
-  by v2.10. An iteration is a patch release and never breaks packages. A change that would is a
+  changes when the platform does: a new kernel, a new package ABI, a new architecture. The first
+  release of a generation is `v2.00`.
+- **ITER** counts the patch releases within a generation, from zero, written with two digits, with
+  no ceiling. v2.09 is followed by v2.10. A patch never breaks packages. A change that would is a
   new MAJOR.
-- **-beta** marks a pre-release: `v2.0-beta (build 486)`. It is dropped when the version ships.
+- **-beta** marks a pre-release: `v2.00-beta (build 486)`. It is dropped when the version ships.
 - **The build number** is the commit count when the images were built. It rises on its own and is
-  never typed by hand. Devices compare `MAJOR.ITER.BUILD` (`2.0.486`), so a later build always
+  never typed by hand. Devices compare `MAJOR.ITER.BUILD` (`2.00.486`), so a later build always
   beats an earlier one.
+
+**Builds are not releases.** A patch is cut on a schedule, when there is enough to say, and the
+builds in between are not published. That keeps the schedule steady and the work per release small:
+the unit of work is the changelog entry, written as the change lands, not a release per commit.
 
 The version lives in one place, `os/kernel/kernel.h`. `tools/release.py bump iter`,
 `bump major "Name"` and `bump ship` edit it.
@@ -68,7 +73,7 @@ Guidelines for an entry:
    - writes versioned copies and `SHA256SUMS` for the GitHub release,
    - turns Unreleased into a dated section of `CHANGELOG.md` and adds a fresh one,
    - adds the release to `releases/releases.json`, which the websites read,
-   - commits, tags (`v2.11`, or `v2.0-beta.486` for a pre-release), pushes, and creates the GitHub release.
+   - commits, tags (`v2.11`, or `v2.00-beta.486` for a pre-release), pushes, and creates the GitHub release.
 
 A tag is never moved or deleted by the tool. A mistake in a release is fixed by the next one.
 

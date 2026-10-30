@@ -994,6 +994,8 @@ static void test_update_os_reading(void) {
     ok(!strcmp(v, "2.0.0.315"), "the older printed shape still reads as it did");
     upd_os_compact("v2.11 (build 1203)", v, sizeof(v));
     ok(!strcmp(v, "2.11.1203"), "a released iteration has no suffix to drop");
+    upd_os_compact("v2.00-beta (build 486)", v, sizeof(v));
+    ok(!strcmp(v, "2.00.486"), "and a padded minor keeps its digits, matching the manifest");
     ok(!upd_os_row(kNoNet, "Installed", row, sizeof(row)),
        "a check that failed printed no rows to read");
 
