@@ -10,6 +10,7 @@
 #include "../apps/novad1/novasub.cpp"
 #include "../apps/novad1/novair.cpp"
 #include "../apps/novad1/novanfc.cpp"
+#include "../apps/novad1/novaoui.cpp"
 
 #include <stdio.h>
 #include <string.h>
@@ -251,6 +252,38 @@ static void test_nfc(void) {
     CHECK(!nfc::write_classic(sink_of(&b), uid4, 4, atqa_classic, 0x08, "1K", 64, block_get, nullptr), "a full sink fails the dump");
 }
 
+static void test_oui(void) {
+    for (unsigned i = 0; i < OUI_CASES_N; i++) {
+        const OuiCase &c = kOui[i];
+        oui::Result r = oui::lookup(c.mac);
+        bool same = ((r.vendor == nullptr) == (c.vendor == nullptr)) && ((r.klass == nullptr) == (c.klass == nullptr)) &&
+                    (!c.vendor || !strcmp(r.vendor, c.vendor)) && (!c.klass || !strcmp(r.klass, c.klass));
+        CHECK(same, "oui '%s': got %s/%s, want %s/%s", c.mac, r.vendor ? r.vendor : "-", r.klass ? r.klass : "-",
+              c.vendor ? c.vendor : "-", c.klass ? c.klass : "-");
+        char p[9];
+        oui::prefix(c.mac, p, sizeof(p));
+        CHECK(!strcmp(p, c.prefix), "oui prefix of '%s': '%s', want '%s'", c.mac, p, c.prefix);
+    }
+    for (unsigned i = 0; i < OUI_BYTE_CASES_N; i++) {
+        const OuiByteCase &c = kOuiBytes[i];
+        oui::Result r = oui::lookup_bytes(c.b, c.n);
+        bool same = ((r.vendor == nullptr) == (c.vendor == nullptr)) && ((r.klass == nullptr) == (c.klass == nullptr)) &&
+                    (!c.vendor || !strcmp(r.vendor, c.vendor)) && (!c.klass || !strcmp(r.klass, c.klass));
+        CHECK(same, "oui bytes case %u", i);
+    }
+    // Every record in the table finds itself: the binary search reaches both ends and the middle.
+    int missed = 0;
+    for (unsigned i = 0; i < oui::table_size(); i++) {
+        uint8_t m[3] = { oui::kOuiTable[i * 4 + 0], oui::kOuiTable[i * 4 + 1], oui::kOuiTable[i * 4 + 2] };
+        // A prefix whose first octet has bit 1 set is never looked up, so only the ones
+        // that are globally administered can find themselves.
+        if (oui::kOuiTable[i * 4 + 0] & 0x02) continue;
+        oui::Result r = oui::lookup_bytes(m, 3);
+        if (!r.vendor) missed++;
+    }
+    CHECK(missed == 0, "%d table prefixes were not found by their own lookup", missed);
+}
+
 static void test_helpers(void) {
     Buf b; buf_init(&b);
     codec::put_fixed6(sink_of(&b), 330000);
@@ -271,6 +304,7 @@ static void test_helpers(void) {
 
 int main() {
     test_helpers();
+    test_oui();
     test_sub_encode();
     test_sub_parse();
     test_sub_write();

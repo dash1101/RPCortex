@@ -27,7 +27,7 @@ sys.path.insert(0, os.path.abspath(args.tests))
 import _shims  # noqa: E402
 _shims.install()
 sys.path.insert(0, os.path.abspath(args.novad1))
-import novacc, novair, novanfc  # noqa: E402
+import novacc, novair, novanfc, novaoui  # noqa: E402
 
 
 def cstr(s):
@@ -246,6 +246,32 @@ w("static const NfcCountCase kNfcCount[] = {\n")
 for mc in ("1K", "4K", "Mini", "Mifare Mini", "2K", ""):
     w("    { %s, %d },\n" % (cstr(mc), novanfc.classic_block_count(mc)))
 w("};\n#define NFC_COUNT_N (sizeof(kNfcCount) / sizeof(kNfcCount[0]))\n")
+
+# ----------------------------------------------------------------------------------------------
+# OUI
+# ----------------------------------------------------------------------------------------------
+oui_cases = []
+T = novaoui._T
+table_prefixes = [T[i:i + 6] for i in range(0, len(T), 8)]
+macs = []
+for pfx in table_prefixes[::37] + table_prefixes[:3] + table_prefixes[-3:]:
+    macs.append(pfx[0:2] + ":" + pfx[2:4] + ":" + pfx[4:6] + ":12:34:56")
+macs += ["AABBCCDDEEFF", "aa-bb-cc-dd-ee-ff", "02:00:00:00:00:01", "02ZZZZ", "00:00", "", "zz:zz:zz", "00:0C:29:AA:BB:CC",
+         "B8:27:EB:00:00:01", "DC:A6:32:00:00:01", "3C:5A:B4:11:22:33", "FC:FB:FB:00:00:00", "7E:00:00:00:00:00", "  :AA:BB",
+         "00000C", "00:00:0c", "0x:00:00"]
+w("struct OuiCase { const char *mac; const char *vendor; const char *klass; const char *prefix; };\n")
+w("static const OuiCase kOui[] = {\n")
+for m in macs:
+    v, c = novaoui.lookup(m)
+    w("    { %s, %s, %s, %s },\n" % (cstr(m), cstr(v) if v else "nullptr", cstr(c) if c else "nullptr", cstr(novaoui.prefix(m))))
+w("};\n#define OUI_CASES_N (sizeof(kOui) / sizeof(kOui[0]))\n")
+byte_macs = [bytes([0x00, 0x00, 0x0C]), bytes([0x02, 0x11, 0x22]), bytes([0x00, 0x00]), bytes([0xB8, 0x27, 0xEB, 1, 2, 3])]
+w("struct OuiByteCase { unsigned n; unsigned char b[6]; const char *vendor; const char *klass; };\n")
+w("static const OuiByteCase kOuiBytes[] = {\n")
+for m in byte_macs:
+    v, c = novaoui.lookup(m)
+    w("    { %d, { %s }, %s, %s },\n" % (len(m), ", ".join(str(x) for x in (list(m) + [0] * 6)[:6]), cstr(v) if v else "nullptr", cstr(c) if c else "nullptr"))
+w("};\n#define OUI_BYTE_CASES_N (sizeof(kOuiBytes) / sizeof(kOuiBytes[0]))\n")
 
 with open(args.out, "w") as f:
     f.write("".join(lines))
