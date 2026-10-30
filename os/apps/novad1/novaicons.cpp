@@ -47,6 +47,29 @@ static void uarc(Canvas &c, int cx, int cy, int rr) {
 
 static int imax(int a, int b) { return a > b ? a : b; }
 
+// An arc of a circle, only the part within about 50 degrees of the way it points. A full
+// half circle is what a signal does not look like: it is a beam, and what leaves an aerial
+// is a short curved wave on the side it faces. (dx, dy) is the facing: up is (0,-1).
+static void arc_dir(Canvas &c, int cx, int cy, int rr, int dx, int dy) {
+    int x = 0, y = rr, d = 1 - rr;
+    while (x <= y) {
+        const int pts[8][2] = { { x, y }, { -x, y }, { x, -y }, { -x, -y }, { y, x }, { -y, x }, { y, -x }, { -y, -x } };
+        for (int i = 0; i < 8; i++) {
+            const int px = pts[i][0], py = pts[i][1];
+            const int ax = px < 0 ? -px : px, ay = py < 0 ? -py : py;
+            bool in = false;
+            if (dy < 0)      in = py < 0 && ax * 4 <= ay * 5;
+            else if (dx > 0) in = px > 0 && ay * 4 <= ax * 5;
+            else if (dx < 0) in = px < 0 && ay * 4 <= ax * 5;
+            else if (dy > 0) in = py > 0 && ax * 4 <= ay * 5;
+            if (in) c.pixel(cx + px, cy + py, 1);
+        }
+        if (d < 0) d += 2 * x + 3;
+        else { d += 2 * (x - y) + 5; y--; }
+        x++;
+    }
+}
+
 // --- the one bitmap ------------------------------------------------------------
 //
 // A gear is the clearest case for pixel art over primitives: built from circles
@@ -139,23 +162,23 @@ static void ic_bt(Canvas &c, int cx, int cy, int r) {
     c.line(cx - r / 2, cy + r / 2, cx + r / 2, cy - r / 2, 1);
 }
 
-// A braced mast, not a whip: this is the shape that tells CC1101 apart from the
-// LoRa antenna at a glance.
+// A key fob with its signal. Sub-GHz is garage doors, gates and fobs, so the icon is the thing
+// people actually point at them; the LoRa aerial beside it is a different silhouette.
 static void ic_radio(Canvas &c, int cx, int cy, int r) {        // sub-GHz
-    int base = cy + r, top = cy - r / 2;
-    int sp = imax(2, r / 2);
-    c.line(cx - sp, base, cx, top, 1);
-    c.line(cx + sp, base, cx, top, 1);
-    for (int i = 1; i <= 2; i++) {              // cross-braces
-        int yy = base - (base - top) * i / 3;
-        int hw = sp * (3 - i) / 3;
-        c.hline(cx - hw, yy, 2 * hw + 1, 1);
-    }
-    c.fill_circle(cx, top, 1, 1);
-    for (int i = 1; i <= 2; i++) {              // emission chevrons
-        int s = i * imax(2, r / 2);
-        c.line(cx - s, top - s / 3, cx - s / 2, top + s / 4, 1);
-        c.line(cx + s, top - s / 3, cx + s / 2, top + s / 4, 1);
+    if (r >= 9) {
+        rbox(c, cx - 8, cy - 4, 9, 15);                          // the body
+        c.circle(cx - 4, cy - 6, 2, 1);                          // the ring it hangs from
+        c.fill_rect(cx - 6, cy - 1, 5, 3, 1);                    // two buttons
+        c.fill_rect(cx - 6, cy + 4, 5, 3, 1);
+        arc_dir(c, cx - 2, cy + 3, 5, 1, 0);                     // and what comes off it
+        arc_dir(c, cx - 2, cy + 3, 9, 1, 0);
+    } else {
+        rbox(c, cx - 5, cy - 2, 5, 8);
+        c.pixel(cx - 3, cy - 3, 1);
+        c.fill_rect(cx - 4, cy, 3, 1, 1);
+        c.fill_rect(cx - 4, cy + 3, 3, 1, 1);
+        arc_dir(c, cx - 1, cy + 2, 3, 1, 0);
+        arc_dir(c, cx - 1, cy + 2, 5, 1, 0);
     }
 }
 
@@ -181,28 +204,31 @@ static void ic_nfc(Canvas &c, int cx, int cy, int r) {
     }
 }
 
-// The body sits at the bottom and the beam leaves it — fanning OUT for the
-// transmitter, arriving as flat bars for the receiver. They are two drawings on
-// purpose: a device can have one without the other, and "is this the emitter or
-// the sensor" is the question somebody wiring it is actually asking.
-static void ic_remote(Canvas &c, int cx, int cy, int r, bool up) {
-    int bw = r, bh = imax(3, r);
-    c.rect(cx - bw / 2, cy + r - bh, bw, bh, 1);
-    c.hline(cx - bw / 2 + 1, cy + r - bh + 2, imax(1, bw - 2), 1);
-    int tip = cy + r - bh;
-    for (int i = 0; i < 3; i++) {
-        int span = imax(2, (r * (i + 1)) / 3);
-        int yy = tip - span;
-        if (up) {
-            c.line(cx - span / 2, yy, cx, tip - 1, 1);
-            c.line(cx + span / 2, yy, cx, tip - 1, 1);
-        } else {
-            c.hline(cx - span / 2, yy, span, 1);
+// A TV remote with its signal leaving the top. The receiver and the transmitter used to be two
+// drawings (bars arriving, a fan leaving) and neither read as anything; the Hardware screen
+// lists them as text, and the IR app is one icon.
+static void ic_ir(Canvas &c, int cx, int cy, int r) {
+    if (r >= 9) {
+        rbox(c, cx - 5, cy - 2, 10, 14);
+        c.fill_rect(cx - 2, cy - 1, 4, 1, 1);                    // the window the light leaves by
+        c.fill_rect(cx - 1, cy + 2, 2, 2, 1);                    // a round button
+        for (int row = 0; row < 2; row++) {
+            c.fill_rect(cx - 3, cy + 5 + row * 3, 2, 2, 1);
+            c.fill_rect(cx + 1, cy + 5 + row * 3, 2, 2, 1);
         }
+        arc_dir(c, cx, cy - 2, 4, 0, -1);
+        arc_dir(c, cx, cy - 2, 8, 0, -1);
+    } else {
+        rbox(c, cx - 3, cy - 1, 6, 7);
+        c.pixel(cx, cy + 1, 1);
+        c.pixel(cx - 1, cy + 3, 1);
+        c.pixel(cx + 1, cy + 3, 1);
+        arc_dir(c, cx, cy - 1, 2, 0, -1);
+        arc_dir(c, cx, cy - 1, 4, 0, -1);
     }
 }
-static void ic_ir_rx(Canvas &c, int cx, int cy, int r) { ic_remote(c, cx, cy, r, false); }
-static void ic_ir_tx(Canvas &c, int cx, int cy, int r) { ic_remote(c, cx, cy, r, true); }
+static void ic_ir_rx(Canvas &c, int cx, int cy, int r) { ic_ir(c, cx, cy, r); }
+static void ic_ir_tx(Canvas &c, int cx, int cy, int r) { ic_ir(c, cx, cy, r); }
 
 // A rounded speech bubble.
 static void ic_chat(Canvas &c, int cx, int cy, int r) {         // Messages
@@ -230,34 +256,49 @@ static void ic_radar(Canvas &c, int cx, int cy, int r) {
     c.fill_circle(cx - imax(2, r / 3), cy + imax(2, r / 3), imax(1, r / 4), 1);
 }
 
-static void ic_person(Canvas &c, int cx, int cy, int r) {       // Presence
-    rbox(c, cx - r, cy - r, 2 * r, 2 * r);                      // the doorway
-    int head = imax(1, r / 4);
-    c.circle(cx, cy - r / 2, head, 1);
-    c.vline(cx, cy - r / 2 + head, r / 2 + 2, 1);               // body
-    c.line(cx, cy, cx - head - 1, cy + r / 3, 1);               // arms
-    c.line(cx, cy, cx + head + 1, cy + r / 3, 1);
-    c.line(cx, cy + r / 2, cx - head - 1, cy + r - 2, 1);       // legs
-    c.line(cx, cy + r / 2, cx + head + 1, cy + r - 2, 1);
+static void ic_person(Canvas &c, int cx, int cy, int r) {       // Presence: somebody, and being noticed
+    if (r >= 9) {
+        c.fill_circle(cx, cy - 4, 3, 1);                         // head
+        for (int y = cy + 1; y <= cy + 10; y++) {                // shoulders, filled
+            int dy = cy + 10 - y, w = 0;
+            while ((w + 1) * (w + 1) + dy * dy <= 64) w++;
+            c.hline(cx - w, y, 2 * w + 1, 1);
+        }
+        arc_dir(c, cx, cy - 4, 7, -1, 0);                        // waves either side
+        arc_dir(c, cx, cy - 4, 10, -1, 0);
+        arc_dir(c, cx, cy - 4, 7, 1, 0);
+        arc_dir(c, cx, cy - 4, 10, 1, 0);
+    } else {
+        c.fill_circle(cx, cy - 2, 2, 1);
+        for (int y = cy + 1; y <= cy + 5; y++) {
+            int dy = cy + 5 - y, w = 0;
+            while ((w + 1) * (w + 1) + dy * dy <= 16) w++;
+            c.hline(cx - w, y, 2 * w + 1, 1);
+        }
+        arc_dir(c, cx, cy - 2, 5, -1, 0);
+        arc_dir(c, cx, cy - 2, 5, 1, 0);
+    }
 }
 
-// Outlined, not filled: a solid car collapses into an unreadable blob at
-// neighbour size.
-static void ic_wardrive(Canvas &c, int cx, int cy, int r) {
-    int bw = 2 * r - 2;
-    int bx = cx - bw / 2;
-    int wheel = imax(1, r / 4);
-    int base = cy + r - wheel;                  // axle line
-    int bh = imax(2, r / 3);
-    rbox(c, bx, base - bh, bw, bh);             // lower body
-    int ch = imax(2, r / 3);                    // cabin, inset both sides
-    int inset = imax(1, bw / 5);
-    rbox(c, bx + inset, base - bh - ch + 1, bw - 2 * inset, ch);
-    c.fill_rect(bx + inset + 1, base - bh, bw - 2 * inset - 2, 1, 0);
-    c.circle(bx + inset, base, wheel, 1);       // wheels
-    c.circle(bx + bw - inset, base, wheel, 1);
-    uarc(c, cx, base - bh - ch - 1, imax(3, r - 1));            // the sweep overhead
-    uarc(c, cx, base - bh - ch - 1, imax(2, (2 * r) / 3));
+static void ic_wardrive(Canvas &c, int cx, int cy, int r) {      // a car, and what it is listening to
+    if (r >= 9) {
+        rbox(c, cx - 9, cy + 1, 18, 6);                          // the body
+        c.line(cx - 5, cy + 1, cx - 3, cy - 3, 1);               // the cabin
+        c.hline(cx - 3, cy - 3, 7, 1);
+        c.line(cx + 4, cy - 3, cx + 6, cy + 1, 1);
+        c.fill_circle(cx - 5, cy + 8, 2, 1);                     // wheels
+        c.fill_circle(cx + 5, cy + 8, 2, 1);
+        c.fill_circle(cx, cy - 6, 1, 1);                         // and the wifi it is hearing
+        arc_dir(c, cx, cy - 6, 4, 0, -1);
+        arc_dir(c, cx, cy - 6, 7, 0, -1);
+    } else {
+        rbox(c, cx - 5, cy + 0, 10, 4);
+        c.hline(cx - 2, cy - 2, 5, 1);
+        c.pixel(cx - 3, cy - 1, 1); c.pixel(cx + 3, cy - 1, 1);
+        c.pixel(cx - 3, cy + 5, 1); c.pixel(cx + 3, cy + 5, 1);
+        c.pixel(cx, cy - 4, 1);
+        arc_dir(c, cx, cy - 3, 3, 0, -1);
+    }
 }
 
 // --- tools ------------------------------------------------------------------------
@@ -367,21 +408,22 @@ static void ic_bars(Canvas &c, int cx, int cy, int r) {         // Resources
     }
 }
 
-// The handle leaves the RIM of the jaw, not its centre — drawn from the centre it
-// ran straight through the head. It is offset by whole pixels in x and y, NOT
-// perpendicular: a 45-degree line offset perpendicular leaves a checkerboard and
-// the handle looks dashed.
-static void ic_wrench(Canvas &c, int cx, int cy, int r) {       // Tools
-    int head = imax(2, r / 2);
-    int hx = cx - r + head + 1, hy = cy - r + head + 1;
-    int sx = hx + head, sy = hy + head;
-    int tx = cx + r - 1, ty = cy + r - 1;
-    c.line(sx, sy, tx, ty, 1);
-    c.line(sx + 1, sy, tx, ty - 1, 1);
-    c.line(sx, sy + 1, tx - 1, ty, 1);
-    c.fill_circle(hx, hy, head, 1);                             // jaw
-    c.fill_circle(hx, hy, imax(1, head - 2), 0);                // hollowed
-    c.fill_rect(hx - head - 1, hy - head - 1, head, head, 0);   // mouth, open
+static void ic_wrench(Canvas &c, int cx, int cy, int r) {       // Tools: a spanner, which a magnifier is not
+    if (r >= 9) {
+        for (int i = -1; i <= 1; i++) c.line(cx - 8 + (i < 0 ? 0 : 0), cy + 8 + i, cx + 2, cy - 2 + i, 1);
+        c.line(cx - 8, cy + 9, cx + 1, cy - 2, 1);
+        c.fill_circle(cx + 5, cy - 5, 5, 1);                     // the jaw
+        c.fill_circle(cx + 5, cy - 5, 2, 0);                     // hollowed
+        c.fill_rect(cx + 5, cy - 11, 7, 6, 0);                   // opened to the corner
+        c.fill_circle(cx - 8, cy + 8, 2, 1);                     // the other end, with its hole
+        c.pixel(cx - 8, cy + 8, 0);
+    } else {
+        c.line(cx - 4, cy + 4, cx + 1, cy - 1, 1);
+        c.line(cx - 4, cy + 5, cx + 1, cy, 1);
+        c.fill_circle(cx + 2, cy - 2, 2, 1);
+        c.fill_rect(cx + 2, cy - 5, 4, 3, 0);
+        c.pixel(cx + 2, cy - 2, 0);
+    }
 }
 
 // A med kit, distinct from the Tools wrench. Every part derives from r so the
@@ -409,17 +451,22 @@ static void ic_folder(Canvas &c, int cx, int cy, int r) {       // Files
     c.hline(x + 2, y + 3, imax(2, w - 6), 1);   // a sheet inside
 }
 
-// A bag that is clearly a bag — tapered top edge, not a bare square.
-static void ic_store(Canvas &c, int cx, int cy, int r) {        // App Store
-    int bx = cx - r + 2, by = cy - r + 5;
-    int bw = 2 * r - 4, bh = 2 * r - 7;
-    rbox(c, bx, by, bw, bh);
-    c.hline(bx + 1, by + 2, bw - 2, 1);         // seam under the opening
-    int hw = imax(2, bw / 4);                   // handle, sized from the bag
-    int hy = by - 3;
-    c.vline(cx - hw, hy + 1, 3, 1);
-    c.vline(cx + hw, hy + 1, 3, 1);
-    c.hline(cx - hw + 1, hy, 2 * hw - 1, 1);
+static void ic_store(Canvas &c, int cx, int cy, int r) {        // App Store: a bag, and something coming out of it
+    if (r >= 9) {
+        rbox(c, cx - 8, cy - 4, 16, 15);
+        arc_dir(c, cx, cy - 4, 4, 0, -1);                        // the handle
+        c.hline(cx - 3, cy - 7, 7, 1);
+        c.vline(cx, cy + 0, 6, 1);                               // an arrow down
+        c.line(cx - 3, cy + 3, cx, cy + 6, 1);
+        c.line(cx + 3, cy + 3, cx, cy + 6, 1);
+    } else {
+        rbox(c, cx - 4, cy - 2, 8, 8);
+        c.vline(cx - 2, cy - 4, 2, 1);
+        c.vline(cx + 2, cy - 4, 2, 1);
+        c.hline(cx - 2, cy - 4, 5, 1);
+        c.line(cx - 2, cy + 1, cx, cy + 3, 1);
+        c.line(cx + 2, cy + 1, cx, cy + 3, 1);
+    }
 }
 
 static void ic_note(Canvas &c, int cx, int cy, int r) {         // Media
@@ -555,19 +602,22 @@ static void ic_globe(Canvas &c, int cx, int cy, int r) {        // Network setti
     c.line(cx + q, cy - rr + 1, cx + q, cy + rr - 1, 1);
 }
 
-static void ic_padlock(Canvas &c, int cx, int cy, int r) {      // Security
-    int bw = 2 * r - 2, bh = imax(4, r + 1);
-    int x = cx - r + 1, y = cy - r + imax(3, r / 2);
-    rbox(c, x, y, bw, bh);
-    // The shackle has to be clearly NARROWER than the body. At the body's full
-    // width it reads as two stacked boxes rather than a lock.
-    int inset = imax(2, bw / 4);
-    int sx0 = x + inset, sx1 = x + bw - 1 - inset;
-    int sh = imax(2, r / 2 + 1);
-    c.vline(sx0, y - sh, sh, 1);
-    c.vline(sx1, y - sh, sh, 1);
-    c.hline(sx0, y - sh, sx1 - sx0 + 1, 1);     // joined, or it reads as a bracket
-    c.fill_rect(cx - 1, y + 2, 2, imax(2, bh - 4), 1);          // keyhole
+static void ic_padlock(Canvas &c, int cx, int cy, int r) {      // Security: a padlock with its shackle
+    if (r >= 9) {
+        rbox(c, cx - 7, cy - 1, 14, 12);                         // the body
+        c.vline(cx - 5, cy - 6, 5, 1);                           // the shackle, narrower than the body
+        c.vline(cx + 4, cy - 6, 5, 1);
+        c.hline(cx - 4, cy - 7, 8, 1);
+        c.pixel(cx - 5, cy - 7, 1); c.pixel(cx + 4, cy - 7, 1);
+        c.fill_circle(cx, cy + 4, 2, 1);                         // keyhole
+        c.vline(cx, cy + 5, 3, 1);
+    } else {
+        rbox(c, cx - 4, cy - 1, 8, 7);
+        c.vline(cx - 2, cy - 4, 3, 1);
+        c.vline(cx + 1, cy - 4, 3, 1);
+        c.hline(cx - 2, cy - 4, 4, 1);
+        c.pixel(cx - 1, cy + 2, 1); c.pixel(cx, cy + 2, 1); c.pixel(cx - 1, cy + 3, 1); c.pixel(cx, cy + 3, 1);
+    }
 }
 
 static void ic_tag(Canvas &c, int cx, int cy, int r) {          // Device / names
@@ -615,15 +665,21 @@ static void ic_vibe(Canvas &c, int cx, int cy, int r) {         // vibration
     }
 }
 
-static void ic_led(Canvas &c, int cx, int cy, int r) {          // status LED
-    c.fill_circle(cx, cy, imax(2, r / 2), 1);
-    static const int8_t kRays[8][2] = {
-        { -1, 0 }, { 1, 0 }, { 0, -1 }, { 0, 1 },
-        { -1, -1 }, { 1, 1 }, { -1, 1 }, { 1, -1 },
-    };
-    for (int i = 0; i < 8; i++) {
-        int ax = kRays[i][0] * r, ay = kRays[i][1] * r;
-        c.line(cx + ax / 2, cy + ay / 2, cx + ax, cy + ay, 1);
+static void ic_led(Canvas &c, int cx, int cy, int r) {          // status LED: a bulb, not a sun
+    if (r >= 9) {
+        c.circle(cx, cy - 2, 6, 1);                              // the glass
+        c.line(cx - 2, cy - 3, cx, cy, 1);                       // the filament
+        c.line(cx, cy, cx + 2, cy - 3, 1);
+        c.hline(cx - 3, cy + 5, 7, 1);                           // the cap
+        c.hline(cx - 2, cy + 7, 5, 1);
+        c.vline(cx, cy - 12, 2, 1);                              // light
+        c.line(cx - 8, cy - 9, cx - 10, cy - 11, 1);
+        c.line(cx + 8, cy - 9, cx + 10, cy - 11, 1);
+    } else {
+        c.circle(cx, cy - 1, 3, 1);
+        c.hline(cx - 1, cy + 3, 3, 1);
+        c.hline(cx - 1, cy + 5, 3, 1);
+        c.pixel(cx, cy - 5, 1);
     }
 }
 
@@ -652,20 +708,24 @@ static void ic_hourglass(Canvas &c, int cx, int cy, int r) {
     c.line(cx, cy, cx + r - 2, cy + r - 1, 1);
 }
 
-static void ic_hash(Canvas &c, int cx, int cy, int r) {          // a number base: the # sign
-    const int a = imax(1, r / 3);
-    c.vline(cx - a, cy - r + 1, 2 * r - 2, 1);
-    c.vline(cx + a, cy - r + 1, 2 * r - 2, 1);
-    c.hline(cx - r + 1, cy - a, 2 * r - 2, 1);
-    c.hline(cx - r + 1, cy + a, 2 * r - 2, 1);
-}
 
-static void ic_torch(Canvas &c, int cx, int cy, int r) {         // a lamp with three rays
-    c.hline(cx - r / 2, cy - r / 4, r, 1);                       // the head
-    c.rect(cx - r / 3, cy - r / 4, imax(3, 2 * r / 3), r + r / 4, 1);
-    c.line(cx - r / 2, cy - r / 2, cx - r, cy - r, 1);
-    c.vline(cx, cy - r / 2 - 1, imax(2, r / 2), 1);
-    c.line(cx + r / 2, cy - r / 2, cx + r, cy - r, 1);
+static void ic_torch(Canvas &c, int cx, int cy, int r) {         // a flashlight pointing up, with its beam
+    if (r >= 9) {
+        c.fill_rect(cx - 6, cy - 4, 12, 2, 1);                   // the lens
+        c.line(cx - 6, cy - 2, cx - 3, cy + 1, 1);               // narrowing to the handle
+        c.line(cx + 5, cy - 2, cx + 2, cy + 1, 1);
+        rbox(c, cx - 3, cy + 1, 6, 11);
+        c.fill_rect(cx - 1, cy + 4, 2, 3, 1);                    // the switch
+        c.vline(cx, cy - 11, 4, 1);                              // the beam
+        c.line(cx - 6, cy - 7, cx - 9, cy - 10, 1);
+        c.line(cx + 5, cy - 7, cx + 8, cy - 10, 1);
+    } else {
+        c.hline(cx - 3, cy - 2, 6, 1);
+        rbox(c, cx - 2, cy - 1, 4, 7);
+        c.vline(cx, cy - 6, 2, 1);
+        c.pixel(cx - 4, cy - 4, 1);
+        c.pixel(cx + 3, cy - 4, 1);
+    }
 }
 
 static void ic_pie(Canvas &c, int cx, int cy, int r) {           // one-time codes: a clock face being used up
@@ -678,12 +738,20 @@ static void ic_pie(Canvas &c, int cx, int cy, int r) {           // one-time cod
     }
 }
 
-static void ic_usb(Canvas &c, int cx, int cy, int r) {            // BadUSB: a plug and its cable
-    rbox(c, cx - r / 2 - 1, cy - r, r + 3, r + 1);                // the connector
-    c.fill_rect(cx - r / 4 - 1, cy - r + 2, 2, 2, 1);             // its two contacts
-    c.fill_rect(cx + r / 4, cy - r + 2, 2, 2, 1);
-    c.vline(cx, cy + 1, r - 1, 1);                                // the cable
-    c.fill_circle(cx, cy + r - 1, 1, 1);
+static void ic_usb(Canvas &c, int cx, int cy, int r) {            // BadUSB: a USB stick, which is what it pretends to be
+    if (r >= 9) {
+        c.rect(cx - 11, cy - 3, 8, 7, 1);                        // the plug
+        c.fill_rect(cx - 9, cy - 1, 2, 1, 1);                    // and its two contacts
+        c.fill_rect(cx - 9, cy + 1, 2, 1, 1);
+        rbox(c, cx - 3, cy - 6, 14, 12);                         // the body
+        c.circle(cx + 6, cy, 2, 1);                              // the loop for a lanyard
+        c.hline(cx - 1, cy - 3, 4, 1);                           // and a label strip
+    } else {
+        c.rect(cx - 6, cy - 2, 4, 5, 1);
+        c.pixel(cx - 5, cy, 1);
+        rbox(c, cx - 2, cy - 3, 8, 7);
+        c.pixel(cx + 3, cy, 1);
+    }
 }
 
 static void ic_tasks(Canvas &c, int cx, int cy, int r) {          // what is running: rows with a mark each
@@ -702,6 +770,46 @@ static void ic_update(Canvas &c, int cx, int cy, int r) {         // a download 
     c.hline(cx - r, cy + r, 2 * r, 1);
     c.vline(cx - r, cy + r - 2, 3, 1);
     c.vline(cx + r - 1, cy + r - 2, 3, 1);
+}
+
+// Wireless: a mast radiating both ways. The folder used to borrow the Bluetooth rune, which is
+// one app inside it.
+static void ic_broadcast(Canvas &c, int cx, int cy, int r) {
+    c.fill_circle(cx, cy, r >= 9 ? 2 : 1, 1);
+    const int a = r >= 9 ? 5 : 3, b = r >= 9 ? 9 : 5;
+    arc_dir(c, cx, cy, a, -1, 0); arc_dir(c, cx, cy, a, 1, 0);
+    arc_dir(c, cx, cy, b, -1, 0); arc_dir(c, cx, cy, b, 1, 0);
+}
+
+// Sensors: a dial with its needle. The folder used to borrow the map pin, which is GPS.
+static void ic_gauge(Canvas &c, int cx, int cy, int r) {
+    const int rr = r >= 9 ? 10 : 5, base = cy + (r >= 9 ? 6 : 3);
+    uarc(c, cx, base, rr);
+    if (r >= 9) uarc(c, cx, base, rr - 1);
+    c.hline(cx - rr, base, 2 * rr + 1, 1);
+    c.line(cx, base, cx + rr / 2 + 1, base - rr / 2 - 1, 1);
+    c.fill_circle(cx, base, r >= 9 ? 2 : 1, 1);
+    if (r >= 9) { c.pixel(cx, base - rr + 2, 1); c.pixel(cx - 7, base - 7, 1); c.pixel(cx + 7, base - 7, 1); }
+}
+
+// System: a chip, which is what is under all of it. The gear is Settings.
+static void ic_chip(Canvas &c, int cx, int cy, int r) {
+    const int h = r >= 9 ? 6 : 3;
+    rbox(c, cx - h, cy - h, 2 * h, 2 * h);
+    c.rect(cx - h / 2, cy - h / 2, h + 1, h + 1, 1);
+    const int n = r >= 9 ? 3 : 2;
+    for (int i = 0; i < n; i++) {
+        const int o = (2 * h * (i + 1)) / (n + 1) - h + (r >= 9 ? 0 : 0);
+        c.vline(cx + o, cy - h - 3, 3, 1); c.vline(cx + o, cy + h, 3, 1);
+        c.hline(cx - h - 3, cy + o, 3, 1); c.hline(cx + h, cy + o, 3, 1);
+    }
+}
+
+// Base Conv: the two digits it is about.
+static void ic_digits(Canvas &c, int cx, int cy, int r) {
+    const int sc = r >= 9 ? 2 : 1;
+    const int w = c.text_width("01", sc, false);
+    c.text(cx - w / 2, cy - (FONT_H * sc) / 2, "01", 1, sc);
 }
 
 // --- the map ------------------------------------------------------------------------
@@ -730,14 +838,14 @@ static const Entry kMap[] = {
     // SETTINGS row and the bars to WiFi itself, and this sits beside both.
     { "lan",         ic_lan },
     // 'ir' is the app; ir_rx and ir_tx are the two halves of the hardware.
-    { "ir",          ic_ir_rx },
+    { "ir",          ic_ir },
     { "ir_rx",       ic_ir_rx },
     { "ir_tx",       ic_ir_tx },
     { "scripts",     ic_scroll },
     { "dice",        ic_dice },
     { "counter",     ic_tally },
     { "timer",       ic_hourglass },
-    { "baseconv",    ic_hash },
+    { "baseconv",    ic_digits },
     { "torch",       ic_torch },
     { "totp",        ic_pie },
     { "badusb",      ic_usb },
@@ -779,10 +887,10 @@ static const Entry kMap[] = {
     // deliberately does NOT take the WiFi bars — the WiFi app has those, and a
     // folder that looks like one of the apps inside it is the confusion the
     // whole icon pass existed to remove.
-    { "Wireless",    ic_bt },
-    { "Sensors",     ic_pin },
+    { "Wireless",    ic_broadcast },
+    { "Sensors",     ic_gauge },
     { "Tools",       ic_wrench },
-    { "System",      ic_gear },
+    { "System",      ic_chip },
     { "Testing",     ic_kbd },
     { "tools",       ic_wrench },
 };
