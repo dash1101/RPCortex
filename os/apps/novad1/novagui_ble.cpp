@@ -1004,7 +1004,7 @@ public:
 
         // The footer says what this is and, while live, how to stop it.
         const char *foot = advertising() ? "BACK stops it"
-                                         : "proximity pairing beacon";
+                                         : "pairing popup beacon";
         c.text_fit(2, c.height() - ui::FH, foot, 1, c.width() - 4, false);
     }
 

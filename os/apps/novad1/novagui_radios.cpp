@@ -810,7 +810,7 @@ public:
     }
 
     void draw(Canvas &c) override {
-        codes::draw(c, "Nothing saved yet. Capture, then Save.");
+        codes::draw(c, "Nothing saved yet.\nCapture, then Save.");
         if (g_fire_note[0]) c.text_fit(2, c.height() - ui::FH, fire_note(), 1, c.width() - 14, false);
         if (g_rf_busy) c.spinner(c.width() - 9, c.height() - ui::FH, phase_ / RF_SPIN_MS, 1);
     }

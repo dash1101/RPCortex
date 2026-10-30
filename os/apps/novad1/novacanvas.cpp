@@ -18,7 +18,31 @@ void Canvas::attach(uint8_t *buf, int w, int h) {
     w_     = w;
     h_     = h;
     pages_ = (h + 7) / 8;
+    now_ms_ = marq_t0_ = marq_key_ = 0;
+    marq_seen_ = clip_on_ = false;
+    clip0_ = clip1_ = 0;
 }
+
+
+#ifdef NOVA_CANVAS_AUDIT
+// A host-only record of text that did not fit, so a sweep of every screen can list what a
+// person would have had to guess at. Compiled in only by the harness that asks for it.
+struct CanvasAuditEntry { char text[48]; char kind; };
+static CanvasAuditEntry g_canvas_audit[96];
+static int g_canvas_audit_n;
+static void canvas_audit(const char *s, char kind) {
+    for (int i = 0; i < g_canvas_audit_n; i++)
+        if (g_canvas_audit[i].kind == kind && !strncmp(g_canvas_audit[i].text, s, sizeof(g_canvas_audit[i].text) - 1)) return;
+    if (g_canvas_audit_n >= 96) return;
+    strncpy(g_canvas_audit[g_canvas_audit_n].text, s, sizeof(g_canvas_audit[0].text) - 1);
+    g_canvas_audit[g_canvas_audit_n].text[sizeof(g_canvas_audit[0].text) - 1] = 0;
+    g_canvas_audit[g_canvas_audit_n].kind = kind;
+    g_canvas_audit_n++;
+}
+#define CANVAS_AUDIT(s, k) canvas_audit((s), (k))
+#else
+#define CANVAS_AUDIT(s, k) ((void)0)
+#endif
 
 void Canvas::clear(int colour) {
     if (buf_) memset(buf_, colour ? 0xff : 0x00, (unsigned)bytes());
@@ -26,6 +50,7 @@ void Canvas::clear(int colour) {
 
 void Canvas::pixel(int x, int y, int colour) {
     if (!buf_ || x < 0 || y < 0 || x >= w_ || y >= h_) return;
+    if (clip_on_ && (x < clip0_ || x >= clip1_)) return;
     uint8_t *p = &buf_[(y >> 3) * w_ + x];
     uint8_t  m = (uint8_t)(1u << (y & 7));
     if (colour) *p = (uint8_t)(*p | m);
@@ -227,8 +252,12 @@ void Canvas::ch(int x, int y, char c, int colour, int scale) {
 void Canvas::text(int x, int y, const char *s, int colour, int scale, bool narrow) {
     if (!s) return;
     if (scale < 1) scale = 1;
+    const char *start = s;
     for (; *s; s++) {
-        if (x >= w_) break;          // nothing further can land on the panel
+        if (x >= w_) {               // nothing further can land on the panel
+            if (!clip_on_) CANVAS_AUDIT(start, 'c');
+            break;
+        }
         if (!narrow) {
             ch(x, y, *s, colour, scale);
             x += FONT_ADV * scale;
@@ -286,6 +315,10 @@ int Canvas::text_fit(int x, int y, const char *s, int colour, int max_px, bool n
     int full = text_width(s, 1, narrow);
     if (full <= max_px) { text(x, y, s, colour, 1, narrow); return full; }
 
+    // Selected text is in colour 0 (a bar behind it); that is the one a person is trying to read.
+    if (colour == 0) { marquee(x, y, s, colour, max_px, narrow); return max_px; }
+    CANVAS_AUDIT(s, 't');
+
     // Room for the two dots has to come out of the budget before deciding how
     // much of the string fits, or the result is one character too long.
     int dots = text_width("..", 1, narrow);
@@ -308,6 +341,35 @@ int Canvas::text_fit(int x, int y, const char *s, int colour, int max_px, bool n
     cut[n]   = 0;
     text(x, y, cut, colour, 1, narrow);
     return text_width(cut, 1, narrow);
+}
+
+int Canvas::text_scroll(int x, int y, const char *s, int colour, int max_px, bool narrow) {
+    if (!s) return 0;
+    int full = text_width(s, 1, narrow);
+    if (full <= max_px) { text(x, y, s, colour, 1, narrow); return full; }
+    marquee(x, y, s, colour, max_px, narrow);
+    return max_px;
+}
+
+// Draw `s` slid left by however far into its cycle the clock says, inside a window of max_px.
+// It rests at the start, slides to the end at a readable pace, rests there, and goes round again.
+void Canvas::marquee(int x, int y, const char *s, int colour, int max_px, bool narrow) {
+    const int over = text_width(s, 1, narrow) - max_px;           // how much is hidden
+    uint32_t key = 2166136261u;
+    for (const char *p = s; *p; p++) key = (key ^ (uint8_t)*p) * 16777619u;
+    key ^= (uint32_t)(x * 131 + y * 7919);
+    if (key != marq_key_) { marq_key_ = key; marq_t0_ = now_ms_; }
+
+    const uint32_t HOLD = 900, SPEED = 28;                         // milliseconds, and pixels a second
+    const uint32_t slide = (uint32_t)over * 1000u / SPEED;
+    uint32_t t = (now_ms_ - marq_t0_) % (HOLD + slide + HOLD);
+    int off = t < HOLD ? 0 : (t < HOLD + slide ? (int)((t - HOLD) * SPEED / 1000u) : over);
+    if (off > over) off = over;
+
+    clip_on_ = true; clip0_ = x; clip1_ = x + max_px;
+    text(x - off, y, s, colour, 1, narrow);
+    clip_on_ = false;
+    marq_seen_ = true;
 }
 
 // --- affordances ------------------------------------------------------------

@@ -250,7 +250,7 @@ public:
 
         const char *foot = note_[0] ? note_
                          : (unavailable_ ? "usbmode/badusb not found"
-                                         : (g_usb_n ? "SELECT runs it into the host"
+                                         : (g_usb_n ? "SELECT runs payload"
                                                     : "no payloads in /nova/badusb"));
         c.text_fit(2, c.height() - ui::FH, foot, 1, c.width() - 4, false);
     }

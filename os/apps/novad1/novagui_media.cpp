@@ -1205,7 +1205,7 @@ private:
         FwDirEntry e;
         if (fw_dir_entry(g_media_path[level_], g_media_row[idx], &e) != 1) return;
         if (g_media_dir_row[idx]) {
-            nova::copy(detail_, sizeof(detail_), "folder - hold to play it all");
+            nova::copy(detail_, sizeof(detail_), "folder: hold to play");
             return;
         }
         char path[MEDIA_PATH_MAX];

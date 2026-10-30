@@ -185,7 +185,7 @@ const char *selected(void) {
 
 void draw(Canvas &c, const char *empty) {
     if (g_list.n <= 0) {
-        c.text_fit(2, ui::TOP, empty, 1, c.width() - 4, false);
+        ui::text_block(c, 2, ui::TOP, empty, 4);
         return;
     }
     const int rows = ui::rows_for(c);

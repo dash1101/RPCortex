@@ -301,6 +301,88 @@ static void test_circles(void) {
     ok(C.get(127, 0) == 0, "without wrapping to the far side");
 }
 
+// --- text that does not fit ------------------------------------------------------------------
+//
+// A row the cursor is on is being READ, so text too long for it slides along instead of being cut;
+// text that is not selected is cut with ".." as before, so a screen of long rows is not a screen of
+// moving ones. The ticker clips to its own window and does not leave the clip behind.
+static void test_ticker(void) {
+    const char *long_name = "A_Really_Long_Network_Name_Indeed";       // 33 characters: 197 px, in a 100 px window
+    const int W = 100;
+
+    // Not selected (colour 1): cut, ending in dots, and no ticker.
+    fresh(); C.set_time(0);
+    C.text_fit(2, 10, long_name, 1, W, false);
+    ok(!C.take_marquee(), "text that is not selected does not scroll");
+    int cut_lit = lit();
+    for (int y = 10; y < 17; y++) for (int x = 2 + W; x < 128; x++) if (C.get(x, y)) { ok(false, "a cut string stays inside its width"); y = 99; break; }
+
+        // Selected (colour 0, on a bar): it scrolls, and says so. The canvas is cleared between frames, not
+    // re-attached: the ticker's memory of where it started lives in the canvas, as it does on the device.
+    auto frame_at = [&](uint32_t ms) {
+        C.clear(0); C.fill_rect(0, 9, 128, 9, 1); C.set_time(ms);
+        C.text_fit(2, 10, long_name, 0, W, false);
+    };
+    fresh();
+    frame_at(0);
+    ok(C.take_marquee(), "selected text that does not fit scrolls");
+    ok(!C.take_marquee(), "and the flag is read once");
+    uint8_t at_start[sizeof(g_buf)]; memcpy(at_start, g_buf, sizeof(g_buf));
+
+    // It rests at the start for a moment, then moves, then rests at the end.
+    frame_at(400);
+    ok(!memcmp(at_start, g_buf, sizeof(g_buf)), "it holds still at the start before it moves");
+    frame_at(900 + 1500);
+    ok(memcmp(at_start, g_buf, sizeof(g_buf)) != 0, "a moment in, it has moved");
+    uint8_t mid[sizeof(g_buf)]; memcpy(mid, g_buf, sizeof(g_buf));
+
+    // The slide is (197-100)px at 28px/s: about 3.5 s. Well past it, the END of the string is showing.
+    frame_at(900 + 3600);
+    ok(memcmp(mid, g_buf, sizeof(g_buf)) != 0, "it keeps moving to the end");
+    uint8_t at_end[sizeof(g_buf)]; memcpy(at_end, g_buf, sizeof(g_buf));
+    frame_at(900 + 3600 + 500);
+    ok(!memcmp(at_end, g_buf, sizeof(g_buf)), "and rests there");
+
+    // Nothing leaks outside the window: the bar is solid lit outside [2, 102), text inverts inside it,
+    // so every pixel right of the window must still be lit.
+    frame_at(900 + 1500);                                   // mid-slide, when the string runs past the window on the right
+    bool leak = false;
+    for (int y = 10; y < 17; y++) for (int x = 2 + W; x < 128; x++) if (!C.get(x, y)) leak = true;
+    ok(!leak, "the ticker draws only inside its window");
+    frame_at(900 + 3600 + 500);
+
+    // And then it goes round again from the start.
+    frame_at(900 + 3600 + 900 + 100);
+    ok(!memcmp(at_start, g_buf, sizeof(g_buf)), "after its rest at the end it starts over");
+
+    // Text that fits is not a ticker, selected or not.
+    fresh(); C.fill_rect(0, 9, 128, 9, 1); C.set_time(5000);
+    C.text_fit(2, 10, "short", 0, W, false);
+    ok(!C.take_marquee(), "text that fits is still");
+
+    // A different string restarts from its beginning rather than inheriting the last one's place.
+    fresh(); C.set_time(10000);
+    C.text_scroll(0, 30, long_name, 1, W, false); C.take_marquee();
+    fresh(); C.set_time(14000);
+    C.text_scroll(0, 30, "Another_Very_Long_Name_Here_Too_X", 1, W, false);
+    uint8_t other[sizeof(g_buf)]; memcpy(other, g_buf, sizeof(g_buf));
+    fresh(); C.set_time(14000);
+    C.text(0, 30, "Another_Very_Long_Name_Here_Too_X", 1);
+    // First draw of a new string at t0 shows its start (clipped to the window).
+    bool same_start = true;
+    for (int y = 30; y < 37 && same_start; y++) for (int x = 0; x < W; x++) if (C.get(x, y) != ((other[(y >> 3) * 128 + x] >> (y & 7)) & 1)) { same_start = false; break; }
+    ok(same_start, "a new string begins at its beginning");
+
+    // The clip is gone afterwards: ordinary text still reaches the right edge.
+    fresh(); C.set_time(0);
+    C.text_scroll(0, 10, long_name, 1, 50, false);
+    C.text(100, 40, "XYZ", 1);
+    bool drawn = false;
+    for (int y = 40; y < 47; y++) for (int x = 100; x < 118; x++) if (C.get(x, y)) drawn = true;
+    ok(drawn, "text drawn after a ticker is not clipped by it");
+    (void)cut_lit;
+}
+
 int main(void) {
     test_layout();
     test_vlsb();
@@ -312,6 +394,7 @@ int main(void) {
     test_text_placement();
     test_affordances();
     test_circles();
+    test_ticker();
 
     printf("  %d checks", checks);
     if (failures) printf(", %d FAILED", failures);

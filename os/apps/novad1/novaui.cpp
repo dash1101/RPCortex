@@ -233,6 +233,16 @@ int wrap(const char *s, int cols, char *store, unsigned store_cap,
     return n;
 }
 
+int text_block(Canvas &c, int x, int y, const char *s, int max_lines) {
+    static char store[192];
+    const char *lines[8];
+    if (max_lines > 8) max_lines = 8;
+    const int cols = (c.width() - x - 2) / FONT_ADV;
+    const int n = wrap(s, cols, store, sizeof(store), lines, max_lines);
+    for (int i = 0; i < n; i++) c.text(x, y + i * ROWH, lines[i], 1);
+    return n;
+}
+
 void heading(Canvas &c, const char *text) {
     c.text(0, TOP, text, 1);
     c.hline(0, TOP + FH + 1, c.width(), 1);

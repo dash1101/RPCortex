@@ -100,7 +100,25 @@ public:
 
     // Truncate to fit `max_px`, ending in ".." when something was cut. Returns
     // the width actually drawn.
+    //
+    // EXCEPT for the selected row. Selected text is drawn in colour 0, inside a bar, and
+    // text that does not fit there SCROLLS instead of being cut: it waits, slides along to its
+    // end, waits, and starts again. A person who has moved the cursor onto a row is asking to
+    // read it, and ".." is a way of saying no. (Text that is not selected stays cut, so a screen
+    // of long rows is not a screen of moving ones.)
     int text_fit(int x, int y, const char *s, int colour, int max_px, bool narrow = false);
+
+    // The same ticker for text that is not in a bar, for a single value somebody has no cursor
+    // to select: a network name, a path. Scrolls when it does not fit and is still when it does.
+    int text_scroll(int x, int y, const char *s, int colour, int max_px, bool narrow = false);
+
+    // The runner tells the canvas what time it is before each frame, so the ticker moves with
+    // it; the canvas has no clock of its own, which is what lets the host draw it too.
+    void set_time(uint32_t ms) { now_ms_ = ms; }
+
+    // Did this frame draw a ticker? Read and cleared by the runner, which keeps redrawing for as
+    // long as the answer is yes and stops the moment it is not.
+    bool take_marquee(void) { bool m = marq_seen_; marq_seen_ = false; return m; }
 
     // --- affordances --------------------------------------------------------
     //
@@ -128,6 +146,13 @@ private:
     int      w_;
     int      h_;
     int      pages_;
+    uint32_t now_ms_;           // set by the runner
+    uint32_t marq_t0_;          // when the current ticker started, so it begins at its beginning
+    uint32_t marq_key_;         // which text that was: a change of text or place restarts it
+    bool     marq_seen_;
+    bool     clip_on_;          // a horizontal window the ticker draws inside
+    int      clip0_, clip1_;
+    void     marquee(int x, int y, const char *s, int colour, int max_px, bool narrow);
 
     // The one place the glyph is fetched, so an out-of-range character produces
     // the same substitute everywhere.

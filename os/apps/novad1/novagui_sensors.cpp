@@ -502,7 +502,7 @@ public:
         if (!g_gps_have) {
             c.text(2, y, "No GPS.", 1);
             y += ui::ROWH;
-            c.text_fit(2, y, "Nothing readable on the UART.", 1, c.width() - 4, false);
+            ui::text_block(c, 2, y, "Nothing readable on the UART.", 2);
             return;
         }
 
@@ -628,13 +628,11 @@ public:
         if (g_ir_seen) {
             c.text(2, y, "Signal seen.", 1);
             y += ui::ROWH;
-            c.text_fit(2, y, "A receiver is answering.", 1, c.width() - 4, false);
+            ui::text_block(c, 2, y, "A receiver is answering.", 2);
         } else {
             c.text(2, y, "No signal yet.", 1);
             y += ui::ROWH;
-            c.text_fit(2, y, "Point a remote and press", 1, c.width() - 4, false);
-            y += ui::ROWH;
-            c.text_fit(2, y, "a button.", 1, c.width() - 4, false);
+            ui::text_block(c, 2, y, "Point a remote at the receiver and press a button.", 3);
         }
     }
 

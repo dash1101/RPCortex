@@ -280,6 +280,12 @@ private:
 int wrap(const char *s, int cols, char *store, unsigned store_cap,
          const char **lines, int max_lines);
 
+// Draw a message in as many lines as it needs, wrapped at spaces to the width of the panel, from
+// (x, y) down, at most `max_lines` of them. Returns the lines drawn. For text that is a
+// sentence rather than a value: a sentence that is cut off with ".." is a sentence nobody can
+// read, and wrapping costs a row where a cut costs the meaning.
+int text_block(Canvas &c, int x, int y, const char *s, int max_lines);
+
 // Draw a title bar row for a screen that wants one inside its own body — a
 // heading with a rule under it, at the top of the body area.
 void heading(Canvas &c, const char *text);

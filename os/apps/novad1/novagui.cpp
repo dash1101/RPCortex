@@ -1124,6 +1124,7 @@ void frame_step(uint32_t now, bool had_input) {
 // the simulator shows is what the panel shows by construction rather than by two
 // copies of the loop agreeing.
 uint32_t frame_once(uint32_t *last) {
+    bool marquee = false;                           // did a ticker draw this frame
     // No poll here. The input task samples the encoder at 2 ms because
     // quadrature needs consecutive readings, and this loop sleeps up to
     // 300 ms — see the note at the top of novainput.cpp.
@@ -1153,6 +1154,7 @@ uint32_t frame_once(uint32_t *last) {
 
     if (g_dirty && s) {
         uint32_t t0 = fw_micros();
+        g_canvas.set_time(now);                     // for the ticker on a selected row that does not fit
         g_canvas.clear(0);
         if (!s->fullscreen()) draw_status(g_canvas, s);
         s->draw(g_canvas);
@@ -1167,6 +1169,9 @@ uint32_t frame_once(uint32_t *last) {
         g_perf.pages = display().last_pages();
         g_frame_count++;
         g_dirty = false;
+        // A ticker moved this frame, so draw the next one soon. Only while the panel is lit: a dark
+        // panel has nobody reading it, and this would keep the loop awake for nothing.
+        if (g_canvas.take_marquee() && g_level == LVL_ACTIVE) { g_dirty = true; marquee = true; }
     }
 
     if (now - g_frame_second >= 1000) {
@@ -1180,10 +1185,13 @@ uint32_t frame_once(uint32_t *last) {
     // and the difference between napping 16 ms and 300 ms is the difference
     // between a day of battery and an afternoon.
     uint32_t nap;
+    // marquee: a ticker is sliding along a line. 20 frames a second is smooth at its pace and
+    // cheap, because only the page it is on changes.
     // Still something queued means still turning. Holding the fast frame
     // rate is what lets the one-step-per-frame rule keep up with a spin.
     if      (input().pending())     nap = NAP_ANIMATING;
     else if (s && s->animating())   nap = NAP_ANIMATING;
+    else if (marquee)               nap = 50;
     // A WINDOW, not a single frame. Holding the active rate for a short
     // while after the last input is what makes a SECOND detent or press
     // land promptly: without it the loop dropped to NAP_IDLE the very next

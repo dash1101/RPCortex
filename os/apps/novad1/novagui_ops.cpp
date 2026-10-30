@@ -618,19 +618,62 @@ class HelpScreen : public ui::Screen {
 public:
     const char *title(void) const override { return "Controls"; }
 
-    void draw(Canvas &c) override {
+    int help(const char **out, int max) const override {
+        if (max < 2) return 0;
+        out[0] = "Turn to scroll.";
+        out[1] = "BACK returns.";
+        return 2;
+    }
+
+    void enter(void) override { built_ = false; top_ = 0; }
+
+    // The help lines are written as fragments ("Turn to move, SELECT opens." / "Needs a second
+    // SX1276.") and several are longer than the panel is wide, so they are joined and wrapped to
+    // it rather than cut. Anything past the bottom is reached by turning, because help that cannot
+    // be read to its end is not help.
+    void build(Canvas &c) {
+        static char joined[400];
         const char *lines[8];
         const int n = g_help_of ? g_help_of->help(lines, 8) : 0;
-        if (n <= 0) {
-            c.text_centred(ui::TOP + ui::ROWH, "Turn, press, and BACK.", 1);
-            c.text_centred(ui::TOP + 2 * ui::ROWH, "Nothing else here.", 1);
-            return;
+        unsigned at = 0;
+        joined[0] = 0;
+        for (int i = 0; i < n; i++) {
+            const unsigned len = (unsigned)strlen(lines[i]);
+            if (at + len + 2 >= sizeof(joined)) break;
+            if (at) joined[at++] = ' ';
+            memcpy(joined + at, lines[i], len);
+            at += len;
+            joined[at] = 0;
         }
-        const int rows = ui::rows_for(c);
-        for (int i = 0; i < n && i < rows; i++)
-            c.text_fit(2, ui::TOP + i * ui::ROWH, lines[i], 1, c.width() - 4, false);
+        if (!at) nova::copy(joined, sizeof(joined), "Turn, press, and BACK. Nothing else here.");
+        n_ = ui::wrap(joined, c.cols() - 1, g_help_store, sizeof(g_help_store), g_help_lines, 16);
+        built_ = true;
     }
+
+    void draw(Canvas &c) override {
+        if (!built_) build(c);
+        const int rows = ui::rows_for(c);
+        if (top_ > n_ - rows) top_ = n_ - rows;
+        if (top_ < 0) top_ = 0;
+        for (int i = 0; i < rows && top_ + i < n_; i++)
+            c.text(2, ui::TOP + i * ui::ROWH, g_help_lines[top_ + i], 1);
+        if (n_ > rows) c.scrollbar(c.width() - ui::SB_W, ui::TOP, rows * ui::ROWH, top_, rows, n_);
+    }
+
+    ui::Action on_event(Event e) override {
+        if (e == EV_ROT_CW)  { top_++; return ui::ACT_STAY; }
+        if (e == EV_ROT_CCW) { if (top_ > 0) top_--; return ui::ACT_STAY; }
+        return Screen::on_event(e);
+    }
+
+private:
+    bool built_;
+    int  n_, top_;
+    static char        g_help_store[640];
+    static const char *g_help_lines[16];
 };
+char        HelpScreen::g_help_store[640];
+const char *HelpScreen::g_help_lines[16];
 
 static Action power_help(void *, int) {
     gui::push<HelpScreen>();

@@ -71,7 +71,7 @@ public:
         // build "90 KB free" and "cannot open a socket" were routinely both
         // true; this build does not fragment the same way, and showing both is
         // still how anyone would notice if it started.
-        snprintf(line, sizeof(line), "%u KB  max %u KB",
+        snprintf(line, sizeof(line), "%uK  max %uK",
                  fw_heap_free() / 1024u, fw_heap_largest() / 1024u);
         c.text(0, y, "RAM", 1);
         c.text(30, y, line, 1);

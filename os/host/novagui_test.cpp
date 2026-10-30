@@ -2542,6 +2542,44 @@ static void test_clocks_follow_the_timezone(void) {
     gui::go_home();
 }
 
+// --- help that is longer than the panel ---------------------------------------------------------
+//
+// The Controls screen cut each help line to the panel's width with "..", and dropped any line past
+// the sixth without saying so. It wraps now and turns to scroll, so every word of it can be read.
+static void test_help_wraps_and_scrolls(void) {
+    using namespace nova;
+    gui::go_home();
+    shell_says(nullptr, nullptr);
+    ui::Screen *under = gui::top();                 // the home screen: five help lines, about 125 characters
+    const char *probe[8];
+    ok(under->help(probe, 8) >= 4, "the home screen has help to show");
+    screens::open_power();
+    input().inject(EV_SELECT); gui::drain_input();  // the first row of the power menu is Controls
+    ui::Screen *h = gui::top();
+    streq_(h->title(), "Controls", "the help screen opens");
+
+    uint8_t first[128 * 8], later[128 * 8];
+    gui::canvas().clear(0); h->draw(gui::canvas());
+    memcpy(first, gui::canvas().buffer(), sizeof(first));
+    ok(lit_pixels() > 12, "it draws the help");
+    for (int i = 0; i < 6; i++) h->on_event(EV_ROT_CW);
+    gui::canvas().clear(0); h->draw(gui::canvas());
+    memcpy(later, gui::canvas().buffer(), sizeof(later));
+    ok(memcmp(first, later, sizeof(first)) != 0, "turning scrolls it, so what did not fit can be reached");
+    for (int i = 0; i < 12; i++) h->on_event(EV_ROT_CCW);
+    gui::canvas().clear(0); h->draw(gui::canvas());
+    ok(!memcmp(first, gui::canvas().buffer(), sizeof(first)), "and turning back returns to the top");
+    ok(h->on_event(EV_BACK) == ui::ACT_BACK, "BACK leaves it");
+    gui::go_home();
+
+    // A message in ui::text_block wraps at spaces rather than being cut.
+    gui::canvas().clear(0);
+    int n = ui::text_block(gui::canvas(), 2, ui::TOP, "Point a remote at the receiver and press a button.", 4);
+    ok(n >= 3 && n <= 4, "a sentence wider than the panel takes more than one line");
+    ok(lit_pixels() > 12, "and draws them");
+    gui::canvas().clear(0);
+}
+
 // --- the sweep: a command that failed must not report success ---------------------
 static void test_set_time_reports_the_truth(void) {
     using namespace nova;
@@ -3300,6 +3338,7 @@ int main(void) {
     STAGE(test_brightness_is_kept);
     STAGE(test_small_apps);
     STAGE(test_clocks_follow_the_timezone);
+    STAGE(test_help_wraps_and_scrolls);
     STAGE(test_lora_messages);
     STAGE(test_badusb);
     STAGE(test_battery);

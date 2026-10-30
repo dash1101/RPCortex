@@ -27,6 +27,7 @@
 // no arguments, and a check nobody passes a flag to is a check that does not
 // run.
 
+#define NOVA_CANVAS_AUDIT 1
 #include "fakefw_d1.inc"
 
 // The whole package, the same set and the same order novagui_test compiles.
@@ -88,6 +89,20 @@ static void compose(void) {
     // gets its own body right is the question here, and the bar has its own
     // dump below.
     s->draw(c);
+}
+
+// What the last screen could not fit, from the canvas's audit (see NOVA_CANVAS_AUDIT). Printed only
+// under --audit, because most screens have something cut off by design and a check nobody can
+// satisfy is one that gets turned off.
+static bool g_audit_print;
+static int  g_audit_total;
+static void audit_report(const char *where) {
+    for (int i = 0; i < nova::g_canvas_audit_n; i++) {
+        g_audit_total++;
+        if (g_audit_print)
+            printf("  %-10s %s  '%s'\n", where, nova::g_canvas_audit[i].kind == 't' ? "cut " : "OFF ", nova::g_canvas_audit[i].text);
+    }
+    nova::g_canvas_audit_n = 0;
 }
 
 static void print_frame(const char *what) {
@@ -160,6 +175,7 @@ static int check_all(void) {
         if (!s) { printf("    FAIL %s opened nothing\n", a.key); bad++; continue; }
         settle();
         compose();
+        audit_report(a.key);
         looked++;
 
         int lit = 0;
@@ -225,6 +241,42 @@ static int shot_here(const char *what, bool dump) {
     return bad;
 }
 
+// Walk each app the way a person would: turn through its rows, open what is under the cursor, look
+// there too, come back. Every state it reaches is audited, so a long value that only appears on
+// the fourth row of a settings page is found as well as the ones on the first screen.
+static void explore_all(void) {
+    using namespace nova;
+    const unsigned n = gui::app_total();
+    for (unsigned i = 0; i < n; i++) {
+        const gui::App &a = *gui::app_at(i);
+        if (!a.open) continue;
+        gui::go_home();
+        gui::chose(&a);
+        a.open();
+        if (!gui::top()) continue;
+        const unsigned base = gui::depth();
+        for (int step = 0; step < 14; step++) {
+            settle();
+            compose();
+            audit_report(a.key);
+            input().inject(EV_ROT_CW);
+            gui::drain_input();
+            if (step % 3 == 2) {
+                input().inject(EV_SELECT);
+                gui::drain_input();
+                if (gui::depth() > base) {
+                    settle();
+                    compose();
+                    audit_report(a.key);
+                    while (gui::depth() > base) { input().inject(EV_BACK); gui::drain_input(); }
+                }
+            }
+            if (!gui::top() || gui::depth() < base) break;
+        }
+    }
+    gui::go_home();
+}
+
 static int gesture_screens(bool dump) {
     using namespace nova;
     int bad = 0;
@@ -261,6 +313,7 @@ static int gesture_screens(bool dump) {
 }
 
 int main(int argc, char **argv) {
+    if (argc > 1 && !strcmp(argv[1], "--audit")) { g_audit_print = true; argc = 1; }
     // The catalogue is only complete after begin() has scanned /nova/apps, so
     // --list starts the runner too rather than printing the built-ins and
     // calling that the list.
@@ -284,8 +337,11 @@ int main(int argc, char **argv) {
     nova::gui::go_home();
 
     if (argc < 2) {
+        nova::g_canvas_audit_n = 0;
         int bad = check_all();
         bad += gesture_screens(false);
+        if (g_audit_print) explore_all();
+        if (g_audit_print) printf("  audit: %d line(s) did not fit\n", g_audit_total);
         return bad ? 1 : 0;
     }
 
