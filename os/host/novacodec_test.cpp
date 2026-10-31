@@ -178,15 +178,22 @@ static void test_ir_write(void) {
 // --- NFC ------------------------------------------------------------------------------------
 
 struct PageCtx { int kind; };      // 0 pages, 1 blocks
-static bool page_get(void *ctx, unsigned i, uint8_t *out) {
+static bool page_get(void *ctx, unsigned i, uint8_t *out, uint16_t *) {
     (void)ctx;
     if (i == 3) return false;
     for (unsigned k = 0; k < 4; k++) out[k] = (uint8_t)(i + k);
     return true;
 }
-static bool block_get(void *, unsigned i, uint8_t *out) {
+static bool block_get(void *, unsigned i, uint8_t *out, uint16_t *) {
     if (i == 5) return false;
     for (unsigned k = 0; k < 16; k++) out[k] = (uint8_t)(i + k);
+    return true;
+}
+// Blocks that are only partly known: a trailer whose Key A is hidden, and one whose Key B is.
+static bool partial_get(void *, unsigned i, uint8_t *out, uint16_t *known) {
+    for (unsigned k = 0; k < 16; k++) out[k] = (uint8_t)(i + k);
+    if (i == 3) { out[6] = 0x7F; out[7] = 0x07; out[8] = 0x88; out[9] = 0x69; *known = 0xFFC0; }       // A unknown
+    if (i == 7) { *known = 0x03FF; }                                                                  // B unknown
     return true;
 }
 
@@ -218,6 +225,10 @@ static void test_nfc(void) {
     buf_init(&b);
     nfc::write_classic(sink_of(&b), uid4, 4, atqa_classic, 0x08, "1K", 64, block_get, nullptr);
     CHECK(!strcmp(b.b, kNfcMc), "a Mifare Classic 1K matches the MicroPython file (%u bytes, want %u)", b.n, (unsigned)strlen(kNfcMc));
+
+    buf_init(&b);
+    nfc::write_classic(sink_of(&b), uid4, 4, atqa_classic, 0x08, "1K", 8, partial_get, nullptr);
+    CHECK(!strcmp(b.b, kNfcMcPartial), "blocks that are partly known match the MicroPython file (got '%s')", b.b);
 
     // Read the identity back out of each.
     nfc::Info in;

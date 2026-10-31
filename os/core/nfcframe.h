@@ -36,6 +36,7 @@
 #define PN532_CMD_SAMCONFIG 0x14   // SAMConfiguration,     § 7.2.10, p: 89
 #define PN532_CMD_LISTTARGET 0x4A  // InListPassiveTarget,  § 7.3.5,  p: 115
 #define PN532_CMD_DATAEX     0x40  // InDataExchange,       § 7.3.8
+#define PN532_CMD_RFCONFIG   0x32  // RFConfiguration,      § 7.3.1
 
 // The frame identifier byte, UM0701-02 § 6.2.1.1: 0xD4 on the way to the chip,
 // 0xD5 on the way back.

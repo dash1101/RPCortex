@@ -109,11 +109,12 @@ static bool memory_line(const Sink &k, const char *label, unsigned index, unsign
                         Getter get_fn, void *ctx) {
     if (!put_str(k, label) || !put_u32(k, index) || !put_str(k, ": ")) return false;
     uint8_t b[16];
-    bool ok = get_fn && get_fn(ctx, index, b);
+    uint16_t known = 0xFFFF;
+    bool ok = get_fn && get_fn(ctx, index, b, &known);
     for (unsigned i = 0; i < width; i++) {
         if (i && !put_chr(k, ' ')) return false;
-        if (ok) { if (!put_hex2(k, b[i])) return false; }
-        else    { if (!put_str(k, "??")) return false; }
+        if (ok && (known & (1u << i))) { if (!put_hex2(k, b[i])) return false; }
+        else                           { if (!put_str(k, "??")) return false; }
     }
     return put_chr(k, '\n');
 }

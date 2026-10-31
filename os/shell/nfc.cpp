@@ -556,7 +556,17 @@ static bool pkg_bus(NfcBus *b, unsigned sda, unsigned scl) {
     return true;
 }
 
-int nfc_pkg_select(unsigned sda, unsigned scl, FwNfcTag *out, unsigned timeout_ms) {
+// RFConfiguration, § 7.3.1: item 0x01 is the RF field, and its one data byte is bit 0 = field on.
+// The byte values are the ones libnfc sends (RFCI_FIELD with 1 or 0), which is the working
+// reference for this chip.
+static void pn532_rf_field(const NfcBus &b, bool on) {
+    const uint8_t body[] = { PN532_TFI_HOST, PN532_CMD_RFCONFIG, 0x01, (uint8_t)(on ? 0x01 : 0x00) };
+    uint8_t rx[16];
+    const uint8_t *p = nullptr;
+    pn532_call(b, body, sizeof(body), PN532_CMD_RFCONFIG, rx, sizeof(rx), &p, 20);
+}
+
+int nfc_pkg_select(unsigned sda, unsigned scl, FwNfcTag *out, unsigned timeout_ms, unsigned flags) {
     if (!out) return FW_NFC_NOCHIP;
     LockGuard own(&g_nfc_op);
     NfcBus b;
@@ -572,6 +582,14 @@ int nfc_pkg_select(unsigned sda, unsigned scl, FwNfcTag *out, unsigned timeout_m
     } else {
         // Asked for and not insisted on - see the note on pn532_sam_normal.
         if (!g_sam_done) g_sam_done = pn532_sam_normal(b);
+        if (flags & FW_NFC_RESET_FIELD) {
+            // Long enough for a card to lose power and come back: its state machine restarts from
+            // idle, which is the only state a poll can find it in.
+            pn532_rf_field(b, false);
+            task_sleep_ms(10);
+            pn532_rf_field(b, true);
+            task_sleep_ms(10);
+        }
         NfcTarget t;
         memset(&t, 0, sizeof(t));
         switch (poll_tag(b, timeout_ms, &t)) {

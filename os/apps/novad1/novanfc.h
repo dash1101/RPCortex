@@ -49,9 +49,14 @@ bool read_info(const char *text, Info *out);
 
 // --- writing ---------------------------------------------------------------------------------
 
-// Whatever supplies the memory: fill `out` with page/block `index` and return true,
-// or return false when that part could not be read and "??" is written instead.
-typedef bool (*Getter)(void *ctx, unsigned index, uint8_t *out);
+// Whatever supplies the memory: fill `out` with page/block `index`. `*known` arrives as 0xFFFF
+// (every byte real) and the getter clears the bit of any byte it does not have - bit 0 is the
+// first byte - so a block whose first six bytes could not be read is written as "?? ?? ?? ?? ?? ??"
+// followed by the rest. Return false when none of it is known, and "??" is written for all of it.
+//
+// Partly-known blocks are what a Mifare Classic sector trailer comes to: the card never gives up
+// Key A, so the file says so rather than carrying six zeros that look like a key.
+typedef bool (*Getter)(void *ctx, unsigned index, uint8_t *out, uint16_t *known);
 
 // A card that is only identified: UID, ATQA, SAK.
 bool write_iso14443a(const codec::Sink &k, const uint8_t *uid, unsigned uid_len,

@@ -222,6 +222,12 @@ nfc_ul2 = novanfc.build_ultralight(uid7, atqa_ntag, 0x00, "NTAG215", pages[:16],
                                    signature=bytes(range(32)), mifare_version=bytes(range(8)),
                                    counters=[1, 70000, 3], tearing=[0xBD, 0, 0x7F], pages_read=10).to_text()
 nfc_mc = novanfc.build_classic(uid4, atqa_classic, 0x08, "1K", blocks).to_text()
+# Blocks that are only partly known: block 3 is a trailer whose Key A is hidden, block 7 one whose Key B is.
+blocks_partial = [bytes(range(i, i + 16)) for i in range(0, 8)]
+blocks_partial[3] = "?? ?? ?? ?? ?? ?? 7F 07 88 69 " + novanfc.hexs(bytes(range(3 + 10, 3 + 16)))
+blocks_partial[7] = novanfc.hexs(bytes(range(7, 7 + 10))) + " ?? ?? ?? ?? ?? ??"
+nfc_mc_partial = novanfc.build_classic(uid4, atqa_classic, 0x08, "1K", blocks_partial).to_text()
+w("static const char *const kNfcMcPartial = %s;\n" % cstr(nfc_mc_partial))
 w("static const char *const kNfcIso = %s;\n" % cstr(nfc_iso))
 w("static const char *const kNfcUl  = %s;\n" % cstr(nfc_ul))
 w("static const char *const kNfcUl2 = %s;\n" % cstr(nfc_ul2))

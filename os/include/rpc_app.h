@@ -670,9 +670,14 @@ struct FwNfcTag {
 #define FW_NFC_IS_STATUS(ret) ((ret) <= -256)
 #define FW_NFC_CODE(ret)      (-(ret) - 256)
 
+// FW_NFC_RESET_FIELD: switch the reader's RF field off and on again before polling. A card that
+// has halted itself (a Mifare Classic does, after a failed authentication) only answers a poll
+// once it has lost power, and this is how it does.
+#define FW_NFC_RESET_FIELD 1u
+
 // Poll for an ISO14443-A card for up to `timeout_ms` (clamped to 50..30000) and select it.
 // 1: one is selected and `out` is filled. 0: none arrived. Negative: FW_NFC_*.
-int fw_nfc_select(unsigned sda, unsigned scl, FwNfcTag *out, unsigned timeout_ms);
+int fw_nfc_select(unsigned sda, unsigned scl, FwNfcTag *out, unsigned timeout_ms, unsigned flags);
 
 // InDataExchange to the selected card: send `tx` (at most 24 bytes) and take what comes back
 // into `rx`. The chip adds and checks the card-side CRC, and for a Mifare Classic does the
@@ -680,7 +685,8 @@ int fw_nfc_select(unsigned sda, unsigned scl, FwNfcTag *out, unsigned timeout_ms
 // four UID bytes. Returns the byte count (an answer longer than `rx_cap` is cut to it), or a
 // negative FW_NFC_* value.
 //
-// A failed Mifare authentication leaves the card halted; select it again before the next try.
+// A failed Mifare authentication leaves the card halted; select it again, with FW_NFC_RESET_FIELD,
+// before the next try.
 int fw_nfc_exchange(unsigned sda, unsigned scl, const void *tx, unsigned tx_len,
                     void *rx, unsigned rx_cap);
 

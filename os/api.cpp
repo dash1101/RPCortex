@@ -1180,7 +1180,7 @@ extern "C" int fw_time_set(const struct FwTime *in) {
 
 int net_pkg_scan(FwNetAp *out, unsigned max);
 int net_pkg_scan2(FwNetAp2 *out, unsigned max);
-int nfc_pkg_select(unsigned sda, unsigned scl, FwNfcTag *out, unsigned timeout_ms);
+int nfc_pkg_select(unsigned sda, unsigned scl, FwNfcTag *out, unsigned timeout_ms, unsigned flags);
 int nfc_pkg_exchange(unsigned sda, unsigned scl, const uint8_t *tx, unsigned tx_len, uint8_t *rx, unsigned rx_cap);
 int net_pkg_ssid(char *out, unsigned cap);
 int net_pkg_ip(char *out, unsigned cap);
@@ -1215,10 +1215,11 @@ extern "C" int fw_net_scan2(FwNetAp2 *out, unsigned max) {
     task_alive();
     return net_pkg_scan2(out, max);
 }
-extern "C" int fw_nfc_select(unsigned sda, unsigned scl, FwNfcTag *out, unsigned timeout_ms) {
+extern "C" int fw_nfc_select(unsigned sda, unsigned scl, FwNfcTag *out, unsigned timeout_ms,
+                             unsigned flags) {
     if (!ok_w(out, sizeof(FwNfcTag))) return -1;
     task_alive();
-    return nfc_pkg_select(sda, scl, out, timeout_ms);
+    return nfc_pkg_select(sda, scl, out, timeout_ms, flags);
 }
 extern "C" int fw_nfc_exchange(unsigned sda, unsigned scl, const void *tx, unsigned tx_len,
                                void *rx, unsigned rx_cap) {
