@@ -22,6 +22,7 @@
 #include "novagui_ble.h"
 #include "novagui_media.h"
 #include "novagui_contact.h"
+#include "novagui_nfc.h"
 #include "novagui_radios.h"
 #include "novagui_sensors.h"
 #include "novagui_tasks.h"

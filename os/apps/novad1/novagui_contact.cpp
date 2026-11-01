@@ -435,47 +435,6 @@ private:
     }
 };
 
-// --- NFC ---------------------------------------------------------------------------
-//
-// v1's NFC app in the shape it had: open it and it reads, because that is what
-// somebody opening it wanted. Its Select saved a Flipper .nfc file, which
-// cannot happen here — see the note at the top — so Select reads again instead,
-// which is the other thing that hand was reaching for.
-
-class NfcScreen : public ContactScreen {
-public:
-    const char *title(void) const override { return "NFC"; }
-
-    int help(const char **out, int max) const override {
-        if (max < 3) return 0;
-        out[0] = "Hold a card flat on the";
-        out[1] = "antenna. SELECT reads again.";
-        out[2] = "A read waits 5s for a tag.";
-        return 3;
-    }
-
-protected:
-    const char *heading(void) const override { return "NFC reader"; }
-    const char *waiting(void) const override { return "tap a tag..."; }
-    const char *nothing(void) const override { return "No tag."; }
-    const char *hint(void) const override { return "Hold it flat on the antenna."; }
-    const char *nopin(void) const override { return "d1 pins set sda"; }
-    const char *field1(void) const override { return "UID"; }
-    const char *field2(void) const override { return "Type"; }
-    const char *field3(void) const override { return "SAK"; }
-
-    bool command(char *out, unsigned cap) const override {
-        // The firmware command has no default pins and should not have one:
-        // guessing a pair means driving two GPIOs that belong to something
-        // else. The package is the side that knows, so it says.
-        const int sda = board::pin(board::PIN_SDA);
-        const int scl = board::pin(board::PIN_SCL);
-        if (sda == board::PIN_NONE || scl == board::PIN_NONE) return false;
-        snprintf(out, cap, "nfc read %d %d %d", CT_READ_SECS, sda, scl);
-        return true;
-    }
-};
-
 // --- iButton -------------------------------------------------------------------------
 //
 // New here — v1 had the module in its table and no driver behind it.
@@ -517,7 +476,6 @@ protected:
 
 // --- the App table's entry points ---------------------------------------------------
 
-void open_nfc(void)     { gui::push<NfcScreen>(); }
 void open_ibutton(void) { gui::push<IButtonScreen>(); }
 
 }  // namespace screens

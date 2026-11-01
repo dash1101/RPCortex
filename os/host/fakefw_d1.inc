@@ -793,6 +793,73 @@ int fw_net_scan2(FwNetAp2 *out, unsigned max) {
     for (int i = 0; i < n; i++) out[i] = g_scan2_aps[i];
     return n;
 }
+// A PN532 with a card on it, for fw_nfc_select / fw_nfc_exchange. By default a Mifare Classic 1K
+// that opens to the FF key, because that is the card somebody out of the box has; g_fake_nfc_present and
+// g_fake_nfc_kind switch it to an NTAG or to nothing there. Only the two verbs a dump uses are answered
+// (authenticate, block/page read, GET_VERSION, READ_SIG), the same ones the engine sends.
+static int  g_fake_nfc_present = 1;      // 0 = no reader answers
+static int  g_fake_nfc_kind    = 0;      // 0 Classic 1K, 1 NTAG215
+static bool g_fake_nfc_authed;
+
+int fw_nfc_select(unsigned sda, unsigned scl, FwNfcTag *out, unsigned timeout_ms, unsigned flags) {
+    (void)sda; (void)scl; (void)timeout_ms;
+    if (!g_fake_nfc_present) return FW_NFC_NOCHIP;
+    if (flags & FW_NFC_RESET_FIELD) g_fake_nfc_authed = false;
+    memset(out, 0, sizeof(*out));
+    if (g_fake_nfc_kind == 1) {
+        static const uint8_t uid[7] = { 0x04, 0xA2, 0xB3, 0xC4, 0xD5, 0xE6, 0xF7 };
+        memcpy(out->uid, uid, 7); out->uid_len = 7;
+        out->atqa[0] = 0x00; out->atqa[1] = 0x44; out->sak = 0x00;
+    } else {
+        static const uint8_t uid[4] = { 0xDE, 0xAD, 0xBE, 0xEF };
+        memcpy(out->uid, uid, 4); out->uid_len = 4;
+        out->atqa[0] = 0x00; out->atqa[1] = 0x04; out->sak = 0x08;
+    }
+    return 1;
+}
+
+int fw_nfc_exchange(unsigned sda, unsigned scl, const void *txv, unsigned tx_len,
+                    void *rxv, unsigned rx_cap) {
+    (void)sda; (void)scl;
+    if (!g_fake_nfc_present) return FW_NFC_NOCHIP;
+    const uint8_t *tx = (const uint8_t *)txv;
+    uint8_t *rx = (uint8_t *)rxv;
+    if (!tx || tx_len == 0) return FW_NFC_NOCHIP;
+
+    if (g_fake_nfc_kind == 0) {
+        if ((tx[0] == 0x60 || tx[0] == 0x61) && tx_len == 12) {
+            static const uint8_t ff[6] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
+            if (memcmp(tx + 2, ff, 6) != 0) return FW_NFC_STATUS(0x14);
+            g_fake_nfc_authed = true;
+            return 0;
+        }
+        if (tx[0] == 0x30 && tx_len == 2) {
+            const unsigned blk = tx[1];
+            if (!g_fake_nfc_authed || blk >= 64 || rx_cap < 16) return FW_NFC_STATUS(0x01);
+            if ((blk % 4) == 3) { memset(rx, 0, 6); rx[6] = 0xFF; rx[7] = 0x07; rx[8] = 0x80; rx[9] = 0x69; memset(rx + 10, 0, 6); }
+            else memset(rx, (uint8_t)blk, 16);
+            return 16;
+        }
+        return FW_NFC_STATUS(0x01);
+    }
+    if (tx[0] == 0x60 && tx_len == 1) {
+        static const uint8_t ver[8] = { 0x00, 0x04, 0x04, 0x02, 0x01, 0x00, 0x11, 0x03 };
+        if (rx_cap < 8) return 0; memcpy(rx, ver, 8); return 8;
+    }
+    if (tx[0] == 0x3C && tx_len == 2) {
+        if (rx_cap < 32) return 0;
+        for (int i = 0; i < 32; i++) rx[i] = (uint8_t)(0x40 + i);
+        return 32;
+    }
+    if (tx[0] == 0x30 && tx_len == 2) {
+        const unsigned page = tx[1];
+        if (rx_cap < 16) return 0;
+        for (int i = 0; i < 16; i++) rx[i] = (uint8_t)(page + i);
+        return 16;
+    }
+    return FW_NFC_STATUS(0x01);
+}
+
 // --- a little music library -------------------------------------------------------
 //
 // PATH-KEYED, deliberately. Every directory answered zero before and the file

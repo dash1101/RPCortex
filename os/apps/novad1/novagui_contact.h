@@ -15,7 +15,6 @@ namespace nova {
 namespace screens {
 
 // The App table's open functions, so their shape is fixed by it.
-void open_nfc(void);        // poll a PN532 for an ISO14443-A tag
 void open_ibutton(void);    // wait for a DS1990A key on the 1-Wire pin
 
 }  // namespace screens

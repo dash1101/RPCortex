@@ -14,6 +14,7 @@
 #include "../apps/novad1/novatotp.cpp"
 #include "../apps/novad1/novagps.cpp"
 #include "../apps/novad1/novawigle.cpp"
+#include "../apps/novad1/novanfcdump.cpp"
 
 #include <stdio.h>
 #include <string.h>
@@ -264,6 +265,228 @@ static void test_nfc(void) {
     // A sink that fills stops the writer.
     buf_init(&b, 100);
     CHECK(!nfc::write_classic(sink_of(&b), uid4, 4, atqa_classic, 0x08, "1K", 64, block_get, nullptr), "a full sink fails the dump");
+}
+
+// --- the NFC dump engine, against a model of a card ------------------------------------------
+//
+// A fake PN532 with a card on it: it answers select and the two things a dump sends an
+// InDataExchange - a Mifare authenticate and a block/page read - the way a real one would, so the
+// walk in novanfcdump can be driven to the end with no reader attached. Two cards: a 1K Classic
+// where one sector uses a non-default key (so a "??" sector is exercised), and an NTAG215.
+using nova::nfcdump::Tag;
+using nova::nfcdump::Reader;
+using nova::nfcdump::Dump;
+
+struct FakeCard {
+    int      kind;              // 0 = classic 1K, 1 = ntag215
+    uint8_t  sak;
+    uint8_t  atqa[2];
+    uint8_t  uid[10];
+    unsigned uid_len;
+    bool     authed;
+    unsigned auth_block;
+    int      selects, exchanges, field_resets;
+    unsigned locked_sector;     // a Classic sector no default key opens; ~0 for none
+    unsigned read_cap;          // pages/blocks that still read; the rest fail (a torn dump)
+    unsigned short_block;       // a Classic block whose read returns too few bytes; ~0 for none
+};
+
+static const uint8_t kFFKey[6] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
+
+static int fake_select(void *ctx, Tag *out, bool reset) {
+    FakeCard *c = (FakeCard *)ctx;
+    c->selects++;
+    if (reset) { c->field_resets++; c->authed = false; }
+    memset(out, 0, sizeof(*out));
+    memcpy(out->uid, c->uid, c->uid_len);
+    out->uid_len = (uint8_t)c->uid_len;
+    out->atqa[0] = c->atqa[0]; out->atqa[1] = c->atqa[1];
+    out->sak = c->sak;
+    return 1;
+}
+
+static int fake_exchange(void *ctx, const uint8_t *tx, unsigned tx_len, uint8_t *rx, unsigned rx_cap) {
+    FakeCard *c = (FakeCard *)ctx;
+    c->exchanges++;
+    if (tx_len == 0) return -1;
+
+    if (c->kind == 0) {
+        // Classic: authenticate (0x60/0x61, block, key[6], uid[4]) then read (0x30, block).
+        if ((tx[0] == 0x60 || tx[0] == 0x61) && tx_len == 12) {
+            const unsigned block = tx[1];
+            const unsigned sector = block < 128 ? block / 4u : 32u + (block - 128u) / 16u;
+            if (sector == c->locked_sector) return (-(256 + 0x14));   // no key here opens it
+            if (memcmp(tx + 2, kFFKey, 6) != 0) return (-(256 + 0x14));   // only FFs work on this card
+            c->authed = true; c->auth_block = block;
+            return 0;                                                     // auth replies with no data
+        }
+        if (tx[0] == 0x30 && tx_len == 2) {
+            const unsigned block = tx[1];
+            const unsigned nblk = (c->sak == 0x18 || c->sak == 0x98) ? 256u : 64u;
+            if (!c->authed) return (-(256 + 0x13));
+            if (block >= nblk) return (-(256 + 0x01));
+            if (rx_cap < 16) return 0;
+            if (block == c->short_block) { memset(rx, 0xEE, 10); return 10; }   // a torn read: too few bytes
+            const bool trailer = (block < 128) ? ((block % 4) == 3) : (((block - 128) % 16) == 15);
+            // Contents: block number in every byte, except a trailer, which is Key A / access / Key B.
+            if (trailer) {
+                memset(rx, 0x00, 6);                          // Key A reads back as zeros on a real card
+                rx[6] = 0xFF; rx[7] = 0x07; rx[8] = 0x80; rx[9] = 0x69;
+                memset(rx + 10, 0x00, 6);                     // Key B also zeros in transport config
+            } else {
+                memset(rx, (uint8_t)block, 16);
+            }
+            return 16;
+        }
+        return (-(256 + 0x01));
+    }
+
+    // NTAG215: GET_VERSION (0x60), READ_SIG (0x3C 0x00), READ (0x30 page).
+    if (tx[0] == 0x60 && tx_len == 1) {
+        static const uint8_t ver[8] = { 0x00, 0x04, 0x04, 0x02, 0x01, 0x00, 0x11, 0x03 };
+        if (rx_cap < 8) return 0;
+        memcpy(rx, ver, 8);
+        return 8;
+    }
+    if (tx[0] == 0x3C && tx_len == 2) {
+        if (rx_cap < 32) return 0;
+        for (int i = 0; i < 32; i++) rx[i] = (uint8_t)(0x40 + i);
+        return 32;
+    }
+    if (tx[0] == 0x30 && tx_len == 2) {
+        const unsigned page = tx[1];
+        if (page / 4 == c->short_block) { memset(rx, 0x00, 8); return 8; }   // a short read ends the walk
+        if (page / 4 >= c->read_cap) return (-(256 + 0x01));   // past where the card still answers
+        if (rx_cap < 16) return 0;
+        for (int i = 0; i < 16; i++) rx[i] = (uint8_t)(page + i);   // four pages at once
+        return 16;
+    }
+    return (-(256 + 0x01));
+}
+
+static bool g_dump_cancel;
+static unsigned g_dump_last_done, g_dump_last_total;
+static bool fake_cancelled(void *) { return g_dump_cancel; }
+static void fake_progress(void *, unsigned done, unsigned total) { g_dump_last_done = done; g_dump_last_total = total; }
+
+static Reader reader_for(FakeCard *c) {
+    Reader r;
+    r.select = fake_select; r.exchange = fake_exchange;
+    r.cancelled = fake_cancelled; r.progress = fake_progress; r.ctx = c;
+    return r;
+}
+
+static void test_nfc_dump(void) {
+    using namespace nova;
+
+    // --- a Classic 1K, sector 5 locked. ---
+    FakeCard c = {};
+    c.kind = 0; c.sak = 0x08; c.atqa[0] = 0x00; c.atqa[1] = 0x04;
+    memcpy(c.uid, "\xDE\xAD\xBE\xEF", 4); c.uid_len = 4;
+    c.locked_sector = 5;
+    c.short_block = 7;          // one block answers with too few bytes - must be left unknown
+    g_dump_cancel = false; g_dump_last_done = g_dump_last_total = 0;
+
+    static nfcdump::Dump d;
+    Tag first; fake_select(&c, &first, false); c.selects = 0;
+    CHECK(nfcdump::run(reader_for(&c), first, &d) == nfcdump::DUMP_OK, "a Classic 1K dumps");
+    CHECK(d.type == nfcdump::DUMP_CLASSIC && !strcmp(d.kind, "1K") && d.units == 64, "as 64 blocks");
+    CHECK(d.read_units == 59, "59 read: not the locked sector's 4, nor the one short read (got %u)", d.read_units);
+    CHECK(d.known[7] == 0, "a block that read too few bytes is left unknown, not half-filled");
+    CHECK(g_dump_last_done == 64 && g_dump_last_total == 64, "and progress reaches the end");
+    CHECK(c.field_resets > 0, "the field was reset to clear a halt between keys");
+
+    // A normal block is its own number; a trailer carries the key that opened it with the other half ??.
+    CHECK(d.known[1] == 0xFFFF && d.mem[1 * 16] == 1, "a data block is fully known");
+    CHECK(d.mem[3 * 16 + 0] == 0xFF && d.mem[3 * 16 + 5] == 0xFF, "a trailer keeps the Key A that opened it");
+    CHECK((d.known[3] & 0xFC00) == 0, "and Key B's six bytes are not trusted");
+    CHECK(d.mem[3 * 16 + 6] == 0xFF && d.mem[3 * 16 + 8] == 0x80, "with the access bits as read");
+    CHECK(d.known[20] == 0 && d.known[23] == 0, "the locked sector's blocks are all unknown");
+
+    // The dump writes a .nfc the reader accepts, with the locked sector as "??".
+    Buf b; buf_init(&b);
+    bool w = nfc::write_classic(sink_of(&b), d.tag.uid, d.tag.uid_len, d.tag.atqa, d.tag.sak, d.kind,
+                                d.units, nfcdump::unit_getter, &d);
+    CHECK(w, "the Classic dump writes a .nfc file");
+    nfc::Info in;
+    CHECK(nfc::read_info(b.b, &in) && in.memory_lines == 64 && !strcmp(in.device_type, "Mifare Classic"),
+          "which reads back as a 64-block Classic");
+    CHECK(strstr(b.b, "Block 20: ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ??") != nullptr,
+          "the locked sector is all ?? in the file");
+    CHECK(strstr(b.b, "Block 3: FF FF FF FF FF FF FF 07 80 69 ?? ?? ?? ?? ?? ??") != nullptr,
+          "and a trailer shows the key, the access bits, and ?? for the untrusted half");
+
+    // --- cancel partway. ---
+    FakeCard c2 = c; c2.selects = c2.exchanges = c2.field_resets = 0;
+    g_dump_cancel = true;
+    static nfcdump::Dump d2;
+    Tag f2; fake_select(&c2, &f2, false);
+    CHECK(nfcdump::run(reader_for(&c2), f2, &d2) == nfcdump::DUMP_CANCELLED, "a cancel stops the dump");
+
+    // --- a Classic 4K: the eight 16-block sectors at the top are the geometry that catches an
+    //     off-by-one in sector_first / sector_blocks. ---
+    FakeCard c4 = {};
+    c4.kind = 0; c4.sak = 0x18; c4.atqa[0] = 0x00; c4.atqa[1] = 0x02;
+    memcpy(c4.uid, "\x11\x22\x33\x44", 4); c4.uid_len = 4;
+    c4.locked_sector = ~0u; c4.short_block = ~0u;
+    g_dump_cancel = false;
+    static nfcdump::Dump d4;
+    Tag f4; fake_select(&c4, &f4, false);
+    CHECK(nfcdump::run(reader_for(&c4), f4, &d4) == nfcdump::DUMP_OK, "a Classic 4K dumps");
+    CHECK(!strcmp(d4.kind, "4K") && d4.units == 256, "as 256 blocks");
+    CHECK(d4.read_units == 256, "all of them read (got %u)", d4.read_units);
+    CHECK(d4.mem[200 * 16] == 200, "a block in the big-sector region is itself");
+    CHECK(g_dump_last_done == 256 && g_dump_last_total == 256, "and progress reaches 256");
+    // The last block of sector 39 is block 255, a trailer in a 16-block sector.
+    CHECK(d4.mem[255 * 16] == 0xFF && (d4.known[255] & 0xFC00) == 0, "the top trailer carries its key, Key B ??");
+
+    // --- an NTAG215, torn after 30 pages. ---
+    FakeCard n = {};
+    n.kind = 1; n.sak = 0x00; n.atqa[0] = 0x00; n.atqa[1] = 0x44;
+    memcpy(n.uid, "\x04\xA2\xB3\xC4\xD5\xE6\xF7", 7); n.uid_len = 7;
+    n.read_cap = 999; n.short_block = ~0u;
+    g_dump_cancel = false;
+    static nfcdump::Dump dn;
+    Tag fn; fake_select(&n, &fn, false);
+    CHECK(nfcdump::run(reader_for(&n), fn, &dn) == nfcdump::DUMP_OK, "an NTAG215 dumps");
+    CHECK(dn.type == nfcdump::DUMP_ULTRALIGHT && !strcmp(dn.kind, "NTAG215") && dn.units == 135,
+          "as NTAG215, 135 pages");
+    CHECK(dn.has_ver && dn.has_sig, "with its version and signature");
+    CHECK(dn.read_units == 135 && dn.known[0] == 0x000F && dn.mem[4] == 4, "every page read, four bytes each");
+
+    buf_init(&b);
+    nfc::UltralightExtras x = {};
+    x.signature = dn.sig; x.mifare_version = dn.mifare_version;
+    w = nfc::write_ultralight(sink_of(&b), dn.tag.uid, dn.tag.uid_len, dn.tag.atqa, dn.tag.sak, dn.kind,
+                              dn.units, nfcdump::unit_getter, &dn, &x);
+    CHECK(w && nfc::read_info(b.b, &in) && in.memory_lines == 135, "the NTAG dump writes a 135-page .nfc");
+
+    // A tear partway: the pages after it are "??", and the file still reads.
+    FakeCard nt = n; nt.read_cap = 8;        // only the first 32 pages answer
+    static nfcdump::Dump dt;
+    Tag ft; fake_select(&nt, &ft, false);
+    nfcdump::run(reader_for(&nt), ft, &dt);
+    CHECK(dt.read_units == 32 && dt.units == 135, "a torn NTAG keeps what it read (%u pages)", dt.read_units);
+    CHECK(dt.known[0] == 0x000F && dt.known[40] == 0, "and the pages past the tear are unknown");
+    buf_init(&b);
+    w = nfc::write_ultralight(sink_of(&b), dt.tag.uid, dt.tag.uid_len, dt.tag.atqa, dt.tag.sak, dt.kind,
+                              dt.units, nfcdump::unit_getter, &dt, &x);
+    CHECK(w && strstr(b.b, "Page 100: ?? ?? ?? ??") != nullptr, "the unread pages are ?? in the file");
+
+    // A SHORT read (not an error) must also end the walk, or a half-page would be taken as whole.
+    FakeCard ns = n; ns.short_block = 10;    // the read of pages 40-43 returns 8 bytes
+    static nfcdump::Dump ds;
+    Tag fs; fake_select(&ns, &fs, false);
+    nfcdump::run(reader_for(&ns), fs, &ds);
+    CHECK(ds.read_units == 40 && ds.known[40] == 0, "a short page read ends the dump cleanly (%u pages)", ds.read_units);
+
+    // --- an unsupported card: identity only. ---
+    FakeCard u = {};
+    u.kind = 0; u.sak = 0x20; u.atqa[0] = 0x03; u.atqa[1] = 0x44; memcpy(u.uid, "\x01\x02\x03\x04", 4); u.uid_len = 4;
+    static nfcdump::Dump du;
+    Tag fu; fake_select(&u, &fu, false);
+    CHECK(nfcdump::run(reader_for(&u), fu, &du) == nfcdump::DUMP_UNSUPPORTED, "an unknown card is not dumped");
+    CHECK(du.units == 0 && du.tag.sak == 0x20, "but its identity is kept");
 }
 
 static void test_oui(void) {
@@ -624,6 +847,7 @@ int main() {
     test_ir_parse();
     test_ir_write();
     test_nfc();
+    test_nfc_dump();
     printf("  novacodec_test: %d checks, %d failed\n", g_checks, g_fail);
     return g_fail ? 1 : 0;
 }

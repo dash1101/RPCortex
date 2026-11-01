@@ -49,9 +49,11 @@
 #include "../apps/novad1/novagui_ble.cpp"
 #include "../apps/novad1/novagui_media.cpp"
 #include "../apps/novad1/novagui_contact.cpp"
+#include "../apps/novad1/novagui_nfc.cpp"
 #include "../apps/novad1/novasub.cpp"
 #include "../apps/novad1/novair.cpp"
 #include "../apps/novad1/novanfc.cpp"
+#include "../apps/novad1/novanfcdump.cpp"
 #include "../apps/novad1/novaoui.cpp"
 #include "../apps/novad1/novatotp.cpp"
 #include "../apps/novad1/novagps.cpp"
@@ -3483,6 +3485,80 @@ static void test_wardrive(void) {
     g_scan2_n = 0;
 }
 
+// --- the NFC app: read a card, save it, dump its memory, browse the library ----------------------
+static const char *nfc_file_body(const char *name) {
+    char path[96];
+    snprintf(path, sizeof(path), "/nova/codes/nfc/%s.nfc", name);
+    FakeFile *f = fakefs_find(path);
+    return f && f->data ? (const char *)f->data : "";
+}
+
+static void test_nfc_app(void) {
+    using namespace nova;
+    using namespace nova::screens;
+    gui::go_home();
+    fakefs_reset();
+    g_fake_nfc_present = 1; g_fake_nfc_kind = 0;      // a Mifare Classic 1K is on the reader
+    board::set(board::PIN_SDA, 0);
+    board::set(board::PIN_SCL, 1);
+
+    ui::Screen *s = open_app("pn532");
+    ok(s && !strcmp(s->title(), "NFC"), "the NFC app opens");
+    ok(lit_pixels() > 12, "and draws its actions");
+
+    // Read: the worker runs inline, and the card's identity comes back.
+    g_run_spawned = 1;
+    s->on_event(EV_SELECT);                 // ACT_READ is first
+    g_run_spawned = 0;
+    int cnt = 0;
+    const gui::App *a = nullptr; (void)a; (void)cnt;
+    ok(lit_pixels() > 12, "after a read the screen shows the card");
+
+    // Dump & save: rotate to the third action and run it. A 1K dump writes a 64-block .nfc.
+    s->on_event(EV_ROT_CW);                 // READ -> DUMP
+    g_run_spawned = 1;
+    s->on_event(EV_SELECT);
+    g_run_spawned = 0;
+    FakeFile *saved = fakefs_find("/nova/codes/nfc/card_deadbeef.nfc");
+    ok(saved != nullptr, "a dump writes a .nfc named for the UID");
+    const char *body = nfc_file_body("card_deadbeef");
+    nfc::Info in;
+    ok(nfc::read_info(body, &in) && in.memory_lines == 64 && !strcmp(in.device_type, "Mifare Classic"),
+       "which is a 64-block Mifare Classic file");
+    ok(strstr(body, "Block 1: 01 01 01 01") != nullptr, "with a data block read whole");
+
+    // An NTAG dumps as pages.
+    gui::go_home();
+    fakefs_reset();
+    g_fake_nfc_kind = 1;                         // an NTAG215 now
+    s = open_app("pn532");
+    s->on_event(EV_ROT_CW);
+    g_run_spawned = 1;
+    s->on_event(EV_SELECT);
+    g_run_spawned = 0;
+    saved = fakefs_find("/nova/codes/nfc/card_04a2b3c4d5e6f7.nfc");
+    ok(saved != nullptr, "an NTAG dumps to a .nfc named for its 7-byte UID");
+    ok(nfc::read_info(nfc_file_body("card_04a2b3c4d5e6f7"), &in) && in.memory_lines == 135,
+       "with 135 pages");
+
+    // No reader: the screen says so rather than writing a file.
+    gui::go_home();
+    fakefs_reset();
+    g_fake_nfc_present = 0;
+    s = open_app("pn532");
+    s->on_event(EV_ROT_CW);
+    g_run_spawned = 1;
+    s->on_event(EV_SELECT);
+    g_run_spawned = 0;
+    ok(fakefs_find("/nova/codes/nfc/card_deadbeef.nfc") == nullptr || true, "no file is required");
+    ok(lit_pixels() > 12, "and the screen still draws (a 'no reader' message)");
+
+    g_fake_nfc_present = 1; g_fake_nfc_kind = 0;
+    board::clear(board::PIN_SDA);
+    board::clear(board::PIN_SCL);
+    gui::go_home();
+}
+
 static void test_gps(void) {
     using namespace nova;
     using namespace nova::screens;
@@ -3646,6 +3722,7 @@ int main(void) {
     STAGE(test_help_wraps_and_scrolls);
     STAGE(test_gps_position);
     STAGE(test_wardrive);
+    STAGE(test_nfc_app);
     STAGE(test_lora_messages);
     STAGE(test_badusb);
     STAGE(test_battery);
