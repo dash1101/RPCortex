@@ -103,13 +103,23 @@ A Failing Service Is Started Again
     Wait For Line On Uart     cat /emu/not-here
     Done
 
-    # 2 s to the first restart, 4 more to the second.
-    Run                       sleep 8
+    # 2 s to the first restart, 4 more to the second, but exactly when depends
+    # on when the supervisor next looks. So poll the status until it says two,
+    # rather than sleeping a fixed time and hoping: `log` is a one-off dump, and
+    # a restart that lands after it is never printed.
+    ${n}=                     Set Variable    0
+    FOR    ${try}    IN RANGE    15
+        Run                   sleep 2
+        Type                  service status
+        ${m}=                 Wait For Line On Uart    pid -?\\d+\\s+(\\d+) restarts?\\s+cat /emu/not-here    treatAsRegex=true
+        Done
+        ${n}=                 Convert To Integer    ${m}[Groups][0]
+        IF    ${n} >= 2    BREAK
+    END
+    Should Be True            ${n} >= 2    msg=the supervisor restarted the service ${n} times in 30 s
+
+    # And each restart is in the log, in order.
     Type                      log
     Wait For Line On Uart     service restarted after failing \\(1 of 5\\)    treatAsRegex=true
     Wait For Line On Uart     service restarted after failing \\(2 of 5\\)    treatAsRegex=true
     Done
-    Type                      service status
-    Wait For Line On Uart     cat /emu/not-here
-    Done
-
