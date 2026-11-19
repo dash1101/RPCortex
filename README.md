@@ -214,6 +214,8 @@ and `pkg install greet.app` on the device. `putfile.py` waits for the device to
 acknowledge each chunk and checks the sha256 of what landed, which is the
 difference between a transfer that worked and one that appeared to. `os/apps/greet/` is the worked
 example; `os/include/rpc_app.h` is the only header a package includes.
+[PACKAGES.md](PACKAGES.md) is the full guide: the build, the ABI and its
+versioning, memory and the sandbox on each chip, size limits, and testing.
 
 ---
 
