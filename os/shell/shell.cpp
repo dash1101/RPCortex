@@ -722,8 +722,8 @@ static int run_one(char *seg) {
     if (flen < sizeof(first)) {
         memcpy(first, seg, flen);
         first[flen] = 0;
-        const char *repl = cmd_ualias_get(first);
-        if (repl) {
+        char repl[UALIAS_VALUE];
+        if (cmd_ualias_get_copy(first, repl, sizeof(repl))) {
             snprintf(expanded, sizeof(expanded), "%s%s", repl, sp ? sp : "");
             seg = expanded;
         }

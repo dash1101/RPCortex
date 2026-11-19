@@ -97,8 +97,12 @@ static int ualias_find(const char *name) {
     return -1;
 }
 
+// The user aliases are under the command table's lock as well: `unalias` shifts
+// the array down, and a line being expanded on another task at that moment read
+// the slot after the shift - a different alias's command.
 bool cmd_ualias_set(const char *name, const char *value) {
     if (!name || !value || !name[0] || !value[0]) return false;
+    LockGuard _c(&g_cmd_lock);
     if (strlen(name) >= UALIAS_NAME || strlen(value) >= UALIAS_VALUE) return false;
     // A real command always keeps its own name. Letting an alias shadow `rm`
     // would make a destructive command mean something else without warning.
@@ -115,6 +119,7 @@ bool cmd_ualias_set(const char *name, const char *value) {
 }
 
 bool cmd_ualias_remove(const char *name) {
+    LockGuard _c(&g_cmd_lock);
     int i = ualias_find(name);
     if (i < 0) return false;
     for (uint32_t j = (uint32_t)i; j + 1 < g_ualias_count; j++) g_ualias[j] = g_ualias[j + 1];
@@ -123,8 +128,18 @@ bool cmd_ualias_remove(const char *name) {
 }
 
 const char *cmd_ualias_get(const char *name) {
+    LockGuard _c(&g_cmd_lock);
     int i = ualias_find(name);
     return i < 0 ? nullptr : g_ualias[i].value;
+}
+
+bool cmd_ualias_get_copy(const char *name, char *out, uint32_t cap) {
+    if (!out || !cap) return false;
+    LockGuard _c(&g_cmd_lock);
+    int i = ualias_find(name);
+    if (i < 0) { out[0] = 0; return false; }
+    snprintf(out, cap, "%s", g_ualias[i].value);
+    return true;
 }
 
 uint32_t    cmd_ualias_count(void)         { return g_ualias_count; }

@@ -93,6 +93,9 @@ const Alias *cmd_alias_at(uint32_t i);
 bool        cmd_ualias_set(const char *name, const char *value);
 bool        cmd_ualias_remove(const char *name);
 const char *cmd_ualias_get(const char *name);      // the line, or nullptr
+// The same, copied out under the lock: for expanding a line, where the table can
+// change between the lookup and the use.
+bool cmd_ualias_get_copy(const char *name, char *out, uint32_t cap);
 uint32_t    cmd_ualias_count(void);
 const char *cmd_ualias_name_at(uint32_t i);
 
