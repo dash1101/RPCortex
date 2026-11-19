@@ -19,12 +19,10 @@ littlefs used from two tasks at once, then checked.
 # appended file is counted before and after it, and the test fails unless it
 # grew. A run in which the writer never fired has tested nothing.
 #
-# The reads are typed commands rather than a .rps loop, and the writer is the
-# scheduler rather than `bg script`. Under the emulator, at build 493, a script
-# run by `bg` overflowed its 3 KB task stack, and a script looping over an
-# appending echo overflowed the shell's own 8 KB; either takes the machine down
-# before the filesystem has been tested at all (DEVICE-UNCONFIRMED). Typed
-# commands also let every single read be checked here.
+# The reads are typed commands rather than a .rps loop, so every single read
+# can be checked here. (Scripts were also unusable when this was written: a
+# script run by `bg` overflowed its stack and silenced the machine. That is
+# fixed and has its own suite, bg_script.robot.)
 #
 # The read file goes over with `put`. put acknowledges every 256 bytes with 0x06
 # for a sender on real hardware to wait on; the emulated UART queues everything
@@ -128,12 +126,11 @@ A Writer And A Reader Leave The Filesystem Consistent
     Boot RPCortex
     Set Up And Log In
 
-    # A known-good layout to start from. Straight after first-run setup the two
-    # home directories do not exist yet: the boot's layout check ran before
-    # there were any accounts, and nothing creates them until the next boot. So
-    # a plain fscheck here reports them missing, which has nothing to do with
-    # concurrency; --fix puts them in place and the check after the race is
-    # then a fair one.
+    # A known-good layout to start from. --fix rather than a plain check, so a
+    # layout problem that has nothing to do with concurrency is repaired here
+    # instead of failing the check after the race. (Setup once left the two
+    # home directories missing until the next boot; it makes them now, and
+    # bg_script.robot checks that.)
     Type                      fscheck --fix
     Wait For Line On Uart     Repaired\\.|Everything is where it should be\\.    treatAsRegex=true
     Done

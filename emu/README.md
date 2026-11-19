@@ -52,6 +52,11 @@ reached the OS. That was measured against a boot that had already wedged before
 the shell started (the RTC stall below), so there was nothing reading. Once a
 boot reaches a prompt, `Write Line To Uart` and a Monitor `WriteChar` both land:
 `fs_concurrency.robot` answers the first-run wizard, logs in and types commands.
+The suites are `boot`, `fs_concurrency` (two tasks on littlefs), `bg_script` (a
+looping script in a background task, which used to silence the machine) and
+`service_restart` (the supervisor restarting a failing service). Each is one test
+in its own file: a second boot in the same Renode, after `Reset Emulation`,
+stalled at the login prompt, and nothing here has needed to explain that yet.
 Two things about driving it: the line editor redraws the whole prompt on every
 echoed character, so waiting for the prompt says nothing about whether a command
 has finished; and two spaces inside an expected line are a cell boundary to
