@@ -220,19 +220,21 @@ static void fail(RpsResult *r, uint32_t line, const char *fmt, ...) {
     r->line = line + 1;
 }
 
-// The script and its variables, taken from the heap for the length of a run.
+// The script, its variables and its line buffers, taken from the heap for the
+// length of a run.
 //
-// They used to be locals: a 2 KB line index and 2.4 KB of variables, about 5 KB
-// of stack before a single line had run - and every line then runs the whole
-// shell beneath it (host_run -> shell_run_line_now -> run_segment -> the
-// command). A script started with `bg`, on a 3 KB task stack, overflowed at
-// once, and a loop of `echo ... >> file` on the shell's 8 KB did too.
+// They used to be locals: 5384 bytes of stack (measured, Cortex-M0+ -O3) before
+// a single line had run, and every line then runs the whole shell beneath it
+// (host_run -> shell_run_line_now -> run_segment -> the command). A script
+// started with `bg`, on a 3 KB task stack, could not survive its first line.
 struct RunMem {
     Script s;
     Ctx    c;
+    char   raw[RPS_LINE_MAX];      // the line as written
+    char   line[RPS_LINE_MAX];     // and with its variables expanded
 };
 
-static bool run_body(const char *text, const RpsHost *host, RpsResult *out, Script &s, Ctx &c);
+static bool run_body(const char *text, const RpsHost *host, RpsResult *out, RunMem &m);
 
 bool rps_run(const char *text, const RpsHost *host, RpsResult *out) {
     RunMem *m = (RunMem *)calloc(1, sizeof(RunMem));
@@ -241,12 +243,16 @@ bool rps_run(const char *text, const RpsHost *host, RpsResult *out) {
         fail(out, 0, "not enough memory to run a script");
         return false;
     }
-    bool ok = run_body(text, host, out, m->s, m->c);
+    bool ok = run_body(text, host, out, *m);
     free(m);
     return ok;
 }
 
-static bool run_body(const char *text, const RpsHost *host, RpsResult *out, Script &s, Ctx &c) {
+static bool run_body(const char *text, const RpsHost *host, RpsResult *out, RunMem &m) {
+    Script &s = m.s;
+    Ctx    &c = m.c;
+    char   *raw  = m.raw;
+    char   *line = m.line;
     index_lines(&s, text);
 
     c.host = host;
@@ -258,7 +264,7 @@ static bool run_body(const char *text, const RpsHost *host, RpsResult *out, Scri
     Block stack[RPS_DEPTH];
     int depth = 0;
 
-    char raw[RPS_LINE_MAX], line[RPS_LINE_MAX], w[32];
+    char w[32];
 
     for (uint32_t i = 0; i < s.lines; ) {
         if (host->poll && host->poll(host->ctx)) {
@@ -266,14 +272,14 @@ static bool run_body(const char *text, const RpsHost *host, RpsResult *out, Scri
             return false;
         }
 
-        get_line(&s, i, raw, sizeof(raw));
+        get_line(&s, i, raw, sizeof(m.raw));
         const char *t = skip_ws(raw);
         if (!*t || *t == '#') { i++; continue; }
 
         // Substitution happens ONCE, before the statement is looked at, so a
         // variable can hold a whole argument list — and so `$` means the same
         // thing everywhere rather than only where the language remembered.
-        rps_expand(&c.vars, t, line, sizeof(line));
+        rps_expand(&c.vars, t, line, sizeof(m.line));
         const char *rest = word(line, w, sizeof(w));
         out->executed++;
 

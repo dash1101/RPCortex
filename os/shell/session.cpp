@@ -23,6 +23,7 @@
 #include "out.h"
 #include "task.h"
 #include "interrupt.h"
+#include "storage.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -350,6 +351,13 @@ static void first_run(void) {
 
     // Silent: the guest account, as v1 created it at the end of setup.
     if (!users_exists("guest")) users_add("guest", nullptr, /*admin*/false, /*nopass*/true);
+
+    // Their homes, now. The boot's layout check ran before either account
+    // existed, so without this /home/root and /home/guest were missing for the
+    // whole first session and only appeared at the next boot. mkacct does the
+    // same for every account made later.
+    storage_mkdir("/home/root");
+    storage_mkdir("/home/guest");
 
     reg_set("System.Setup", "true");
     persist_save_users();

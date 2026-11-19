@@ -52,6 +52,12 @@
 // apps_launch, app_main, then whatever a package does — and __sbprintf alone
 // wants 1128 bytes somewhere in there. It gets 8 KB because it is the one task
 // every command runs inside, and because the alternative was found the hard way.
+//
+// A line run anywhere else gets the same: `bg`, services, the scheduler. They
+// run exactly what the shell would, and they used to do it on TASK_STACK_DEF.
+// `bg script x.rps` measured about 3.1 KB before printf or an interrupt -
+// run_segment, the script command, the interpreter, run_segment again, then a
+// littlefs commit - on a 3 KB stack, and on RP2040 that silenced the machine.
 #define TASK_STACK_SHELL 8192
 
 // What a task needs if it will touch the wireless driver or lwIP. Those call

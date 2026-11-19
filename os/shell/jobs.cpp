@@ -218,8 +218,9 @@ static int cmd_task(int argc, char **argv) {
             out_warn("The scheduler is already running (pid %d).", g_sched_pid);
             return 1;
         }
+        // It runs shell lines, so it gets the shell's stack (TASK_STACK_SHELL).
         g_sched_pid = task_spawn("scheduler", "(built-in)", sched_task, nullptr,
-                                 TASK_STACK_DEF, AFFINITY_ANY);
+                                 TASK_STACK_SHELL, AFFINITY_ANY);
         if (g_sched_pid < 0) { out_err("Could not start the scheduler."); return 1; }
         out_ok("Scheduler running as pid %d.", g_sched_pid);
         return 0;

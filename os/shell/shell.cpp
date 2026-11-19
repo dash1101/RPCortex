@@ -554,7 +554,8 @@ int shell_bg_spawn(const char *line) {
     if (w >= sizeof(name)) w = sizeof(name) - 1;
     memcpy(name, job->line, w);
     name[w] = 0;
-    int pid = task_spawn(name, job->line, bg_entry, job, TASK_STACK_DEF, AFFINITY_ANY);
+    // A whole shell line, so the shell's stack: see TASK_STACK_SHELL.
+    int pid = task_spawn(name, job->line, bg_entry, job, TASK_STACK_SHELL, AFFINITY_ANY);
     if (pid < 0) free(job);
     return pid;
 }
