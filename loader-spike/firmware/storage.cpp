@@ -343,10 +343,23 @@ uint32_t storage_mtime(const char *path) {
 #define FS_BLOCK_WARN 95      // per cent: say something
 #define FS_BLOCK_STOP 98      // per cent: refuse to add anything more
 
+// The last thing lfs_fs_size said when it failed, or 0. Kept because the numbers
+// built on it cannot say "unknown": free space came out as 0 and the percentage
+// as 0, so `df` printed a confident "100% used" with no "full" warning beside it
+// for a filesystem nobody had measured (PAR-63). Callers that report space ask
+// storage_fs_error() first and say they could not measure.
+static int g_fs_size_err;
+
+static lfs_ssize_t fs_used_blocks(void) {
+    lfs_ssize_t used = lfs_fs_size(&g_lfs);
+    g_fs_size_err = used < 0 ? (int)used : 0;
+    return used;
+}
+
 // Computed without the lock, because every caller already holds it.
 static uint32_t used_percent_locked(void) {
     if (!g_mounted) return 0;
-    lfs_ssize_t used = lfs_fs_size(&g_lfs);
+    lfs_ssize_t used = fs_used_blocks();
     if (used < 0) return 0;
     uint32_t blocks = g_cfg_live.block_count;
     if (!blocks) return 100;
@@ -364,7 +377,7 @@ static bool room_for(uint32_t bytes) {
     // Blocks needed, rounded up, plus one for the metadata the commit costs.
     uint32_t need = (bytes + FS_BLOCK_SIZE - 1) / FS_BLOCK_SIZE + 1;
     uint32_t blocks = g_cfg_live.block_count;
-    lfs_ssize_t used = lfs_fs_size(&g_lfs);
+    lfs_ssize_t used = fs_used_blocks();
     if (used < 0) return false;
     uint32_t after = (uint32_t)used + need;
     return after * 100u / (blocks ? blocks : 1u) < FS_BLOCK_STOP;
@@ -461,8 +474,18 @@ static int sd_source_read(void *ctx, uint32_t off, void *dst, uint32_t len) {
 }
 #endif
 
+// Every one of the source calls takes the filesystem lock, the same as the
+// whole-file calls do. They used not to. littlefs keeps a list of open files and
+// a read cache shared by all of them, so a source opened, read or closed on one
+// task while another task (or the other core) was inside littlefs could leave
+// that list holding a handle that had already been freed — after which every
+// space calculation walks freed memory. The rollback image (855 KB) and a WAV
+// being played are both read this way, for seconds at a time, which is the
+// window that made it likely. Suspected cause of PAR-63; not confirmed on a board.
 static int lfs_source_read(void *ctx, uint32_t off, void *dst, uint32_t len) {
     FileHandle *h = (FileHandle *)ctx;
+    LockGuard _fs(&g_fs_lock);
+    if (!g_mounted) return -1;
     if (lfs_file_seek(&g_lfs, &h->f, off, LFS_SEEK_SET) < 0) return -1;
     lfs_ssize_t n = lfs_file_read(&g_lfs, &h->f, dst, len);
     return (int)n;
@@ -499,6 +522,7 @@ bool storage_open_source(const char *name, AppSource *src, void **handle) {
         return true;
     }
 #endif
+    LockGuard _fs(&g_fs_lock);
     if (!g_mounted) return false;
     FileHandle *h = (FileHandle *)malloc(sizeof(FileHandle));
     if (!h) return false;
@@ -589,8 +613,9 @@ bool storage_close_sink(void *handle) {
         // The close is where littlefs actually commits, so its result matters
         // as much as any write's — a download that filled the disk fails here.
         ok = g_mounted && lfs_file_close(&g_lfs, &h->f) >= 0 && h->ok;
+        // Inside the lock: stamping the time is a metadata commit like any other.
+        if (ok) { touch(h->name); bump(); }
     }
-    if (ok) { touch(h->name); bump(); }
     free(h);
     return ok;
 }
@@ -601,11 +626,15 @@ void storage_close_source(void *handle) {
     // A card handle holds no open file and nothing to close — the read path is
     // stateless, which is what makes a card pulled out mid-read cost an error
     // rather than a dangling handle.
-    if (!h->is_sd) lfs_file_close(&g_lfs, &h->f);
+    if (!h->is_sd) {
+        LockGuard _fs(&g_fs_lock);
+        if (g_mounted) lfs_file_close(&g_lfs, &h->f);
+    }
     free(h);
 }
 
 void storage_list(void) {
+    LockGuard _fs(&g_fs_lock);
     if (!g_mounted) { printf("  (no filesystem)\n"); return; }
     lfs_dir_t dir;
     if (lfs_dir_open(&g_lfs, &dir, "/") < 0) { printf("  (cannot open /)\n"); return; }
@@ -892,7 +921,17 @@ void storage_pkg_slot_flash(SlotFlash *out) {
 uint32_t storage_free_bytes(void) {
     LockGuard _fs(&g_fs_lock);
     if (!g_mounted) return 0;
-    lfs_ssize_t used = lfs_fs_size(&g_lfs);
+    lfs_ssize_t used = fs_used_blocks();
     if (used < 0) return 0;
-    return FS_SIZE - (uint32_t)used * FS_BLOCK_SIZE;
+    // Clamped: more blocks reported in use than exist would otherwise wrap to
+    // nearly 4 GB free, which every caller would believe.
+    uint32_t used_bytes = (uint32_t)used * FS_BLOCK_SIZE;
+    return used_bytes >= FS_SIZE ? 0u : FS_SIZE - used_bytes;
+}
+
+int storage_fs_error(void) {
+    LockGuard _fs(&g_fs_lock);
+    if (!g_mounted) return 0;
+    fs_used_blocks();
+    return g_fs_size_err;
 }

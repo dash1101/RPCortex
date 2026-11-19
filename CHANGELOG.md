@@ -22,6 +22,8 @@ Summary: The boot recovery ladder now works on hardware, and releases are number
 
 ### Fixed (unreleased)
 
+- Reading a file in pieces - how the rollback image is checked, how a WAV is played, and what a package's `fw_file_read_at` uses - entered littlefs without the filesystem lock, and so did the time stamp at the end of a streamed write. littlefs keeps one list of open files and one read cache for everyone, so a read on one task racing a write on another could leave that list pointing at freed memory. The likely cause of the filesystem that read 100% full until a big file was deleted (not yet confirmed on a board). All of them take the lock now, and a host check fails the build if a littlefs call is ever made outside it again.
+- `df` no longer reports a failed measurement as a full disk. When littlefs cannot say how full it is, `df` says so and suggests `fscheck`, rather than printing "100% used" with no warning beside it.
 - Two tasks could be inside I2C transfers on the same block at once (the display flush and a PN532 exchange), which the SDK's transfer calls do not allow. Every transfer, and every change of bus speed, now takes a per-block lock.
 
 ### Changed

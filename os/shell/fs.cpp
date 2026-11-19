@@ -531,6 +531,16 @@ static int cmd_rename(int argc, char **argv) {
 // df — the whole filesystem, v1's diskfree.
 static int cmd_df(int, char **) {
     uint32_t total = storage_total_bytes();
+    // Asked first, because a failed measurement otherwise prints as a full disk
+    // and sends somebody deleting files to fix something deleting cannot fix.
+    int err = storage_fs_error();
+    if (err) {
+        out_multi("  Total : %u KB", (unsigned)(total / 1024));
+        out_err("Could not measure the filesystem (littlefs error %d).", err);
+        out_multi("  Free space is unknown, so writes are refused until it can be");
+        out_multi("  measured. Run 'fscheck', and reboot if this persists.");
+        return 1;
+    }
     uint32_t free  = storage_free_bytes();
     uint32_t pct   = storage_used_percent();
     uint32_t used  = total - free;

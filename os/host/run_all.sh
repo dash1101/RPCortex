@@ -231,6 +231,18 @@ else
     fail=$((fail+1))
 fi
 
+# littlefs is not safe to enter from two tasks at once, and nothing at run time
+# says when a call slipped outside the lock - it surfaces days later as a disk
+# that reads full (PAR-63). So the rule is checked in the source.
+printf '  %-16s ' "fslock"
+if python3 ../../tools/check-fslock.py > "$OUT/fslock.out" 2>&1; then
+    echo "ok"
+    pass=$((pass+1))
+else
+    echo "FAILED"; sed 's/^/      /' "$OUT/fslock.out" | tail -12
+    fail=$((fail+1))
+fi
+
 # The release tooling decides what a release is called and what it says, so it is
 # held to the same standard as the firmware.
 printf '  %-16s ' "release_py"

@@ -53,6 +53,11 @@ typedef void (*StorageWalkFn)(void *ctx, const char *name, bool is_dir, uint32_t
 bool     storage_walk(const char *path, StorageWalkFn cb, void *ctx);
 uint32_t storage_free_bytes(void);
 
+// The error littlefs gave when asked how full the filesystem is, or 0 when it
+// answered. While non-zero, storage_free_bytes() reads 0 and storage_used_percent()
+// reads 0, neither of which is a measurement; a caller reporting space says so.
+int storage_fs_error(void);
+
 // How full the filesystem is, and whether something would still fit.
 //
 // littlefs needs free blocks to commit metadata, so the last few per cent are
