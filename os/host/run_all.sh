@@ -161,6 +161,8 @@ declare -A SRC=(
     [textcore_test]="$CORE/textcore.cpp $CORE/interrupt.cpp $CORE/task.cpp $CORE/blackbox.cpp host_task_stub.cpp"
     [history_test]="$CORE/history.cpp"
     [core_test]="$CORE/sha256.cpp $CORE/registry.cpp $CORE/users.cpp $CORE/lock.cpp $CORE/task.cpp $CORE/blackbox.cpp host_task_stub.cpp"
+    # Saving the registry while another task changes it: persist.cpp is included.
+    [persist_test]="$CORE/sha256.cpp $CORE/registry.cpp $CORE/users.cpp $CORE/lock.cpp $CORE/task.cpp $CORE/blackbox.cpp host_task_stub.cpp"
     [out_test]="$CORE/out.cpp $CORE/lock.cpp $CORE/task.cpp $CORE/blackbox.cpp $CORE/logring.cpp host_task_stub.cpp"
     # host_describe.cpp is what makes the region checks bind to the real thing:
     # it includes shell/apps.cpp so realapp_test can call describe() and compare

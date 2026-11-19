@@ -2,6 +2,7 @@
 #include "registry.h"
 #include "users.h"
 #include "storage.h"
+#include "lock.h"
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -48,13 +49,36 @@ static bool load_one(const char *file, void (*loader)(const char *, uint32_t)) {
     return n > 0;
 }
 
-static void save_one(const char *file, uint32_t (*ser)(char *, uint32_t)) {
-    uint32_t need = ser(nullptr, 0);
-    char *buf = (char *)malloc(need + 1);
-    if (!buf) return;
-    uint32_t n = ser(buf, need + 1);
-    storage_write_file(file, (const uint8_t *)buf, n);
-    free(buf);
+// One save at a time. Each save takes a snapshot and writes it; two at once
+// (the shell's periodic save, and a package calling fw_reg_save on the other
+// core) could each take theirs and write them in the wrong order, leaving the
+// OLDER one on disk with the table marked clean.
+static RpcLock g_persist_lock;
+
+// Serialize a table and write it.
+//
+// The table is measured and then filled in two calls, and it can grow between
+// them: another task setting a key. The serializer then reports the size it
+// NEEDED, which is more than the buffer holds, and that count used to be
+// written straight out — the bytes after the buffer, which are whatever was
+// next on the heap, went into /os/registry.cfg. So a fill that came back larger
+// than the measurement is measured again; and if the table will not hold still,
+// nothing is written, leaving the previous good file in place rather than a
+// truncated one.
+static bool save_one(const char *file, uint32_t (*ser)(char *, uint32_t)) {
+    for (int attempt = 0; attempt < 4; attempt++) {
+        uint32_t need = ser(nullptr, 0);
+        char *buf = (char *)malloc(need + 1);
+        if (!buf) return false;
+        uint32_t n = ser(buf, need + 1);
+        if (n <= need) {
+            bool ok = storage_write_file(file, (const uint8_t *)buf, n);
+            free(buf);
+            return ok;
+        }
+        free(buf);
+    }
+    return false;
 }
 
 // What the last load had to do. Read by fsinit so the boot can say so, because
@@ -106,15 +130,22 @@ void persist_load_all(void) {
 // Every save updates the shadow too. The pair is written primary-first: if
 // power goes between them the shadow is one revision old, which is a setting
 // lost rather than a device that cannot log in.
+//
+// The dirty flag is cleared BEFORE the snapshot is taken, not after the write.
+// After the write, a change made while the file was being written was marked
+// clean along with everything else and never saved; before, that change sets
+// the flag again and the next save picks it up.
 void persist_save_registry(void) {
+    LockGuard _p(&g_persist_lock);
+    reg_mark_clean();
     save_one(REG_FILE, reg_serialize);
     save_one(REG_BACKUP, reg_serialize);
-    reg_mark_clean();
 }
 void persist_save_users(void) {
+    LockGuard _p(&g_persist_lock);
+    users_mark_clean();
     save_one(USERS_FILE, users_serialize);
     save_one(USERS_BACKUP, users_serialize);
-    users_mark_clean();
 }
 
 void persist_save_dirty(void) {
@@ -148,8 +179,9 @@ void persist_save_scope(void) {
     char dir[64];
     snprintf(dir, sizeof(dir), "/home/%s", user);
     storage_mkdir(dir);
-    save_one(path, reg_scope_serialize);
+    LockGuard _p(&g_persist_lock);
     reg_scope_mark_clean();
+    save_one(path, reg_scope_serialize);
 }
 
 void persist_scope_enter(const char *user) {
