@@ -197,6 +197,8 @@ for board in "${BOARDS[@]}"; do
         # can be pointed at what grew rather than bisected for. A readout, never a
         # gate — `|| true` keeps a reporting hiccup from failing a good build.
         python3 "$(dirname "$0")/tools/size-report.py" "$dir/rpcortex_v2.elf.map" --groups 2>/dev/null || true
+        # And whether it moved a lot since the size somebody last accepted.
+        python3 "$(dirname "$0")/tools/size-guard.py" check "$board" "out/rpcortex-v2-$board.bin" || true
     fi
 done
 
