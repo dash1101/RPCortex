@@ -45,49 +45,35 @@ every read emits a warning. Thousands a second. Left on, Renode spends its time
 formatting log lines and a seven-second boot does not finish inside seven
 minutes. This cost most of an afternoon to notice.
 
-## Where this stops today: OUTPUT WORKS, INPUT DOES NOT
+## Where this stops today
 
-Worth stating plainly, because it decides what the emulator is good for.
+**Input works.** The note that used to stand here said nothing sent to the UART
+reached the OS. That was measured against a boot that had already wedged before
+the shell started (the RTC stall below), so there was nothing reading. Once a
+boot reaches a prompt, `Write Line To Uart` and a Monitor `WriteChar` both land:
+`fs_concurrency.robot` answers the first-run wizard, logs in and types commands.
+Two things about driving it: the line editor redraws the whole prompt on every
+echoed character, so waiting for the prompt says nothing about whether a command
+has finished; and two spaces inside an expected line are a cell boundary to
+Robot, so such lines are matched as regexes.
 
-Everything the OS PRINTS arrives. The boot is asserted on that, and a boot
-regression is catchable here in seven seconds.
-
-Nothing sent TO it arrives. Tested directly rather than inferred: with a socket
-terminal connected to `sysbus.uart0`, the machine running and sitting at the
-first-run prompt, sending `rpcortex\r\n` produces **zero bytes back and no
-echo**. The shell echoes every character it receives, so no echo means the
-character never got there.
-
-That rules out both theories the Robot attempts suggested. It is not the wizard
-prompting without a trailing newline, and it is not `Write Line To Uart` waiting
-for an echo that a password field answers with bullets — both are real, both
-would matter later, and neither is what is happening. Characters are not
-reaching the CPU at all, which puts the problem in the model's PL011 receive
-path or in what the SDK's UART stdio expects to be told about a waiting
-character.
-
-So today this is a BOOT TESTER, not a shell. Reproducing a crash that needs a
-typed command — the `kill` fault, an install under memory pressure — needs the
-receive path first.
-
-Two things to try next, in order:
-
-  * Read the platform's UART model and check whether the receive FIFO raises the
-    interrupt the SDK's stdio waits on, and whether a Monitor `WriteChar` drives
-    the same path a connected terminal does.
-  * **Seed the flash with a prepared littlefs**, so accounts and the registry
-    already exist. That skips the wizard *and* the login, and with `autonomy`
-    set the device boots straight to a shell prompt. Commands can then be put in
-    `/etc/startup.cfg` and their OUTPUT asserted — which reaches most of the OS
-    using only the direction that already works.
-
-The second is the better bet: it needs nothing from the model that is not
-already proven.
+**Boot stops after POST on the current build.** Core 0 spins forever on one
+load in `guard_ok()` (`os/core/task.cpp`), in the first `reschedule()` after the
+shell task is spawned. On RP2040 the stack guard is an MPU region with no access
+at all over the bottom 32 bytes of the running task's stack, and `guard_ok()`
+then reads those same bytes. The core neither faults nor moves on, and emulated
+time slows to about a seventieth of normal, so a 60-second terminal-tester
+timeout (which counts emulated time) was still waiting after 43 minutes. Skipping
+`mpu_platform_init` with a CPU hook lets the boot reach the wizard. Whether real
+RP2040 silicon faults on the same read is DEVICE-UNCONFIRMED; RP2350 uses MSPLIM
+instead and does not take this path. Both tests carry a wall-clock `[Timeout]`
+for this reason.
 
 **No RTC.** The RP2040 model does not implement the RTC peripheral. The SDK writes
 the time and then waits for a status bit the model never raises, so
 `aon_timer_start_calendar` spins forever and boot stops after POST without
 reaching the shell. `kernel.cpp` skips that call in emulator builds
 (`RPC_CONSOLE_UART`), so the clock reports "not set" there. `boot.robot` asserts
-that boot gets as far as the first-run wizard, which is what catches this class
-of stall.
+that boot gets as far as the first-run wizard's own header. It used to stop at
+"You will be asked to set a root password", which `main()` prints before the
+shell task exists, so a boot that stalled after POST still passed.

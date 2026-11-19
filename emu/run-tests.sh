@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run the emulator test suite. See emu/tests/boot.robot.
+# Run the emulator test suites in emu/tests/.
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 V2="$(dirname "$HERE")"
@@ -16,4 +16,12 @@ if [ ! -x "$VENV/bin/python" ]; then
     "$VENV/bin/pip" install -q -r /opt/renode/tests/requirements.txt || exit 1
 fi
 
-PATH="$VENV/bin:$PATH" renode-test "$HERE/tests/boot.robot" "$@"
+# Every suite in tests/, unless suites are named:
+#     emu/run-tests.sh                              all of them
+#     emu/run-tests.sh emu/tests/fs_concurrency.robot   one
+# Anything else on the line is passed through to renode-test.
+SUITES=()
+for a in "$@"; do case "$a" in *.robot) SUITES+=("$a") ;; esac; done
+[ ${#SUITES[@]} -eq 0 ] && set -- "$HERE"/tests/*.robot "$@"
+
+PATH="$VENV/bin:$PATH" renode-test "$@"

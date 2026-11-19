@@ -18,11 +18,8 @@ The OS booting, asserted rather than eyeballed.
 # RTC start in emulator builds (kernel.cpp, RPC_CONSOLE_UART); this fails if that
 # or any later step stops short of the first-run setup.
 #
-# WHAT IT DOES NOT COVER YET is the shell, and the reason is written down in
-# emu/README.md: the first-run wizard prompts without a newline and the
-# interaction has not been made reliable. The keywords for it exist and are used
-# below; getting them to land is the next piece of work, not a missing feature
-# of Renode.
+# The shell is fs_concurrency.robot's: input does reach the OS once the boot
+# gets as far as a prompt, and that test types into it.
 
 *** Settings ***
 Suite Setup                   Setup
@@ -58,14 +55,23 @@ Boot RPCortex
 
 *** Test Cases ***
 Boots To A Mounted Filesystem
+    # Wall-clock, unlike the terminal tester's timeouts, which count emulated
+    # time. A wedged core slows emulated time to a crawl, and without this a
+    # 60-second wait was still waiting after 43 minutes.
+    [Timeout]                 5 minutes
     Boot RPCortex
-    Wait For Line On Uart     RPCortex v2.0.0
+    # Not the exact version: it moves with every release, and a banner that
+    # says v2.01-beta failed a test still waiting for v2.0.0.
+    Wait For Line On Uart     RPCortex v2.
     Wait For Line On Uart     POST
     # A REAL filesystem on emulated flash, written and read back through the
     # XIP/SSI model rather than a stub. A first boot has nothing there and
     # formats; the interesting assertion is that it mounts afterwards.
     Wait For Line On Uart     Filesystem mounted
     Wait For Line On Uart     Reading the registry
-    # POST finished, and the shell task got as far as the first-run wizard.
     Wait For Line On Uart     System ready
-    Wait For Line On Uart     You will be asked to set a root password
+    # The shell task got as far as the first-run wizard. Its OWN header, not
+    # "You will be asked to set a root password": that line comes from the
+    # account check in main(), before core 1, USB or the shell task start, so a
+    # boot that stopped there still passed.
+    Wait For Line On Uart     First Run Setup
