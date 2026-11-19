@@ -220,11 +220,35 @@ static void fail(RpsResult *r, uint32_t line, const char *fmt, ...) {
     r->line = line + 1;
 }
 
-bool rps_run(const char *text, const RpsHost *host, RpsResult *out) {
+// The script and its variables, taken from the heap for the length of a run.
+//
+// They used to be locals: a 2 KB line index and 2.4 KB of variables, about 5 KB
+// of stack before a single line had run - and every line then runs the whole
+// shell beneath it (host_run -> shell_run_line_now -> run_segment -> the
+// command). A script started with `bg`, on a 3 KB task stack, overflowed at
+// once, and a loop of `echo ... >> file` on the shell's 8 KB did too.
+struct RunMem {
     Script s;
+    Ctx    c;
+};
+
+static bool run_body(const char *text, const RpsHost *host, RpsResult *out, Script &s, Ctx &c);
+
+bool rps_run(const char *text, const RpsHost *host, RpsResult *out) {
+    RunMem *m = (RunMem *)calloc(1, sizeof(RunMem));
+    if (!m) {
+        memset(out, 0, sizeof(*out));
+        fail(out, 0, "not enough memory to run a script");
+        return false;
+    }
+    bool ok = run_body(text, host, out, m->s, m->c);
+    free(m);
+    return ok;
+}
+
+static bool run_body(const char *text, const RpsHost *host, RpsResult *out, Script &s, Ctx &c) {
     index_lines(&s, text);
 
-    Ctx c{};
     c.host = host;
     c.res = out;
 
