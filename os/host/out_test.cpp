@@ -195,6 +195,38 @@ int main(int argc, char **argv) {
     out_capture_end();
     ck(strlen(small) == sizeof(small) - 1, "a truncated capture is still terminated");
 
+    // --- a capture inside a capture, on one task ---
+    // fw_shell_run("ls | grep x") captures, and the pipeline inside it captures
+    // each stage. With one capture for the whole device the inner one could not
+    // start, the stage printed into the OUTER buffer, and ending it ended the
+    // outer capture and handed back its length for a buffer that held nothing.
+    char outer[64], inner[64];
+    ck(out_capture_begin_all(outer, sizeof(outer)), "an outer capture starts");
+    out_multi("before");
+    ck(out_capture_begin(inner, sizeof(inner)), "a capture inside it starts too");
+    out_multi("inside");
+    uint32_t in_n = out_capture_end();
+    eq(inner, "inside\n", "the inner capture took only what was printed inside it");
+    ck(in_n == strlen("inside\n"), "and its length is its own");
+    out_multi("after");
+    out_capture_end();
+    eq(outer, "before\nafter\n", "the outer capture is back, and never saw the inner output");
+
+    // --- ending with nothing to end ---
+    ck(out_capture_end() == 0, "ending when nothing is captured returns nothing");
+    ck(!out_capturing(), "and leaves nothing captured");
+
+    // --- more captures than there is room for ---
+    static char many[16][8];
+    int got = 0;
+    while (got < 16 && out_capture_begin(many[got], sizeof(many[got]))) got++;
+    ck(got > 0 && got < 16, "captures run out at some bound rather than forever");
+    ck(!out_capture_begin(small, sizeof(small)), "and a begin past it says no");
+    for (int i = 0; i < got; i++) out_capture_end();
+    ck(!out_capturing(), "and every one that started can be ended");
+    ck(out_capture_begin(small, sizeof(small)), "after which a capture starts again");
+    out_capture_end();
+
     if (argc > 1 && !strcmp(argv[1], "-v")) {
         printf("\n  --- rendered sample ---\n");
         out_ok("Package 'greet' loaded.");

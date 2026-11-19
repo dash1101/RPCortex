@@ -913,7 +913,13 @@ static int run_segment(char *seg) {
         if (capturing) {
             if (!buf_a) buf_a = (char *)malloc(PIPE_BUF);
             if (!buf_a) { out_err("Not enough memory for a pipeline."); status = 1; break; }
-            out_capture_begin(buf_a, PIPE_BUF);
+            // A capture that did not start must not be ended or read: ending it
+            // would end somebody else's, and buf_a holds nothing yet.
+            if (!out_capture_begin(buf_a, PIPE_BUF)) {
+                out_err("Too many pipes and redirects running at once to start another.");
+                status = 1;
+                break;
+            }
         }
 
         status = run_one(cmdline_trim(stage));

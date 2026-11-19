@@ -178,31 +178,87 @@ void out_fatal(const char *fmt, ...) {
 }
 
 // --- capture ----------------------------------------------------------------
+//
+// ONE FRAME PER CAPTURE, OWNED BY A TASK, NESTED PER TASK.
+//
+// There used to be one capture for the whole device, which broke in two ways.
+// Across tasks: a package's fw_shell_run on core 1 held it, the shell's own
+// pipeline failed to begin one, ran anyway, then ENDED the package's capture
+// and read its length, and handed that many bytes of an uninitialised buffer to
+// the next stage or into the redirect file. And on one task, with no race at
+// all: fw_shell_run("ls | grep x") holds the capture, so the pipeline inside it
+// had none of its own and the same thing happened every time.
+//
+// So each begin takes a frame of its own, stamped with the task. A task that is
+// already capturing stacks a new frame over its old one and gets it back when
+// the inner one ends, which is a pipeline inside fw_shell_run. Output goes to
+// the TOP frame of the task printing it, and only that task can end it.
+#define CAP_FRAMES 8
 
-static char    *g_cap;
-static uint32_t g_cap_size, g_cap_len;
-static bool     g_cap_over;
-// Whose pipeline the capture belongs to. A capture is per-COMMAND, so a
-// background task printing during `ls > f` must go to the console rather than
-// into someone else's redirect — its output has nothing to do with that file.
-static int      g_cap_owner;
-// Whether the tagged lines come too. A pipe wants the data channel only; a
-// package that asked for a command's output wants what a person would see.
-static bool     g_cap_tags;
-// Where the escape-stripper got to. Kept across calls because out_write is
-// handed whatever the caller had, and a sequence can straddle two writes.
-static uint8_t  g_cap_esc;
+struct CapFrame {
+    char    *buf;
+    uint32_t size, len;
+    bool     over;
+    // Whether the tagged lines come too. A pipe wants the data channel only; a
+    // package that asked for a command's output wants what a person would see.
+    bool     tags;
+    // Where the escape-stripper got to. Kept across calls because out_write is
+    // handed whatever the caller had, and a sequence can straddle two writes.
+    uint8_t  esc;
+    int      owner;
+    uint32_t seq;        // larger is newer; the owner's newest frame is its top
+    bool     used;
+};
+static CapFrame g_caps[CAP_FRAMES];
+// The owner of a frame nobody holds. Not -1: that is what task_self() says when
+// no task is running (at boot, and on a host), and a frame being claimed must
+// match nobody at all.
+#define CAP_NOBODY (-1000)
+static uint32_t g_cap_seq;
+// What the last frame a task ended said about truncation, read after the end.
+static int      g_last_over_owner = CAP_NOBODY;
+static bool     g_last_over;
 
-bool out_capturing(void)           { return g_cap != nullptr; }
-bool out_capture_overflowed(void)  { return g_cap_over; }
+// This task's top frame, or null. Read without the lock: a task only ever
+// changes its own frames, and another task's frame can never carry this task's
+// id, so nothing this compares against changes under it.
+//
+// noinline, deliberately. pico2_w is built at -O3, which unrolled this loop and
+// inlined it into every output function: 16 KB of image for a table lookup.
+__attribute__((noinline)) static CapFrame *cur(void) {
+    int me = task_self();
+    CapFrame *top = nullptr;
+    for (int i = 0; i < CAP_FRAMES; i++) {
+        CapFrame *f = &g_caps[i];
+        if (f->used && f->owner == me && (!top || f->seq > top->seq)) top = f;
+    }
+    return top;
+}
+
+bool out_capturing(void) { return cur() != nullptr; }
+
+bool out_capture_overflowed(void) {
+    CapFrame *f = cur();
+    if (f) return f->over;
+    return g_last_over_owner == task_self() && g_last_over;
+}
 
 static bool begin(char *buf, uint32_t cap, bool tags) {
-    if (g_cap || !buf || cap == 0) return false;
-    g_cap = buf; g_cap_size = cap; g_cap_len = 0; g_cap_over = false;
-    g_cap_owner = task_self();
-    g_cap_tags = tags;
-    g_cap_esc = 0;
-    g_cap[0] = 0;
+    if (!buf || cap == 0) return false;
+    // Claimed under the hardware lock: two cores looking for a free frame at the
+    // same instant must not both take the same one.
+    CapFrame *f = nullptr;
+    lock_hw_enter();
+    for (int i = 0; i < CAP_FRAMES; i++)
+        if (!g_caps[i].used) { f = &g_caps[i]; f->owner = CAP_NOBODY; f->used = true; break; }
+    uint32_t seq = ++g_cap_seq;
+    lock_hw_exit();
+    if (!f) return false;
+    f->buf = buf; f->size = cap; f->len = 0; f->over = false;
+    f->tags = tags; f->esc = 0;
+    f->seq = seq;
+    buf[0] = 0;
+    f->owner = task_self();          // last: the frame is this task's from here
     return true;
 }
 
@@ -210,12 +266,22 @@ bool out_capture_begin(char *buf, uint32_t cap)     { return begin(buf, cap, fal
 bool out_capture_begin_all(char *buf, uint32_t cap) { return begin(buf, cap, true); }
 
 // True only for the task that started the capture.
-static bool capturing_here(void) { return g_cap && g_cap_owner == task_self(); }
-static bool capture_takes_tags(void) { return g_cap_tags && capturing_here(); }
+static bool capturing_here(void) { return cur() != nullptr; }
+static bool capture_takes_tags(void) { CapFrame *f = cur(); return f && f->tags; }
 
+// Ends THIS task's newest capture, and only that. A task that is not capturing
+// gets 0 and changes nothing - it used to end whichever capture was running,
+// which was usually somebody else's.
 uint32_t out_capture_end(void) {
-    uint32_t n = g_cap_len;
-    g_cap = nullptr;
+    CapFrame *f = cur();
+    if (!f) return 0;
+    uint32_t n = f->len;
+    g_last_over_owner = f->owner;
+    g_last_over = f->over;
+    lock_hw_enter();
+    f->used = false;
+    f->owner = CAP_NOBODY;
+    lock_hw_exit();
     return n;
 }
 
@@ -233,7 +299,9 @@ uint32_t out_capture_end(void) {
 //
 // CSI is ESC '[', parameter and intermediate bytes, then one final byte in
 // 0x40..0x7e. Anything else after ESC is a two-byte sequence and ends there.
-static void cap_append(const char *src, uint32_t len, uint8_t *st) {
+__attribute__((noinline)) static void cap_append(const char *src, uint32_t len, uint8_t *st) {
+    CapFrame *f = cur();
+    if (!f) return;
     for (uint32_t i = 0; i < len; i++) {
         char c = src[i];
         if (*st == 1)      { *st = (c == '[') ? 2 : 0; continue; }
@@ -241,10 +309,10 @@ static void cap_append(const char *src, uint32_t len, uint8_t *st) {
         if (c == '\033')   { *st = 1; continue; }
         // Leave a byte for the terminator so the buffer is always a valid C
         // string for whatever reads it next.
-        if (g_cap_len + 1 >= g_cap_size) { g_cap_over = true; break; }
-        g_cap[g_cap_len++] = c;
+        if (f->len + 1 >= f->size) { f->over = true; break; }
+        f->buf[f->len++] = c;
     }
-    g_cap[g_cap_len] = 0;
+    f->buf[f->len] = 0;
 }
 
 // Flushed, always. stdout is line buffered, so a write with no newline in it
@@ -264,7 +332,8 @@ void out_write(const char *data, uint32_t len) {
         fflush(stdout);
         return;
     }
-    cap_append(data, len, &g_cap_esc);
+    CapFrame *f = cur();
+    if (f) cap_append(data, len, &f->esc);
 }
 
 void out_multi(const char *fmt, ...) {
@@ -277,13 +346,14 @@ void out_multi(const char *fmt, ...) {
     // Format straight into the remaining space, then take the escapes back out
     // in place. vsnprintf returns the length it WANTED, so a return past the
     // room available is how truncation is detected.
-    uint32_t start = g_cap_len;
-    uint32_t room  = g_cap_size - 1 - start;
-    int want = vsnprintf(g_cap + start, room + 1, fmt, ap);
+    CapFrame *f = cur();
+    uint32_t start = f->len;
+    uint32_t room  = f->size - 1 - start;
+    int want = vsnprintf(f->buf + start, room + 1, fmt, ap);
     va_end(ap);
     if (want < 0) return;
     uint32_t got = (uint32_t)want > room ? room : (uint32_t)want;
-    if ((uint32_t)want > room) g_cap_over = true;
+    if ((uint32_t)want > room) f->over = true;
 
     // Read that region back through the filter. The write index starts level
     // with the read index and only ever falls behind it, since the filter drops
@@ -291,8 +361,8 @@ void out_multi(const char *fmt, ...) {
     // formatted at once, so no escape can straddle it: a local state, and the
     // shared one is left alone for out_write's benefit.
     uint8_t st = 0;
-    g_cap_len = start;
-    cap_append(g_cap + start, got, &st);
+    f->len = start;
+    cap_append(f->buf + start, got, &st);
     st = 0;
     cap_append("\n", 1, &st);
 }
