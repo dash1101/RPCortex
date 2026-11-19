@@ -65,9 +65,19 @@ const char *reg_get(const char *key, const char *def) {
     return i >= 0 ? g_reg[i].val : def;
 }
 
+bool reg_get_copy(const char *key, char *out, uint32_t cap) {
+    if (!out || !cap) return false;
+    LockGuard _r(&g_reg_lock);
+    const char *v = reg_get(key, nullptr);      // recursive: the lock is held across
+    if (!v) { out[0] = 0; return false; }
+    snprintf(out, cap, "%s", v);
+    return true;
+}
+
 int32_t reg_get_int(const char *key, int32_t def) {
-    const char *v = reg_get(key, nullptr);
-    if (!v) return def;
+    char buf[REG_VAL_MAX];
+    if (!reg_get_copy(key, buf, sizeof(buf))) return def;
+    const char *v = buf;
     char *end = nullptr;
     long n = strtol(v, &end, 10);
     return (end && end != v) ? (int32_t)n : def;

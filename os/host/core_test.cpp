@@ -49,6 +49,18 @@ int main(void) {
     ck(strcmp(reg_get("Nope.Key", "def"), "def") == 0, "missing key returns default");
     reg_set("Settings.Version", "v2.0.1");
     ck(strcmp(reg_get("Settings.Version", "?"), "v2.0.1") == 0, "update in place");
+    {
+        // The copying read: what a package's fw_reg_get goes through.
+        char b[32];
+        ck(reg_get_copy("Settings.Version", b, sizeof(b)) && !strcmp(b, "v2.0.1"), "a copy reads the value");
+        ck(!reg_get_copy("Nope.Key", b, sizeof(b)) && b[0] == 0, "an absent key copies nothing, terminated");
+        char tiny[4];
+        ck(reg_get_copy("Settings.Version", tiny, sizeof(tiny)) && !strcmp(tiny, "v2."), "a short buffer is cut and terminated");
+        ck(!reg_get_copy("Settings.Version", nullptr, 8), "no buffer is refused");
+        // Parsed through the copy too. No second key: the checks below count entries.
+        ck(reg_get_int("Settings.Version", -7) == -7, "a value that is not a number gives the default");
+        ck(reg_get_int("Nope.Key", -1) == -1, "and so does an absent one");
+    }
     ck(reg_count() == 1, "update did not add a second entry");
     reg_set("System.TZ", "-5");
     ck(reg_get_int("System.TZ", 0) == -5, "integer read");

@@ -353,13 +353,9 @@ extern "C" int fw_file_rename(const char *from, const char *to) {
 extern "C" int fw_reg_get(const char *key, char *out, uint32_t cap) {
     task_alive();
     if (!ok_s(key) || !ok_w(out, cap) || cap == 0) return 0;
-    const char *v = reg_get(key, nullptr);
-    if (!v) { out[0] = 0; return 0; }
-    uint32_t n = (uint32_t)strlen(v);
-    if (n >= cap) n = cap - 1;
-    memcpy(out, v, n);
-    out[n] = 0;
-    return 1;
+    // Copied under the registry lock: a package reads settings from its own
+    // task, often on the other core, while the shell or a logout changes them.
+    return reg_get_copy(key, out, cap) ? 1 : 0;
 }
 
 extern "C" int fw_reg_set(const char *key, const char *value) {

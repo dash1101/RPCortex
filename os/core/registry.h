@@ -26,6 +26,13 @@
 // Read a value, or `def` (which may be nullptr) when the key is absent.
 const char *reg_get(const char *key, const char *def);
 
+// reg_get, copied out while the table is locked. reg_get hands back a pointer
+// into the table, which another task can rewrite (reg_set), or a logout can
+// clear, the moment the lock is released; anything that copies or parses the
+// value afterwards can see half of one value and half of the next, or another
+// user's setting. True when the key was there; `out` is always terminated.
+bool reg_get_copy(const char *key, char *out, uint32_t cap);
+
 // Write a value. Returns false only if the table is full on a new key or the
 // key/value is over length. An existing key is updated in place.
 bool reg_set(const char *key, const char *value);
