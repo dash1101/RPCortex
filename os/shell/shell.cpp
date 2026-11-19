@@ -540,25 +540,41 @@ static int bg_entry(void *arg) {
     return rc;
 }
 
+// Start `line` as a background task and hand back its pid, or -1. Quiet: the
+// caller says what it wants to. Shared by `bg` and the service supervisor, which
+// needs the pid to watch what it started.
+int shell_bg_spawn(const char *line) {
+    if (!line || !line[0]) return -1;
+    BgJob *job = (BgJob *)malloc(sizeof(BgJob));
+    if (!job) return -1;
+    snprintf(job->line, sizeof(job->line), "%s", line);
+    // The task is named after the command, the way `ps` has always shown them.
+    char name[TASK_NAME_MAX];
+    size_t w = strcspn(job->line, " ");
+    if (w >= sizeof(name)) w = sizeof(name) - 1;
+    memcpy(name, job->line, w);
+    name[w] = 0;
+    int pid = task_spawn(name, job->line, bg_entry, job, TASK_STACK_DEF, AFFINITY_ANY);
+    if (pid < 0) free(job);
+    return pid;
+}
+
 static int cmd_bg(int argc, char **argv) {
     if (argc < 2) { out_multi("Usage: bg <command> [args...]"); return 1; }
 
-    BgJob *job = (BgJob *)malloc(sizeof(BgJob));
-    if (!job) { out_err("Not enough memory to start a task."); return 1; }
-    job->line[0] = 0;
+    char line[sizeof(((BgJob *)nullptr)->line)];
+    line[0] = 0;
     for (int i = 1; i < argc; i++) {
-        if (i > 1) strncat(job->line, " ", sizeof(job->line) - strlen(job->line) - 1);
-        strncat(job->line, argv[i], sizeof(job->line) - strlen(job->line) - 1);
+        if (i > 1) strncat(line, " ", sizeof(line) - strlen(line) - 1);
+        strncat(line, argv[i], sizeof(line) - strlen(line) - 1);
     }
 
-    int pid = task_spawn(argv[1], job->line, bg_entry, job,
-                         TASK_STACK_DEF, AFFINITY_ANY);
+    int pid = shell_bg_spawn(line);
     if (pid < 0) {
-        free(job);
         out_err("Could not start a task — the table is full or memory is short.");
         return 1;
     }
-    out_ok("[%d] %s", pid, job->line);
+    out_ok("[%d] %s", pid, line);
     return 0;
 }
 

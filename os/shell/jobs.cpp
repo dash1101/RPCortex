@@ -23,6 +23,8 @@
 #include "storage.h"
 #include "interrupt.h"
 #include "registry.h"
+#include "logring.h"
+#include "svcpolicy.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -35,6 +37,7 @@
 #define CFG_BUF      1024
 
 int  shell_run_line_now(char *line);       // shell.cpp — runs one command line
+int  shell_bg_spawn(const char *line);     // shell.cpp — `bg` that returns the pid
 
 // --- the config files -------------------------------------------------------
 
@@ -248,13 +251,108 @@ static int cmd_task(int argc, char **argv) {
 }
 
 // --- services ---------------------------------------------------------------
+//
+// Each service started is remembered with its pid, and a small task watches
+// them: one that FAILS is started again, with a pause that doubles each time and
+// a limit (core/svcpolicy.h has the rules and why). Before this a service that
+// crashed stayed dead until the next reboot.
+//
+// The watcher only exists while there is something to watch, and wakes once a
+// second, which is a pause measured in seconds needs no finer.
+
+#define SVC_TRACK 8
+struct Svc {
+    bool     used;
+    int      pid;
+    SvcState st;
+    char     line[128];
+};
+static Svc g_svcs[SVC_TRACK];
+static int g_svc_watch_pid = -1;
+
+// What the task behind a service looks like now. Read without a lock: these are
+// whole words written by the task's own exit, and a torn read costs one second.
+static SvcSeen svc_seen(int pid) {
+    const TaskInfo *t = task_find(pid);
+    if (!t || t->pid != pid) return SVC_GONE;
+    if (t->state != TASK_DONE) return SVC_RUNNING;
+    if (t->kill_requested) return SVC_KILLED;
+    return t->exit_code == 0 ? SVC_FINISHED : SVC_FAILED;
+}
+
+static int svc_watch_task(void *) {
+    while (!task_should_stop()) {
+        uint32_t now = task_now_ms();
+        for (int i = 0; i < SVC_TRACK; i++) {
+            Svc &e = g_svcs[i];
+            if (!e.used || e.st.retired) continue;
+            switch (svc_decide(&e.st, svc_seen(e.pid), now)) {
+            case SVC_RESTART: {
+                // Started before the old one is cleared away, so a restart that
+                // could not get a task leaves the failed one to be judged again
+                // on the next pass, rather than losing track of it.
+                int pid = shell_bg_spawn(e.line);
+                if (pid < 0) break;
+                task_reap(e.pid);
+                e.pid = pid;
+                svc_started(&e.st, now);
+                log_addf(LOG_K_WARN, "service restarted after failing (%u of %u): %s",
+                         (unsigned)e.st.failures, (unsigned)SVC_MAX_RESTARTS, e.line);
+                break;
+            }
+            case SVC_GIVE_UP:
+                log_addf(LOG_K_ERR, "service failed %u times in a row, not restarting: %s",
+                         (unsigned)SVC_MAX_RESTARTS, e.line);
+                break;
+            case SVC_LET_GO:
+                if (svc_seen(e.pid) == SVC_GONE)
+                    log_addf(LOG_K_INFO, "service ended unseen, not restarted: %s", e.line);
+                break;
+            default:
+                break;
+            }
+        }
+        task_sleep_ms(1000);
+    }
+    return 0;
+}
+
+// Remember a service that has just been started, under its line, so the same
+// line started again (pkg install puts back the services it stopped) replaces
+// its entry rather than adding a second.
+static void svc_track(const char *line, int pid) {
+    Svc *e = nullptr;
+    for (int i = 0; i < SVC_TRACK && !e; i++)
+        if (g_svcs[i].used && !strcmp(g_svcs[i].line, line)) e = &g_svcs[i];
+    for (int i = 0; i < SVC_TRACK && !e; i++)
+        if (!g_svcs[i].used) e = &g_svcs[i];
+    if (!e) return;                       // more services than watched slots: started, unwatched
+    memset(e, 0, sizeof(*e));
+    e->used = true;
+    e->pid  = pid;
+    snprintf(e->line, sizeof(e->line), "%s", line);
+    svc_started(&e->st, task_now_ms());
+
+    if (g_svc_watch_pid > 0 && task_find(g_svc_watch_pid)) return;
+    g_svc_watch_pid = task_spawn("svcwatch", "(built-in)", svc_watch_task, nullptr,
+                                 TASK_STACK_DEF, AFFINITY_ANY);
+}
+
+// Start one service line and watch it. Returns the pid, or -1.
+static int svc_start_line(const char *line) {
+    int pid = shell_bg_spawn(line);
+    if (pid < 0) {
+        out_err("Could not start service: %s", line);
+        return -1;
+    }
+    out_ok("[%d] %s", pid, line);
+    svc_track(line, pid);
+    return pid;
+}
 
 static void svc_start_cb(void *v, uint32_t, const char *line) {
     uint32_t *n = (uint32_t *)v;
-    char copy[160];
-    snprintf(copy, sizeof(copy), "bg %s", line);
-    shell_run_line_now(copy);
-    (*n)++;
+    if (svc_start_line(line) > 0) (*n)++;
 }
 
 void jobs_start_services(void) {
@@ -285,19 +383,40 @@ void jobs_services_walk(JobWalkFn cb, void *ctx) {
 
 int jobs_service_start(const char *line) {
     if (!line || !line[0]) return 1;
-    char copy[160];
     // Exactly what jobs_start_services does at boot, so a service restarted
-    // here is indistinguishable from one that was never stopped.
-    snprintf(copy, sizeof(copy), "bg %s", line);
-    return shell_run_line_now(copy);
+    // here is indistinguishable from one that was never stopped - watched included.
+    return svc_start_line(line) > 0 ? 0 : 1;
+}
+
+// What each watched service is doing, for `service status`.
+static void svc_status(void) {
+    bool any = false;
+    for (int i = 0; i < SVC_TRACK; i++) {
+        const Svc &e = g_svcs[i];
+        if (!e.used) continue;
+        any = true;
+        const char *state;
+        if (e.st.retired) {
+            SvcSeen seen = svc_seen(e.pid);
+            state = seen == SVC_FAILED ? "gave up" :
+                    seen == SVC_KILLED ? "stopped" :
+                    seen == SVC_FINISHED ? "finished" : "ended";
+        } else {
+            state = e.st.retry_at_ms ? "restarting" : "running";
+        }
+        out_multi("  %-10s pid %-4d %u restart%s  %s", state, e.pid,
+                  (unsigned)e.st.failures, e.st.failures == 1 ? " " : "s", e.line);
+    }
+    if (!any) out_multi("  No services have been started.");
 }
 
 static int cmd_service(int argc, char **argv) {
     if (argc >= 2 && !strcmp(argv[1], "start")) { jobs_start_services(); return 0; }
+    if (argc >= 2 && !strcmp(argv[1], "status")) { svc_status(); return 0; }
     int rc = list_command(SERVICE_CFG, "Services", false, argc, argv,
-                          "Usage: service [list | add <cmd> | remove <n> | clear | start]");
+                          "Usage: service [list | add <cmd> | remove <n> | clear | start | status]");
     if (argc < 2 || !strcmp(argv[1], "list"))
-        out_multi("  %sLive state is in 'ps'; services run as ordinary tasks.%s",
+        out_multi("  %s'service status' shows each one live; a service that fails is restarted.%s",
                   C_GRAY, C_RESET);
     return rc;
 }
