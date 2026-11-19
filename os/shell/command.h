@@ -101,6 +101,19 @@ const Command *cmd_find(const char *name);
 // cmd_find, then one alias hop. One hop, not a chain: an alias to an alias is a
 // configuration mistake, and following it would need loop detection to be safe.
 const Command *cmd_resolve(const char *name);
+
+// cmd_resolve for the path that is about to CALL the command.
+//
+// cmd_resolve returns a pointer into the table, and the table is compacted when
+// a package unloads: between the lookup and the call, that pointer can come to
+// point at a different command, and a package command's name string lives inside
+// the package and is freed with it. This copies the entry, and the name, out
+// while the table is locked, so what the caller holds stays what it looked up.
+struct CommandRef {
+    Command cmd;            // cmd.name points at `name` below
+    char    name[32];
+};
+bool cmd_resolve_copy(const char *name, CommandRef *out);
 uint32_t       cmd_count(void);
 // How many registrations were refused (table full, or a duplicate name). Checked
 // once after boot: a command that silently failed to register is a bug that

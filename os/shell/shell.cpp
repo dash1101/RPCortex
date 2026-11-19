@@ -208,7 +208,7 @@ static bool shell_complete(void *, const char *prefix, uint32_t word_start,
 
     if (word_start == 0) {
         for (uint32_t i = 0; i < cmd_count() && !w.found; i++)
-            complete_offer(&w, cmd_at(i)->name, false);
+            if (const Command *ci = cmd_at(i)) complete_offer(&w, ci->name, false);
         for (uint32_t i = 0; i < cmd_alias_count() && !w.found; i++)
             complete_offer(&w, cmd_alias_at(i)->name, false);
         return w.found;
@@ -752,7 +752,9 @@ static int run_one(char *seg) {
         argc = n - 1;
     }
 
-    const Command *c = cmd_resolve(argv[0]);
+    // A copy, not a pointer into the table: see cmd_resolve_copy.
+    CommandRef ref;
+    const Command *c = cmd_resolve_copy(argv[0], &ref) ? &ref.cmd : nullptr;
     if (!c) {
         // A bare path to a script runs it, as it did on v1. Checked before the
         // error so `/os/setup.rps` works the way people already expect.
@@ -798,9 +800,18 @@ static int run_one(char *seg) {
     }
     // A package's command runs the way its app_main did: on a stack of its own,
     // sandboxed where the board allows it. A built-in is called directly.
+    //
+    // A package's command NEVER falls back to a direct call. app_run_owner says
+    // false only when no loaded package owns it any more, which means it was
+    // unloaded between being looked up and being run, and its code is freed:
+    // calling it directly would jump into the heap, privileged and unsandboxed.
     int rc = 0;
-    if (!c->owner || !app_run_owner(c->owner, c->fn, argc, argv, &rc))
+    if (!c->owner) {
         rc = c->fn(argc, argv);
+    } else if (!app_run_owner(c->owner, c->fn, argc, argv, &rc)) {
+        out_err("'%s' was unloaded before it could run.", c->name);
+        rc = 1;
+    }
     g_current_app = nullptr;
     if (c->owner) {
         snprintf(phase, sizeof(phase), "'%s' returned", c->name);

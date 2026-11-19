@@ -46,6 +46,33 @@ int main(int argc,char**argv){
     cmd_remove_owner(nullptr);
     ck(cmd_count()==1,"remove_owner(nullptr) never touches built-ins");
 
+    // --- a lookup that is about to be CALLED is a copy, not a pointer into the table ---
+    // The table compacts when a package unloads, so a pointer taken before the
+    // unload can come to name a different command, and the package's own name
+    // string is freed with it.
+    {
+        static char pkg_name[16];          // stands in for a string inside a package image
+        strcpy(pkg_name,"gamma");
+        static int (*gfn)(int,char**)=[](int,char**){return 7;};
+        Command c4{pkg_name,"g",gfn,(void*)0x5678};
+        Command c5{"delta","d",dummy,(void*)0x9abc};
+        ck(cmd_register(&c4)&&cmd_register(&c5),"register two package commands");
+        const Command *p=cmd_find("delta");         // the old way: a pointer into the table
+        CommandRef ref;
+        ck(cmd_resolve_copy("delta",&ref),"a copy of a command can be taken");
+        ck(!cmd_resolve_copy("nope",&ref),"and an unknown name gives none");
+        CommandRef gref;
+        ck(cmd_resolve_copy("gamma",&gref),"a copy of the first package's command");
+        cmd_remove_owner((void*)0x5678);            // gamma unloads; delta shifts down
+        memset(pkg_name,0,sizeof(pkg_name));        // and its image is freed
+        ck(p!=cmd_find("delta"),"a pointer taken before the unload no longer points at delta's entry");
+        ck(!strcmp(gref.cmd.name,"gamma"),"the copy still names the command it looked up");
+        ck(gref.cmd.fn==gfn && gref.cmd.owner==(void*)0x5678,"with the function and owner it had");
+        ck(ref.cmd.owner==(void*)0x9abc && !strcmp(ref.cmd.name,"delta"),"and the other copy is untouched");
+        ck(!cmd_resolve_copy("gamma",&gref),"a fresh lookup after the unload finds nothing");
+        cmd_remove_owner((void*)0x9abc);
+    }
+
     // --- greet.app loads against the 1.1 ABI ---
     if(argc>1){
         g_sram=(uint8_t*)mmap((void*)kBase,1<<20,PROT_READ|PROT_WRITE|PROT_EXEC,MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED_NOREPLACE,-1,0);

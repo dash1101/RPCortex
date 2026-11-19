@@ -984,8 +984,12 @@ static int launch_loaded(LoadedApp *appp, int arg, bool quiet, uint32_t before) 
 
     // Resident iff it registered a command owned by its image.
     bool resident = false;
-    for (uint32_t i = 0; i < cmd_count(); i++)
-        if (cmd_at(i)->owner == app.image) { resident = true; break; }
+    for (uint32_t i = 0; i < cmd_count(); i++) {
+        // Null when the table shrank under the loop (a package unloading on
+        // another task); cmd_at checks the bound, the caller checks the answer.
+        const Command *ci = cmd_at(i);
+        if (ci && ci->owner == app.image) { resident = true; break; }
+    }
 
     if (resident) {
         if (apps_store(&app)) {

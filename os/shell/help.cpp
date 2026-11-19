@@ -247,6 +247,7 @@ static int help_all(void) {
     out_info("%u commands registered:", (unsigned)cmd_count());
     for (uint32_t i = 0; i < cmd_count(); i++) {
         const Command *c = cmd_at(i);
+        if (!c) break;                  // the table shrank under the loop
         out_multi("  %s%-10s%s %s%s", C_CYAN, c->name, C_RESET, c->help,
                   c->owner ? "  [pkg]" : "");
     }

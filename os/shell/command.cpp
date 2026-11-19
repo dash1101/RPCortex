@@ -1,6 +1,7 @@
 #include "command.h"
 #include "lock.h"
 #include <string.h>
+#include <stdio.h>
 
 // A package loading on one core registers commands while the other resolves
 // one. Read-mostly, but the write side moves entries during cmd_remove_owner.
@@ -134,4 +135,16 @@ const Command *cmd_resolve(const char *name) {
     if (c) return c;
     const char *t = cmd_alias_target(name);
     return t ? cmd_find(t) : nullptr;
+}
+
+bool cmd_resolve_copy(const char *name, CommandRef *out) {
+    // The lock is recursive, so the lookups inside take it again harmlessly; what
+    // matters is that it is held across the copy.
+    LockGuard _c(&g_cmd_lock);
+    const Command *c = cmd_resolve(name);
+    if (!c) return false;
+    out->cmd = *c;
+    snprintf(out->name, sizeof(out->name), "%s", c->name ? c->name : "");
+    out->cmd.name = out->name;
+    return true;
 }
