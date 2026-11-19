@@ -212,6 +212,23 @@ int main(int argc, char **argv) {
     out_capture_end();
     eq(outer, "before\nafter\n", "the outer capture is back, and never saw the inner output");
 
+    // --- the error flag across a nested run ---
+    // A line run with fw_shell_run from inside a command clears the flag to judge
+    // itself; the outer command's error has to come back afterwards.
+    char sink[64];
+    out_capture_begin(sink, sizeof(sink));      // keep the error text off the test's output
+    out_clear_error();
+    out_err("the outer command failed");
+    bool outer_err = out_had_error();
+    out_clear_error();                          // the inner run starts clean
+    ck(!out_had_error(), "an inner run starts without the outer error");
+    out_restore_error(outer_err);
+    ck(out_had_error(), "and the outer error is back after it");
+    out_clear_error();
+    out_restore_error(false);
+    ck(!out_had_error(), "restoring 'no error' never invents one");
+    out_capture_end();
+
     // --- ending with nothing to end ---
     ck(out_capture_end() == 0, "ending when nothing is captured returns nothing");
     ck(!out_capturing(), "and leaves nothing captured");

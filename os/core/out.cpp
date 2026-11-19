@@ -81,10 +81,10 @@ struct OutGuard {
 #include <stdarg.h>
 #include <string.h>
 
-static bool g_had_error;
 
-void out_clear_error(void) { g_had_error = false; }
-bool out_had_error(void)   { return g_had_error; }
+void out_clear_error(void) { task_shell()->had_error = false; }
+bool out_had_error(void)   { return task_shell()->had_error; }
+void out_restore_error(bool had) { if (had) task_shell()->had_error = true; }
 
 // Defined with the rest of the capture below; declared here because emit needs
 // them and reads better where it is.
@@ -157,21 +157,21 @@ TAGGED_P(out_warnp, C_WARN,   "?")
 
 // The two that set the error flag get explicit bodies rather than the macro.
 void out_err(const char *fmt, ...) {
-    g_had_error = true;
+    task_shell()->had_error = true;
     va_list ap; va_start(ap, fmt);
     emit(C_FAIL, "!", nullptr, fmt, ap);
     va_end(ap);
 }
 
 void out_errp(const char *p, const char *fmt, ...) {
-    g_had_error = true;
+    task_shell()->had_error = true;
     va_list ap; va_start(ap, fmt);
     emit(C_FAIL, "!", p, fmt, ap);
     va_end(ap);
 }
 
 void out_fatal(const char *fmt, ...) {
-    g_had_error = true;
+    task_shell()->had_error = true;
     va_list ap; va_start(ap, fmt);
     emit(C_FAIL, "!!!", nullptr, fmt, ap);
     va_end(ap);

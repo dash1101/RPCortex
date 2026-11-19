@@ -390,6 +390,24 @@ struct Arena;
 Arena *task_arena(void);
 void   task_arena_set(Arena *a);
 
+// What the shell keeps for the command a task is running: the input of the pipe
+// stage it is in, whether it was run with sudo, and whether it has printed an
+// error (the status `&&` and `||` decide on).
+//
+// Per task, because commands run on more than the shell's task: a package's
+// fw_shell_run, a detached run and the scheduler all run lines, on either core.
+// When these were globals one task's command could read another's pipe input,
+// or clear its error so that `cp x y && rm x` removed x after the copy failed.
+//
+// Before the scheduler is up there is no task, and one shared block stands in.
+struct TaskShell {
+    const char *stdin_buf;
+    uint32_t    stdin_len;
+    bool        elevated;
+    bool        had_error;
+};
+TaskShell *task_shell(void);
+
 // Read back what this task holds, so an entry into package code can put the
 // previous description back rather than clearing it. Nothing today can nest —
 // no ABI call lets a package invoke a command — but "clear on the way out" is

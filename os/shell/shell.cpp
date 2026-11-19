@@ -692,12 +692,11 @@ void shell_register_builtins(void) {
 
 #define PIPE_BUF 2048          // one stage's captured output
 
-// A piped stage's input, for commands that can read it instead of a file.
-static const char *g_stdin;
-static uint32_t    g_stdin_len;
-
-const char *shell_stdin(void)     { return g_stdin; }
-uint32_t    shell_stdin_len(void) { return g_stdin_len; }
+// A piped stage's input, for commands that can read it instead of a file. Kept
+// per task (task_shell): lines run on more than the shell's task, and a global
+// handed one task's pipe buffer to another task's command.
+const char *shell_stdin(void)     { return task_shell()->stdin_buf; }
+uint32_t    shell_stdin_len(void) { return task_shell()->stdin_len; }
 
 
 
@@ -705,9 +704,9 @@ uint32_t    shell_stdin_len(void) { return g_stdin_len; }
 
 // Run one command (no connectors, no pipes, no redirect left in it).
 // Returns its exit status; a missing command is status 1.
-// Set for the duration of one command by `sudo`. Not a mode: it is cleared the
-// moment that command returns, so a sudo cannot leak into the next thing typed.
-static bool g_elevated;
+// Set for the duration of one command by `sudo` (task_shell()->elevated, per
+// task). Not a mode: it is cleared the moment that command returns, so a sudo
+// cannot leak into the next thing typed.
 
 static int run_one(char *seg) {
     // A user alias maps a name to a whole command line, so it is expanded into
@@ -739,7 +738,7 @@ static int run_one(char *seg) {
     // stays a real array and the command sees a normal argv[0].
     char **argv = raw;
     int argc = n;
-    bool elevated = g_elevated;
+    bool elevated = task_shell()->elevated;
     if (!strcmp(argv[0], "sudo")) {
         if (argc < 2) { out_multi("Usage: sudo <command> [args...]"); return 1; }
         if (!users_is_admin(session_user())) {
@@ -776,8 +775,8 @@ static int run_one(char *seg) {
         return 1;
     }
 
-    bool saved = g_elevated;
-    g_elevated = elevated;
+    bool saved = task_shell()->elevated;
+    task_shell()->elevated = elevated;
 
     // Phase markers around the call itself. A package command jumps into code
     // the loader put in RAM, and if THAT is what fails, no checkpoint inside the
@@ -818,7 +817,7 @@ static int run_one(char *seg) {
         bb_note_phase(phase);
     }
 
-    g_elevated = saved;
+    task_shell()->elevated = saved;
     return rc;
 }
 
@@ -902,7 +901,13 @@ static int run_segment(char *seg) {
     char *buf_a = nullptr, *buf_b = nullptr;
     int status = 0;
 
-    g_stdin = nullptr; g_stdin_len = 0;
+    // Saved and put back: a stage's command may run a line of its own through
+    // fw_shell_run on this same task, and that inner pipeline must not leave the
+    // outer stage reading nothing.
+    TaskShell *ts = task_shell();
+    const char *outer_in = ts->stdin_buf;
+    uint32_t    outer_len = ts->stdin_len;
+    ts->stdin_buf = nullptr; ts->stdin_len = 0;
 
     while (stage) {
         char *pipe = cmdline_next_pipe(stage);
@@ -942,14 +947,14 @@ static int run_segment(char *seg) {
                 if (!buf_b) buf_b = (char *)malloc(PIPE_BUF);
                 if (!buf_b) { out_err("Not enough memory for a pipeline."); status = 1; break; }
                 char *t = buf_a; buf_a = buf_b; buf_b = t;
-                g_stdin = buf_b; g_stdin_len = n;
+                ts->stdin_buf = buf_b; ts->stdin_len = n;
             }
         }
 
         stage = pipe ? pipe + 1 : nullptr;
     }
 
-    g_stdin = nullptr; g_stdin_len = 0;
+    ts->stdin_buf = outer_in; ts->stdin_len = outer_len;
     free(buf_a);
     free(buf_b);
     return status;
@@ -960,9 +965,13 @@ static int run_segment(char *seg) {
 // its own half-parser.
 int shell_run_line_now(char *line) {
     bb_note_command(line);
+    // A line run from inside a command on this same task (fw_shell_run) clears
+    // the error flag to judge itself; the outer command's error must survive it.
+    bool outer_error = out_had_error();
     out_clear_error();
     int rc = run_segment(line);
     if (rc == 0 && out_had_error()) rc = 1;
+    out_restore_error(outer_error);
     persist_save_dirty();
     return rc;
 }

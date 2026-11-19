@@ -70,6 +70,10 @@ void out_pad(const char *s, int width, char *dst, int cap);
 // && / || will read.
 void out_clear_error(void);
 bool out_had_error(void);
+// Put back an error flag saved before a nested run (a pipeline run by a command
+// that was itself run with fw_shell_run), so the inner run's clear does not
+// erase the outer command's error. Only ever sets it; never clears.
+void out_restore_error(bool had);
 
 // Raw bytes on the data channel — what `cat` and `hex` emit. Goes wherever
 // out_multi goes, so a redirect or a pipe catches it too. Anything writing file

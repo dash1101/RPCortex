@@ -67,6 +67,7 @@ struct Task {
     // Where fw_malloc sends this task while it is inside a sandboxed package.
     // Owned by whoever set it; the scheduler only carries it.
     Arena     *arena;
+    TaskShell  shell;
 };
 
 static bool     g_up;                // task_init has run
@@ -460,6 +461,7 @@ int task_spawn(const char *name, const char *path, TaskFn fn, void *arg,
     t->arg       = arg;
     t->app_mem_set = false;
     t->arena = nullptr;
+    memset(&t->shell, 0, sizeof(t->shell));   // a reused slot must not inherit sudo or stdin
     t->live  = false;        // slots are reused; the memset above only clears info
     t->crit  = 0;
 
@@ -998,6 +1000,12 @@ bool task_app_mem_get(TaskAppMem *out) {
     if (!t || !t->app_mem_set) return false;
     if (out) *out = t->app_mem;
     return true;
+}
+
+TaskShell *task_shell(void) {
+    static TaskShell boot;
+    Task *t = cur();
+    return t ? &t->shell : &boot;
 }
 
 Arena *task_arena(void) {
