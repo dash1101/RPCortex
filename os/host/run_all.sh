@@ -98,6 +98,8 @@ declare -A SRC=(
     [nfcframe_test]="$CORE/nfcframe.cpp"
     # The per-radio scan list, which the shell's name-merged one cannot stand in for.
     [scanlist_test]="$CORE/scanlist.cpp"
+    # An update streamed straight into the staging area, against a model flash.
+    [stagesink_test]="$CORE/stagesink.cpp $CORE/sha256.cpp"
     [onewire_test]="$CORE/onewire.cpp"
     # The two SPI radios: frequency->register maths, band limits, LoRa modem-config
     # packing and its LDRO threshold, hex/timing parsing, and the exact shell text

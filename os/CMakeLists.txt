@@ -113,6 +113,7 @@ add_executable(rpcortex_v2
     ${OS_ROOT}/core/btname.cpp
     ${OS_ROOT}/core/nfcframe.cpp
     ${OS_ROOT}/core/scanlist.cpp
+    ${OS_ROOT}/core/stagesink.cpp
     ${OS_ROOT}/core/onewire.cpp
     ${OS_ROOT}/core/powerpolicy.cpp
     ${OS_ROOT}/core/framebuf.cpp
