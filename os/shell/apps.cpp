@@ -784,14 +784,25 @@ extern "C" int apps_spawn_in_sandbox(const char *name, int (*fn)(int), void *arg
         // The TASK stack depends on whether the sandbox will actually be set
         // up. When it is, the package runs on the sandbox stack and this one
         // only carries the shim — find the image, call app_run_stack — so the
-        // minimum is ample. When it is not (ARMv6-M, or an allocation that
-        // fails), app_run calls the package function directly on THIS stack,
-        // and it had better be the size the package asked for.
+        // minimum is ample. When it is not, app_run_stack calls the package
+        // function directly on THIS stack, and then this stack has to hold what
+        // the sandbox stack would have: what the package asked for AND the
+        // firmware reserve, because every ABI call runs firmware on it.
+        // fw_shell_run alone runs the whole shell line runner there.
+        //
+        // "Will it be boxed" is app_run_stack's own test, not just "can this
+        // board sandbox": a package without veneer gates is run directly even
+        // on RP2350, and used to get 2 KB for it. (A board that can box and is
+        // merely short of memory refuses a spawned task instead; see there.)
         //
         // Getting that backwards is a stack overflow whose cause looks like
         // anything but a stack size, which is how the first version of this
-        // went wrong.
-        uint32_t task_stack = sandbox_supported() ? TASK_STACK_MIN : want;
+        // went wrong, and the second.
+        const LoadedApp *owner = nullptr;
+        for (int k = 0; k < APPS_MAX; k++)
+            if (g_used[k] && g_apps[k].image == m.text) { owner = &g_apps[k]; break; }
+        bool boxed = sandbox_supported() && owner && owner->veneer_gates;
+        uint32_t task_stack = boxed ? TASK_STACK_MIN : want + FW_CALL_RESERVE;
         if (task_stack < TASK_STACK_MIN) task_stack = TASK_STACK_MIN;
 
         int pid = task_spawn(name, "(package)", pkg_task_shim, &g_pkg_tasks[i],

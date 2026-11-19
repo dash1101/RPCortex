@@ -82,9 +82,16 @@
 // tripwire lives. Reading the tripwire back at every yield therefore faulted on
 // the very first reschedule, and the RP2040 images never got past boot (seen in
 // the emulator: core 0 stuck reading its own guard). So on that chip the
-// tripwire is the window, a stray write into it faults on the spot, and
-// guard_ok() leaves it to the hardware. RP2350 guards with a stack-pointer limit
-// instead, which reads cannot trip, and keeps both halves.
+// tripwire is the window and guard_ok() leaves it to the hardware. RP2350 guards
+// with a stack-pointer limit instead, which reads cannot trip, and keeps both.
+//
+// What the RP2040 window does NOT do: catch a frame larger than 32 bytes that
+// steps clean over it. MSPLIM catches any stack pointer below the line; a window
+// only catches an access that lands inside it. In the emulator, a script with a
+// 5 KB frame on a 3 KB stack silenced the machine rather than being named, which
+// is consistent with exactly that. That the window faults on silicon at all is
+// DEVICE-UNCONFIRMED (PAR-28): the emulator proves it no longer fires on a good
+// boot, and mpu_test proves the bits, but no overflow has been caught by it yet.
 #if defined(PICO_RP2040) && PICO_RP2040
 #define TASK_GUARD_BYTES 32
 #define TASK_GUARD_IN_HARDWARE 1
