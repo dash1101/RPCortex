@@ -441,8 +441,14 @@ int task_spawn(const char *name, const char *path, TaskFn fn, void *arg,
     void *stack = (void *)aligned;
     paint(stack, stack_bytes);
 
+    // The pid under the lock too: two cores spawning at once could otherwise
+    // read the same counter and hand out one pid twice, after which slot_of
+    // finds the wrong task for one of them - its sandbox, its arena and all.
+    lock_hw_enter();
+    int pid = g_next_pid++;
+    lock_hw_exit();
     memset(&t->info, 0, sizeof(t->info));
-    t->info.pid        = g_next_pid++;
+    t->info.pid        = pid;
     t->info.affinity   = affinity;
     t->info.stack_size = stack_bytes;
     snprintf(t->info.name, sizeof(t->info.name), "%s", name ? name : "task");
@@ -919,14 +925,26 @@ const TaskInfo *task_find(int pid) {
 }
 
 bool task_reap(int pid) {
+    // Claimed under the hardware lock, the same way task_spawn reclaims a
+    // finished slot. Without it, `kill` reaping a finished task on one core and
+    // a spawn on the other taking the same slot as "the oldest finished" both
+    // saw TASK_DONE: the stack was freed twice, the recycle hook ran twice, and
+    // this then marked FREE a slot the spawn had just reserved and was filling.
+    lock_hw_enter();
     Task *t = slot_of(pid);
-    if (!t || t->info.state != TASK_DONE) return false;
+    if (!t || t->info.state != TASK_DONE) { lock_hw_exit(); return false; }
     // stack_raw, not stack: the latter is a few bytes further in, and handing
     // the heap a pointer it never issued corrupts it silently.
-    if (t->stack_raw) free(t->stack_raw);
+    void *freeing = t->stack_raw;
     t->stack = t->stack_raw = nullptr;
     t->app_mem_set = false;
     t->arena = nullptr;
+    t->info.state = TASK_BLOCKED;        // reserved: nobody else can take it now
+    lock_hw_exit();
+
+    // Outside the guard, for the reason task_spawn gives: free and the recycle
+    // hook take locks of their own, and this one is not recursive.
+    if (freeing) free(freeing);
     task_slot_recycled((int)(t - g_tasks));
     t->info.state = TASK_FREE;
     return true;
