@@ -134,6 +134,24 @@ bool mpu_v6_encode(uint32_t base, uint32_t size, uint8_t region, MpuPerm perm,
     return true;
 }
 
+bool mpu_v6_encode_window32(uint32_t guard, uint8_t region, MpuPerm perm, MpuV6Region *out) {
+    if (!out || region > 7) return false;
+    if (guard & 31u) return false;                     // not on a subregion boundary
+    uint32_t ap = 0, xn = 0;
+    if (!v6_perm_bits(perm, &ap, &xn)) return false;
+    const uint32_t base = guard & ~255u;
+    const uint32_t keep = (guard >> 5) & 7u;           // which of the eight is wanted
+    const uint32_t srd  = 0xFFu & ~(1u << keep);       // a set bit DISABLES a subregion
+    out->rbar = base | (1u << 4) | region;
+    out->rasr = 1u                                     // ENABLE
+              | (7u << 1)                              // SIZE 7: 2^8 = 256 bytes, the minimum
+              | (srd << 8)
+              | V6_MEM_ATTRS
+              | (ap << 24)
+              | (xn << 28);
+    return true;
+}
+
 // --- sizing -----------------------------------------------------------------
 
 uint32_t mpu_align_up(uint32_t v, uint32_t align) {

@@ -118,19 +118,32 @@ int main(void) {
     // ---------------------------------------------------------------- ARMv6-M
     MpuV6Region r6;
 
-    ck(mpu_v6_encode(0x20001000u, 32, MPU_RGN_STACK_GUARD, MPU_NO_ACCESS, &r6),
-       "the same 32-byte guard encodes on ARMv6-M");
-    ck(v6_addr(r6) == 0x20001000u, "with the base it was given");
+    // THE STACK GUARD. 32 bytes is below the ARMv6-M minimum region of 256, so
+    // it is a 256-byte region with seven of its eight subregions disabled. It was
+    // once encoded as a bare 32-byte region (SIZE 4), which the architecture does
+    // not define; and since every stack starts 32-aligned, that window sat on the
+    // tripwire the scheduler reads at every yield, and the RP2040 hung at boot.
+    ck(mpu_v6_encode_window32(0x20001060u, MPU_RGN_STACK_GUARD, MPU_NO_ACCESS, &r6),
+       "a 32-byte guard window encodes on ARMv6-M");
+    ck(v6_addr(r6) == 0x20001000u, "as the 256-byte block that contains it");
+    ck(v6_size(r6) == 7, "of size field 7, which is 2^8 = 256 bytes, the minimum");
+    ck(((r6.rasr >> 8) & 0xFFu) == (0xFFu & ~(1u << 3)),
+       "with every subregion disabled but the fourth, which is 0x60..0x7F");
     ck(v6_valid(r6) == 1, "VALID set, or the region number in RBAR is ignored");
     ck(v6_region(r6) == MPU_RGN_STACK_GUARD, "and the region number carried in RBAR");
     ck(v6_enable(r6) == 1, "enabled");
     ck(v6_xn(r6) == 1, "not executable");
-    // SIZE encodes 2^(SIZE+1) bytes, so 32 bytes is 4 and not 5. Off by one
-    // makes the guard 64 bytes and it eats the stack below it.
-    ck(v6_size(r6) == 4, "and a size field of 4, which is 2^5 = 32 bytes");
     // ARMv6-M can express what ARMv8-M cannot: privileged code gets nothing.
     ck(v6_ap(r6) == 0b000,
        "no access at all here, including for the OS — ARMv6-M can say that");
+    ck(mpu_v6_encode_window32(0x20001000u, 0, MPU_NO_ACCESS, &r6) &&
+       ((r6.rasr >> 8) & 0xFFu) == 0xFEu, "the first window of a block keeps subregion 0");
+    ck(mpu_v6_encode_window32(0x200010E0u, 0, MPU_NO_ACCESS, &r6) &&
+       ((r6.rasr >> 8) & 0xFFu) == 0x7Fu, "and the last keeps subregion 7");
+    ck(!mpu_v6_encode_window32(0x20001010u, 0, MPU_NO_ACCESS, &r6),
+       "a window off a 32-byte boundary is refused");
+    ck(!mpu_v6_encode_window32(0x20001000u, 8, MPU_NO_ACCESS, &r6),
+       "and so is a region number the hardware does not have");
 
     ck(mpu_v6_encode(0x20002000u, 0x2000, 1, MPU_RO_EXEC, &r6) && v6_size(r6) == 12,
        "an 8 KB region is size field 12");
@@ -142,14 +155,17 @@ int main(void) {
     // --- what it refuses. ARMv6-M's rules are stricter and the refusals matter
     // more, because an unaligned base here does not fault — the hardware simply
     // ignores the low bits and protects a DIFFERENT block.
-    ck(!mpu_v6_encode(0x20001010u, 32, 0, MPU_NO_ACCESS, &r6),
+    ck(!mpu_v6_encode(0x20001010u, 256, 0, MPU_NO_ACCESS, &r6),
        "a base not aligned to its own size is refused");
-    ck(!mpu_v6_encode(0x20001000u, 96, 0, MPU_NO_ACCESS, &r6),
+    ck(!mpu_v6_encode(0x20001000u, 768, 0, MPU_NO_ACCESS, &r6),
        "a size that is not a power of two is refused");
-    ck(!mpu_v6_encode(0x20001000u, 16, 0, MPU_NO_ACCESS, &r6),
-       "and one below the 32-byte minimum");
-    ck(!mpu_v6_encode(0x20001000u, 32, 8, MPU_NO_ACCESS, &r6),
-       "and a region number the hardware does not have");
+    ck(!mpu_v6_encode(0x20001000u, 32, 0, MPU_NO_ACCESS, &r6) &&
+       !mpu_v6_encode(0x20001000u, 128, 0, MPU_NO_ACCESS, &r6),
+       "and one below the 256-byte minimum - 32 and 128 included");
+    ck(mpu_v6_encode(0x20001000u, 256, 0, MPU_NO_ACCESS, &r6) && v6_size(r6) == 7,
+       "256 bytes is the smallest, size field 7");
+    ck(!mpu_v6_encode(0x20001000u, 256, 8, MPU_NO_ACCESS, &r6),
+       "and a region number the hardware does not have is refused");
 
     // --- what a REAL package span costs on each architecture -----------------
     //
@@ -203,8 +219,8 @@ int main(void) {
 
     ck(mpu_v6_plan_block(1024, &p) && p.region_bytes == 1024,
        "an exact power of two is not rounded up again");
-    ck(mpu_v6_plan_block(1, &p) && p.region_bytes == 32,
-       "and nothing is smaller than the 32-byte minimum");
+    ck(mpu_v6_plan_block(1, &p) && p.region_bytes == 256,
+       "and nothing is smaller than the 256-byte minimum");
     ck(mpu_v8_plan_block(1, &p) && p.region_bytes == 32, "on either architecture");
 
     ck(!mpu_v8_plan_block(0, &p) && !mpu_v6_plan_block(0, &p),

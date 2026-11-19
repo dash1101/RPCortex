@@ -57,17 +57,18 @@ echoed character, so waiting for the prompt says nothing about whether a command
 has finished; and two spaces inside an expected line are a cell boundary to
 Robot, so such lines are matched as regexes.
 
-**Boot stops after POST on the current build.** Core 0 spins forever on one
-load in `guard_ok()` (`os/core/task.cpp`), in the first `reschedule()` after the
-shell task is spawned. On RP2040 the stack guard is an MPU region with no access
-at all over the bottom 32 bytes of the running task's stack, and `guard_ok()`
-then reads those same bytes. The core neither faults nor moves on, and emulated
-time slows to about a seventieth of normal, so a 60-second terminal-tester
-timeout (which counts emulated time) was still waiting after 43 minutes. Skipping
-`mpu_platform_init` with a CPU hook lets the boot reach the wizard. Whether real
-RP2040 silicon faults on the same read is DEVICE-UNCONFIRMED; RP2350 uses MSPLIM
-instead and does not take this path. Both tests carry a wall-clock `[Timeout]`
-for this reason.
+**The RP2040 stack guard, and why boot once stopped after POST.** It used to:
+core 0 spun forever on one load in `guard_ok()` (`os/core/task.cpp`) in the first
+`reschedule()`. On RP2040 the stack guard is an MPU window with no access at all,
+on the bottom 32 bytes of the running task's stack, and stacks start 32-aligned,
+so the window always sat on the software tripwire `guard_ok()` reads at every
+yield. It was also encoded as a bare 32-byte region, which is below the ARMv6-M
+minimum of 256. Both are fixed: the window is one enabled subregion of a 256-byte
+region, the tripwire on RP2040 is that same window, and the scheduler leaves it to
+the hardware. Boot reaches the wizard in about 8 seconds with the MPU on. While a
+core is stuck like that, emulated time slows to about a seventieth of normal and
+the tester's timeouts (which count emulated time) never fire, so both tests carry
+a wall-clock `[Timeout]`.
 
 **No RTC.** The RP2040 model does not implement the RTC peripheral. The SDK writes
 the time and then waits for a status bit the model never raises, so

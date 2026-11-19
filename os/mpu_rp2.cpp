@@ -142,10 +142,14 @@ extern "C" void task_stack_guard_set(const void *bottom, uint32_t size) {
     // Round UP to the granule, never down. Down would put the guard in the
     // previous heap allocation — protecting a stranger's memory and leaving
     // this task's own bottom bytes wide open, which is the worst of both.
-    uint32_t guard = mpu_align_up((uint32_t)base, MPU_V6_MIN_SIZE);
+    //
+    // A 32-byte window, encoded as a 256-byte region with seven subregions off:
+    // 32 bytes on its own is below the ARMv6-M minimum (see mpu.h). The window
+    // is the task's tripwire too (TASK_GUARD_BYTES is 32 on this chip), so the
+    // scheduler does not read it back - it would fault on its own guard.
+    uint32_t guard = mpu_align_up((uint32_t)base, MPU_V6_SUBREGION);
     MpuV6Region r;
-    if (!mpu_v6_encode(guard, MPU_V6_MIN_SIZE, MPU_RGN_STACK_GUARD,
-                       MPU_NO_ACCESS, &r)) {
+    if (!mpu_v6_encode_window32(guard, MPU_RGN_STACK_GUARD, MPU_NO_ACCESS, &r)) {
         return;                            // unencodable: leave the last one
     }
     mpu_hw->rnr  = MPU_RGN_STACK_GUARD;

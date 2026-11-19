@@ -36,8 +36,8 @@
 // 1024-byte region on a 1024-byte boundary, and the alignment is paid for in
 // wasted heap. That is why package W^X is enabled on RP2350 and not on RP2040:
 // the same protection there would cost more RAM than the part has to spare.
-// The stack guard is exempt because it is 32 bytes, which is the minimum on
-// both and rounds to nothing.
+// The stack guard is exempt: it is 32 bytes on both, which ARMv8-M encodes
+// directly and ARMv6-M as one enabled subregion of a 256-byte region.
 #ifndef RPC_MPU_H
 #define RPC_MPU_H
 
@@ -85,18 +85,33 @@ bool mpu_v8_encode(uint32_t base, uint32_t size, MpuPerm perm, MpuV8Region *out)
 
 // --- ARMv6-M (Cortex-M0+, RP2040) -------------------------------------------
 
-#define MPU_V6_MIN_SIZE 32u
+// 256 bytes is the smallest region an ARMv6-M MPU takes (RASR SIZE 7); smaller
+// encodings are not defined by the architecture. A region of 256 or more splits
+// into eight subregions, which is the 32-byte granule a window can use.
+#define MPU_V6_MIN_SIZE  256u
+#define MPU_V6_SUBREGION 32u
 
 struct MpuV6Region {
     uint32_t rbar;
     uint32_t rasr;
 };
 
+// THE SMALLEST REGION AN ARMv6-M MPU TAKES IS 256 BYTES. A region of 32, as
+// mpu_v6_encode will build, is below the architecture's minimum and its
+// behaviour on silicon is not defined. A 32-byte window is made the way the
+// architecture provides for: a 256-byte region aligned to 256, with seven of its
+// eight 32-byte subregions disabled, so only the one wanted is covered.
+//
+// `guard` must be 32-aligned. The region holds only that window; everything
+// else in the 256 bytes falls through to the regions beneath, as if this one
+// were not there.
+bool mpu_v6_encode_window32(uint32_t guard, uint8_t region, MpuPerm perm, MpuV6Region *out);
+
 // Encode one region, including the region number — ARMv6-M carries it in RBAR
 // alongside a VALID bit rather than in a separate select register, so the
 // number is part of the encoding here and not part of the write.
 //
-// `size` must be a power of two of at least 32, and `base` must be aligned to
+// `size` must be a power of two of at least 256, and `base` must be aligned to
 // it. Both are the architecture's rules, not this code's.
 bool mpu_v6_encode(uint32_t base, uint32_t size, uint8_t region, MpuPerm perm,
                    MpuV6Region *out);

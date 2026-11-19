@@ -69,7 +69,23 @@
 // than being replaced by it, for two reasons: it is what the host tests can
 // exercise, and it catches a wild write into the bottom of the stack, which is
 // not the same event as the stack pointer crossing a line.
+//
+// ON RP2040 THE TWO ARE THE SAME 32 BYTES, and the software half stands down.
+// The hardware guard there is an MPU window with no access at all - not even
+// for the OS - placed on the bottom 32 bytes of the stack, which is where the
+// tripwire lives. Reading the tripwire back at every yield therefore faulted on
+// the very first reschedule, and the RP2040 images never got past boot (seen in
+// the emulator: core 0 stuck reading its own guard). So on that chip the
+// tripwire is the window, a stray write into it faults on the spot, and
+// guard_ok() leaves it to the hardware. RP2350 guards with a stack-pointer limit
+// instead, which reads cannot trip, and keeps both halves.
+#if defined(PICO_RP2040) && PICO_RP2040
+#define TASK_GUARD_BYTES 32
+#define TASK_GUARD_IN_HARDWARE 1
+#else
 #define TASK_GUARD_BYTES 16
+#define TASK_GUARD_IN_HARDWARE 0
+#endif
 
 // Every stack starts on a boundary of this, so the hardware guard can be placed
 // on it. Both architectures protect memory in 32-byte units at minimum, so one

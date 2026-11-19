@@ -196,6 +196,9 @@ static void paint(void *base, uint32_t bytes) {
 // the lowest addresses and is the first thing an overflow reaches.
 static bool guard_ok(const Task *t) {
     if (!t->stack) return true;                  // the adopted boot stack
+    // On RP2040 these bytes are the MPU's no-access window: reading them is the
+    // fault, and an overflow into them has already faulted. See task.h.
+    if (TASK_GUARD_IN_HARDWARE) return true;
     const uint32_t *p = (const uint32_t *)t->stack;
     for (uint32_t i = 0; i < TASK_GUARD_BYTES / 4; i++)
         if (p[i] != STACK_GUARD) return false;
