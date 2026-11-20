@@ -13,6 +13,7 @@ Summary:
 ### New
 
 - `tools/benchmark.py` measures a board (boot, memory, console traffic, ping, HTTPS, upload, a package install, the CPU benchmark and a set of reliability scenarios) and compares two firmwares in percent. It drives old firmware through the prompt, so it runs on v2.00-beta too.
+- SSH, on the Pico 2 W. `ssh server on` lets a computer log in with `ssh root@<device>` and get the device's shell (pipes, Tab, colours, Ctrl+C for the running command), or run one command and get its exit status. `ssh user@host` logs the device in somewhere else, with the host's key shown and remembered in `~/.ssh/known_hosts` on first use and a changed key refused. `ssh keygen` gives a user a key of their own. Key exchange curve25519-sha256 and ecdh-sha2-nistp256, an ECDSA host key, AES-GCM and AES-CTR with HMAC-SHA2-256, strict key exchange, re-keying; logins by key (ECDSA P-256, RSA with SHA-2) or password. Off until turned on, two sessions at most, no forwarding, and accounts without a password (guest as shipped) cannot log in. Wrong passwords are slowed down, six tries end a connection, and many failures in a minute shut everyone out for a minute; every login and refusal is logged. Costs 32 KB of flash on a Pico 2 W (119 KB of its slot left), and about 25 KB of memory per session, an 8 KB stack included, plus 8 KB for the server's own task while it runs. Proven on a computer against the real OpenSSH client and server, every algorithm forced in turn; not yet run on a board. See `SSH.md`.
 
 ### Improved
 
@@ -22,7 +23,15 @@ Summary:
 
 ### Security
 
+- An ordinary account can no longer read or change another user's `~/.ssh`, or remove another user's home directory; `/os/ssh`, where the SSH host key lives, is closed to everyone but an admin.
+- Defining or removing an alias needs an admin now. Aliases are expanded in everyone's shell before any command is looked up, so an ordinary account could put `exit=<anything>` in front of the admin; a built-in alias (`exit`, `id`, `exec`) can no longer be shadowed at all.
+- A package run by an ordinary account can no longer write the settings that decide who gets in (`System.Autonomous`, `System.Setup`, `SSH.*`, `Alias.*`), and one run from a remote login only its own (`Apps.*`, `User.*`). Before, any package anybody could `run` could set the device to boot straight into root's shell.
+
 ### Changed
+
+- Who a command runs as belongs to the task now, not to the console. A remote login's shell, and everything it starts, acts for that login's user, in its own working directory, with its own Ctrl+C; every other task follows whoever is signed in at the console, as before. So a guest logged in over SSH stays a guest while root is at the serial port, and a remote root does not make the console's guest an admin. `logout` in a remote session ends that session and leaves the console alone. Each task carries 160 bytes more for this (about 2 KB in all).
+- A full-screen app belongs to the terminal that opened it; one started on a second terminal while another is open is refused instead of drawing into the first.
+- These cost the Pico W 2.4 KB of slot (16 KB left), where SSH itself is not built.
 
 ### Known issues
 
@@ -46,6 +55,9 @@ Summary: A small fix release: the browser tool shows the RPCortex mark instead o
 
 - Only the Pico 2 W has run this build. The Pico 2, Pico W and Pico images build and pass the image checks; the Pico image boots in the emulator.
 - A saved rollback copy takes most of a Pico 2 W's filesystem; the next update removes it to make room.
+- SSH has not been run on a board. The protocol and the device's server code are proven against OpenSSH on a computer; the sockets, the radio and the timings are not.
+- An SSH key exchange runs on the console's core, so anyone who can reach the port can keep that core busy by connecting over and over, before logging in. Leave the server off on networks that are not trusted.
+- Output printed over SSH while a command holds the filesystem or the network is held back 8 KB at a time and cut beyond that, with a note (`curl` to the screen of a big page, `ls` of a huge directory).
 
 ## v2.01-beta (build 578), 2026-11-20
 
