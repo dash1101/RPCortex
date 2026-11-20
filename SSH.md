@@ -151,3 +151,10 @@ On a computer, from `os/host`:
   `ssh` to test against.
 - `identity_test` proves the per-session identity: a guest session cannot read
   protected files or run admin commands while root is at the console.
+
+On a Pico 2 W (OpenSSH 10.0 on Linux as the other end), the server has done:
+logging in with an ECDSA key and with a password, a wrong password refused, a
+command's exit status, an interactive session with Tab and Ctrl+C, two sessions
+at once, 20 logins in a row with no memory lost (about 1.3 s each, key exchange
+included), and 64 KB of binary output byte for byte. Not yet on hardware: the
+device's own `ssh` client, full-screen apps over SSH, and the failure cooldowns.

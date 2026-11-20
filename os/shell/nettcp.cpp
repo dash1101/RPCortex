@@ -98,8 +98,9 @@ struct TcpSlot {
     struct tcp_pcb *pcb;
 
     // Listener: connections the accept callback has taken but nobody has asked
-    // for yet.
-    struct tcp_pcb *pending[TCP_BACKLOG];
+    // for yet. Each is already a full connection slot with its callbacks set
+    // (see on_accept), so nothing that arrives before the accept is lost.
+    struct TcpSlot *pending[TCP_BACKLOG];
     uint8_t  npending;
 
     // Connection: the received data, held as lwIP's own pbufs rather than copied
@@ -117,6 +118,7 @@ struct TcpSlot {
 };
 
 static TcpSlot g_slots[TCP_SLOTS];
+static void slot_release(TcpSlot *s);
 
 // --- handles -----------------------------------------------------------------
 //
@@ -163,7 +165,7 @@ static void slot_release(TcpSlot *s) {
         // Anything queued but never accepted is aborted, not leaked: the peer
         // is owed an answer either way, and a reset is the honest one.
         for (int i = 0; i < s->npending; i++)
-            if (s->pending[i]) tcp_abort(s->pending[i]);
+            if (s->pending[i]) slot_release(s->pending[i]);
         s->npending = 0;
         if (s->pcb) tcp_close(s->pcb);
     } else {
@@ -208,12 +210,39 @@ static void on_err(void *arg, err_t e) {
     s->failed = true;
 }
 
+// A connection gets its slot and its callbacks HERE, in lwIP's accept, not
+// when a task gets round to accepting it. Until a pcb has a recv callback,
+// lwIP's default (tcp_recv_null) throws away whatever arrives; an SSH client
+// sends its version line the moment it connects, so the server lost it, read
+// the client's next packet as a version line and hung up ("version line too
+// long"). And a queued bare pcb that was reset was freed by lwIP while the
+// queue still pointed at it. A slot buffers the early data and records the
+// reset; the task that accepts it takes it over.
 static err_t on_accept(void *arg, struct tcp_pcb *newpcb, err_t err) {
     TcpSlot *lsn = (TcpSlot *)arg;
     if (!lsn || !lsn->used || err != ERR_OK || !newpcb) return ERR_VAL;
     if (lsn->npending >= TCP_BACKLOG) return ERR_MEM;   // lwIP refuses it for us
-    lsn->pending[lsn->npending++] = newpcb;
+    TcpSlot *conn = slot_claim();
+    if (!conn) return ERR_MEM;                          // no slot: refused the same way
+    conn->listening = false;
+    conn->owner = lsn->owner;      // the listener's until a task accepts it
+    conn->pcb = newpcb;
+    tcp_arg(newpcb, conn);
+    tcp_recv(newpcb, on_recv);
+    tcp_err(newpcb, on_err);
+    lsn->pending[lsn->npending++] = conn;
     return ERR_OK;
+}
+
+// Caller holds the lwIP lock. The oldest waiting connection, now the
+// caller's, or null when none is waiting.
+static TcpSlot *pending_take(TcpSlot *lsn) {
+    if (!lsn->npending) return nullptr;
+    TcpSlot *conn = lsn->pending[0];
+    for (int i = 1; i < lsn->npending; i++) lsn->pending[i - 1] = lsn->pending[i];
+    lsn->npending--;
+    conn->owner = task_slot_index();
+    return conn;
 }
 
 // --- the ABI -----------------------------------------------------------------
@@ -249,8 +278,6 @@ int net_pkg_tcp_listen(unsigned port) {
 int net_pkg_tcp_accept(int listener, uint32_t timeout_ms) {
     absolute_time_t deadline = make_timeout_time_ms(timeout_ms);
     for (;;) {
-        struct tcp_pcb *taken = nullptr;
-        TcpSlot *conn = nullptr;
         {
             // Inside the loop, so the wait between polls happens with the
             // network free. Holding it across the sleep would let a server with
@@ -260,26 +287,8 @@ int net_pkg_tcp_accept(int listener, uint32_t timeout_ms) {
             LwipLock lk;
             TcpSlot *lsn = slot_of(listener, true);
             if (!lsn) return -1;
-            if (lsn->npending) {
-                taken = lsn->pending[0];
-                for (int i = 1; i < lsn->npending; i++) lsn->pending[i - 1] = lsn->pending[i];
-                lsn->npending--;
-                conn = slot_claim();
-                if (!conn) {
-                    // No slot to put it in. Refusing the connection is better
-                    // than holding it open with nobody able to answer.
-                    tcp_abort(taken);
-                    taken = nullptr;
-                }
-            }
-            if (taken && conn) {
-                conn->listening = false;
-                conn->pcb = taken;
-                tcp_arg(taken, conn);
-                tcp_recv(taken, on_recv);
-                tcp_err(taken, on_err);
-                return slot_handle(conn);
-            }
+            TcpSlot *conn = pending_take(lsn);
+            if (conn) return slot_handle(conn);
         }
         if (absolute_time_diff_us(get_absolute_time(), deadline) < 0) return -2;  // timed out
         if (intr_check()) return -2;
@@ -429,18 +438,8 @@ int net_tcp_accept_now(int listener) {
     LwipLock lk;
     TcpSlot *lsn = slot_of(listener, true);
     if (!lsn) return -1;
-    if (!lsn->npending) return 0;
-    struct tcp_pcb *taken = lsn->pending[0];
-    for (int i = 1; i < lsn->npending; i++) lsn->pending[i - 1] = lsn->pending[i];
-    lsn->npending--;
-    TcpSlot *conn = slot_claim();
-    if (!conn) { tcp_abort(taken); return 0; }    // refused: no slot to put it in
-    conn->listening = false;
-    conn->pcb = taken;
-    tcp_arg(taken, conn);
-    tcp_recv(taken, on_recv);
-    tcp_err(taken, on_err);
-    return slot_handle(conn);
+    TcpSlot *conn = pending_take(lsn);
+    return conn ? slot_handle(conn) : 0;
 }
 
 int net_tcp_read_now(int handle, void *buf, unsigned cap) {
