@@ -24,6 +24,9 @@ Summary: A small fix release: the browser tool shows the RPCortex mark instead o
 
 ### Known issues
 
+- Only the Pico 2 W has run this build. The Pico 2, Pico W and Pico images build and pass the image checks; the Pico image boots in the emulator.
+- A saved rollback copy takes most of a Pico 2 W's filesystem; the next update removes it to make room.
+
 ## v2.01-beta (build 578), 2026-11-20
 
 Summary: The first Vela II update: tools to drive a board from a computer, Wi-Fi that answers in about a millisecond, smaller packages, and a long list of fixes found by testing on a real Pico 2 W.
