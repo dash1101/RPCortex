@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Checks for tools/features.py: what a board's standard image has, what --with and
 --without turn into, what a custom image is called, and the marker a release reads."""
-import os, shlex, subprocess, sys, tempfile, unittest
+import json, os, shlex, subprocess, sys, tempfile, unittest
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import features as F
 
@@ -191,10 +191,18 @@ class Sizes(unittest.TestCase):
 
 class BuildConf(unittest.TestCase):
     """tools/buildconf.py, answered through a pipe, never told to build."""
-    def answers(self, text):
-        p = subprocess.run([sys.executable, os.path.join(HERE, "buildconf.py")], input=text,
-                           capture_output=True, text=True, timeout=30)
-        self.assertEqual(p.returncode, 0, p.stderr)
+    def answers(self, text, sizes=None, rc=0):
+        # No measured sizes unless a test gives some, so the answers do not depend on
+        # the last `tools/features.py measure`.
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "sizes.json")
+            if sizes is not None:
+                with open(path, "w") as fh:
+                    json.dump(sizes, fh)
+            p = subprocess.run([sys.executable, os.path.join(HERE, "buildconf.py")], input=text,
+                               capture_output=True, text=True, timeout=30,
+                               env=dict(os.environ, RPC_FEATURE_SIZES=path))
+        self.assertEqual(p.returncode, rc, p.stdout + p.stderr)
         lines = p.stdout.splitlines()
         return lines[lines.index("The command:") + 1].strip(), p.stdout
 
@@ -215,6 +223,18 @@ class BuildConf(unittest.TestCase):
     def test_adding_ssh_on_a_pico_w(self):
         cmd, _ = self.answers("pico_w\n\n\ny\n\n\nn\n")
         self.assertEqual(cmd, "./build.sh pico_w --with ssh")
+
+    def test_an_image_that_will_not_fit_is_not_offered(self):
+        k = 1024
+        sizes = {"measured_at": "a test", "boards": {"pico_w": {
+            "standard": {"flash": 820 * k, "ram": 0, "slot": 832 * k},
+            "variants": {"ssh": {"flash": 852 * k, "ram": 0, "fits": False}}}}}
+        # Pico W with SSH added; nothing else changed. No "Build it now?" answer is
+        # given, and none is needed: it is not offered.
+        cmd, out = self.answers("pico_w\n\n\ny\n\n\n", sizes=sizes, rc=1)
+        self.assertEqual(cmd, "./build.sh pico_w --with ssh")
+        self.assertIn("will refuse it", out)
+        self.assertNotIn("Build it now?", out)
 
     def test_no_wifi_means_no_ssh_question(self):
         cmd, out = self.answers("pico2_w\nn\n\n\n\n\nn\n")

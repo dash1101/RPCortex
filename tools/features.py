@@ -8,16 +8,18 @@
     tools/features.py cmake BOARD OUT [name=ON|OFF ...]
                                               the settings os/CMakeLists.txt includes
     tools/features.py measure [BOARD ...]     build each variant and record its size in
-                                              tools/feature-sizes.json (several minutes)
+                                              tools/feature-sizes.json (half an hour);
+                                              --no-build records the images already built
 
 ONE TABLE, HERE. build.sh, os/CMakeLists.txt, tools/buildconf.py and tools/release.py all
 read it, so a feature's name, its boards and its default cannot disagree between them. A
 second copy in CMake would be the drift build.sh's slot check exists to catch.
 
 THE STANDARD IMAGE for a board is every feature that board can have, except SSH on the Pico W
-(its slot is too tight) and the development packages. That is what a release publishes. Anything else is a custom image: its file name
-says how it differs (rpcortex-v2-pico2_w-nobt.uf2), `ver` on the device says so, and
-tools/release.py refuses to publish it.
+(its slot is too tight) and the development packages. That is what a release publishes.
+Anything else is a custom image: its file name says how it differs
+(rpcortex-v2-pico2_w-nobt.uf2), `ver` on the device says so, and tools/release.py refuses to
+publish it.
 
 THE FLASH LAYOUT DOES NOT CHANGE with the features. The firmware slot, the package slot and
 the filesystem start where they always do for that board, so moving between a standard and
@@ -36,7 +38,9 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-SIZES = os.path.join(HERE, "feature-sizes.json")
+# The measured sizes `list` and buildconf show. RPC_FEATURE_SIZES names another file, which
+# the tests use so that what they check does not depend on the last measurement.
+SIZES = os.environ.get("RPC_FEATURE_SIZES") or os.path.join(HERE, "feature-sizes.json")
 
 BOARDS = ("pico2_w", "pico_w", "pico2", "pico")
 CHIP = {"pico2_w": "RP2350", "pico2": "RP2350", "pico_w": "RP2040", "pico": "RP2040"}
@@ -194,7 +198,7 @@ def resolve(board, with_=(), without=(), strict=True):
 def variant(board, chosen):
     """The name a custom image carries ("" for the standard one): -no<tag> for each feature
     left out and -<tag> for each added. A feature that went only because something it needs
-    went is not named again: -nowifi already says there is no SSH."""
+    went is not named again: -nowifi already says there is no Bluetooth or SSH."""
     std = standard(board)
     parts = []
     for f in FEATURES:
@@ -327,19 +331,12 @@ def cmd_list(_a):
             print("      Needs: %s." % ", ".join(f.requires))
         for b in f.boards:
             print("      %-8s %s" % (b, describe_saving(sizes, b, f)))
-        if f.name == "wifi":
-            print("      With bluetooth left out too, the radio driver and its firmware go as well:")
-            for b in f.boards:
-                s = saving(sizes, b, "nowifi-nobt")
-                if s:
-                    print("      %-8s saves %s of flash and %s of RAM%s" % (
-                        b, kb(s[0]), kb(s[1]), headroom(sizes, b, "nowifi-nobt")))
         print()
     if sizes:
-        print("Sizes measured at %s, from the .bin and the ELF's static RAM. They do not simply" %
+        print("Sizes measured at %s, from the .bin and the ELF's static RAM." %
               sizes.get("measured_at", "an earlier build"))
-        print("add up: the radio driver is shared by Wi-Fi and Bluetooth and only goes when both do.")
-        print("tools/features.py measure records them again.")
+        print("They do not simply add up: leaving out Wi-Fi takes Bluetooth, SSH and the radio")
+        print("driver with it. tools/features.py measure records them again.")
     else:
         print("No sizes recorded yet: tools/features.py measure builds each variant and records them.")
     return 0
@@ -419,12 +416,10 @@ def cmd_cmake(a):
 
 def measured_variants():
     """(with, without) for every variant worth measuring: each feature left out on its
-    own, each optional one added, and both radios out together (they share a driver).
-    """
+    own (Wi-Fi takes what needs it along), and each optional one added."""
     out = [([], [])]
     for f in FEATURES:
         out.append(([f.name], []) if f.default is False else ([], [f.name]))
-    out.append(([], ["wifi", "bluetooth"]))
     # And SSH added where the standard image leaves it out (the Pico W).
     out.append((["ssh"], []))
     return out
@@ -486,15 +481,22 @@ def cmd_measure(a):
     sizes.setdefault("boards", {})
     recs = {b: {"variants": {}} for b in boards}
     for w, wo in measured_variants():
-        tags = {b: variant(b, resolve(b, w, wo)[0]) for b in boards}
+        tags = {}
+        for b in boards:
+            try:
+                tags[b] = variant(b, resolve(b, w, wo)[0])
+            except FeatureError:
+                continue                  # this board cannot have it (SSH on a Pico)
         standard_run = not w and not wo
-        these = [b for b in boards if standard_run or tags[b]]
+        these = [b for b in tags if standard_run or tags[b]]
         if not these:
             continue
-        over = build_variant(these, w, wo)
+        # --no-build records the images the last builds left in out/ and os/build_*,
+        # for when they are already the ones wanted.
+        over = [] if a.no_build else build_variant(these, w, wo)
         for b in these:
             n = image_numbers(b, tags[b])
-            if b in over:
+            if b in over or n["flash"] > n["slot"]:
                 n["fits"] = False
             if standard_run:
                 recs[b]["standard"] = n
@@ -523,6 +525,8 @@ def main(argv=None):
     c.add_argument("settings", nargs="*")
     m = sub.add_parser("measure", help="build each variant and record its size")
     m.add_argument("boards", nargs="*")
+    m.add_argument("--no-build", action="store_true",
+                   help="record the images already built instead of building them again")
     v = sub.add_parser("image-variant", help="the variant a built image says it is")
     v.add_argument("image")
     a = p.parse_args(argv)

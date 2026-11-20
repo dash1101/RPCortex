@@ -1,0 +1,121 @@
+{
+ "boards": {
+  "pico": {
+   "standard": {
+    "flash": 311992,
+    "ram": 92904,
+    "slot": 393216
+   },
+   "variants": {
+    "dev": {
+     "flash": 344400,
+     "ram": 92904,
+     "slot": 393216
+    },
+    "noperiph": {
+     "flash": 297208,
+     "ram": 92612,
+     "slot": 393216
+    }
+   }
+  },
+  "pico2": {
+   "standard": {
+    "flash": 373516,
+    "ram": 100324,
+    "slot": 524288
+   },
+   "variants": {
+    "dev": {
+     "flash": 405908,
+     "ram": 100324,
+     "slot": 524288
+    },
+    "noperiph": {
+     "flash": 357524,
+     "ram": 100032,
+     "slot": 524288
+    },
+    "nosd": {
+     "flash": 364316,
+     "ram": 98944,
+     "slot": 524288
+    }
+   }
+  },
+  "pico2_w": {
+   "standard": {
+    "flash": 871900,
+    "ram": 196792,
+    "slot": 1048576
+   },
+   "variants": {
+    "dev": {
+     "flash": 904300,
+     "ram": 196792,
+     "slot": 1048576
+    },
+    "nobt": {
+     "flash": 751796,
+     "ram": 180552,
+     "slot": 1048576
+    },
+    "noperiph": {
+     "flash": 856268,
+     "ram": 196504,
+     "slot": 1048576
+    },
+    "nosd": {
+     "flash": 863020,
+     "ram": 195412,
+     "slot": 1048576
+    },
+    "nossh": {
+     "flash": 835036,
+     "ram": 196060,
+     "slot": 1048576
+    },
+    "nowifi": {
+     "flash": 373932,
+     "ram": 100324,
+     "slot": 1048576
+    }
+   }
+  },
+  "pico_w": {
+   "standard": {
+    "flash": 775412,
+    "ram": 188340,
+    "slot": 851968
+   },
+   "variants": {
+    "dev": {
+     "flash": 807812,
+     "ram": 188340,
+     "slot": 851968
+    },
+    "nobt": {
+     "flash": 653324,
+     "ram": 172072,
+     "slot": 851968
+    },
+    "noperiph": {
+     "flash": 760956,
+     "ram": 188052,
+     "slot": 851968
+    },
+    "nowifi": {
+     "flash": 310376,
+     "ram": 92904,
+     "slot": 851968
+    },
+    "ssh": {
+     "flash": 813956,
+     "ram": 189076,
+     "slot": 851968
+    }
+   }
+  }
+ },
+ "measured_at": "build 631 (e7533fca)"
+}

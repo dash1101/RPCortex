@@ -66,9 +66,8 @@ def pick_board():
 
 
 def estimate(sizes, board, with_, without):
-    """Roughly how big the image will be, from the measured variants. The savings do not
-    add up exactly (the two radios share a driver), so both radios out uses its own
-    measurement rather than the sum."""
+    """Roughly how big the image will be, from the measured variants. Leaving out
+    Wi-Fi takes Bluetooth and SSH with it, and its measurement already counts them."""
     try:
         std = sizes["boards"][board]["standard"]
     except (KeyError, TypeError):
@@ -76,13 +75,8 @@ def estimate(sizes, board, with_, without):
     flash = std["flash"]
     ram = std["ram"]
     out = set(without)
-    if {"wifi", "bluetooth"} <= out:
-        s = F.saving(sizes, board, "nowifi-nobt")
-        if not s:
-            return None
-        flash -= s[0]
-        ram -= s[1]
-        out -= {"wifi", "bluetooth"}
+    if "wifi" in out:
+        out -= {"bluetooth", "ssh"}
     for name in sorted(out):
         f = F.feature(name)
         s = F.saving(sizes, board, "no" + f.tag)
@@ -162,17 +156,28 @@ def main():
     for n in notes:
         print("  note: " + n)
     est = estimate(sizes, board, with_, without)
+    too_big = False
     if est:
         flash, ram, slot = est
-        line = "  About %s of flash" % F.kb(flash)
-        if slot:
-            line += ", leaving about %s of the %s firmware slot" % (F.kb(slot - flash), F.kb(slot))
-        print(line + ".")
+        too_big = bool(slot) and flash > slot
+        if too_big:
+            print("  About %s of flash, which is more than the %s firmware slot. build.sh"
+                  % (F.kb(flash), F.kb(slot)))
+            print("  will refuse it: an image that big could not be installed by an update.")
+            print("  Leave something else out to make room.")
+        else:
+            line = "  About %s of flash" % F.kb(flash)
+            if slot:
+                line += ", leaving about %s of the %s firmware slot" % (F.kb(slot - flash), F.kb(slot))
+            print(line + ".")
         print("  (Estimated from %s; the build prints the real figure.)" % sizes.get("measured_at", "earlier builds"))
     print()
     print("The command:")
     print("  " + " ".join(shlex.quote(c) for c in cmd))
     print()
+    if too_big:
+        print("Not built: it would not fit.")
+        return 1
     if yes_no("Build it now?", False):
         print()
         return subprocess.call(cmd, cwd=ROOT)
