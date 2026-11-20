@@ -272,8 +272,9 @@ def cmd_status(_a):
     print("tag       %s   (the next release; the last published was %s)" % (
         tag_for(v, build), (load_json(os.path.join(RELEASES, "releases.json"), {"releases": []})["releases"] or [{"display": "none"}])[0]["display"]))
     print("device    compares %s" % comparable(v, build))
-    print("notes     %d added, %d changed, %d fixed, %d limitations" %
-          tuple(len(notes[k]) for k in ("added", "changed", "fixed", "limitations")))
+    print("notes     " + ", ".join("%d %s" % (len(notes[k]), label.lower()) for k, label in SECTIONS))
+    for p in check_notes(notes):
+        print("          not ready: " + p)
     for p in check_notes(notes):
         print("  ! " + p)
     hist = load_json(os.path.join(RELEASES, "releases.json"), {"releases": []})

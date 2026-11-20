@@ -8,73 +8,71 @@ good notes is in `RELEASING.md`.
 
 ## Unreleased
 
-Summary: The boot recovery ladder now works on hardware, and releases are numbered the new way.
+Summary: The first Vela II update: tools to drive a board from a computer, Wi-Fi that answers in about a millisecond, smaller packages, and a long list of fixes found by testing on a real Pico 2 W.
 
-### Added
+### New
 
-- Versions are written `vMAJOR.ITER` with the build number beside them, with two digits for the iteration. Every release published takes the next number, and a label says how finished it is: `v2.00-beta` was the first, then `v2.01-beta`, release candidates as `-rc`, `-rc2` and so on, and no label once it is final. Only a new generation gets a name. `ver`, `update` and the rollback messages show the build.
-- `tools/release.py`: one command to cut a release, and `tools/soak.py` to leave a board running and write down what it does.
-- `releases/releases.json` and `releases/boards.json`: the release history and per-board status that the websites read.
-- Services are supervised. A service that fails (a non-zero exit, which is also how a contained fault ends) is started again after 2 seconds, then 4, 8, 16 and 32, and given up on after five failures in a row; a minute of running normally clears the count. A service that was killed, finished cleanly, or ended without being seen is left alone. `service status` shows each one, and every restart and every give-up is in the log.
-- Package API 1.25, `fw_time_set`: a package can set the clock. The Nova D1's GPS screen uses it to set the time from the satellites.
-- Package API 1.26, `fw_net_scan2`: a Wi-Fi scan that keeps every radio. The older `fw_net_scan` merges beacons by name and drops networks with no name; this one reports one row per BSSID, hidden networks included, with the channel and the security the beacon declared. Wardrive on the Nova D1 uses it to write a WiGLE file.
+- `link`: a mode for programs on a computer to drive the board over USB. They can run a command and get its output and exit status back, send and fetch files with a SHA-256 check (about 19 KB/s up and 74 KB/s down on a Pico 2 W) and list folders. The protocol is in LINK.md.
+- `wifi power` chooses how hard the radio saves power: `auto` (the default), `off`, `balanced` or `save`. `auto` keeps the radio listening while the board has USB power and saves power on battery, switching by itself.
+- Services are supervised. A service that fails is started again after 2 seconds, then 4, 8, 16 and 32, and is given up on after five failures in a row; a minute of normal running clears the count. A service that was killed or finished cleanly is left alone. `service status` shows each one, and every restart is in the log.
+- Package API 1.25, `fw_time_set`: a package can set the clock. Nova D1's GPS screen uses it to set the time from the satellites.
+- Package API 1.26, `fw_net_scan2`: a Wi-Fi scan with one row per access point, hidden networks included, with the channel and the security it advertises. Nova D1's wardrive uses it to write a WiGLE file.
+- Package API 1.27, `fw_nfc_select` and `fw_nfc_exchange`: a package can find a card on a PN532 reader and talk to it. Nova D1's NFC app uses them to dump Mifare Classic and NTAG cards. Not yet run against a reader.
 - `subghz tx @<file>` sends the timings in a file, so a saved `.sub` can be replayed.
-- Package API 1.27, `fw_nfc_select` and `fw_nfc_exchange`: a package can find a card on a PN532 reader and talk to it (InDataExchange), leaving the protocol to the package. The Nova D1's NFC app uses them to dump Mifare Classic and NTAG cards. Not yet run against a reader.
+- Version numbers are now `vMAJOR.ITER` with the build beside them, like `v2.01-beta (build 561)`. Every release takes the next number, and the label (`-beta`, `-rc`, none) says how finished it is. `tools/release.py` cuts a release, and the websites read the release history from `releases/releases.json`.
 
-### Fixed (unreleased)
+### Improved
 
-- Reading a file in pieces - how the rollback image is checked, how a WAV is played, and what a package's `fw_file_read_at` uses - entered littlefs without the filesystem lock, and so did the time stamp at the end of a streamed write. littlefs keeps one list of open files and one read cache for everyone, so a read on one task racing a write on another could leave that list pointing at freed memory. The likely cause of the filesystem that read 100% full until a big file was deleted (not yet confirmed on a board). All of them take the lock now, and a host check fails the build if a littlefs call is ever made outside it again.
-- Saving the registry could write heap memory into `/os/registry.cfg`. The table was measured, then filled, then the fill's reported size written; a setting changed between the two (a package saving settings on the other core while the shell saved) made that size larger than the buffer. A save now measures again when the table grew, and writes nothing rather than a partial file if it will not hold still. A setting changed while the file was being written was also marked saved without being saved; the flag is now cleared before the snapshot, and saves run one at a time. The same applies to the accounts file and per-user settings.
-- A package command looked up just before its package was unloaded (by another task, or a script running `unload` or `pkg install`) could be called anyway, directly and without its sandbox, into memory the package no longer owned. The lookup now copies the command out while the table is locked, and a package command whose package has gone is refused rather than called. Three loops over the command table also stop cleanly if it shrinks under them.
-- A pipe or redirect inside a command run by a package (`fw_shell_run("ls | grep x")`) handed the next stage, or the file, the contents of an uninitialised buffer, and the package got nothing back. There was one output capture for the whole device: the inner pipeline could not start its own, then ended the package's. The same happened across tasks, when the shell ran a pipe while a package on the other core was capturing. Each capture now belongs to the task that started it and nests inside that task's previous one, only its owner can end it, and a pipe that cannot start a capture says so instead of running.
-- Two rare cross-core races in the task table: reaping a finished task (`kill` on one) while a spawn on the other core reclaimed the same slot could free its stack twice and hand one slot to two tasks; and two cores spawning at once could give two tasks the same pid. Both now happen under the cross-core lock.
-- A package reading a setting (`fw_reg_get`) copied it from the registry after the registry's lock had been released, so a setting changed or a user logging out at that moment could hand it half of one value and half of another, or someone else's. The copy is now taken under the lock.
-- The shell's per-command state (the input of the current pipe stage, whether the command was run with `sudo`, and whether it printed an error) was shared by every task running commands. One task's command could clear another's error, so a chain like `cp x y && rm x` running beside a package's own command could remove `x` after the copy had failed. It is kept per task now, and a line run from inside a command on the same task no longer erases the outer command's error or input.
-- A script (`.rps`) run with `bg` silenced the whole machine. The interpreter kept about 5 KB on the stack before running a line, and a background job had 3 KB to run a full shell line in. The interpreter's state is on the heap now (its frame is a few hundred bytes), and background jobs, services and the scheduler get the same 8 KB stack as the shell, since they run the same lines.
-- After first-run setup, `/home/root` and `/home/guest` did not exist until the next boot. Setup makes them now.
-- A task started by a package could run on far less stack than its firmware calls need. On RP2040 it got only what the package asked for, without the 8 KB firmware reserve every ABI call runs on; on RP2350 a package without veneer gates got 2 KB. It now gets the package's request plus the reserve whenever it will not be sandboxed.
-- The memory cost of the stack changes above: each `bg` job, service and the scheduler now holds 8 KB instead of 3 KB (+5 KB each; eight services is 64 KB), and an unsandboxed package task holds its request plus 8 KB. Spawning fails cleanly when the heap is short, and says so.
-- The RP2040 images (Pico, Pico W) stopped after POST: the stack guard's no-access window sat on the tripwire the scheduler reads at every task switch, and it was encoded as a 32-byte region, below the 256-byte minimum that MPU allows. The window is now one subregion of a valid 256-byte region and the scheduler leaves it to the hardware. Boot reaches the first-run setup in the emulator; real RP2040 boards are still to be tried.
-- Typing at the console sends back what was typed, not the whole prompt and line again for every key: 130 bytes for a 48-character command where it was 3,604. It matters most on a UART console, and for pasted scripts, which used to come back as tens of kilobytes.
-- `wc` takes `-l`, `-w` and `-c` (it used to report "No such file: -l"), counts several files with a total, and counts a named file even when a pipe is also feeding it. `capture n wc -l file` in a script now gives a number.
-- A freshly flashed Pico 2 W no longer opens its log with "Last restart was the WATCHDOG - something stopped responding". The boot ROM restarts the chip through the watchdog after a flash; that restart is now told apart and noted as what it is.
-- Boot is about a second faster when no terminal is open (after a reboot, or on battery). It waited up to three seconds for one; it now waits for the computer to recognise the device, then briefly for a terminal.
-- `download` ended on the first key only sometimes: most keys were taken by its own Ctrl+C check and replayed at the next prompt (a `q` came back as `qls`). Commands and full-screen apps that read keys themselves now read them the same way the prompt does, so none go missing.
-- `compat` and `pkg certs` froze a Pico 2 W whose radio had not been switched on, until the watchdog restarted it. Checking the certificates needs the network stack, which starts with the radio; with the radio off they now say so instead.
-- `compat` warned "0 bytes free on the boot stack" on every board. It was measuring the wrong stack; it now reports the boot stack's real deepest point.
-- A file or directory name of 40 characters or more was silently dropped from a path, so the path meant its parent instead: `touch /tmp/<long name>` made a file called `/tmp`, and `rm -r /home/root/<long name>` would have removed the whole home directory. Long names are kept whole now, and a path too long to handle is refused with "Path too long".
-- `rm`, `mv` and `rename` refuse `/` and the system directories (`/os`, `/os/pkg`, `/etc`, `/home`, `/tmp`, `/usb`) themselves, even for root, and say how to empty one instead. `rm /tmp` used to delete it silently and break everything that writes there until a reboot. What is inside them can still be removed.
-- `mkdir` now asks the same permission question as every other command that writes.
-- `kill 1` said "It is the shell"; pid 1 is init, and the shell is told apart by what it is rather than by number.
-- Usage messages, and `logdump`'s own "lines dropped" note, no longer go into the 48-line log, where a few of them pushed out the boot and crash entries it is there to keep.
-- Tab completion of a path kept only the name: `ls /ho` became `ls home/`, a different path. The directory typed is kept now (`ls /home/`, `ls ../os/`).
-- 14 KB more free memory on every board: buffers that were reserved for the whole time the device runs, but used only by one command (the boot scan, `download`, the USB drive's import, the task and service lists, Tab's candidate list), are taken when that command runs instead.
-- Several pieces of shared state could be used by two tasks at once: the package loader's working buffers, `pkg install`, the task and service list files, the scheduler's table, and the `download` drive. Two `pkg install`s or two `download`s at once are now refused with a message; the rest take turns.
-- `rm -r` could not remove a directory holding a name of 64 characters or more, and two `rm -r`s at once (one in the background) shared one working path. A factory reset had the same name limit. All three keep names whole now and work independently.
-- `/tmp` is really emptied at every boot. Folders inside it were skipped and stayed for ever.
-- A file standing where a system directory belongs is moved aside (to `<name>.displaced`) so the directory can be made again, instead of failing every boot.
-- `link`: a framed mode on the console for programs on a computer (LINK.md). Run a command and get its output and exit status, send and fetch files with a SHA-256 check (about 19 KB/s up, 74 KB/s down on a Pico 2 W), list directories. The command-line and browser tools are built on it.
-- `;`, `&&` and `||` work everywhere a command line is run, not only at the prompt. In scripts, `bg`, services, scheduled tasks and from packages, `a ; b` used to run as one command called `a`.
-- Packages are 7 to 19% smaller on disk and to download (Nova D1 440 KB -> 365 KB). The build drops symbol names the loader never reads; the full object is kept beside each one as `<name>.dbg` for debugging.
-- A package command's output can be piped, redirected and captured. `greet | wc` used to count nothing, and output from a package run by another package or by a host tool went to the console instead.
-- Loading a large package reads far less of its file (a traced Nova D1 load and install went from 77 MB to 10 MB of reads). On a Pico 2 W an install is about 10% faster, since erasing and writing flash is most of it; the copy-to-RAM path used on RP2040 gains the most.
-- Wi-Fi replies about a hundred times faster on USB power: a ping from a PC next to the router went from an average of 157 ms (up to 559 ms) to about 1 ms (at most 4 ms). The radio's power saving was making it doze between beacons. `wifi power` sets it: `auto` (the default: no power saving on USB power, light power saving on battery, switching by itself), `off`, `balanced` or `save`.
-- `df` no longer reports a failed measurement as a full disk. When littlefs cannot say how full it is, `df` says so and suggests `fscheck`, rather than printing "100% used" with no warning beside it.
-- Two tasks could be inside I2C transfers on the same block at once (the display flush and a PN532 exchange), which the SDK's transfer calls do not allow. Every transfer, and every change of bus speed, now takes a per-block lock.
-
-### Changed
-
-- The update channel compares `MAJOR.ITER.BUILD`, for example `2.01.486`. An older device that compares `2.0.0.483` still updates into it.
+- Wi-Fi replies about a hundred times faster on USB power. A ping from a PC next to the router went from an average of 157 ms (up to 559 ms) to about 1 ms. The radio's power saving was making it doze between beacons; see `wifi power` above.
+- 14 KB more free memory on every board. Buffers that sat reserved the whole time the device ran, but were only used by one command (the boot scan, `download`, the USB drive's import, the task and service lists, Tab's list of matches), are now taken only while that command runs.
+- Packages are 7 to 19% smaller on disk and to download (Nova D1 went from 440 KB to 365 KB). The build drops symbol names the loader never reads, and keeps the full file beside each one as `<name>.dbg` for debugging.
+- Typing at the console sends back what was typed rather than the whole prompt and line again for every key: 130 bytes for a 48 character command, where it used to be 3,604. It matters most on a UART console and for pasted text.
+- Boot is about a second faster when no terminal is open (after a reboot, or on battery). It used to wait up to three seconds for one; it now waits for the computer to see the device, then only briefly.
+- Loading a big package reads much less of its file (a traced Nova D1 load and install went from 77 MB of reads to 10 MB). On a Pico 2 W an install is about 10% faster, since writing flash is most of it; the RP2040's copy into RAM gains more.
+- `wc` takes `-l`, `-w` and `-c`, counts several files with a total, and counts a named file even when a pipe is also feeding it. `capture n wc -l file` in a script now gives a number.
+- A freshly flashed board no longer opens its log with "Last restart was the WATCHDOG, something stopped responding". A restart by the boot ROM after a flash is recognised and noted as what it is.
+- Usage messages, and `logdump`'s own note about dropped lines, no longer go into the 48-line log, where a few typos could push out the boot and crash entries it is there to keep.
 
 ### Fixed
 
-- The boot recovery ladder (a maintenance start after three failed starts, then the saved firmware, then a rebuild) could never run on a board: the failure count was kept in a register the SDK overwrites before it is read. It is kept in one nothing else touches, and has been confirmed on a Pico 2 W along with `update rollback` in both directions.
-- A build this device rolled back from is now actually refused by `update check`; the marker it kept never matched the version in the manifest.
+- `;`, `&&` and `||` only worked at the prompt. In scripts, `bg`, services, scheduled tasks and from packages, `a ; b` ran as one command called `a`. They work everywhere now.
+- A package command's output can be piped, redirected and captured. `greet | wc` used to count nothing, and a package run by another package or a host tool printed straight to the console.
+- A script run with `bg` froze the whole board. The script interpreter used about 5 KB of stack before running a line and a background job had 3 KB. The interpreter's state is on the heap now, and background jobs, services and the scheduler get the same 8 KB stack as the shell.
+- `compat` and `pkg certs` froze a Pico 2 W whose radio had not been switched on, until the watchdog restarted it. They say the radio is off instead.
+- A file or folder name of 40 characters or more was quietly dropped from a path, so the path meant its parent instead: `touch /tmp/<long name>` made a file called `/tmp`, and `rm -r /home/root/<long name>` would have removed the whole home folder. Long names are kept whole, and a path too long to handle is refused with "Path too long".
+- `rm -r` could not remove a folder holding a name of 64 characters or more, and two `rm -r` running at once (one in the background) could interfere. A factory reset had the same name limit.
+- Tab completion of a path dropped the folder that was typed: `ls /ho` became `ls home/`, a different path. It keeps it now (`ls /home/`, `ls ../os/`).
+- `/tmp` is really emptied at every boot. Folders inside it were skipped and stayed for ever.
+- After first-run setup, `/home/root` and `/home/guest` did not exist until the next boot.
+- The Pico and Pico W images stopped right after POST: the RP2040 stack guard sat on bytes the scheduler reads at every task switch, and it was set up as a region smaller than that chip allows. Fixed and checked in the emulator; real RP2040 boards are still to be tried.
+- `download` only sometimes ended on the first key; most keys were taken by its own Ctrl+C check and came back at the next prompt (a `q` turned into `qls`).
+- `compat` warned "0 bytes free on the boot stack" on every board. It was measuring the wrong stack.
+- `kill 1` said "It is the shell"; pid 1 is init. Each is now named for what it is.
+- `df` no longer reports a failed measurement as a full disk. When the filesystem cannot say how full it is, `df` says so and suggests `fscheck`.
+- The boot recovery ladder (start with nothing loaded after three failed starts, then the saved firmware, then a rebuild) could never run on a board, because the failure count was kept in a register the SDK overwrites first. It now works, confirmed on a Pico 2 W along with `update rollback` both ways.
+- A build the device rolled back from is now really refused by `update check`.
+- Two tasks using the filesystem at once could leave littlefs pointing at freed memory: reading a file in pieces (rollback checks, WAV playback, `fw_file_read_at`) skipped the filesystem lock. Likely the cause of a filesystem that read 100% full until a big file was deleted. Every littlefs call takes the lock now, and the build fails if one ever does not.
+- Saving settings while a package changed one on the other core could write stray memory into `/os/registry.cfg`, or mark a setting saved that was not. The same applies to the accounts file and per-user settings.
+- A package could read half of one setting and half of another if the setting changed at that moment.
+- More races between tasks and cores, each found and fixed: a package command called after its package was unloaded; pipes inside a package's command getting another task's output; two tasks getting the same pid; one command's error clearing another's (so `cp x y && rm x` could remove `x` after a failed copy); the package loader's working buffers, the task and service lists and the scheduler's table shared between tasks; two I2C transfers on one bus at once.
+- A task started by a package could run on less stack than its firmware calls need (on RP2040, and on RP2350 for packages built without veneer gates).
 
-### Known limitations
+### Security
 
-- Only the Pico 2 W has run this build. The Pico 2, Pico W and Pico images build and pass the image checks and have never been booted.
+- `rm`, `mv` and `rename` refuse `/` and the system folders (`/os`, `/os/pkg`, `/etc`, `/home`, `/tmp`, `/usb`) themselves, even for root, and say how to empty one instead. `rm /tmp` used to delete it without a word, and nothing stopped `rm -r /os`, which removes every account and package.
+- `mkdir` asks the same permission question as every other command that writes; a guest could make folders inside protected ones.
+
+### Changed
+
+- `bg` jobs, services and the scheduler take 8 KB of memory each instead of 3 KB, because they run full shell lines (eight services is 64 KB). A package task that runs outside the sandbox takes what it asks for plus 8 KB. Starting one fails cleanly if memory is short.
+- Two `pkg install` at once, or two `download` at once, are refused with a message instead of interfering. `download` only runs at the prompt.
+- The update channel compares `MAJOR.ITER.BUILD`, for example `2.01.486`. An older device that compares `2.0.0.483` still updates into it.
+
+### Known issues
+
+- Only the Pico 2 W has run this build. The Pico 2, Pico W and Pico images build and pass the image checks; the Pico image boots in the emulator.
 - A saved rollback copy takes most of a Pico 2 W's filesystem; the next update removes it to make room.
+- The Pico W has only about 12 KB left in its firmware slot.
 
 ## v2.00-beta — "Vela II" (build 483, 2026-10-28)
 
