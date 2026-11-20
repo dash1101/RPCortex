@@ -245,7 +245,7 @@ bool rollback_apply(bool at_boot) {
     if (!rollback_read(&info)) {
         out_err("There is no saved firmware to go back to.");
         out_multi("  A copy is kept automatically when an update is applied,");
-        out_multi("  and 'update rollback --save' keeps one now.");
+        out_multi("  and 'sudo update rollback --save' keeps one now.");
         return false;
     }
 
@@ -377,15 +377,15 @@ static void show(void) {
             out_multi("  %sThere is a %lu KB image with no valid record beside it.%s",
                       C_GRAY, (unsigned long)(orphan / 1024), C_RESET);
         out_multi("  A copy is saved automatically when an update is applied.");
-        out_multi("  'update rollback --save' saves one from what is running now.");
+        out_multi("  'sudo update rollback --save' saves one from what is running now.");
         return;
     }
 
     out_multi("  Saved      %s%s%s  (%lu KB)", C_CYAN, info.ver, C_RESET,
               (unsigned long)(info.size / 1024));
     out_blank();
-    out_multi("  'update rollback --now' writes it back and reboots.");
-    out_multi("  'update rollback --forget' deletes it and frees %lu KB.",
+    out_multi("  'sudo update rollback --now' writes it back and reboots.");
+    out_multi("  'sudo update rollback --forget' deletes it and frees %lu KB.",
               (unsigned long)(info.size / 1024));
 }
 

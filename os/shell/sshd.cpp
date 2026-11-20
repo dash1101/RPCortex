@@ -821,7 +821,7 @@ int sshd_command(int argc, char **argv) {
         char v[8]; snprintf(v, sizeof(v), "%ld", port);
         reg_set("SSH.Port", v);
         persist_save_dirty();
-        out_okp("ssh", "Port %ld from the next start ('ssh server off', then 'on').", port);
+        out_okp("ssh", "Port %ld from the next start ('sudo ssh server off', then 'on').", port);
         return 0;
     }
     if (!strcmp(sub, "rekey")) {

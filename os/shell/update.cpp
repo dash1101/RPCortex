@@ -281,11 +281,11 @@ static int do_check(bool quiet) {
     if (!strcmp(reg_get("System.Rollback_Refused", ""), e.ver)) {
         out_warn("This device already rolled back from %s.", e.ver);
         out_multi("  It was installed and would not start, so the previous version");
-        out_multi("  was put back. 'update install --force' installs it anyway.");
+        out_multi("  was put back. 'sudo update install --force' installs it anyway.");
         return 0;
     }
 
-    out_info("An update is available. 'update install' to fetch and apply it.");
+    out_info("An update is available. 'sudo update install' to fetch and apply it.");
     return 0;
 }
 
@@ -299,7 +299,7 @@ static int do_install(bool force, bool yes) {
     if (!fetch_manifest(&e)) return 1;
 
     if (!force && repo_version_cmp(e.ver, RPC_OS_BUILDVER) <= 0) {
-        out_ok("Already running %s build %s. 'update install --force' to reinstall.",
+        out_ok("Already running %s build %s. 'sudo update install --force' to reinstall.",
                RPC_OS_VERSION, RPC_OS_BUILD);
         return 0;
     }
@@ -307,7 +307,7 @@ static int do_install(bool force, bool yes) {
         out_err("%s was installed on this device before and would not start.", e.ver);
         out_multi("  The previous version was restored automatically. Installing it");
         out_multi("  again is unlikely to end differently unless something has changed.");
-        out_multi("  'update install --force' does it anyway.");
+        out_multi("  'sudo update install --force' does it anyway.");
         return 1;
     }
 

@@ -278,7 +278,7 @@ static int cmd_regreset(int argc, char **argv) {
     if (argc < 2 || strcmp(argv[1], "--yes") != 0) {
         out_warn("This clears every setting and restores the defaults.");
         out_multi("  Accounts and files are NOT touched - only the registry.");
-        out_multi("  Run 'regreset --yes' to go ahead.");
+        out_multi("  Run 'sudo regreset --yes' to go ahead.");
         return 1;
     }
 

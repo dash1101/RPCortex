@@ -437,7 +437,7 @@ static bool install_finish(const char *file, const char *name, const char *versi
             out_err("Could not put the package into %s.", PKG_DIR);
             out_multi("  %lu bytes free. A package needs its own size again to be",
                       (unsigned long)storage_free_bytes());
-            out_multi("  copied in; 'pkg remove' something, or 'df' to see where it went.");
+            out_multi("  copied in; 'sudo pkg remove' something, or 'df' to see where it went.");
             if (slot >= 0) {
                 // The slot already has the new package, so the device WILL run
                 // it — but the file a reinstall or a boot fallback would read is
@@ -475,7 +475,7 @@ static bool install_finish(const char *file, const char *name, const char *versi
                 out_warnp("pkg", "'%s' is installed, but the flash slot still holds "
                                  "the old build.", name);
                 out_multi("  It is running, so the slot cannot be cleared now. Until");
-                out_multi("  it is, a reboot brings the OLD one back — 'pkg install");
+                out_multi("  it is, a reboot brings the OLD one back. 'sudo pkg install");
                 out_multi("  %s' again once nothing is using it.", name);
             } else if (!slot_release((uint32_t)stale)) {
                 out_warnp("pkg", "'%s' is installed, but the flash slot holding the "
@@ -665,7 +665,7 @@ bool pkg_install_file(const char *file, bool quiet, bool consume) {
         } else if (route == PKG_ROUTE_COPY && occupant) {
             out_warnp("pkg", "The flash slot holds '%s', so '%s' loads into RAM.",
                       occupant, name);
-            out_multi("  There is one slot. 'pkg remove %s' frees it if that is", occupant);
+            out_multi("  There is one slot. 'sudo pkg remove %s' frees it if that is", occupant);
             out_multi("  the package you would rather have out of RAM.");
         }
     }
@@ -708,7 +708,7 @@ bool pkg_install_file(const char *file, bool quiet, bool consume) {
                 out_multi("  a half-written one can never be run — it is empty now.");
                 out_multi("  Nothing on the filesystem changed: whatever was installed");
                 out_multi("  before is still there, and a reboot loads it into RAM.");
-                out_multi("  'pkg install %s' tries the slot again.", name);
+                out_multi("  'sudo pkg install %s' tries the slot again.", name);
             }
             return false;
         }

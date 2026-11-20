@@ -120,7 +120,7 @@ static int list_command(const char *path, const char *label, bool intervals,
             strncat(line, argv[i], sizeof(line) - strlen(line) - 1);
         }
         if (intervals && !joblist_split_interval(line, nullptr, nullptr)) {
-            out_err("Expected an interval first, e.g. 'task add 60 sysinfo'.");
+            out_err("Expected an interval first, e.g. 'sudo task add 60 sysinfo'.");
             return 1;
         }
         uint32_t nl = joblist_add(buf, len, CFG_BUF, line);

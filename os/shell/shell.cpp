@@ -545,7 +545,7 @@ static int cmd_run(int argc, char **argv) {
         out_err("v2 runs compiled packages, not %s source.", src);
         out_multi("  Build it on the host, then copy the .app over:");
         out_multi("    tools/rpc-push.sh %s /dev/ttyACM0", argv[1]);
-        out_multi("    run myapp.app        (or 'pkg install myapp.app' to keep it)");
+        out_multi("    run myapp.app        (or 'sudo pkg install myapp.app' to keep it)");
         return 1;
     }
     int arg = (argc >= 3) ? (int)strtol(argv[2], nullptr, 10) : 0;

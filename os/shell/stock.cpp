@@ -205,7 +205,7 @@ static void repair_installed_index(void) {
     out_warnp("pkg", "The installed-package list was holding a repository "
                      "catalogue, and has been cleared.");
     out_multi("  Built-in packages are being restored. Anything else will need");
-    out_multi("  'pkg install' again — the files are still there, only the list");
+    out_multi("  'sudo pkg install' again: the files are still there, only the list");
     out_multi("  of them was wrong.");
     // Whatever the registry thinks was placed, it no longer is as far as the
     // list is concerned. Forget it so the built-ins are written back.

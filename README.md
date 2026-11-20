@@ -40,7 +40,7 @@ unchanged. It's in beta and still changing from one release to the next.
   `kill`. A runaway task gets preempted after 250 ms.
 - **Networking on the W boards.** Wi-Fi, HTTPS with verified certificates, `curl`,
   NTP, and Bluetooth LE and Classic (it can play a WAV to a Bluetooth speaker).
-- **SSH on the Pico 2 W.** `ssh server on`, then `ssh root@<device>` from a
+- **SSH on the Pico 2 W.** `sudo ssh server on`, then `ssh root@<device>` from a
   computer on the same network; `ssh` on the device reaches other machines. Off
   until it's turned on. [SSH.md](SSH.md) has the details.
 - **Files.** littlefs on the onboard flash, and a USB drive mode (`download`) for

@@ -979,13 +979,13 @@ static void test_update_os_reading(void) {
         "  Installed  v2.0-beta (build 315)\n"
         "  Available  2.0.316\n"
         "  Size       955 KB\n"
-        "[:] An update is available. 'update install' to fetch and apply it.\n";
+        "[:] An update is available. 'sudo update install' to fetch and apply it.\n";
     static const char *kRefused =
         "  Installed  v2.0-beta (build 315)\n"
         "  Available  2.0.316\n"
         "[?] This device already rolled back from 2.0.316.\n"
         "  It was installed and would not start, so the previous version\n"
-        "  was put back. 'update install --force' installs it anyway.\n";
+        "  was put back. 'sudo update install --force' installs it anyway.\n";
     static const char *kNoNet = "[!] No network. Connect first.\n";
 
     eq(upd_os_state(kCurrent), UPD_CURRENT, "the OS reports itself up to date");

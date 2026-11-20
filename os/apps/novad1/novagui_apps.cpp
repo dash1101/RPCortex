@@ -1577,7 +1577,7 @@ private:
     const char *footer(void) const {
         if (msg_[0])            return msg_;
         if (d1_ == UPD_NEWER)   return "SELECT installs it, then restarts.";
-        if (os_ == UPD_NEWER)   return "OS: 'update install' in Shell.";
+        if (os_ == UPD_NEWER)   return "OS: 'sudo update install' in Shell.";
         if (os_ == UPD_REFUSED) return "A newer OS failed to start before.";
         if (d1_ == UPD_CURRENT && os_ == UPD_CURRENT) return "Everything is up to date.";
         return "Hold SELECT to look again.";

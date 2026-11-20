@@ -40,7 +40,7 @@ Summary:
 - `autonomy on` asks for the password before the warning rather than after, since `sudo` asks first.
 - Nova D1's screen, run as a service, installs packages, resets settings and edits services as before. Started by hand it needs `sudo -v` at the console first. `novad1 setup` and `novad1 selfupdate` are `sudo novad1 setup` and `sudo novad1 selfupdate` now, and say so when run without it.
 - The backup package keeps its snapshots in `/etc/backups`, so `backup create` and `backup restore` need `sudo` in front.
-- sudo costs about 5.7 KB of flash on every board (the Pico W has 3 KB of its slot left, the Pico 2 W 105 KB) and 136 bytes of memory.
+- sudo costs about 5.8 KB of flash on every board (the Pico W has 2 KB of its slot left, the Pico 2 W 100 KB, the Pico 64 KB) and 140 bytes of memory.
 
 ### Known issues
 
