@@ -441,6 +441,21 @@ static bool radio_up(void) {
     join_phase("enable_sta_mode");
     cyw43_arch_enable_sta_mode();
 
+    // DID THE CHIP ACTUALLY START? cyw43_arch_init only sets up state; the
+    // firmware goes over the bus inside enable_sta_mode, which returns nothing.
+    // The driver marks the station interface up only once that worked, so a
+    // chip that did not answer, or a firmware image that failed its check
+    // (cyw43_fw.cpp says which in the log), leaves it clear. Carrying on from
+    // here would report a radio that is not there, and the VBUS read below
+    // would power-cycle the chip and try the whole download again. The driver
+    // is taken down so the next attempt starts from nothing, not on top of it.
+    // DEVICE-UNCONFIRMED: this path on a board, with a chip that fails to start.
+    if (!(cyw43_state.itf_state & (1u << CYW43_ITF_STA))) {
+        cyw43_arch_deinit();
+        out_err("The wireless chip did not start.");
+        return false;
+    }
+
     // POWER SAVE: see WiFi.Power above. Set HERE and not in the join path: the
     // driver only applies its default while the interface is down, so once is
     // enough and it survives every rejoin.

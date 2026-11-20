@@ -112,8 +112,8 @@ the board over its USB serial port using the protocol in [LINK.md](LINK.md).
 
 ## Building from source
 
-On Linux, with CMake, the Arm GNU toolchain (`arm-none-eabi-gcc`), Python 3 and
-g++:
+On Linux, with CMake, the Arm GNU toolchain (`arm-none-eabi-gcc`), Python 3, g++
+and `patch` (the wireless boards apply `os/patches/` to a copy of one SDK file):
 
 ```
 git clone --depth 1 --branch 2.3.0 --recurse-submodules --shallow-submodules https://github.com/raspberrypi/pico-sdk.git sdk

@@ -407,6 +407,105 @@ if(PICO_CYW43_SUPPORTED)
         MBEDTLS_CONFIG_FILE="${OS_ROOT}/mbedtls_config.h")
 endif()
 
+# --- the radio firmware, stored deflated --------------------------------------
+#
+# The CYW43 firmware the SDK embeds (the Wi-Fi firmware and its CLM, 227 KB as
+# one array) was the largest single object in a wireless image, stored exactly
+# as it is sent to the chip. Deflated it is 148 KB, which is 78 KB of slot back
+# on both W boards, and on a Pico W that is the difference between room for the
+# next feature and none.
+#
+# Three pieces:
+#   tools_cyw43fw.py   deflates the SDK's array at build time, with a 2 KB window
+#                      and a CRC-32 per window (cyw43_fw_data.c, not in git);
+#   core/fwstream.cpp  inflates it a window at a time and checks each window
+#                      before handing out any of it (uzlib, in uzlib/);
+#   patches/cyw43-fw-stream.patch
+#                      makes the driver take the firmware from that reader. It
+#                      is applied to a COPY of cyw43_ll.c in this build
+#                      directory, never to the SDK: sdk/ is cloned, often shared
+#                      between checkouts, and not this project's to edit. A
+#                      fresh copy is patched at every configure, so applying it
+#                      is idempotent by construction, and a patch that no longer
+#                      applies stops the configure rather than building the
+#                      driver as it was.
+#
+# Off with -DRPC_CYW43_FW_STREAM=OFF, which builds the SDK's driver untouched.
+option(RPC_CYW43_FW_STREAM "Store the CYW43 firmware deflated" ON)
+if(PICO_CYW43_SUPPORTED AND RPC_CYW43_FW_STREAM)
+    set(CYW43_FW_DIR   ${CMAKE_BINARY_DIR}/cyw43_fw)
+    set(CYW43_LL_SDK   ${PICO_CYW43_DRIVER_PATH}/src/cyw43_ll.c)
+    set(CYW43_FW_PATCH ${OS_ROOT}/patches/cyw43-fw-stream.patch)
+    # The firmware the SDK picks when Bluetooth is linked, which on these boards
+    # it always is; cyw43_fw.h refuses to build otherwise.
+    set(CYW43_FW_BLOB  ${PICO_CYW43_DRIVER_PATH}/firmware/wb43439A0_7_95_49_00_combined.h)
+
+    find_program(RPC_PATCH_TOOL patch)
+    if(NOT RPC_PATCH_TOOL)
+        message(FATAL_ERROR "The 'patch' program is needed to build the radio driver "
+            "(os/patches/cyw43-fw-stream.patch). Install it, or configure with "
+            "-DRPC_CYW43_FW_STREAM=OFF to build with the firmware stored as it is.")
+    endif()
+    file(REMOVE_RECURSE ${CYW43_FW_DIR}/work)
+    configure_file(${CYW43_LL_SDK} ${CYW43_FW_DIR}/work/src/cyw43_ll.c COPYONLY)
+    execute_process(
+        COMMAND ${RPC_PATCH_TOOL} -p1 -N -t -F 0 -i ${CYW43_FW_PATCH}
+        WORKING_DIRECTORY ${CYW43_FW_DIR}/work
+        RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE out)
+    if(NOT rc EQUAL 0)
+        message(FATAL_ERROR "os/patches/cyw43-fw-stream.patch does not apply to "
+            "${CYW43_LL_SDK}:\n${out}\nThe SDK's cyw43-driver has probably changed. "
+            "Bring the patch up to date, or configure with -DRPC_CYW43_FW_STREAM=OFF "
+            "to build with the firmware stored as it is.")
+    endif()
+    # Copied on only when it changed, so a configure does not rebuild the driver.
+    configure_file(${CYW43_FW_DIR}/work/src/cyw43_ll.c ${CYW43_FW_DIR}/cyw43_ll.c COPYONLY)
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${CYW43_FW_PATCH})
+
+    # Swap the patched copy in for the SDK's file in the driver's own source
+    # list, and say so if the SDK stopped listing it there: a swap that silently
+    # did nothing would link the stock driver against no firmware at all.
+    get_target_property(_cyw43_srcs cyw43_driver INTERFACE_SOURCES)
+    list(FIND _cyw43_srcs ${CYW43_LL_SDK} _cyw43_ll_at)
+    if(_cyw43_ll_at EQUAL -1)
+        message(FATAL_ERROR "cyw43_driver no longer builds ${CYW43_LL_SDK}; "
+            "os/CMakeLists.txt cannot swap in the patched copy.")
+    endif()
+    list(REMOVE_AT _cyw43_srcs ${_cyw43_ll_at})
+    list(INSERT _cyw43_srcs ${_cyw43_ll_at} ${CYW43_FW_DIR}/cyw43_ll.c)
+    set_property(TARGET cyw43_driver PROPERTY INTERFACE_SOURCES ${_cyw43_srcs})
+
+    # --pad 4 is CYW43_WRITE_BYTES_PAD on the SPI bus; the patched driver
+    # static_asserts that the stream is exactly the length it sends.
+    add_custom_command(
+        OUTPUT ${CYW43_FW_DIR}/cyw43_fw_data.c ${CYW43_FW_DIR}/cyw43_fw_data.h
+        COMMAND ${CMAKE_COMMAND} -E env python3 ${OS_ROOT}/tools_cyw43fw.py --pad 4
+                ${CYW43_FW_BLOB} ${CYW43_FW_DIR}/cyw43_fw_data
+        DEPENDS ${CYW43_FW_BLOB} ${OS_ROOT}/tools_cyw43fw.py)
+    set(RPC_FW_STREAM_SOURCES
+        ${OS_ROOT}/cyw43_fw.cpp ${OS_ROOT}/core/fwstream.cpp
+        ${OS_ROOT}/uzlib/tinflate.c ${OS_ROOT}/uzlib/crc32.c ${OS_ROOT}/uzlib/adler32.c)
+    target_sources(rpcortex_v2 PRIVATE ${RPC_FW_STREAM_SOURCES}
+        ${CYW43_FW_DIR}/cyw43_fw_data.c ${CYW43_FW_DIR}/cyw43_fw_data.h)
+    target_include_directories(rpcortex_v2 PRIVATE ${CYW43_FW_DIR} ${OS_ROOT}/uzlib)
+    target_compile_definitions(rpcortex_v2 PRIVATE
+        CYW43_FW_STREAM=1
+        CYW43_CHIPSET_FIRMWARE_INCLUDE_FILE="cyw43_fw.h")
+    # uzlib's extra checks on a damaged stream: two compares, worth having on
+    # input that is only ever trusted after its CRC. One of them compares an int
+    # with sizeof, safely (it tests < 0 first), and -Wextra says so.
+    set_property(SOURCE ${OS_ROOT}/uzlib/tinflate.c APPEND PROPERTY
+        COMPILE_DEFINITIONS UZLIB_CONF_PARANOID_CHECKS=1)
+    set_property(SOURCE ${OS_ROOT}/uzlib/tinflate.c APPEND PROPERTY
+        COMPILE_OPTIONS -Wno-sign-compare)
+    # Runs once per radio start-up, so it is cold code like the rest of the driver.
+    if(RPC_COLD_SIZE AND CMAKE_BUILD_TYPE STREQUAL "Release")
+        set_property(SOURCE ${RPC_FW_STREAM_SOURCES} ${CYW43_FW_DIR}/cyw43_ll.c
+            APPEND PROPERTY COMPILE_OPTIONS -Os)
+    endif()
+    message(STATUS "CYW43 firmware: stored deflated (os/patches/cyw43-fw-stream.patch)")
+endif()
+
 # --- SSH: a server to log in to, and a client to log in elsewhere ---------------
 #
 # Needs the radio and mbedTLS, so only a W board can have it; ON by default for
@@ -530,8 +629,9 @@ target_compile_definitions(rpcortex_v2 PRIVATE
 # its slot. The next feature that lands on all boards has to keep an eye on this
 # row, not just the release headroom.
 #
-# The wireless images carry the 227 KB CYW43 blob and cannot be made much
-# smaller. The plain ones have no radio and no business reserving room for one.
+# The wireless images carry the CYW43 firmware (148 KB stored deflated, see
+# "the radio firmware, stored deflated" above; 227 KB as the SDK ships it) and
+# cannot be made much smaller. The plain ones have no radio and no business reserving room for one.
 #
 # Written out as well as compiled in, so build.sh checks the image against what
 # the firmware ACTUALLY holds rather than against a second copy of this table.

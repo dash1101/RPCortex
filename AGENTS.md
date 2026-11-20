@@ -65,6 +65,10 @@ os/*.cpp        Platform glue: task_rp2.cpp (context switch, watchdog,
                 ABI: every fw_* function), main.cpp (boot order).
 os/apps/        Packages built from this tree (greet is the smallest example).
 os/include/     rpc_app.h, the header packages are written against.
+os/patches/     Patches the build applies to COPIES of SDK files in the build
+                directory, never to sdk/ itself (os/CMakeLists.txt says how).
+os/uzlib/       The uzlib inflater, from MicroPython (zlib licence), for the
+                radio firmware; tinflate.c carries one fix, marked as such.
 os/host/        Host test suites. run_all.sh builds and runs them all.
 loader-spike/firmware/
                 storage.cpp (littlefs, the filesystem lock, sinks and sources),

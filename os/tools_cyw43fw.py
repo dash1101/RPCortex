@@ -1,0 +1,159 @@
+#!/usr/bin/env python3
+"""Store the CYW43 radio firmware deflated, to be inflated as it is sent.
+
+    tools_cyw43fw.py [--pad N] [--wbits N] <firmware header> <output base>
+
+Reads one of cyw43-driver's combined firmware headers (the Wi-Fi firmware, then
+the CLM starting at the next 512-byte boundary, as one C array) and writes
+<output base>.c and <output base>.h, which os/cyw43_fw.cpp and the patched
+driver (os/patches/cyw43-fw-stream.patch) are built from:
+
+  - the Wi-Fi firmware exactly as the driver sends it, padded to --pad bytes
+    (CYW43_WRITE_BYTES_PAD: 4 on the SPI bus every RP2 board uses), deflated;
+  - the CLM, deflated;
+  - a CRC-32 of every window (2 KB) of each, which the reader checks before it
+    hands out any byte of that window;
+  - the last 800 bytes of the firmware, uncompressed, which is all the driver's
+    "is this firmware at all" check reads;
+  - the lengths.
+
+THE WINDOW IS THE READER'S WHOLE DICTIONARY. The device keeps 2 KB of output and
+nothing more, so a stream made with a larger window (a larger wbits) would refer
+back to bytes it no longer has. Each stream is inflated again here with a 2 KB
+window and compared with the original before anything is written, so a stream
+the device cannot read never reaches an image. --wbits exists to prove that
+check works; the build never passes it.
+
+Raw deflate, no zlib or gzip header: the lengths and checks live beside the
+stream, so a header would only repeat them. Standard library only.
+"""
+import argparse
+import os
+import re
+import sys
+import zlib
+
+WINDOW_BITS = 11            # the reader's window: FWSTREAM_WINDOW in core/fwstream.h
+WINDOW = 1 << WINDOW_BITS
+TAIL = 800                  # cyw43_check_valid_chipset_firmware reads the last 800 bytes
+CLM_ALIGN = 512             # where the driver finds the CLM: CYW43_CLM_ADDR
+
+
+def parse(path):
+    text = open(path, encoding='ascii', errors='strict').read()
+    m = re.search(r'\[\]\s*[A-Z0-9_]*\s*=\s*\{(.*?)\};', text, re.S)
+    if not m:
+        sys.exit('%s: no firmware array found' % path)
+    items = [t.strip() for t in m.group(1).split(',') if t.strip()]
+    if not all(re.fullmatch(r'0x[0-9a-fA-F]{2}', t) for t in items):
+        sys.exit('%s: the array holds something other than bytes' % path)
+    blob = bytes(int(t, 16) for t in items)
+
+    def define(name):
+        d = re.search(r'#define\s+%s\s+\(?(\d+)\)?' % name, text)
+        if not d:
+            sys.exit('%s: no %s' % (path, name))
+        return int(d.group(1))
+
+    return blob, define('CYW43_WIFI_FW_LEN'), define('CYW43_CLM_LEN')
+
+
+def deflate(data, wbits):
+    c = zlib.compressobj(9, zlib.DEFLATED, -wbits, 9)
+    return c.compress(data) + c.flush()
+
+
+def window_crcs(data):
+    return [zlib.crc32(data[i:i + WINDOW]) for i in range(0, len(data), WINDOW)]
+
+
+def c_bytes(data):
+    out = []
+    for i in range(0, len(data), 16):
+        out.append('    ' + ''.join('0x%02x, ' % b for b in data[i:i + 16]).rstrip())
+    return '\n'.join(out)
+
+
+def c_words(words):
+    out = []
+    for i in range(0, len(words), 6):
+        out.append('    ' + ''.join('0x%08xu, ' % w for w in words[i:i + 6]).rstrip())
+    return '\n'.join(out)
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
+    ap.add_argument('--pad', type=int, default=4,
+                    help='CYW43_WRITE_BYTES_PAD granule (4 for SPI, 64 for SDIO)')
+    ap.add_argument('--wbits', type=int, default=WINDOW_BITS, help=argparse.SUPPRESS)
+    ap.add_argument('header')
+    ap.add_argument('out')
+    a = ap.parse_args()
+
+    blob, fw_len, clm_len = parse(a.header)
+    clm_off = (fw_len + CLM_ALIGN - 1) & ~(CLM_ALIGN - 1)
+    sent = (fw_len + a.pad - 1) & ~(a.pad - 1)
+    if a.pad <= 0 or a.pad & (a.pad - 1) or sent > clm_off:
+        sys.exit('--pad %d: not a power of two that keeps the firmware clear of the CLM' % a.pad)
+    if len(blob) < clm_off + clm_len:
+        sys.exit('%s: %d bytes, but the CLM ends at %d' % (a.header, len(blob), clm_off + clm_len))
+    if clm_len > WINDOW:
+        sys.exit('the CLM is %d bytes; the driver patch sends it from one %d-byte window'
+                 % (clm_len, WINDOW))
+
+    wifi = blob[:sent]          # what cyw43_download_resource would read from fw_data
+    clm = blob[clm_off:clm_off + clm_len]
+    tail = blob[fw_len - TAIL:fw_len]
+
+    streams = {}
+    for name, data in (('wifi', wifi), ('clm', clm)):
+        z = deflate(data, a.wbits)
+        # Inflated the way the device will: with WINDOW bytes of history, no more.
+        try:
+            back = zlib.decompress(z, -WINDOW_BITS)
+        except zlib.error as e:
+            sys.exit('%s stream does not inflate with a %d-byte window: %s' % (name, WINDOW, e))
+        if back != data:
+            sys.exit('%s stream does not inflate to the original' % name)
+        streams[name] = (z, window_crcs(data))
+
+    base = os.path.basename(a.out)
+    src_name = os.path.basename(a.header)
+    note = '// Generated by os/tools_cyw43fw.py from %s. Do not edit.\n' % src_name
+
+    with open(a.out + '.h', 'w') as h:
+        h.write(note)
+        h.write('#ifndef CYW43_FW_DATA_H\n#define CYW43_FW_DATA_H\n\n#include <stdint.h>\n\n')
+        h.write('#define CYW43_FW_SOURCE "%s"\n' % src_name)
+        h.write('#define CYW43_WIFI_FW_LEN (%d)\n' % fw_len)
+        h.write('#define CYW43_CLM_LEN (%d)\n' % clm_len)
+        h.write('#define CYW43_FW_WINDOW %d       // inflate window, and the span of each CRC\n' % WINDOW)
+        h.write('#define CYW43_FW_WIFI_LEN %d    // firmware as sent: padded to %d\n' % (len(wifi), a.pad))
+        h.write('#define CYW43_FW_WIFI_ZLEN %d\n' % len(streams['wifi'][0]))
+        h.write('#define CYW43_FW_CLM_ZLEN %d\n' % len(streams['clm'][0]))
+        h.write('#define CYW43_FW_TAIL_LEN %d\n\n' % TAIL)
+        h.write('#ifdef __cplusplus\nextern "C" {\n#endif\n')
+        h.write('extern const uint8_t  cyw43_fw_wifi_z[%d];\n' % len(streams['wifi'][0]))
+        h.write('extern const uint32_t cyw43_fw_wifi_crc[%d];\n' % len(streams['wifi'][1]))
+        h.write('extern const uint8_t  cyw43_fw_clm_z[%d];\n' % len(streams['clm'][0]))
+        h.write('extern const uint32_t cyw43_fw_clm_crc[%d];\n' % len(streams['clm'][1]))
+        h.write('extern const uint8_t  cyw43_fw_tail[%d];\n' % TAIL)
+        h.write('#ifdef __cplusplus\n}\n#endif\n\n#endif\n')
+
+    with open(a.out + '.c', 'w') as c:
+        c.write(note)
+        c.write('#include "%s.h"\n\n' % base)
+        for name in ('wifi', 'clm'):
+            z, crcs = streams[name]
+            c.write('const uint8_t cyw43_fw_%s_z[%d] = {\n%s\n};\n\n' % (name, len(z), c_bytes(z)))
+            c.write('const uint32_t cyw43_fw_%s_crc[%d] = {\n%s\n};\n\n' % (name, len(crcs), c_words(crcs)))
+        c.write('const uint8_t cyw43_fw_tail[%d] = {\n%s\n};\n' % (TAIL, c_bytes(tail)))
+
+    stored = sum(len(z) + 4 * len(crcs) for z, crcs in streams.values()) + TAIL
+    print('%s -> %s.c: %d bytes stored in place of %d (firmware %d -> %d, CLM %d -> %d)'
+          % (src_name, base, stored, clm_off + clm_len, len(wifi), len(streams['wifi'][0]),
+             clm_len, len(streams['clm'][0])))
+
+
+if __name__ == '__main__':
+    main()

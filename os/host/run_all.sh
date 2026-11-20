@@ -233,6 +233,32 @@ SRC[perms_test]="$CORE/perms.cpp $CORE/users.cpp $CORE/sha256.cpp"
 # command and the OS's own writes. Real tasks on ucontext, like identity_test.
 SRC[sudo_test]="$CORE/sudo.cpp $CORE/perms.cpp $SHELL_DIR/fsguard.cpp $CORE/ident.cpp $CORE/users.cpp $CORE/sha256.cpp $CORE/protect.cpp $CORE/path.cpp $CORE/out.cpp $CORE/logring.cpp $CORE/interrupt.cpp $CORE/lock.cpp $CORE/task.cpp $CORE/blackbox.cpp $CORE/registry.cpp $CORE/persist.cpp"
 
+# --- the radio firmware, stored deflated ---------------------------------------
+#
+# fwstream_test reads the deflated CYW43 firmware back the way the patched
+# driver does and compares it with the SDK's own copy, so it needs that copy and
+# a stream made from it by the generator the build runs. uzlib is C and is
+# compiled as C here; g++ would take it for C++ and refuse it. Without an SDK
+# checkout the suite says SKIPPED. With one, a generator that fails is a failure.
+CYW43_FWDIR="$SDK_DIR/lib/cyw43-driver/firmware"
+FW_OK=0
+if [ -f "$CYW43_FWDIR/wb43439A0_7_95_49_00_combined.h" ]; then
+    mkdir -p "$OUT/fw"
+    FW_CC="gcc -c -std=c99 -g -fsanitize=address,undefined -DUZLIB_CONF_PARANOID_CHECKS=1 -I../uzlib -I$OUT/fw"
+    if python3 ../tools_cyw43fw.py --pad 4 "$CYW43_FWDIR/wb43439A0_7_95_49_00_combined.h" \
+            "$OUT/fw/cyw43_fw_data" > "$OUT/fw/gen.out" 2>&1 \
+        && $FW_CC ../uzlib/tinflate.c -o "$OUT/fw/tinflate.o" 2>>"$OUT/fw/gen.out" \
+        && $FW_CC ../uzlib/crc32.c -o "$OUT/fw/crc32.o" 2>>"$OUT/fw/gen.out" \
+        && $FW_CC ../uzlib/adler32.c -o "$OUT/fw/adler32.o" 2>>"$OUT/fw/gen.out" \
+        && $FW_CC "$OUT/fw/cyw43_fw_data.c" -o "$OUT/fw/cyw43_fw_data.o" 2>>"$OUT/fw/gen.out"; then
+        FW_OK=1
+    else
+        FW_OK=2
+    fi
+fi
+SRC[fwstream_test]="$CORE/fwstream.cpp $OUT/fw/tinflate.o $OUT/fw/crc32.o $OUT/fw/adler32.o $OUT/fw/cyw43_fw_data.o"
+FLAGS[fwstream_test]="-I../uzlib -I$OUT/fw -I$CYW43_FWDIR"
+
 # Tests worth running a SECOND time with no sanitizer.
 #
 # AddressSanitizer replaces malloc with its own allocator, and that allocator
@@ -251,6 +277,16 @@ for t in "${!SRC[@]}"; do
     if [ "$MBED_OK" -eq 0 ] && [[ " $NEEDS_MBED " == *" $t "* ]]; then
         echo "SKIPPED (no mbedTLS at $SDK_DIR/lib/mbedtls)"
         skip=$((skip+1)); continue
+    fi
+    if [ "$t" = fwstream_test ] && [ "$FW_OK" -ne 1 ]; then
+        if [ "$FW_OK" -eq 0 ]; then
+            echo "SKIPPED (no cyw43-driver firmware at $CYW43_FWDIR)"
+            skip=$((skip+1))
+        else
+            echo "FAILED (making the stream)"; sed 's/^/      /' "$OUT/fw/gen.out" | tail -8
+            fail=$((fail+1))
+        fi
+        continue
     fi
     if ! $CXX $INC ${FLAGS[$t]:-} "$t.cpp" ${SRC[$t]} -o "$OUT/$t" 2>"$OUT/$t.err"; then
         echo "BUILD FAILED"; sed 's/^/      /' "$OUT/$t.err" | head -15

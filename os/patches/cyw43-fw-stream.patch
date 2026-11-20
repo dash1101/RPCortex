@@ -1,0 +1,150 @@
+Store the CYW43 WiFi firmware and CLM deflated, and inflate them as they are sent.
+
+Applied by os/CMakeLists.txt to a copy of cyw43-driver's src/cyw43_ll.c in the
+build directory. The SDK itself is never modified. Everything added is behind
+CYW43_FW_STREAM, which defaults to 0, and with it at 0 the file compiles to
+the same code as the original. Written against cyw43-driver 1.1.0, as
+pico-sdk 2.3.0 ships it. The stream and its checks: os/cyw43_fw.h,
+os/core/fwstream.h, os/tools_cyw43fw.py.
+
+cyw43_ll.c is Copyright (C) 2019-2022 George Robotics Pty Ltd, used under
+lib/cyw43-driver/LICENSE.RP (with Raspberry Pi semiconductor devices only).
+
+--- a/src/cyw43_ll.c
++++ b/src/cyw43_ll.c
+@@ -63,6 +63,14 @@
+ 
+ #define CYW43_RAM_SIZE (512 * 1024)
+ 
++// With CYW43_FW_STREAM the WiFi firmware and the CLM are stored deflated and
++// inflated as they are sent (cyw43_download_stream, cyw43_clm_stream), and
++// CYW43_CHIPSET_FIRMWARE_INCLUDE_FILE names the header for that store. It
++// defines no fw_data, so a read of the firmware not routed here does not build.
++#ifndef CYW43_FW_STREAM
++#define CYW43_FW_STREAM (0)
++#endif
++
+ // Include the file containing the WiFi+CLM firmware blob as a C array.
+ #include CYW43_CHIPSET_FIRMWARE_INCLUDE_FILE
+ 
+@@ -497,6 +505,56 @@
+     return 0;
+ }
+ 
++#if CYW43_FW_STREAM
++#if CYW43_RESOURCE_VERIFY_DOWNLOAD
++#error "CYW43_RESOURCE_VERIFY_DOWNLOAD reads the firmware back from fw_data, which CYW43_FW_STREAM does not have"
++#endif
++static_assert(CYW43_WRITE_BYTES_PAD(CYW43_WIFI_FW_LEN) == CYW43_FW_WIFI_LEN, "stream length differs from the download length");
++static_assert(CYW43_FW_WINDOW % CYW43_BUS_MAX_BLOCK_SIZE == 0, "a bus block would span two stream windows");
++
++// cyw43_download_resource, taking the firmware from the stream. The stream
++// checks each window it inflates before handing out any of it, so a damaged
++// image stops the download having sent only good bytes, and the caller returns
++// before the WLAN core is let out of reset.
++static int cyw43_download_stream(cyw43_int_t *self, uint32_t addr, size_t len, int which) {
++    cyw43_fw_stream_t *z = cyw43_fw_open(which);
++    if (z == NULL) {
++        return -CYW43_EIO;
++    }
++
++    int ret = 0;
++    for (size_t offset = 0; offset < len; offset += CYW43_BUS_MAX_BLOCK_SIZE) {
++        CYW43_EVENT_POLL_HOOK;
++
++        size_t sz = CYW43_BUS_MAX_BLOCK_SIZE;
++        if (offset + sz > len) {
++            sz = len - offset;
++        }
++        const uint8_t *src = cyw43_fw_read(z, sz);
++        if (src == NULL) {
++            ret = -CYW43_EIO;
++            break;
++        }
++        uint32_t dest_addr = addr + offset;
++        assert(((dest_addr & BACKPLANE_ADDR_MASK) + sz) <= (BACKPLANE_ADDR_MASK + 1));
++        cyw43_set_backplane_window(self, dest_addr);
++        dest_addr &= BACKPLANE_ADDR_MASK;
++        #if CYW43_USE_SPI
++        dest_addr |= SBSDIO_SB_ACCESS_2_4B_FLAG;
++        #endif
++        ret = cyw43_write_bytes(self, BACKPLANE_FUNCTION, dest_addr, sz, src);
++        if (ret != 0) {
++            break;
++        }
++    }
++
++    if (cyw43_fw_close(z) != 0 && ret == 0) {
++        ret = -CYW43_EIO;
++    }
++    return CYW43_FAIL_FAST_CHECK(ret);
++}
++#endif
++
+ /*******************************************************************************/
+ // Async event parsing
+ 
+@@ -1395,6 +1453,21 @@
+     CYW43_VDEBUG("clm data load ok\n");
+ }
+ 
++#if CYW43_FW_STREAM
++static_assert(CYW43_CLM_LEN <= CYW43_FW_WINDOW, "the CLM must fit one stream window");
++
++// The CLM is one stream window: inflate and check it, then, if send is set,
++// load it from there. Without send it is only checked.
++static int cyw43_clm_stream(cyw43_int_t *self, bool send) {
++    cyw43_fw_stream_t *z = cyw43_fw_open(CYW43_FW_CLM);
++    const uint8_t *clm = z ? cyw43_fw_read(z, CYW43_CLM_LEN) : NULL;
++    if (clm != NULL && send) {
++        cyw43_clm_load(self, clm, CYW43_CLM_LEN);
++    }
++    return cyw43_fw_close(z) == 0 ? 0 : -CYW43_EIO;
++}
++#endif
++
+ static void cyw43_write_iovar_u32(cyw43_int_t *self, const char *var, uint32_t val, uint32_t iface) {
+     uint8_t *buf = &self->spid_buf[SDPCM_HEADER_LEN + 16];
+     size_t len = strlen(var) + 1;
+@@ -1634,13 +1707,27 @@
+     cyw43_write_backplane(self, SOCSRAM_BANKX_PDA, 4, 0);
+ 
+     // Check that valid chipset firmware exists at the given source address.
++    #if CYW43_FW_STREAM
++    // That check reads only the end of the firmware, which is kept uncompressed.
++    // The CLM is checked here as well, while the WLAN core is still in reset,
++    // because it is not sent until after the core has started.
++    int ret = cyw43_check_valid_chipset_firmware(self, CYW43_FW_TAIL_LEN, (uintptr_t)cyw43_fw_tail);
++    if (ret == 0) {
++        ret = cyw43_clm_stream(self, false);
++    }
++    #else
+     int ret = cyw43_check_valid_chipset_firmware(self, CYW43_WIFI_FW_LEN, fw_data);
++    #endif
+     if (ret != 0) {
+         return ret;
+     }
+ 
+     // Download the main WiFi firmware blob to the 43xx device.
++    #if CYW43_FW_STREAM
++    ret = cyw43_download_stream(self, 0x00000000, CYW43_WRITE_BYTES_PAD(CYW43_WIFI_FW_LEN), CYW43_FW_WIFI);
++    #else
+     ret = cyw43_download_resource(self, 0x00000000, CYW43_WRITE_BYTES_PAD(CYW43_WIFI_FW_LEN), fw_data);
++    #endif
+     if (ret != 0) {
+         return ret;
+     }
+@@ -1761,7 +1848,13 @@
+ 
+     // Load the CLM data; it sits just after main firmware
+     CYW43_VDEBUG("cyw43_clm_load start\n");
++    #if CYW43_FW_STREAM
++    if (cyw43_clm_stream(self, true) != 0) {
++        return -CYW43_EIO;
++    }
++    #else
+     cyw43_clm_load(self, (const uint8_t *)CYW43_CLM_ADDR, CYW43_CLM_LEN);
++    #endif
+     CYW43_VDEBUG("cyw43_clm_load done\n");
+ 
+     cyw43_write_iovar_u32(self, "bus:txglom", 0, WWD_STA_INTERFACE); // tx glomming off

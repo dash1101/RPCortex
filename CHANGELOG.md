@@ -17,6 +17,8 @@ Summary:
 
 ### Improved
 
+- The Pico W and Pico 2 W keep their radio firmware compressed and unpack it on its way to the chip, which frees 76 KB of flash on both. A Pico W had 7 KB of its firmware slot left and now has 83 KB; a Pico 2 W goes from 105 KB to 181 KB. Every 2 KB of the firmware is checked before it is sent, so a damaged copy stops the radio from starting, with the reason in the log, instead of reaching the chip. Starting the radio borrows about 3.3 KB of memory while it unpacks and gives it back. Tested on a computer against the original firmware; not yet run on a board, so how much longer the radio takes to start is not measured yet.
+
 ### Fixed
 
 - `factoryreset` said that reflashing the firmware clears the accounts. It does not; the files are kept. The way back from a forgotten password is a maintenance boot (`safeboot`), where sudo at the console does not ask, and `PERMISSIONS.md` says what to do when nobody can sign in at all.
