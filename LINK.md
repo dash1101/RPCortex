@@ -10,7 +10,9 @@ prompts, suggestions. A program reading that has to guess where a command's outp
 starts and ends. Link mode is the same console with all of that switched off and
 every answer framed, so nothing has to be guessed.
 
-Protocol version: **1**.
+Protocol version: **2**. Version 2 added `AUTH` and the `sudo` error, for firmware
+where installing a package or changing `/os` or `/etc` needs sudo (PERMISSIONS.md).
+A host reads `proto` from `HELLO` and does not send `AUTH` to a device that says 1.
 
 ## Entering and leaving
 
@@ -90,6 +92,8 @@ Error codes:
 | `timeout` | the host went quiet in the middle of a transfer |
 | `cancelled` | the host sent `CANCEL` |
 | `io` | the filesystem refused a read or write |
+| `sudo` | the request needs sudo and the session has no grace: send `AUTH`, then the request again (protocol 2) |
+| `auth` | `AUTH` was given the wrong password, or the account has none (protocol 2) |
 
 Binary data travels as **standard base64** (RFC 4648 alphabet, `=` padding) in
 `D` lines and frames. Each `D` carries at most the `chunk` number of bytes from
@@ -103,7 +107,7 @@ Sent by the device unprompted on entering, and again on request.
 
 ```
 > HELLO
-< 0x1E HELLO proto=1 os=v2.01-beta build=552 board=pico2_w arch=armv8m user=root cwd=/ chunk=768 exec_max=32768
+< 0x1E HELLO proto=2 os=v2.03-beta build=600 board=pico2_w arch=armv8m user=root cwd=/ chunk=768 exec_max=32768
 < 0x1E OK
 ```
 
@@ -144,9 +148,18 @@ command finishes.
 - While a command runs, the host must not send anything except a single `0x03`
   byte, which interrupts it the way Ctrl+C does at the prompt.
 - An interrupted command ends `OK rc=1`, with `[?] Interrupted.` in its output.
-- A command that stops to ask a question (a yes/no confirmation, a password)
-  waits for keys the host is not sending. Use the terminal for those, or send
-  `0x03` to give up.
+- A command that stops to ask a question (a yes/no confirmation) waits for keys
+  the host is not sending. Use the terminal for those, or send `0x03` to give up.
+- sudo never asks for a password here: the keys come from a program. A command
+  with `sudo` in front runs while the session has a grace (`AUTH` starts one).
+  Without one, that command fails as it would with no password, the rest of the
+  line goes on as it would after any failure (`&&` stops, `;` does not), and the
+  final frame is `ERR sudo` instead of `OK`, after the `OUT` frames. Send `AUTH`,
+  then the same `EXEC` again. Whatever else the line did has then run twice, so a
+  host sends one command per `EXEC` when it may need sudo.
+- A command that changes the system and has no `sudo` in front is refused as it
+  would be at the prompt: `OK rc=1`, with `'pkg install' changes the system. Run
+  it with sudo: ...` in its output. Put `sudo` in front.
 
 ### PUT <size> <sha256> <path>
 
@@ -169,6 +182,9 @@ Writes a file. `sha256` is 64 hex characters of the whole file's digest.
   and stall the other core, so this is what keeps the console from overflowing.
 - When `size` bytes have arrived it compares the digest. On a mismatch it removes
   the file and answers `ERR digest`.
+- A path in `/os` or `/etc` needs sudo. An admin with a grace (from `AUTH`) may
+  write there; without one the answer is `ERR sudo` before `READY`. An ordinary
+  account gets `ERR perm` either way.
 - The host may send `CANCEL` instead of a `D` line: the partial file is removed
   and the answer is `ERR cancelled`.
 - 10 seconds with no line from the host ends the transfer with `ERR timeout`,
@@ -219,6 +235,30 @@ the name, which may contain spaces. `.` and `..` are not listed.
 ```
 
 `ERR nofile` if it does not exist.
+
+### AUTH <password> (protocol 2)
+
+Proves the signed-in account's password, the way typing it at sudo's prompt
+would, and starts the grace for this session: for the next 5 minutes (each use
+starts it again) `EXEC sudo ...` runs without asking, and `PUT` may write into
+`/os` and `/etc`. The password is standard base64 of its UTF-8 bytes.
+
+```
+> AUTH cm9vdHB3
+< 0x1E OK grace=300
+```
+
+- `grace` is the number of seconds a pass counts for.
+- `ERR auth` for a wrong password, after a pause of a second; every third wrong
+  one in a row is logged. `ERR auth` too for an account with no password, and
+  `ERR perm` for one that is not an admin: neither can use sudo at all.
+- The grace belongs to the console's session, so it also holds for `sudo` typed at
+  the prompt after leaving link mode, and `sudo -k` (in an `EXEC` or at the
+  prompt) ends it.
+- A host asks for the password once (`rpc` takes `$RPC_PASSWORD` if it is set),
+  sends `AUTH` when a request first comes back `ERR sudo`, and repeats that
+  request. Keeping the password for the rest of the connection lets it send
+  `AUTH` again if the grace runs out in the middle of a long job.
 
 ### BYE
 

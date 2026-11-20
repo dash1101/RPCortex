@@ -34,7 +34,7 @@ class TestHelloAndExec(LinkBase):
     def test_hello_on_entry(self):
         h = self.d.hello
         self.assertEqual(self.d.mode, "link")
-        self.assertEqual(h["proto"], "1")
+        self.assertEqual(h["proto"], "2")
         self.assertEqual(h["board"], "pico2_w")
         self.assertEqual(self.link.chunk, 768)
         self.assertEqual(self.link.exec_max, 32768)
@@ -237,6 +237,38 @@ class TestGuest(LinkBase):
             self.d.put(b"x", "/etc/nope")
         self.assertEqual(cm.exception.code, "perm")
         self.d.put(b"mine", "/home/guest/mine.txt")
+
+
+class TestAuth(LinkBase):
+    def test_auth_and_the_grace(self):
+        r = self.link.exec("pkg install /os/pkg/greet.app")
+        self.assertEqual(r.rc, 1)
+        self.assertIn("Run it with sudo", r.text)
+        with self.assertRaises(LinkError) as cm:
+            self.link.exec("sudo -v")
+        self.assertEqual(cm.exception.code, "sudo")
+        with self.assertRaises(LinkError) as cm:
+            self.link.put(b"x", "/etc/x")
+        self.assertEqual(cm.exception.code, "sudo")
+        with self.assertRaises(LinkError) as cm:
+            self.link.auth("wrong")
+        self.assertEqual(cm.exception.code, "auth")
+        self.assertEqual(self.link.auth("rootpw"), 300)
+        self.assertEqual(self.link.exec("sudo -v").rc, 0)
+        self.link.put(b"x", "/etc/x")
+        self.assertEqual(self.dev.fs.files["/etc/x"], b"x")
+        self.assertEqual(self.link.exec("sudo pkg install /os/pkg/greet.app").rc, 0)
+        self.assertEqual(self.link.exec("sudo -k").rc, 0)
+        with self.assertRaises(LinkError):
+            self.link.put(b"y", "/etc/x")
+        self.assertEqual(self.link.proto, 2)
+
+    def test_device_retries_once(self):
+        self.d.sudo_password = "rootpw"
+        self.d.put(b"z", "/os/z")
+        self.assertEqual(self.dev.fs.files["/os/z"], b"z")
+        self.assertEqual(self.dev.auths, ["rootpw"])
+        self.assertEqual(len([r for r in self.dev.requests if r.startswith("PUT")]), 2)
 
 
 class TestFrameReader(unittest.TestCase):

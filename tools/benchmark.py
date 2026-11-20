@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Measure a board running RPCortex v2, so two firmwares can be compared.
 
-    tools/benchmark.py run  [--port P] [--ip ADDR] [--wifi SSID] --out result.json
+    tools/benchmark.py run  [--port P] [--ip ADDR] [--wifi SSID] [--password-file F] --out result.json
     tools/benchmark.py compare before.json after.json      a table with the change in percent
 
 `run` measures the board it finds, whatever firmware it runs. It works through
@@ -23,6 +23,11 @@ What it measures:
 Destructive on purpose, within limits: it removes and reinstalls packages,
 writes in /tmp, and removes /usb (which a correct firmware refuses, and which
 is put back). Run it on a test board.
+
+Removing and installing packages needs sudo on firmware that has it (link
+protocol 2), which asks for the signed-in account's password. Give it with
+--password-file (a file holding the password, kept out of the repository);
+without one, those steps are skipped and the result says so.
 """
 import argparse
 import hashlib
@@ -48,13 +53,17 @@ def log(msg):
     print(msg, flush=True)
 
 
+# The account's password for sudo, from --password-file; None without one.
+SUDO_PASSWORD = None
+
+
 def connect(port, wait=60):
     """A Device, waiting for the board to come back if it is restarting."""
     end = time.time() + wait
     last = None
     while time.time() < end:
         try:
-            return _device.Device.open(port)
+            return _device.Device.open(port, sudo_password=SUDO_PASSWORD)
         except Exception as e:                       # the port is coming and going
             last = e
             time.sleep(1.0)
@@ -193,10 +202,20 @@ def scenarios(port, dev):
 
 # --- the run ----------------------------------------------------------------
 
+def can_sudo(dev):
+    """Whether the package steps can run: firmware without sudo, or a password."""
+    return not dev.has_sudo or SUDO_PASSWORD is not None
+
+
 def cmd_run(a):
-    res = {"when": time.strftime("%Y-%m-%d %H:%M"), "measures": {}, "scenarios": []}
+    global SUDO_PASSWORD
+    res = {"when": time.strftime("%Y-%m-%d %H:%M"), "measures": {}, "scenarios": [],
+           "skipped": []}
     M = res["measures"]
     port = a.port
+    if a.password_file:
+        with open(a.password_file) as f:
+            SUDO_PASSWORD = f.read().rstrip("\r\n")
 
     log("echo")
     M["echo_bytes_per_key"] = round(echo_bytes(port), 1)
@@ -207,13 +226,24 @@ def cmd_run(a):
     res["version"] = t.strip().splitlines()[0] if t.strip() else "?"
     log("firmware: %s (%s)" % (res["version"], dev.mode))
 
+    sudo_ok = can_sudo(dev)
+    if not sudo_ok:
+        log("    this firmware needs sudo to remove or install packages, and no --password-file "
+            "was given: those steps are skipped")
+        res["skipped"] += ["clean state (pkg remove)", "package_install_s", "cpu", "scenarios"]
     # The SSH server (v2.03-beta on) holds memory and a task. The first
     # release had none, so it is off for the measurements and put back after.
+    # Turning it off and on needs sudo where the firmware has it.
     dev, rc, t, _ = run_cmd(port, dev, "ssh server status")
     ssh_was_on = "Server on" in t
     res["ssh_server_was_on"] = ssh_was_on
-    if ssh_was_on:
-        run_cmd(port, dev, "ssh server off")
+    ssh_turned_off = False
+    if ssh_was_on and sudo_ok:
+        run_cmd(port, dev, dev.sudo_line("ssh server off"))
+        ssh_turned_off = True
+    elif ssh_was_on:
+        log("    the SSH server is on, and turning it off needs sudo: measured with it on")
+        res["skipped"].append("ssh server off")
     # Rejoining Wi-Fi at boot starts the radio and a join task before the
     # memory is read; the first release's run had it off. Off here too.
     dev, rc, t, _ = run_cmd(port, dev, "wifi auto")
@@ -224,8 +254,8 @@ def cmd_run(a):
 
     log("clean state: no packages, then a restart")
     dev, rc, t, _ = run_cmd(port, dev, "pkg list")
-    for name in re.findall(r"^\s+(\S+)\s+\d", t, re.M):
-        run_cmd(port, dev, "pkg remove " + name)
+    for name in (re.findall(r"^\s+(\S+)\s+\d", t, re.M) if sudo_ok else []):
+        run_cmd(port, dev, dev.sudo_line("pkg remove " + name))
     try:
         dev.reboot()
     except Exception:
@@ -282,9 +312,23 @@ def cmd_run(a):
     M["upload_kbps"] = round(64 / (time.time() - s), 1)
     run_cmd(port, dev, "rm /tmp/bench.bin")
 
+    if not sudo_ok:
+        log("package install, cpu and scenarios: skipped (sudo needs --password-file)")
+        dev, rc, t, _ = run_cmd(port, dev, "wifi connect " + a.wifi, timeout=60)
+        if auto_was_on:
+            dev, *_ = run_cmd(port, dev, "wifi auto on")
+        try:
+            dev.close()
+        except Exception:
+            pass
+        with open(a.out, "w") as f:
+            json.dump(res, f, indent=2)
+        log("written to %s (with steps skipped: %s)" % (a.out, ", ".join(res["skipped"])))
+        return
+
     log("package install from the repository")
     s = time.time()
-    dev, rc, t, _ = run_cmd(port, dev, "pkg install " + a.repo_package, timeout=300)
+    dev, rc, t, _ = run_cmd(port, dev, dev.sudo_line("pkg install " + a.repo_package), timeout=300)
     if rc == 0 and "nstalled" in t:
         M["package_install_s"] = round(time.time() - s, 1)
         dev, rc, t, _ = run_cmd(port, dev, "pkg list")
@@ -294,7 +338,7 @@ def cmd_run(a):
         log("    install failed: %s" % t.strip()[-120:])
 
     log("cpu")
-    dev, rc, t, _ = run_cmd(port, dev, "pkg install bench", timeout=120)
+    dev, rc, t, _ = run_cmd(port, dev, dev.sudo_line("pkg install bench"), timeout=120)
     runs = {}
     for _ in range(3):                      # the median of three, not one run
         dev, rc, t, _ = run_cmd(port, dev, "bench", timeout=240)
@@ -311,11 +355,11 @@ def cmd_run(a):
     res["bench_output"] = t[-600:]
 
     log("scenarios")
-    dev, rc, t, _ = run_cmd(port, dev, "pkg install greet", timeout=120)
+    dev, rc, t, _ = run_cmd(port, dev, dev.sudo_line("pkg install greet"), timeout=120)
     dev, res["scenarios"] = scenarios(port, dev)
     dev, rc, t, _ = run_cmd(port, dev, "wifi connect " + a.wifi, timeout=60)
-    if ssh_was_on:
-        dev, *_ = run_cmd(port, dev, "ssh server on")
+    if ssh_turned_off:
+        dev, *_ = run_cmd(port, dev, dev.sudo_line("ssh server on"))
     if auto_was_on:
         dev, *_ = run_cmd(port, dev, "wifi auto on")
     try:
@@ -372,6 +416,9 @@ def cmd_compare(a):
             ch += " (%.0fx faster)" % (o / n) if unit in ("s", "ms") else ""
         fmt = lambda v: "n/a" if v is None else ("%s %s" % (v, unit)).strip()
         print("| %s | %s | %s | %s |" % (label, fmt(o), fmt(n), ch))
+    for which, r in (("Before", old), ("After", new)):
+        if r.get("skipped"):
+            print("%s: skipped %s (no --password-file for sudo).\n" % (which, ", ".join(r["skipped"])))
     so = old.get("scenarios", []); sn = new.get("scenarios", [])
     po = sum(1 for s in so if s["pass"]); pn = sum(1 for s in sn if s["pass"])
     print("\nReliability scenarios: %d of %d before, %d of %d after.\n" % (po, len(so), pn, len(sn)))
@@ -392,6 +439,9 @@ def main():
     r.add_argument("--port")
     r.add_argument("--ip", help="the board's address, if wifi status does not show it")
     r.add_argument("--wifi", default="", help="a saved network to join")
+    r.add_argument("--password-file",
+                   help="a file holding the signed-in account's password, for the sudo that "
+                        "removing and installing packages needs (without it those steps are skipped)")
     r.add_argument("--repo-package", default="novad1",
                    help="a package to time installing from the repository (download included)")
     r.add_argument("--out", required=True)

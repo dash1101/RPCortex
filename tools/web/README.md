@@ -17,7 +17,17 @@ Any static server works as long as the address is `http://localhost` or
 `file://` path cannot load its own modules either.
 
 Add `?demo` to the address (`http://localhost:8765/?demo`) to try the page
-against a pretend device in the page itself, with no board attached.
+against a pretend device in the page itself, with no board attached. Its account's
+password, which installing a package asks for, is `demo`.
+
+## sudo
+
+On firmware with link protocol 2, installing a package and changing anything in
+`/os` or `/etc` need sudo (PERMISSIONS.md). The first time the device says so, the
+page asks for the signed-in account's password, sends it with `AUTH` (LINK.md) and
+does the request again. A wrong password is asked for again, three times at most.
+The password is kept for as long as the page is connected, so a long job is not
+stopped by the device's five minutes running out. Older firmware is never asked.
 
 ## Which browsers
 

@@ -41,6 +41,18 @@ When the device is at a login prompt, `--user NAME` logs in; the password is
 asked for, or read from `RPC_PASSWORD`. Without `--user` nothing is typed at the
 prompt and `rpc` says what it found.
 
+## sudo
+
+On firmware with link protocol 2, installing a package and changing anything in
+`/os` or `/etc` (`put`, `rm`, `mkdir`, `mv` there, and `restore`) need sudo, which
+asks for the signed-in account's password (PERMISSIONS.md). `rpc` asks for it the
+first time the device says so, sends it with `AUTH` (LINK.md) and repeats the
+request; a typed password that is wrong is asked for again, three times at most.
+`RPC_PASSWORD`, when it is set, is used instead of asking, and tried once.
+`--sudo` gives it before anything else, so a long job is not stopped half way to
+ask. `rpc exec` runs the line as written: `rpc exec "sudo pkg remove gps"`.
+Firmware without sudo is never asked.
+
 Every command leaves the device at its normal prompt when it finishes,
 including after an error or Ctrl+C. Lines the device's background services
 print while `rpc` works are shown on stderr as `[device] ...`; `-q` hides them
@@ -134,6 +146,10 @@ with Device.open() as dev:              # or Device.open("/dev/ttyACM0", user="r
 
 Every error is an `rpctool.RpcError`; a refusal from the device is a
 `LinkError` with the protocol's error `code` (`nofile`, `perm`, `digest`, …).
+`Device(..., sudo_password=...)` takes the account's password (or a function that
+asks for it) for sudo; `dev.sudo_line("pkg install x")` puts `sudo` in front where
+the firmware has it, and `exec` and `put` send `AUTH` and try again when the
+device asks for sudo.
 `Device` takes a `Transport`, which wraps anything shaped like pyserial's
 `Serial` (`read`, `write`, `in_waiting`, `close`), so a script can hand it
 something other than a real port.

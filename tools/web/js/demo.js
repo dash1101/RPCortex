@@ -14,6 +14,8 @@ class DemoPort {
     }
     if (!this.dev) {
       this.dev = new MockDevice({ noise: 0.03 }).start();
+      // What sudo asks for in the demo; the page says so when it asks.
+      this.dev.users.root = "demo";
       this.dev.files.set("/home/root/hello.txt", new TextEncoder().encode("Hello from the demo device.\n"));
     }
     const dev = this.dev;

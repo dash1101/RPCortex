@@ -4,6 +4,7 @@
     tools/devsmoke.py                    # the board on /dev/ttyACM0
     tools/devsmoke.py --port /dev/ttyACM1
     tools/devsmoke.py --no-reboot        # start from the shell that is there
+    tools/devsmoke.py --password-file F  # the account's password, for sudo
 
 It reboots the board, checks the version, installs and runs a package,
 brings the Nova D1 screen up, takes a picture of it, and reads the memory
@@ -54,6 +55,11 @@ REQUIREMENTS
 pyserial. The board must boot to a shell without a login prompt, or the
 first command will be answered by the password prompt and every check will
 fail at once.
+
+Installing a package needs sudo on firmware that has it, which asks for the
+signed-in account's password. --password-file names a file holding it (keep
+it out of the repository); without one, the install is skipped and says so,
+and the package is run only if it was already installed.
 """
 
 import argparse
@@ -139,6 +145,28 @@ class Board:
         while lines and (not lines[-1].strip() or PROMPT.search(lines[-1].encode())):
             lines.pop()
         return "\n".join(ln for ln in lines if ln.strip()).strip()
+
+    def sudo_v(self, password, wait=10.0):
+        """`sudo -v`, answering its password prompt. True when it was taken."""
+        self.ser.reset_input_buffer()
+        self.ser.write(b"sudo -v\r")
+        self.ser.flush()
+        buf = bytearray()
+        start = time.time()
+        while time.time() - start < wait and b"Password for" not in ANSI.sub(b"", bytes(buf)):
+            buf.extend(self.ser.read(4096))
+        if b"Password for" not in ANSI.sub(b"", bytes(buf)):
+            return False
+        self.ser.write(password.encode() + b"\r")
+        self.ser.flush()
+        out = bytearray()
+        start = time.time()
+        while time.time() - start < wait:
+            out.extend(self.ser.read(4096))
+            clean = ANSI.sub(b"", bytes(out))
+            if PROMPT.search(clean.split(b"\n")[-1]):
+                break
+        return b"will not ask again" in ANSI.sub(b"", bytes(out))
 
     def wake(self):
         """Get to a clean prompt, whatever state the line editor is in."""
@@ -227,7 +255,7 @@ def check_version(b, r):
     return m.group(1)
 
 
-def check_install_and_run(b, r, path, name, expect):
+def check_install_and_run(b, r, path, name, expect, password=None):
     """A real install round trip, then run what it installed.
 
     This is the whole loader on real silicon: read the ELF off littlefs,
@@ -237,6 +265,17 @@ def check_install_and_run(b, r, path, name, expect):
     that sentence and not one of the verbs.
     """
     out = b.send("pkg install {}".format(path), wait=90.0)
+    if "Run it with sudo" in out:
+        # Firmware with sudo. Proven once with -v, then the install with sudo.
+        if not password:
+            r.note("pkg install {}: skipped, it needs sudo (--password-file)".format(name))
+            out = b.send(name, wait=30.0)
+            return r.check(expect in out, "{} runs and prints".format(name),
+                           out.replace("\n", " | ")[:90])
+        if not r.check(b.sudo_v(password), "sudo -v takes the password", "",
+                       fail_detail="the password was not accepted"):
+            return False
+        out = b.send("sudo pkg install {}".format(path), wait=90.0)
     if "Installed" not in out and "loaded" not in out:
         r.fail("pkg install {}".format(name), out.replace("\n", " | ")[:110])
         return False
@@ -355,6 +394,9 @@ def main():
     ap.add_argument("--no-reboot", action="store_true",
                     help="use the shell that is already there instead of "
                          "restarting the board first")
+    ap.add_argument("--password-file", default=None,
+                    help="a file holding the signed-in account's password, for "
+                         "the sudo that installing needs")
     ap.add_argument("--greet", default="/greet.app",
                     help="a package file on the DEVICE to install (default: "
                          "/greet.app)")
@@ -376,7 +418,11 @@ def main():
             return 1
 
     check_version(b, r)
-    check_install_and_run(b, r, args.greet, "greet", "hello from the greet package")
+    password = None
+    if args.password_file:
+        with open(args.password_file) as f:
+            password = f.read().rstrip("\r\n")
+    check_install_and_run(b, r, args.greet, "greet", "hello from the greet package", password)
     check_novad1_service(b, r)
     check_shot(b, r)
     check_meminfo(b, r)

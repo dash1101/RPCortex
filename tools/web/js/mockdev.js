@@ -82,8 +82,19 @@ function b64(bytes) {
 }
 
 export class MockDevice {
-  constructor({ link = true, login = false, crlf = true, noise = 0, board = "pico2_w", user = "root" } = {}) {
+  constructor({ link = true, login = false, crlf = true, noise = 0, board = "pico2_w", user = "root",
+                proto = 2 } = {}) {
     this.linkSupported = link;
+    // Protocol 2 is the firmware with sudo (core/sudo.cpp): `pkg install` and
+    // a PUT into /os or /etc need it, EXEC never asks for a password and says
+    // ERR sudo instead, and AUTH starts the grace. 1 is the firmware before.
+    this.proto = link ? proto : 1;
+    this.admins = new Set(["root"]);
+    this.grace = false;
+    this.elevated = false;
+    this.noprompt = false;
+    this.sudoBlocked = false;
+    this.auths = [];
     this.crlf = crlf;
     this.noise = noise;
     this.board = board;
@@ -257,8 +268,35 @@ export class MockDevice {
     return status;
   }
 
+  static isSystem(p) { return p === "/os" || p === "/etc" || p.startsWith("/os/") || p.startsWith("/etc/"); }
+
+  needsSudo(p) {
+    return this.proto >= 2 && this.admins.has(this.user) && MockDevice.isSystem(p) && !this.elevated;
+  }
+
+  async sudo(a) {
+    if (a.length < 2) { this.out("Usage: sudo <command> [args...]\n"); return 1; }
+    if (a[1] === "-k") { this.grace = false; return 0; }
+    if (!this.admins.has(this.user)) {
+      this.err(`${this.user} is not an admin. sudo cannot grant what the account does not have.`);
+      return 1;
+    }
+    if (this.proto < 2) return this.command(a.slice(1));
+    if (!this.elevated && !this.grace) {
+      // Only link mode reaches this mock's shell, and EXEC never asks.
+      this.sudoBlocked = true;
+      this.err("sudo needs a password and cannot ask for one here; run `sudo -v` first.");
+      return 1;
+    }
+    if (a[1] === "-v") return 0;
+    const was = this.elevated;
+    this.elevated = true;
+    try { return await this.command(a.slice(1)); } finally { this.elevated = was; }
+  }
+
   async command(a) {
     const fs = this.files, dirs = this.dirs, r = (p) => resolve(this.cwd, p);
+    if (a[0] === "sudo") return this.sudo(a);
     switch (a[0]) {
       case "echo": this.out(a.slice(1).join(" ") + "\n"); return 0;
       case "whoami": this.out(this.user + "\n"); return 0;
@@ -308,6 +346,10 @@ export class MockDevice {
         return 0;
       }
       case "pkg": {
+        if (this.proto >= 2 && (a[1] === "install" || a[1] === "remove") && !this.elevated) {
+          this.err(`'pkg ${a[1]}' changes the system. Run it with sudo: sudo ${a.join(" ")}`);
+          return 1;
+        }
         if (a[1] === "list") { this.info("Installed packages:"); for (const k of Object.keys(this.installed).sort()) this.out(`  ${k.padEnd(14)} ${this.installed[k]}\n`); return 0; }
         if (a[1] === "install" && a[2]) {
           const p = r(a[2]);
@@ -368,7 +410,7 @@ export class MockDevice {
 
   hello() {
     const cwd = this.cwd.replace(/%/g, "%25").replace(/ /g, "%20");
-    this.frame(`HELLO proto=1 os=v2.01-beta build=554 board=${this.board} arch=${/^pico(_w)?$/.test(this.board) ? "armv6m" : "armv8m"} user=${this.user} cwd=${cwd} chunk=768 exec_max=32768`);
+    this.frame(`HELLO proto=${this.proto} os=v2.01-beta build=554 board=${this.board} arch=${/^pico(_w)?$/.test(this.board) ? "armv6m" : "armv8m"} user=${this.user} cwd=${cwd} chunk=768 exec_max=32768`);
   }
 
   async link() {
@@ -391,6 +433,7 @@ export class MockDevice {
       else if (verb === "GET") await this.lGet(rest);
       else if (verb === "LS") this.lLs(rest);
       else if (verb === "STAT") this.lStat(rest);
+      else if (verb === "AUTH" && this.proto >= 2) this.lAuth(rest);
       else if (verb === "BYE") { this.byes++; this.frame("OK"); break; }
       else this.frame("ERR badreq unknown verb " + verb);
     }
@@ -402,18 +445,35 @@ export class MockDevice {
 
   async lExec(line) {
     this.capture = [];
+    this.sudoBlocked = false;
     let rc;
     try { rc = await this.runLine(line); } catch (e) { rc = 1; }
     const out = this.capture.reduce(concat, new Uint8Array(0));
     this.capture = null;
     for (let i = 0; i < out.length; i += 768) this.frame("OUT " + b64(out.subarray(i, i + 768)));
+    if (this.sudoBlocked) {
+      this.sudoBlocked = false;
+      return this.frame("ERR sudo sudo needs a password: send AUTH, then the request again");
+    }
     this.frame(`OK rc=${rc ? 1 : 0} truncated=0`);
+  }
+
+  lAuth(rest) {
+    let pw = null;
+    try { pw = rest ? dec.decode(Uint8Array.from(atob(rest), (c) => c.charCodeAt(0))) : null; } catch (e) { pw = null; }
+    if (pw === null) return this.frame("ERR badreq AUTH <password in base64>");
+    this.auths.push(pw);
+    if (!this.admins.has(this.user)) return this.frame(`ERR perm ${this.user} is not an admin`);
+    if (pw !== this.users[this.user]) return this.frame("ERR auth wrong password");
+    this.grace = true;
+    this.frame("OK grace=300");
   }
 
   async lPut(rest) {
     const m = /^(\d+) ([0-9a-fA-F]{64}) (.+)$/.exec(rest);
     if (!m) return this.frame("ERR badreq PUT <size> <sha256> <path>");
     const size = Number(m[1]); const p = resolve(this.cwd, m[3]);
+    if (this.needsSudo(p) && !this.grace) return this.frame(`ERR sudo ${p} is part of the system: send AUTH first`);
     if (this.dirs.has(p)) return this.frame(`ERR nofile ${p} is a directory`);
     if (!this.dirs.has(dirname(p))) return this.frame(`ERR io could not open ${p} for writing`);
     this.frame("READY chunk=768");

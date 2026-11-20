@@ -76,6 +76,15 @@ class Ctx(object):
             return getpass.getpass("Password for {} on the device: ".format(self.args.user))
         return None
 
+    def _sudo_password(self):
+        """The signed-in account's password, for sudo, asked for at the
+        terminal. ($RPC_PASSWORD, when it is set, is used instead; it is the
+        same account's.)"""
+        if sys.stdin.isatty():
+            who = self.dev.hello.get("user", "this account") if self.dev else "this account"
+            return getpass.getpass("Password for {} on the device (sudo): ".format(who))
+        return None
+
     def port(self):
         return transport.choose_port(getattr(self.args, "port", None))
 
@@ -83,8 +92,11 @@ class Ctx(object):
         if self.dev is None:
             path = self.port()
             ser = transport.open_serial(path)
+            # A password from the environment is a string, tried once; one
+            # typed is asked for again if the device refuses it.
             dev = Device(transport.Transport(ser, path), user=getattr(self.args, "user", None),
-                         password=self._password, timing=self.timing, on_noise=self._noise)
+                         password=self._password, timing=self.timing, on_noise=self._noise,
+                         sudo_password=os.environ.get("RPC_PASSWORD") or self._sudo_password)
             try:
                 dev.connect()
             except BaseException:
@@ -94,6 +106,12 @@ class Ctx(object):
             if dev.mode == "legacy":
                 self.note("note: this firmware has no link mode; working through the prompt "
                           "(legacy: no exit status from files, no get, ls or stat)")
+            if getattr(self.args, "sudo", False):
+                # Up front, so a long job is not stopped half way to ask.
+                if dev.has_sudo:
+                    dev.authenticate()
+                else:
+                    self.note("note: this firmware has no sudo; --sudo does nothing")
         return self.dev
 
     def progress(self, label):
@@ -651,6 +669,9 @@ def _common(p, suppress, short_port=True, port=True):
                         "(password asked for, or $RPC_PASSWORD)")
     p.add_argument("-q", "--quiet", action="store_true", default=d(False),
                    help="no progress or notes, only results and errors")
+    p.add_argument("--sudo", action="store_true", default=d(False),
+                   help="give the device the password for sudo before starting (it is "
+                        "otherwise asked for when first needed; $RPC_PASSWORD is used if set)")
 
 
 def build_parser():

@@ -12,7 +12,12 @@ rather than from memory:
     errors, CANCEL, Ctrl+C, the 10 s transfer timeout, LS, STAT, EXEC with
     captured output and rc;
   * the old `put` command with one 0x06 per 256 bytes (os/shell/shell.cpp);
-  * firmware older than link mode, where `link` is not a command.
+  * firmware older than link mode, where `link` is not a command;
+  * sudo (protocol 2, core/sudo.cpp): `pkg install` and `pkg remove` and any
+    change in /os or /etc need it; `sudo` at the prompt asks for the password,
+    in link mode it never asks and EXEC answers ERR sudo instead; AUTH starts
+    the grace, which also lets PUT write into /os and /etc. proto=1 is the
+    firmware from before, where none of that exists.
 
 Output can end lines with CRLF, as the SDK's console does, and background
 lines can be dropped between frames, as services do.
@@ -238,8 +243,14 @@ class MockDevice(object):
 
     def __init__(self, link=True, login=False, crlf=True, noise=0.0, partial_noise=False,
                  seed=1, board="pico2_w", user="root", xfer_timeout=10.0, gone_after=3.0,
-                 online=False, repaint=True, capacity=1024 * 1024):
+                 online=False, repaint=True, capacity=1024 * 1024, proto=2):
         self.link_supported = link
+        self.proto = proto if link else 1      # no link mode, no sudo either
+        self.grace = False            # sudo's grace (AUTH, sudo -v, a typed password)
+        self.elevated = False         # inside `sudo <command>`
+        self.noprompt = False         # in an EXEC: sudo never asks
+        self.sudo_blocked = False
+        self.auths = []               # every password AUTH was given
         self.need_login = login
         self.crlf = crlf
         self.noise = noise
@@ -568,6 +579,8 @@ class MockDevice(object):
 
     def run_command(self, args):
         name = args[0]
+        if name == "sudo":
+            return self.c_sudo(args)
         fn = getattr(self, "c_" + name, None)
         if name == "link" and not self.link_supported:
             fn = None
@@ -578,6 +591,58 @@ class MockDevice(object):
 
     # --- permissions ------------------------------------------------------
 
+    @staticmethod
+    def is_system(p):
+        return p in ("/os", "/etc") or p.startswith("/os/") or p.startswith("/etc/")
+
+    def needs_sudo(self, p):
+        """An admin changing /os or /etc without sudo (protocol 2 only)."""
+        return (self.proto >= 2 and self.user in self.admins and self.is_system(p)
+                and not self.elevated)
+
+    def sudo_auth(self, what="use sudo"):
+        if self.elevated or self.grace:
+            return True
+        if self.noprompt:
+            self.sudo_blocked = True
+            self.out_err("sudo needs a password and cannot ask for one here; run `sudo -v` first.")
+            return False
+        for _ in range(3):
+            pw = self.read_field("Password for {}, to {}".format(self.user, what), secret=True)
+            if pw and pw == self.users.get(self.user):
+                self.grace = True
+                return True
+            self.out_err("Wrong password.")
+        return False
+
+    def c_sudo(self, a):
+        if len(a) < 2:
+            self.out("Usage: sudo <command> [args...]\n")
+            return 1
+        if self.proto < 2:
+            # Before sudo asked for anything: an admin's word was enough.
+            if self.user not in self.admins:
+                self.out_err("{} is not an admin. sudo cannot grant what the account does not have."
+                             .format(self.user))
+                return 1
+            return self.run_command(a[1:])
+        if a[1] == "-k":
+            self.grace = False
+            return 0
+        if self.user not in self.admins:
+            self.out_err("{} is not an admin. sudo cannot grant what the account does not have."
+                         .format(self.user))
+            return 1
+        if a[1] == "-v":
+            return 0 if self.sudo_auth() else 1
+        if not self.sudo_auth("run '{}'".format(a[1])):
+            return 1
+        was, self.elevated = self.elevated, True
+        try:
+            return self.run_command(a[1:])
+        finally:
+            self.elevated = was
+
     def may_read(self, p):
         if self.user == "root":
             return True
@@ -585,7 +650,7 @@ class MockDevice(object):
 
     def may_change(self, p):
         if self.user == "root":
-            return True
+            return not self.needs_sudo(p)
         return p.startswith("/home/{}/".format(self.user)) or p.startswith("/tmp/")
 
     # --- commands ---------------------------------------------------------
@@ -761,6 +826,18 @@ class MockDevice(object):
             for k in sorted(self.installed):
                 self.out("  {:<14} {}\n".format(k, self.installed[k]))
             return 0
+        if self.proto >= 2 and sub in ("install", "remove") and not self.elevated:
+            self.out_err("'pkg {}' changes the system. Run it with sudo: sudo {}".format(
+                sub, " ".join(a)))
+            return 1
+        if sub == "remove" and len(a) > 2:
+            if a[2] not in self.installed:
+                self.out_err("'{}' is not installed.".format(a[2]))
+                return 1
+            del self.installed[a[2]]
+            self.fs.files.pop("/os/pkg/{}.app".format(a[2]), None)
+            self.out_ok("Removed {}.".format(a[2]), "pkg")
+            return 0
         if sub == "install" and len(a) > 2:
             arg = a[2]
             if "/" not in arg:
@@ -867,8 +944,9 @@ class MockDevice(object):
         arch = ""
         if getattr(self, "send_arch", True):
             arch = "arch={} ".format("armv6m" if self.board in ("pico", "pico_w") else "armv8m")
-        self.frame("HELLO proto=1 os=v2.01-beta build=554 board={} {}user={} cwd={} chunk={} "
-                   "exec_max={}".format(self.board, arch, self.user, cwd, CHUNK, EXEC_MAX))
+        self.frame("HELLO proto={} os=v2.01-beta build=554 board={} {}user={} cwd={} chunk={} "
+                   "exec_max={}".format(self.proto, self.board, arch, self.user, cwd, CHUNK,
+                                        EXEC_MAX))
 
     def c_link(self, a):
         if self.in_link:
@@ -909,6 +987,8 @@ class MockDevice(object):
                     self.l_ls(rest)
                 elif verb == "STAT":
                     self.l_stat(rest)
+                elif verb == "AUTH" and self.proto >= 2:
+                    self.l_auth(rest)
                 elif verb == "BYE":
                     self.byes += 1
                     self.frame("OK")
@@ -932,6 +1012,9 @@ class MockDevice(object):
         if len(p.encode("utf-8", "surrogateescape")) >= 200:
             self.err("toolong", "path too long")
             return None
+        if change and self.needs_sudo(p):
+            self.err("sudo", "{} is part of the system: send AUTH first".format(p))
+            return None
         if not (self.may_change(p) if change else self.may_read(p)):
             self.err("perm", "{} is protected for this account".format(p))
             return None
@@ -941,17 +1024,37 @@ class MockDevice(object):
         if not line:
             return self.err("badreq", "EXEC needs a command")
         self.capture = bytearray()
+        self.noprompt, self.sudo_blocked = True, False
         try:
             rc = self.run_line(line)
         except Logout:
             rc = 0
         finally:
             out, self.capture = bytes(self.capture), None
+            self.noprompt = False
         over = len(out) > EXEC_MAX
         out = out[:EXEC_MAX]
         for i in range(0, len(out), CHUNK):
             self.frame(b"OUT " + base64.b64encode(out[i:i + CHUNK]))
+        if self.sudo_blocked:
+            self.sudo_blocked = False
+            return self.err("sudo", "sudo needs a password: send AUTH, then the request again")
         self.frame("OK rc={} truncated={}".format(1 if rc else 0, 1 if over else 0))
+
+    def l_auth(self, rest):
+        try:
+            pw = base64.b64decode(rest.encode("ascii"), validate=True).decode("utf-8") if rest else None
+        except (binascii.Error, ValueError, UnicodeError):
+            pw = None
+        if pw is None:
+            return self.err("badreq", "AUTH <password in base64>")
+        self.auths.append(pw)
+        if self.user not in self.admins:
+            return self.err("perm", "{} is not an admin".format(self.user))
+        if pw != self.users.get(self.user):
+            return self.err("auth", "wrong password")
+        self.grace = True
+        self.frame("OK grace=300")
 
     def l_put(self, rest):
         parts = rest.split(" ", 2)
@@ -962,7 +1065,14 @@ class MockDevice(object):
         except (binascii.Error, ValueError):
             return self.err("badreq", "PUT <size> <sha256> <path>")
         size, want = int(parts[0]), parts[1].lower()
-        p = self._path(parts[2], True)
+        # The file requests run with sudo while the grace holds (link.cpp's LinkSudo).
+        was = self.elevated
+        if self.grace and self.user in self.admins:
+            self.elevated = True
+        try:
+            p = self._path(parts[2], True)
+        finally:
+            self.elevated = was
         if p is None:
             return
         if self.fs.isdir(p):

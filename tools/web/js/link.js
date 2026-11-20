@@ -1,4 +1,4 @@
-// The link protocol client (LINK.md, protocol 1), for the browser and for Node.
+// The link protocol client (LINK.md, protocols 1 and 2), for the browser and for Node.
 //
 // No DOM here. It talks to a byte stream with two methods:
 //
@@ -202,6 +202,58 @@ export class LinkClient {
     this.busy = null;
     this.dropped = false;
     this._chain = Promise.resolve();
+    // For sudo (protocol 2): async (user, wrongBefore) => the account's
+    // password, or null to give up. Asked when the device first says a request
+    // needs sudo; the password is kept for the rest of the connection.
+    this.sudoPassword = null;
+    this._sudoKnown = null;
+  }
+
+  get proto() { return parseInt(this.hello.proto || "1", 10) || 1; }
+  get hasSudo() { return this.proto >= 2; }
+
+  // `line` as it has to be sent to run with sudo on this firmware.
+  sudoLine(line) { return this.hasSudo ? "sudo " + line : line; }
+
+  // AUTH: prove the signed-in account's password. Resolves to the seconds the
+  // device says it counts for; a wrong one rejects with LinkError "auth".
+  async auth(password) {
+    const { final } = await this.request("AUTH " + b64encode(enc.encode(password)));
+    return parseInt(final.kv().grace || "0", 10);
+  }
+
+  // AUTH, asking for the password if need be: three tries when it is typed.
+  async authenticate() {
+    if (!this.hasSudo) return false;
+    const user = this.hello.user || "this account";
+    let wrong = false;
+    for (let i = 0; i < 3; i++) {
+      const known = this._sudoKnown;
+      const pw = known || (this.sudoPassword ? await this.sudoPassword(user, wrong) : null);
+      if (!pw) throw new RpcError(`This needs sudo on the device, which asks for ${user}'s password.`);
+      try {
+        await this.auth(pw);
+        this._sudoKnown = pw;
+        return true;
+      } catch (e) {
+        if (!(e instanceof LinkError) || e.code !== "auth") throw e;
+        this._sudoKnown = null;
+        wrong = true;
+        if (known) continue;
+      }
+    }
+    throw new RpcError(`Three wrong passwords for ${user}; nothing was done.`);
+  }
+
+  // Run fn; if the device says it needs sudo, AUTH and run it once more.
+  async _withSudo(fn) {
+    try {
+      return await fn();
+    } catch (e) {
+      if (!(e instanceof LinkError) || e.code !== "sudo" || !this.hasSudo) throw e;
+    }
+    await this.authenticate();
+    return fn();
   }
 
   get chunk() {
@@ -330,8 +382,11 @@ export class LinkClient {
   }
 
   // Run a shell line. After `timeout` ms, or when `signal` is aborted, a
-  // Ctrl+C is sent and the result comes back with stopped set.
-  async exec(line, { timeout, signal } = {}) {
+  // Ctrl+C is sent and the result comes back with stopped set. A line the
+  // device says needs sudo is run again after AUTH.
+  exec(line, opts = {}) { return this._withSudo(() => this._exec(line, opts)); }
+
+  async _exec(line, { timeout, signal } = {}) {
     const data = LinkClient.encode("EXEC " + line);
     return this._serial(() => this._guard("exec", async () => {
       await this.s.write(data);
@@ -370,8 +425,11 @@ export class LinkClient {
     }));
   }
 
-  // Write `data` to `path`; resolves to the digest the device confirmed.
-  put(data, path, { progress, signal } = {}) {
+  // Write `data` to `path`; resolves to the digest the device confirmed. A
+  // path the device says needs sudo (in /os or /etc) is tried again after AUTH.
+  put(data, path, opts = {}) { return this._withSudo(() => this._put(data, path, opts)); }
+
+  _put(data, path, { progress, signal } = {}) {
     return this._serial(async () => {
       const digest = await sha256hex(data);
       const req = LinkClient.encode(`PUT ${data.length} ${digest} ${path}`);
@@ -615,13 +673,14 @@ export async function enterLink(stream, { user, password, timing, onNoise } = {}
   throw new RpcError("The device did not answer. Check it is running and that nothing else has the port open.");
 }
 
-// Copy a package to /tmp, `pkg install` it, and remove the copy again.
+// Copy a package to /tmp, `pkg install` it (with sudo where the firmware has
+// it: installing changes the system), and remove the copy again.
 export async function installPackage(link, data, name, { progress, signal } = {}) {
   const base = name.replace(/\.app$/i, "").replace(/[^A-Za-z0-9_.-]/g, "_").slice(0, 40) || "package";
   const tmp = `/tmp/${base}.app`;
   await link.put(data, tmp, { progress, signal });
   try {
-    return await link.exec("pkg install " + quote(tmp));
+    return await link.exec(link.sudoLine("pkg install " + quote(tmp)));
   } finally {
     try { await link.exec("rm " + quote(tmp)); } catch (e) { /* it is in /tmp, emptied at boot */ }
   }

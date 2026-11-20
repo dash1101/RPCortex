@@ -30,8 +30,12 @@ class CliCase(unittest.TestCase):
         os.chdir(self.tmp)
         self.addCleanup(os.chdir, self.cwd)
 
+    # The account's password, for the sudo that installing and writing /etc
+    # needs on current firmware. TestSudo takes it away to see what happens.
+    env = {"RPC_PASSWORD": "rootpw"}
+
     def rpc(self, *argv):
-        rc, out, err = run_cli(self.dev, argv)
+        rc, out, err = run_cli(self.dev, argv, env=self.env)
         time.sleep(0.05)
         self.assertFalse(self.dev.in_link, "rpc {} left the device in link mode".format(argv))
         return rc, out, err
@@ -51,7 +55,7 @@ class TestBasics(CliCase):
         rc, out, err = self.rpc("info")
         text = out.decode()
         self.assertEqual(rc, 0, err)
-        for want in ("link (protocol 1)", "pico2_w", "v2.01-beta", "memory", "280 KB free",
+        for want in ("link (protocol 2)", "pico2_w", "v2.01-beta", "memory", "280 KB free",
                      "largest block 180 KB", "storage"):
             self.assertIn(want, text)
 
@@ -323,8 +327,9 @@ class TestBackup(CliCase):
             if not p.startswith("/os/"):
                 del fresh.fs.files[p]
         fresh.installed = {}
-        rc, out, err = run_cli(fresh, ["restore", dest])
+        rc, out, err = run_cli(fresh, ["restore", dest], env=self.env)
         self.assertEqual(rc, 0, err)
+        self.assertEqual(fresh.auths, ["rootpw"], "restoring /etc and packages asks for sudo once")
         for p in ("/home/root/notes.txt", "/home/root/" + SNOW + ".txt", "/toplevel.txt",
                   "/etc/startup.cfg", "/usb/readme.txt"):
             self.assertEqual(fresh.fs.files[p], self.dev.fs.files[p], p)
@@ -363,6 +368,115 @@ class TestBackup(CliCase):
         self.assertEqual(rc, 1)
         self.assertIn("skipped", err)
         self.assertIn(b"skipped", out)
+
+
+class TestSudo(CliCase):
+    """Installing and changing /os or /etc need sudo on protocol 2 firmware:
+    the device answers ERR sudo, rpc sends AUTH with the account's password,
+    and the request is made again."""
+    env = {}
+
+    def requests(self, prefix):
+        return [r for r in self.dev.requests if r.startswith(prefix)]
+
+    def test_install_without_a_password_is_refused_and_says_how(self):
+        rc, out, err = self.rpc("install", self.local("a.app", make_app("mine")))
+        self.assertEqual(rc, 1)
+        self.assertIn("needs sudo", err)
+        self.assertIn("RPC_PASSWORD", err)
+        self.assertNotIn("mine", self.dev.installed)
+        self.assertEqual(self.dev.auths, [])
+        self.assertFalse(any(p.startswith("/tmp/") for p in self.dev.fs.files), "temp file left")
+
+    def test_install_with_the_password_in_the_environment(self):
+        rc, out, err = run_cli(self.dev, ["install", self.local("a.app", make_app("mine"))],
+                               env={"RPC_PASSWORD": "rootpw"})
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(self.dev.installed["mine"], "1.0")
+        self.assertEqual(self.dev.auths, ["rootpw"])
+        self.assertTrue(self.requests("EXEC sudo pkg install"), self.dev.requests)
+
+    def test_a_wrong_password_from_the_environment_is_not_tried_again(self):
+        rc, out, err = run_cli(self.dev, ["install", self.local("a.app", make_app("mine"))],
+                               env={"RPC_PASSWORD": "nope"})
+        self.assertEqual(rc, 1)
+        self.assertIn("refused the password", err)
+        self.assertEqual(self.dev.auths, ["nope"])
+        self.assertNotIn("mine", self.dev.installed)
+
+    def test_asked_with_getpass_and_asked_again_when_wrong(self):
+        answers = ["wrong", "rootpw"]
+        asked = []
+
+        def fake_getpass(prompt):
+            asked.append(prompt)
+            return answers.pop(0)
+        with mock.patch("getpass.getpass", fake_getpass), \
+                mock.patch.object(sys.stdin, "isatty", lambda: True):
+            rc, out, err = self.rpc("install", self.local("a.app", make_app("mine")))
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(self.dev.auths, ["wrong", "rootpw"])
+        self.assertEqual(len(asked), 2)
+        self.assertIn("root", asked[0])
+        self.assertIn("sudo", asked[0])
+
+    def test_sudo_flag_authenticates_first(self):
+        with mock.patch("getpass.getpass", lambda prompt: "rootpw"), \
+                mock.patch.object(sys.stdin, "isatty", lambda: True):
+            rc, out, err = self.rpc("--sudo", "exec", "sudo pkg remove greet")
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(self.dev.requests[0], "AUTH " + "cm9vdHB3")     # base64 of rootpw
+        self.assertNotIn("greet", [r for r in self.requests("EXEC") if "ERR" in r])
+        self.assertNotIn("greet", self.dev.installed)
+
+    def test_exec_of_a_sudo_line_retries_after_auth(self):
+        rc, out, err = run_cli(self.dev, ["exec", "sudo pkg remove greet"],
+                               env={"RPC_PASSWORD": "rootpw"})
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(len(self.requests("EXEC sudo pkg remove greet")), 2,
+                         "sent, refused with ERR sudo, AUTH, sent again")
+        self.assertNotIn("greet", self.dev.installed)
+
+    def test_exec_without_sudo_is_the_device_saying_so(self):
+        rc, out, err = run_cli(self.dev, ["exec", "pkg remove greet"],
+                               env={"RPC_PASSWORD": "rootpw"})
+        self.assertEqual(rc, 1)
+        self.assertIn(b"Run it with sudo: sudo pkg remove greet", out)
+        self.assertEqual(self.dev.auths, [], "no password is sent for a line that did not ask for sudo")
+
+    def test_put_and_rm_in_etc(self):
+        src = self.local("s.cfg", b"# mine\n")
+        env = {"RPC_PASSWORD": "rootpw"}
+        rc, out, err = run_cli(self.dev, ["put", src, "/etc/startup.cfg"], env=env)
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(self.dev.fs.files["/etc/startup.cfg"], b"# mine\n")
+        self.assertEqual(self.dev.auths, ["rootpw"])
+        rc, out, err = run_cli(self.dev, ["rm", "/etc/startup.cfg"], env=env)
+        self.assertEqual(rc, 0, err)
+        self.assertNotIn("/etc/startup.cfg", self.dev.fs.files)
+        rc, out, err = run_cli(self.dev, ["put", src, "/home/root/s.cfg"], env={})
+        self.assertEqual(rc, 0, "a home needs no sudo: " + err)
+
+    def test_a_guest_gets_nothing_from_it(self):
+        self.dev.user = "guest"
+        rc, out, err = run_cli(self.dev, ["install", self.local("a.app", make_app("mine"))],
+                               env={"RPC_PASSWORD": "rootpw"})
+        self.assertEqual(rc, 1)
+        self.assertIn(b"not an admin", out)
+        self.assertNotIn("mine", self.dev.installed)
+
+    def test_older_firmware_is_never_asked(self):
+        old = MockDevice(proto=1).start()
+        self.addCleanup(old.shutdown)
+        rc, out, err = run_cli(old, ["install", self.local("a.app", make_app("mine"))], env={})
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(old.installed["mine"], "1.0")
+        self.assertEqual(old.auths, [])
+        self.assertFalse([r for r in old.requests if r.startswith("AUTH") or "sudo" in r],
+                         old.requests)
+        rc, out, err = run_cli(old, ["--sudo", "put", self.local("x", b"x"), "/etc/x"], env={})
+        self.assertEqual(rc, 0, err)
+        self.assertIn("no sudo", err)
 
 
 class TestLegacyCli(CliCase):

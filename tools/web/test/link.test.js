@@ -14,6 +14,7 @@ import { MockDevice, makeApp } from "../js/mockdev.js";
 
 const FAST = { settle: 40, enter: 1500, request: 2000, transfer: 2000, abort: 2000, bye: 400 };
 const enc = new TextEncoder();
+const dec = new TextDecoder();
 const tests = [];
 const test = (name, fn) => tests.push({ name, fn });
 
@@ -138,12 +139,42 @@ test("login prompt: nothing typed without an account, then a real login", async 
   await r.link.bye(); dev.stop();
 });
 
-test("installing a package file", async () => {
+test("installing a package file asks for sudo once, and tries again when wrong", async () => {
   const { dev, link } = await connected();
+  eq(link.proto, 2);
+  const asked = [];
+  link.sudoPassword = async (user, wrong) => { asked.push([user, wrong]); return asked.length === 1 ? "nope" : "rootpw"; };
   const x = await installPackage(link, makeApp("hello", "2.0"), "hello world.app");
   eq(x.rc, 0);
   eq(dev.installed.hello, "2.0");
+  eq(asked, [["root", false], ["root", true]]);
+  eq(dev.auths, ["nope", "rootpw"]);
+  ok(dev.requests.some((r) => r.startsWith("EXEC sudo pkg install")), "sent with sudo");
   ok(![...dev.files.keys()].some((p) => p.startsWith("/tmp/")), "temp file left behind");
+  // The password is kept: the next one asks nothing.
+  await installPackage(link, makeApp("again", "1.0"), "again.app");
+  eq(asked.length, 2);
+  await link.bye(); dev.stop();
+});
+
+test("sudo: refused without a password, PUT into /etc after AUTH, nothing asked of older firmware", async () => {
+  let { dev, link } = await connected();
+  const e = await rejects(link.put(enc.encode("x"), "/etc/x"), Error, "no password");
+  ok(/sudo/.test(e.message), e.message);
+  await rejects(link.auth("wrong"), LinkError, "wrong");
+  eq(await link.auth("rootpw"), 300);
+  await link.put(enc.encode("x"), "/etc/x");
+  eq(dec.decode(dev.files.get("/etc/x")), "x");
+  const plain = await link.exec("pkg install /os/pkg/greet.app");
+  ok(plain.rc === 1 && /Run it with sudo/.test(plain.text), "a line without sudo is the device's to refuse");
+  await link.bye(); dev.stop();
+
+  ({ dev, link } = await connected({ proto: 1 }));
+  link.sudoPassword = async () => { throw new Error("asked"); };
+  const x = await installPackage(link, makeApp("old", "1.0"), "old.app");
+  eq(x.rc, 0);
+  eq(dev.auths, []);
+  ok(!dev.requests.some((r) => r.startsWith("AUTH") || r.includes("sudo")), "nothing new sent");
   await link.bye(); dev.stop();
 });
 

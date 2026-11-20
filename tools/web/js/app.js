@@ -60,20 +60,23 @@ function explain(e) {
 function fail(e) { console.error(e); toast(explain(e), true); }
 
 // A question in a dialog. Resolves to the typed text (or true), or null.
-function ask({ title, body = "", input = null, ok = "OK", danger = false }) {
+function ask({ title, body = "", input = null, ok = "OK", danger = false, secret = false }) {
   const d = $("#ask");
   $("#ask-title").textContent = title;
   $("#ask-body").textContent = body;
   const inp = $("#ask-input");
   inp.hidden = input === null;
   inp.value = input || "";
+  // A password field for a password: masked, and offered to a password manager.
+  inp.type = secret ? "password" : "text";
+  inp.autocomplete = secret ? "current-password" : "off";
   const okBtn = $("#ask-ok");
   okBtn.textContent = ok;
   okBtn.className = danger ? "danger" : "primary";
   return new Promise((resolve) => {
     d.addEventListener("close", () => {
       if (d.returnValue !== "ok") resolve(null);
-      else resolve(input === null ? true : inp.value.trim() || null);
+      else resolve(input === null ? true : (secret ? inp.value : inp.value.trim()) || null);
     }, { once: true });
     d.returnValue = "";
     d.showModal();
@@ -150,7 +153,7 @@ async function doSwitch(target) {
       const user = $("#login-user").value.trim() || undefined;
       const r = await enterLink(S.line, {
         user, onNoise: noise,
-        password: async () => $("#login-pass").value || (await ask({ title: `Password for ${user}`, input: "", ok: "Log in" })),
+        password: async () => $("#login-pass").value || (await ask({ title: `Password for ${user}`, input: "", ok: "Log in", secret: true })),
       });
       if (r.mode === "legacy") {
         S.line.setSink(termWrite);
@@ -158,6 +161,14 @@ async function doSwitch(target) {
         throw new RpcError("This firmware is older than link mode. The Terminal works; Files, Run, Packages and Device need newer firmware.");
       }
       S.link = r.link;
+      // sudo (firmware with link protocol 2): installing a package or changing
+      // /os or /etc asks for the account's password once, and again if wrong.
+      S.link.sudoPassword = (who, wrong) => ask({
+        title: wrong ? `Wrong password. Password for ${who}` : `Password for ${who}`,
+        body: "This needs sudo on the device. It counts for a few minutes." +
+              (DEMO ? " (The demo device's password is demo.)" : ""),
+        input: "", ok: "Continue", secret: true,
+      });
       S.cwd = S.link.hello.cwd || "/";
       setMode("link");
       renderFacts();
@@ -383,8 +394,13 @@ async function downloadFile(path, size) {
   }
 }
 
-async function runChecked(line) {
+// A file command in /os or /etc runs with sudo, as a PUT there does: the device
+// asks for it, and the password given once answers both.
+const isSystem = (p) => p === "/os" || p === "/etc" || p.startsWith("/os/") || p.startsWith("/etc/");
+
+async function runChecked(line, ...paths) {
   const link = await needLink();
+  if (paths.some(isSystem)) line = link.sudoLine(line);
   const r = await link.exec(line);
   if (r.rc !== 0) throw new RpcError(r.text.trim() || `${line} failed`);
   return r;
@@ -398,7 +414,7 @@ async function deleteEntry(path, isDir) {
     ok: "Delete", danger: true,
   });
   if (!yes) return;
-  await runChecked(`rm ${isDir ? "-r " : ""}${quote(path)}`);
+  await runChecked(`rm ${isDir ? "-r " : ""}${quote(path)}`, path);
   await loadDir(S.cwd);
 }
 
@@ -407,7 +423,7 @@ async function renameEntry(path) {
   const name = await ask({ title: `Rename ${old}`, input: old, ok: "Rename" });
   if (!name || name === old) return;
   if (name.includes("/")) throw new RpcError("A name cannot contain /.");
-  await runChecked(`mv ${quote(path)} ${quote(joinPath(parentPath(path), name))}`);
+  await runChecked(`mv ${quote(path)} ${quote(joinPath(parentPath(path), name))}`, path);
   await loadDir(S.cwd);
 }
 
@@ -415,7 +431,7 @@ async function newFolder() {
   const name = await ask({ title: "New folder", body: `In ${S.cwd}`, input: "", ok: "Create" });
   if (!name) return;
   if (name.includes("/")) throw new RpcError("A name cannot contain /.");
-  await runChecked("mkdir " + quote(joinPath(S.cwd, name)));
+  await runChecked("mkdir " + quote(joinPath(S.cwd, name)), joinPath(S.cwd, name));
   await loadDir(S.cwd);
 }
 

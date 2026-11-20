@@ -20,6 +20,8 @@
 #include "sha256.h"
 #include "b64.h"
 #include "linkreq.h"
+#include "sudo.h"
+#include "users.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -129,12 +131,32 @@ static ReadResult read_line(char *buf, uint32_t cap, uint32_t timeout_ms,
 static bool link_path(LinkState *st, const char *in, char *out, uint32_t cap, bool change) {
     if (!in[0]) { ERR(st, "badreq", "a path is needed"); return false; }
     if (!path_resolve(fs_cwd(), in, out, cap)) { ERR(st, "toolong", "path too long"); return false; }
+    if (change && fs_change_needs_sudo(out)) {
+        // An admin, a system path and no grace: AUTH, then the same request
+        // again, gets it through.
+        ERR(st, "sudo", "%s is part of the system: send AUTH first", out);
+        return false;
+    }
     if (change ? !fs_may_change(out) : !fs_may_read(out)) {
         ERR(st, "perm", "%s is protected for this account", out);
         return false;
     }
     return true;
 }
+
+// The file requests run with sudo while the session's grace holds, which AUTH
+// starts: AUTH is the host saying "and do this as sudo". An EXEC is different:
+// there, as at the prompt, a command needs `sudo` in front, and the grace only
+// saves it asking.
+struct LinkSudo {
+    bool was;
+    LinkSudo() {
+        TaskShell *ts = task_shell();
+        was = ts->elevated;
+        if (!was && users_is_admin(session_user()) && sudo_grace_valid()) ts->elevated = true;
+    }
+    ~LinkSudo() { task_shell()->elevated = was; }
+};
 
 // --- the requests -----------------------------------------------------------
 
@@ -176,7 +198,15 @@ static void do_exec(LinkState *st, const char *line) {
         ERR(st, "busy", "too many captures running at once");
         return;
     }
+    // No password prompt: the keys come from a program, which would never
+    // answer one. sudo uses the grace AUTH started, or says it needs one.
+    TaskShell *ts = task_shell();
+    ts->noprompt++;
+    ts->sudo_flags &= (uint8_t)~SUDO_F_BLOCKED;
     int rc = shell_run_line_now(st->cmd);
+    ts->noprompt--;
+    bool blocked = ts->sudo_flags & SUDO_F_BLOCKED;
+    ts->sudo_flags &= (uint8_t)~SUDO_F_BLOCKED;
     uint32_t n = out_capture_end();
     bool over = out_capture_overflowed();
     intr_clear();
@@ -187,7 +217,29 @@ static void do_exec(LinkState *st, const char *line) {
         frame_data(st, "OUT", (const uint8_t *)out + i, m);
     }
     free(out);
-    frame(st, "OK rc=%d truncated=%d", rc ? 1 : 0, over ? 1 : 0);
+    // What ran before the command that needed sudo has run; the host repeats
+    // the line after AUTH. LINK.md says so.
+    if (blocked) ERR(st, "sudo", "sudo needs a password: send AUTH, then the request again");
+    else         frame(st, "OK rc=%d truncated=%d", rc ? 1 : 0, over ? 1 : 0);
+}
+
+// AUTH <base64 password>: the check sudo makes, without a prompt. Starts the
+// grace for this session (the console's), as typing the password there would.
+static void do_auth(LinkState *st, const char *rest) {
+    char pw[USR_CRED_MAX];
+    int32_t n = rest[0] ? b64_decode(rest, (uint32_t)strlen(rest), (uint8_t *)pw, sizeof(pw) - 1)
+                        : -1;
+    if (n < 0) { ERR(st, "badreq", "AUTH <password in base64>"); return; }
+    pw[n] = 0;
+    SudoCheck r = sudo_check_password(pw);
+    for (unsigned i = 0; i < sizeof(pw); i++) ((volatile char *)pw)[i] = 0;
+    switch (r) {
+    case SUDO_OK:        frame(st, "OK grace=%u", (unsigned)(SUDO_GRACE_MS / 1000u)); break;
+    case SUDO_WRONG:     ERR(st, "auth", "wrong password"); break;
+    case SUDO_NOPASS:    ERR(st, "auth", "%s has no password, so it cannot use sudo", session_user()); break;
+    case SUDO_NOT_ADMIN: ERR(st, "perm", "%s is not an admin", session_user()); break;
+    default:             ERR(st, "perm", "nobody is signed in"); break;
+    }
 }
 
 static void do_put(LinkState *st, const char *rest) {
@@ -199,6 +251,7 @@ static void do_put(LinkState *st, const char *rest) {
         return;
     }
     char path[200];
+    LinkSudo sudo;
     if (!link_path(st, rp, path, sizeof(path), /*change*/true)) return;
     bool is_dir = false;
     if (storage_stat(path, &is_dir, nullptr) && is_dir) {
@@ -368,6 +421,7 @@ static int cmd_link(int, char **) {
         else if (!strcmp(q.verb, "GET"))   do_get(st, q.rest);
         else if (!strcmp(q.verb, "LS"))    do_ls(st, q.rest);
         else if (!strcmp(q.verb, "STAT"))  do_stat(st, q.rest);
+        else if (!strcmp(q.verb, "AUTH"))  do_auth(st, q.rest);
         else if (!strcmp(q.verb, "BYE"))   { frame(st, "OK"); break; }
         else ERR(st, "badreq", "unknown verb %s", q.verb);
     }

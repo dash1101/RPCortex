@@ -1,4 +1,4 @@
-"""The link protocol client (LINK.md, protocol 1).
+"""The link protocol client (LINK.md, protocols 1 and 2).
 
 One request at a time, read to its final OK or ERR before the next is sent.
 Anything on the wire that is not a frame is a background line from the device
@@ -315,6 +315,24 @@ class LinkClient(object):
 
     def ping(self):
         self.request("PING")
+
+    @property
+    def proto(self):
+        try:
+            return int(self.hello.get("proto", "1"))
+        except ValueError:
+            return 1
+
+    def auth(self, password):
+        """AUTH (protocol 2): prove the signed-in account's password, so the
+        commands that need sudo can run for the next few minutes. Returns the
+        seconds the device says it counts for. A wrong one is LinkError 'auth'."""
+        pw = password.encode("utf-8") if isinstance(password, str) else bytes(password)
+        f, _ = self.request("AUTH " + base64.b64encode(pw).decode("ascii"))
+        try:
+            return int(f.kv().get("grace", "0"))
+        except ValueError:
+            return 0
 
     def hello_request(self):
         f, keep = self.request("HELLO")

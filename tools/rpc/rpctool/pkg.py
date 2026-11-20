@@ -19,7 +19,8 @@ def install_bytes(dev, data, name, progress=None, timeout=None):
     tmp = tmp_name(name)
     dev.put(data, tmp, progress)
     try:
-        return dev.exec("pkg install " + quote(tmp), timeout)
+        # With sudo where the firmware has it: installing changes the system.
+        return dev.exec(dev.sudo_line("pkg install " + quote(tmp)), timeout)
     finally:
         try:
             dev.exec("rm " + quote(tmp))

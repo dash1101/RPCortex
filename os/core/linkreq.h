@@ -8,7 +8,7 @@
 
 #include <stdint.h>
 
-#define LINK_PROTO      1
+#define LINK_PROTO      2        // 2: AUTH, and ERR sudo
 #define LINK_LINE_MAX   1100     // request line, newline included
 #define LINK_CHUNK      768      // bytes per D line or frame (1024 base64 chars)
 

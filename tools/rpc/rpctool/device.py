@@ -16,7 +16,7 @@ import re
 import time
 
 from . import transport as _transport
-from .errors import (DeviceGone, LoginFailed, LoginRequired, NotSupported,
+from .errors import (DeviceGone, LinkError, LoginFailed, LoginRequired, NotSupported,
                      RpcError)
 from .legacy import LegacyShell
 from .link import ExecResult, Frame, FrameReader, LinkClient, Timing, _b64
@@ -54,10 +54,15 @@ class Device(object):
     """One connected device. Construct with a Transport, then connect()."""
 
     def __init__(self, transport, user=None, password=None, timing=None,
-                 on_noise=None):
+                 on_noise=None, sudo_password=None):
         self.t = transport
         self.user = user
         self.password = password          # a string, or a callable that asks
+        # For sudo (link protocol 2): the signed-in account's password, a
+        # string or a callable that asks. Asked for once, when the device first
+        # says a request needs it, and kept for the rest of the connection.
+        self.sudo_password = sudo_password
+        self._sudo_known = None
         self.timing = timing or Timing()
         self.on_noise = on_noise
         self.mode = None                  # "link" or "legacy"
@@ -234,6 +239,79 @@ class Device(object):
         finally:
             self.t.close()
 
+    # --- sudo --------------------------------------------------------------
+    #
+    # Firmware with link protocol 2 asks for sudo before it installs or removes
+    # a package or changes anything in /os or /etc. A host tool proves the
+    # password once with AUTH and the device remembers it for a few minutes.
+    # Older firmware has no sudo at all, and is never asked.
+
+    @property
+    def proto(self):
+        return self.link.proto if self.mode == "link" and self.link else 0
+
+    @property
+    def has_sudo(self):
+        return self.proto >= 2
+
+    def sudo_line(self, line):
+        """`line` as it has to be sent to run with sudo on this firmware."""
+        return "sudo " + line if self.has_sudo else line
+
+    def _files_line(self, line, *paths):
+        """A file command, with sudo when it touches /os or /etc: the device
+        asks for it there, as it does for a PUT (and AUTH answers both)."""
+        for p in paths:
+            p = self.abspath(p)
+            if p in ("/os", "/etc") or p.startswith("/os/") or p.startswith("/etc/"):
+                return self.sudo_line(line)
+        return line
+
+    def _ask_sudo(self):
+        pw = self._sudo_known
+        if pw:
+            return pw, True
+        src = self.sudo_password
+        pw = src() if callable(src) else src
+        return pw, False
+
+    def authenticate(self):
+        """AUTH with the account's password, asking for it if need be (up to
+        three times when it is typed). True when the device accepted one; False
+        on firmware without sudo."""
+        if not self.has_sudo:
+            return False
+        who = self.hello.get("user", "this account")
+        for _ in range(3):
+            pw, known = self._ask_sudo()
+            if not pw:
+                raise RpcError(
+                    "This needs sudo on the device, which asks for {}'s password. Give it when "
+                    "asked, in $RPC_PASSWORD, or say --sudo to be asked first.".format(who))
+            try:
+                self.link.auth(pw)
+                self._sudo_known = pw
+                return True
+            except LinkError as e:
+                if e.code != "auth":
+                    raise
+                self._sudo_known = None
+                # A password that is not typed (a string, the environment)
+                # will be just as wrong the second time.
+                if known or not callable(self.sudo_password):
+                    raise RpcError("The device refused the password for {}.".format(who))
+        raise RpcError("Three wrong passwords for {}; nothing was done.".format(who))
+
+    def _with_sudo(self, fn):
+        """Run fn; if the device says it needs sudo, AUTH and run it again once."""
+        try:
+            return fn()
+        except LinkError as e:
+            if e.code != "sudo" or not self.has_sudo:
+                raise
+        self.authenticate()
+        return fn()
+
     # --- what the firmware can do -------------------------------------------
 
     def _need_link(self, what):
@@ -243,7 +321,7 @@ class Device(object):
 
     def exec(self, line, timeout=None):
         if self.mode == "link":
-            return self.link.exec(line, timeout)
+            return self._with_sudo(lambda: self.link.exec(line, timeout))
         rc, out, timed_out = self.legacy.run(line, timeout)
         return ExecResult(rc, out, False, timed_out)
 
@@ -256,7 +334,7 @@ class Device(object):
 
     def put(self, data, path, progress=None):
         if self.mode == "link":
-            return self.link.put(data, path, progress)
+            return self._with_sudo(lambda: self.link.put(data, path, progress))
         return self.legacy.put(data, path, progress)
 
     def get(self, path, progress=None):
@@ -283,7 +361,7 @@ class Device(object):
         an existing directory is not an error."""
         path = self.abspath(path)
         if not parents:
-            self.check("mkdir " + quote(path))
+            self.check(self._files_line("mkdir " + quote(path), path))
             return
         parts = [p for p in path.split("/") if p]
         cur = ""
@@ -292,7 +370,7 @@ class Device(object):
             if self.mode == "link":
                 st = self.stat(cur)
                 if st is None:
-                    self.check("mkdir " + quote(cur))
+                    self.check(self._files_line("mkdir " + quote(cur), cur))
                 elif st[0] != "d":
                     raise RpcError("{} is a file, not a directory".format(cur))
             else:
@@ -302,10 +380,11 @@ class Device(object):
         if "*" in path:
             raise RpcError("'{}': rm on the device treats * as a wildcard; refusing a name "
                            "that has one".format(path))
-        return self.check("rm {}{}".format("-r " if recursive else "", quote(path)))
+        return self.check(self._files_line(
+            "rm {}{}".format("-r " if recursive else "", quote(path)), path))
 
     def mv(self, src, dst):
-        return self.check("mv {} {}".format(quote(src), quote(dst)))
+        return self.check(self._files_line("mv {} {}".format(quote(src), quote(dst)), src, dst))
 
     def walk(self, top):
         """(path, entries) for top and every directory below it, top first."""
