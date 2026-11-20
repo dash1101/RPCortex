@@ -127,6 +127,46 @@ outgrown its board's firmware slot fails the build. littlefs is pinned to v2.11 
 the on-disk format stays the one v1 uses. `emu/` boots the Pico image under Renode
 with no board attached.
 
+## Choosing features
+
+Every board's standard image has everything that board can do (except SSH on the
+Pico W, which has no room for it). Some boards don't need all of it: a Pico W that
+never goes online has no use for Wi-Fi, HTTPS or the package downloader, and
+leaving them out gives it a lot more room. `build.sh` can build an image without
+them:
+
+```
+./build.sh --features                  what can be left out, and what each one saves
+./build.sh pico_w --without wifi       a Pico W with no radio at all
+./build.sh pico2_w --without bluetooth
+tools/buildconf.py                     asks which board and which features, then builds it
+```
+
+The features are `wifi` (and everything that needs a network, Bluetooth and SSH
+included, since they run on the same radio), `bluetooth`, `ssh`,
+`sd` for the microSD driver, `peripherals` for the NFC, iButton, sub-GHz and LoRa
+drivers, and `devpkgs`, the test packages, which only go in when asked for with
+`--with devpkgs`. Leaving one out takes its code out of the image rather than
+switching it off. Its commands stay behind to explain: on a Pico W built without
+Wi-Fi, `wget` says "This image was built without Wi-Fi." and `ver` lists what the
+image has.
+
+What it buys on the wireless boards, measured (`./build.sh --features` has the
+rest). "Left" is room in the firmware slot; the memory a feature frees goes to the
+heap, and a Pico W without Wi-Fi has about twice the heap it had:
+
+| Image | Pico W | Pico 2 W |
+|---|---|---|
+| Standard | 757 KB, 75 KB left | 851 KB, 173 KB left |
+| `--without bluetooth` | 638 KB, 194 KB left, 16 KB more heap | 734 KB, 290 KB left, 16 KB more heap |
+| `--without wifi` | 303 KB, 529 KB left, 93 KB more heap | 365 KB, 659 KB left, 94 KB more heap |
+
+A custom image is named for what it leaves out, like
+`rpcortex-v2-pico_w-nobt.uf2`, so it can't be mistaken for a release, and the
+release tool won't publish one. The flash layout stays the same, so a board can go
+from a standard image to a custom one and back without losing its files. `update
+install` always brings back the standard image.
+
 ## Writing packages
 
 A package is a small C++ program, built on a PC and installed with `pkg`. It adds

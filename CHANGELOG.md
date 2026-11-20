@@ -12,9 +12,12 @@ Summary:
 
 ### New
 
+- An image can be built without the parts a board does not need: `./build.sh pico_w --without wifi` (Bluetooth and SSH go with it) leaves a Pico W 529 KB of its firmware slot free instead of 75, and 93 KB more memory. `bluetooth`, `ssh`, `sd` and `peripherals` (the NFC, iButton, sub-GHz and LoRa drivers) can be left out the same way; `./build.sh --features` lists them with what each saves, and `tools/buildconf.py` asks the questions. `ver` lists the features an image was built with, a command whose feature was left out says so, and a custom image is named for what it leaves out and is never published as a release. Custom images have not yet run on a board.
+
 ### Improved
 
 - Downloads to a file are about three times faster: 866 KB over HTTPS in 16.5 s, where it took 54.8 s, which is now as fast as the network delivers it. Every packet written used to walk the whole filesystem twice to check the file still fitted; it is measured when the file opens and every 256 KB, and estimated in between. A download that does not fit is still refused before the disk is full, and leaves no partial file.
+- On the Pico and Pico 2, the network commands (`wget`, `curl`, `pkg update`, `update check` and the rest) say the board has no wireless hardware instead of trying, and the code behind them is no longer in those images, which are about 15 KB smaller.
 ### Fixed
 
 - Pinging the device's own address, or 127.0.0.1, timed out. Packets to itself go through a loopback now, as on a computer, and answer in about half a millisecond.

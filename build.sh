@@ -6,7 +6,7 @@
 #   ./build.sh --clean      wipe the build directories first
 #   ./build.sh --features   what an image can be built with or without, and the cost
 #   ./build.sh pico2_w --without bluetooth      a custom image: rpcortex-v2-pico2_w-nobt
-#   ./build.sh pico_w --without wifi,bluetooth  (several at once, comma separated)
+#   ./build.sh pico2_w --without sd,peripherals (several at once, comma separated)
 #   ./build.sh pico2_w --with devpkgs           (or --dev-packages) bench, probe, stress, havoc
 #   ./build.sh --release           the standard images a release publishes (the default)
 #   ./build.sh --fast              -O3 on every board, for comparison
@@ -105,7 +105,7 @@ for arg in "$@"; do
     esac
 done
 if [ -n "$want" ]; then
-    echo "--$want needs a list of features, like --$want wifi,bluetooth (./build.sh --features)" >&2
+    echo "--$want needs a list of features, like --$want sd,peripherals (./build.sh --features)" >&2
     exit 1
 fi
 if [ "$RELEASE" -eq 1 ] && [ -n "${WITH//,/}${WITHOUT//,/}" ]; then

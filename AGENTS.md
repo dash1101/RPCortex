@@ -96,6 +96,104 @@ emu/run-tests.sh [suite]      emulator suites (each takes 10 s to 3 min)
 grows more than 8 KB over `tools/size-baseline.json`. Note the headroom before and
 after any change.
 
+### Features: what an image is built with
+
+```
+./build.sh --features                       the features, their boards, the measured cost
+./build.sh pico2_w --without bluetooth      a custom image: out/rpcortex-v2-pico2_w-nobt.uf2
+./build.sh pico2_w --without sd,peripherals several at once
+./build.sh pico --with devpkgs              add one (--dev-packages still works)
+tools/buildconf.py                          the same by questions, then runs build.sh
+tools/features.py measure                   rebuild every variant, rewrite tools/feature-sizes.json
+                                            (--no-build: record the images already built)
+```
+
+The features are `wifi`, `bluetooth`, `ssh`, `sd`, `peripherals` (the NFC,
+iButton, sub-GHz and LoRa drivers) and `devpkgs`. A board's **standard image** has
+every feature it can have except SSH on the Pico W (its slot is too tight) and
+`devpkgs`; that is what a release publishes.
+
+- **The table is `tools/features.py`** (`FEATURES`): name, aliases, the tag an image
+  name carries, the CMake option, the define, the boards that can have it, its
+  default and what it requires. build.sh, os/CMakeLists.txt (at configure time,
+  through `features.py cmake`, which writes `features.cmake` into the build
+  directory), tools/buildconf.py and tools/release.py all read it. There is no
+  second copy of a default anywhere.
+- **A feature is whole files, never an #if in shared code.** Each has a source list
+  in os/CMakeLists.txt (`RPC_WIFI_SOURCES`, `RPC_BLUETOOTH_SOURCES`,
+  `RPC_SD_SOURCES`, `RPC_PERIPHERALS_SOURCES`, `RPC_SSH_SOURCES`) and its libraries
+  are linked only with it. When it is off, a stand-in file is compiled instead:
+  `net_off.cpp`, `bt_off.cpp`, `sd_off.cpp`, `periph_off.cpp`, and `radio_off.cpp`
+  when neither radio is in. A stand-in registers the same command names, help
+  lines, levels and aliases, has each answer through `feature_missing()`
+  (os/shell/imagefeatures.h: "This image was built without Wi-Fi.", or "This board
+  has no wireless hardware." where the board could never have it), and keeps every
+  package call in the ABI table, failing the way it fails with no hardware. New
+  code for a feature goes in that feature's files; the "no" answer goes in its
+  stand-in.
+- **Where a command is half network**, the network half is its own file: `pkg`
+  (pkgrepo.cpp keeps the catalogue and `pkg install <file>`, pkgfetch.cpp
+  downloads) and `update` (update.cpp keeps from-file, rollback and the boot
+  report, which the recovery ladder needs; update_net.cpp checks and downloads).
+  `pkg install <file>` must keep working without Wi-Fi: it is how tools/rpc and
+  tools/web install a package on a board with no network.
+- **The defines are always 0 or 1**, so they work in a plain `if`: `RPC_HAS_WIFI`,
+  `RPC_HAS_BLUETOOTH`, `RPC_HAS_SSH`, `RPC_HAS_SD`, `RPC_HAS_PERIPHERALS`;
+  `RPC_CAN_<X>` for whether the board could have it at all; and `RPC_STD_SSH` for
+  whether its standard image has SSH, which is what decides whether ssh_off.cpp
+  registers an `ssh` that explains itself (sd_off.cpp does the same with
+  `RPC_CAN_SD`), so no standard image gains or loses a command. `RPC_HAS_CYW43` is a
+  fact about the board, not a feature: GPIO 23/24/25/29 belong to the radio chip
+  whatever the image carries, so `fw_gpio_*` keeps refusing them.
+- **Bluetooth and SSH need Wi-Fi.** The CYW43 driver and its firmware come in
+  with Wi-Fi, so an image without Wi-Fi has no radio at all: no driver, no
+  firmware, no firmware streaming (`RPC_CYW43_FW_STREAM`, the patch step and
+  cyw43_fw.cpp go too). radio.cpp owns the chip for both radios (the one-owner
+  lock, `radio_up`/`radio_down`, the radio lock, `radio`); the Wi-Fi steps of
+  bringing it up and down are the `wifi_radio_*` hooks in net.cpp. An image with
+  Wi-Fi and without Bluetooth streams the plain firmware rather than the
+  Bluetooth-capable one, and cyw43_fw.h checks the two agree. Nothing in the OS uses the W boards' LED, and VBUS is read through
+  Wi-Fi's status cache, so on a W image without Wi-Fi `fw_power_source` answers
+  unknown (as a full image does before the radio first comes up).
+- **A custom image is named for how it differs**: `-no<tag>` for each feature left
+  out (a feature that went only because what it needs went is not named again,
+  so `-nowifi` covers Bluetooth and SSH), `-<tag>` for one added, `-emu` for the emulator image.
+  It builds in its own directory (`os/build_pico2_w-nobt`) and is never compared
+  against or recorded as the size baseline.
+- **The image says what it is.** imagefeatures.cpp bakes `rpcimage:<variant>` into
+  every image (`standard`, or the tag). build.sh checks it after every build
+  against what it asked for; `ver` and `sysinfo` print the feature list and say
+  "custom image"; tools/release.py reads the marker from the `.bin` and the `.uf2`
+  and refuses anything that is not `standard`, whatever the file is called.
+  `update install` on a custom image installs the standard one, and says so first.
+- **The flash layout does not depend on the features.** `RPC_FW_RESERVE` and the
+  package slot are per board, so a custom image gains slot headroom and RAM, never
+  filesystem, and a board moves between a standard and a custom image keeping its
+  files. Do not size the reserve from the features: the next update from an image
+  with a smaller reserve would be written over the start of the filesystem.
+- **build.sh passes every feature option on every configure.** A build directory
+  remembers its cache, and an option left to the cache builds the last feature
+  set rather than this one.
+- **Adding a feature:** an entry in `FEATURES`; its option in
+  `RPC_FEATURE_OPTIONS`, a source list and a stand-in in os/CMakeLists.txt; a
+  `Feature` value and its message in imagefeatures; tests in
+  tools/test_features.py; build every board with and without it; then
+  `tools/features.py measure`. Only add one where switching it off removes real
+  code and leaves a coherent OS.
+- **SSH keeps its own option name, `RPC_SSH`** (the one the SSH work added), but
+  its value comes from the table like every other feature's: on by default on the
+  Pico 2 W only, and off whenever Wi-Fi is, since it runs over it. The sources are
+  `RPC_SSH_SOURCES`; `RPC_HAS_SSH` is also read by mbedtls_config.h. sshd_boot
+  stays under its `#if` in main.cpp; `ssh` itself is registered in every image,
+  by sshc.cpp or ssh_off.cpp.
+- **Not features, deliberately:** the USB drive (`download`) and the USB keyboard
+  are interfaces of the static composite USB device (usb_descriptors.c, and
+  usbmode.h keeps them idle). Taking one out would change the descriptor and the
+  interface numbering for every image, for about 10 KB and 8 KB.
+- **No header called `features.h`** under os/: the host suites put os/shell on
+  the include path, and glibc's `<stdio.h>` includes its own `<features.h>`. One
+  did, and every host suite failed to build.
+
 **The order of proof:**
 
 1. **Host test.** Put the logic in `os/core/` and test it in `os/host/`. Add the
