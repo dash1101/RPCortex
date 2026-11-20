@@ -1,0 +1,9 @@
+{
+  "name": "rpcortex-web-tools",
+  "private": true,
+  "type": "module",
+  "description": "The RPCortex v2 browser tool. Static files, no build step; this file only marks the scripts as ES modules for Node.",
+  "scripts": {
+    "test": "node test/link.test.js"
+  }
+}

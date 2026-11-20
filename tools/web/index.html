@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RPCortex device tools</title>
+<meta name="description" content="Connect to an RPCortex v2 device over USB from the browser: a terminal, files, commands, packages.">
+<meta name="color-scheme" content="light dark">
+<link rel="stylesheet" href="css/style.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%2314b8a6'/%3E%3Cpath d='M4 5l3 3-3 3M8 11h4' stroke='white' stroke-width='1.6' fill='none' stroke-linecap='round'/%3E%3C/svg%3E">
+</head>
+<body data-mode="off">
+<header class="top">
+  <div class="brand">
+    <span class="wordmark">RPCortex</span>
+    <span class="brand-sub">device tools</span>
+  </div>
+  <div class="conn" aria-live="polite">
+    <code class="conn-prompt" id="conn-prompt">no device</code>
+    <span class="chip" id="conn-mode">Not connected</span>
+  </div>
+</header>
+
+<div class="frame">
+  <nav class="tabs" role="tablist" aria-label="Sections">
+    <button role="tab" id="tab-connect" data-pane="connect" aria-selected="true">Connect</button>
+    <button role="tab" id="tab-terminal" data-pane="terminal">Terminal</button>
+    <button role="tab" id="tab-files" data-pane="files" data-link>Files</button>
+    <button role="tab" id="tab-run" data-pane="run" data-link>Run</button>
+    <button role="tab" id="tab-packages" data-pane="packages" data-link>Packages</button>
+    <button role="tab" id="tab-device" data-pane="device" data-link>Device</button>
+  </nav>
+
+  <main>
+    <!-- Connect -->
+    <section class="pane" id="pane-connect" role="tabpanel" aria-labelledby="tab-connect">
+      <h1>Connect</h1>
+      <div class="notice" id="unsupported" hidden>
+        <p><strong>This browser cannot open serial ports.</strong> The page talks to the device through Web Serial, which Chrome and Edge on a desktop computer offer, and only on a secure page (https, or http://localhost). Firefox and Safari do not have it.</p>
+        <p>The command-line tool does everything this page does: <code>pip install -e tools/rpc</code>, then <code>rpc term</code>.</p>
+      </div>
+
+      <div class="row">
+        <button class="primary" id="btn-choose">Choose device</button>
+        <button id="btn-reconnect" hidden>Reconnect</button>
+        <button id="btn-disconnect" disabled>Disconnect</button>
+        <label class="check"><input type="checkbox" id="show-all"> List every serial port</label>
+      </div>
+      <p class="hint" id="connect-status">Plug the board in with a data cable, then choose it. It is listed as RPCortex, or as a Pico.</p>
+
+      <details class="block" id="login-box">
+        <summary>If the device asks for a login</summary>
+        <p class="hint">Used only when the device is at its login prompt. The password is typed into the device and kept nowhere else.</p>
+        <div class="fields">
+          <label>Account <input id="login-user" autocomplete="username" spellcheck="false" placeholder="root"></label>
+          <label>Password <input id="login-pass" type="password" autocomplete="current-password"></label>
+        </div>
+      </details>
+
+      <div class="block">
+        <h2>Two ways of talking to the device</h2>
+        <p>The Terminal shows the console as a person sees it. Files, Run, Packages and Device use <em>link mode</em>, a framed channel the device offers to programs, so transfers are checked and every command reports whether it worked. Moving between the two switches the device over; the badge at the top right says which one it is in.</p>
+      </div>
+
+      <div class="block" id="messages-block">
+        <h2>Background messages</h2>
+        <p class="hint">Lines the device's services printed while link mode was in use.</p>
+        <pre class="out small" id="messages">None yet.</pre>
+      </div>
+
+      <div class="block danger-zone">
+        <h2>Firmware update</h2>
+        <p>Resetting to BOOTSEL restarts the board into its bootloader. The connection closes and a drive named <code>RP2350</code> or <code>RPI-RP2</code> appears; copy an RPCortex <code>.uf2</code> onto it and the board restarts with the new firmware. Files on the device are kept.</p>
+        <button class="danger" id="btn-bootsel" disabled>Reset to BOOTSEL</button>
+      </div>
+    </section>
+
+    <!-- Terminal -->
+    <section class="pane" id="pane-terminal" role="tabpanel" aria-labelledby="tab-terminal" hidden>
+      <div class="pane-head">
+        <h1>Terminal</h1>
+        <div class="row">
+          <button id="btn-ctrlc" disabled title="Send Ctrl+C">Send Ctrl+C</button>
+          <button id="btn-clear">Clear</button>
+        </div>
+      </div>
+      <div class="term" id="term"></div>
+      <p class="hint" id="term-note"></p>
+    </section>
+
+    <!-- Files -->
+    <section class="pane" id="pane-files" role="tabpanel" aria-labelledby="tab-files" hidden>
+      <div class="pane-head">
+        <h1>Files</h1>
+        <div class="row">
+          <button id="btn-up" title="Up one folder">Up</button>
+          <button id="btn-refresh">Refresh</button>
+          <button id="btn-mkdir">New folder</button>
+          <button class="primary" id="btn-upload">Upload files</button>
+          <input type="file" id="upload-input" multiple hidden>
+        </div>
+      </div>
+      <nav class="crumbs" id="crumbs" aria-label="Folder"></nav>
+      <div class="drop" id="drop">
+        <table class="files">
+          <thead><tr><th>Name</th><th class="num">Size</th><th class="acts"><span class="sr">Actions</span></th></tr></thead>
+          <tbody id="file-rows"></tbody>
+        </table>
+        <p class="drop-hint">Drop files here to upload them into this folder.</p>
+      </div>
+      <ul class="transfers" id="transfers"></ul>
+    </section>
+
+    <!-- Run -->
+    <section class="pane" id="pane-run" role="tabpanel" aria-labelledby="tab-run" hidden>
+      <h1>Run</h1>
+      <form class="runbar" id="run-form" autocomplete="off">
+        <input id="run-input" spellcheck="false" placeholder="ls /home ; df" aria-label="Command line">
+        <button class="primary" type="submit" id="run-go">Run</button>
+        <button type="button" id="run-stop" disabled>Stop</button>
+      </form>
+      <div class="result-head"><span id="run-status" class="hint">Runs through the device's own shell: pipes, <code>;</code>, <code>&amp;&amp;</code> and <code>||</code> work.</span></div>
+      <pre class="out" id="run-out"></pre>
+      <h2>History</h2>
+      <ul class="history" id="run-history"></ul>
+    </section>
+
+    <!-- Packages -->
+    <section class="pane" id="pane-packages" role="tabpanel" aria-labelledby="tab-packages" hidden>
+      <h1>Packages</h1>
+      <div class="block">
+        <div class="pane-head"><h2>Installed</h2><button id="btn-pkg-list">Refresh</button></div>
+        <pre class="out" id="pkg-installed"></pre>
+      </div>
+      <div class="block">
+        <h2>Install a package file</h2>
+        <div class="row">
+          <input type="file" id="pkg-file" accept=".app">
+          <button class="primary" id="btn-pkg-file" disabled>Install</button>
+        </div>
+      </div>
+      <div class="block">
+        <h2>From the repository</h2>
+        <p class="hint">The index and the package are downloaded here, checked against the SHA-256 the index publishes, then sent to the device, so it does not need a network of its own.</p>
+        <div class="row">
+          <input id="repo-url" spellcheck="false" aria-label="Package index URL">
+          <button id="btn-repo-load">Load list</button>
+          <input id="repo-filter" placeholder="Filter" aria-label="Filter packages" spellcheck="false">
+        </div>
+        <table class="pkgs">
+          <thead><tr><th>Package</th><th>Version</th><th class="wide">Description</th><th><span class="sr">Install</span></th></tr></thead>
+          <tbody id="repo-rows"></tbody>
+        </table>
+      </div>
+      <pre class="out" id="pkg-log" hidden></pre>
+    </section>
+
+    <!-- Device -->
+    <section class="pane" id="pane-device" role="tabpanel" aria-labelledby="tab-device" hidden>
+      <h1>Device</h1>
+      <dl class="facts" id="facts"></dl>
+      <div class="row">
+        <button data-cmd="meminfo">Memory</button>
+        <button data-cmd="df">Storage</button>
+        <button data-cmd="ps">Tasks</button>
+        <button data-cmd="logdump">Log</button>
+        <button class="danger" id="btn-reboot">Restart device</button>
+      </div>
+      <pre class="out" id="device-out"></pre>
+    </section>
+  </main>
+</div>
+
+<div class="toasts" id="toasts" aria-live="assertive"></div>
+
+<dialog id="ask">
+  <form method="dialog">
+    <h2 id="ask-title"></h2>
+    <p id="ask-body"></p>
+    <input id="ask-input" spellcheck="false" hidden>
+    <div class="row end">
+      <button value="cancel" formnovalidate>Cancel</button>
+      <button value="ok" class="primary" id="ask-ok">OK</button>
+    </div>
+  </form>
+</dialog>
+
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
