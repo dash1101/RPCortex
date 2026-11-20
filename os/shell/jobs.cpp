@@ -20,6 +20,7 @@
 #include "out.h"
 #include "task.h"
 #include "joblist.h"
+#include "lock.h"
 #include "storage.h"
 #include "interrupt.h"
 #include "registry.h"
@@ -47,6 +48,28 @@ static uint32_t cfg_read(const char *path, char *buf, uint32_t cap) {
     return n;
 }
 
+// A list file, read into a buffer that belongs to this call.
+//
+// These were five separate 1 KB static buffers, one per function. That was 5 KB
+// of RAM held for the life of the device by code that runs at boot and when a
+// list is edited — and being static, each was shared by every task that called
+// it. `task add` on the shell and `service add` from a `bg` job or a scheduled
+// line both went through list_command's one buffer, so either could write the
+// other's list into its own file. Each call has its own now, from the heap, and
+// gives it back on the way out.
+struct CfgBuf {
+    char    *p = nullptr;
+    uint32_t len = 0;
+    explicit CfgBuf(const char *path) {
+        p = (char *)malloc(CFG_BUF);
+        if (p) len = cfg_read(path, p, CFG_BUF);
+        else   out_err("Not enough memory to read %s.", path);
+    }
+    ~CfgBuf() { free(p); }
+    CfgBuf(const CfgBuf &) = delete;
+    CfgBuf &operator=(const CfgBuf &) = delete;
+};
+
 static bool cfg_write(const char *path, const char *buf, uint32_t len) {
     storage_mkdir(CFG_DIR);          // no-op when it already exists
     return storage_write_file(path, (const uint8_t *)buf, len);
@@ -73,8 +96,10 @@ static void list_cb(void *v, uint32_t idx, const char *line) {
 // The shared body of startup/task/service: list, add, remove, clear.
 static int list_command(const char *path, const char *label, bool intervals,
                         int argc, char **argv, const char *usage) {
-    static char buf[CFG_BUF];
-    uint32_t len = cfg_read(path, buf, sizeof(buf));
+    CfgBuf cfg(path);
+    if (!cfg.p) return 1;
+    char *buf = cfg.p;
+    uint32_t len = cfg.len;
 
     const char *sub = (argc >= 2) ? argv[1] : "list";
 
@@ -98,7 +123,7 @@ static int list_command(const char *path, const char *label, bool intervals,
             out_err("Expected an interval first, e.g. 'task add 60 sysinfo'.");
             return 1;
         }
-        uint32_t nl = joblist_add(buf, len, sizeof(buf), line);
+        uint32_t nl = joblist_add(buf, len, CFG_BUF, line);
         if (nl == len) { out_err("The list is full."); return 1; }
         if (!cfg_write(path, buf, nl)) { out_err("Could not write %s.", path); return 1; }
         out_ok("Added: %s", line);
@@ -143,8 +168,10 @@ static void run_one_cb(void *v, uint32_t, const char *line) {
 
 // Run the startup list. Called once after login, and by `startup run`.
 void jobs_run_startup(void) {
-    static char buf[CFG_BUF];
-    uint32_t len = cfg_read(STARTUP_CFG, buf, sizeof(buf));
+    CfgBuf cfg(STARTUP_CFG);
+    if (!cfg.p) return;
+    const char *buf = cfg.p;
+    uint32_t len = cfg.len;
     if (!joblist_count(buf, len)) return;
     out_infop("Startup", "Running %u command%s...",
               (unsigned)joblist_count(buf, len),
@@ -172,6 +199,13 @@ static Slot     g_slots[SCHED_MAX];
 static uint32_t g_nslots;
 static int      g_sched_pid = -1;
 static uint32_t g_fired;
+// The table is rebuilt by `task add`/`remove`/`reload` on whichever task typed
+// them, while the scheduler task reads it on another — possibly on the other
+// core. Without this a reload could empty and refill the table under the
+// scheduler as it copied a command out, and the line it ran could be half of one
+// entry and half of another. Held for the rebuild and for the copy only, never
+// while a command runs: a scheduled `task reload` takes it again.
+static RpcLock  g_sched_lock;
 
 static void load_slot(void *, uint32_t, const char *line) {
     if (g_nslots >= SCHED_MAX) return;
@@ -186,22 +220,29 @@ static void load_slot(void *, uint32_t, const char *line) {
     snprintf(s.cmd, sizeof(s.cmd), "%s", cmd);
 }
 
-static void sched_reload(void) {
-    static char buf[CFG_BUF];
-    uint32_t len = cfg_read(TASKS_CFG, buf, sizeof(buf));
+// False when the list could not be read, and the schedule is left as it was.
+static bool sched_reload(void) {
+    LockGuard _lk(&g_sched_lock);
+    CfgBuf cfg(TASKS_CFG);             // after the lock, so it is freed inside it
+    if (!cfg.p) return false;
     g_nslots = 0;
-    joblist_walk(buf, len, load_slot, nullptr);
+    joblist_walk(cfg.p, cfg.len, load_slot, nullptr);
+    return true;
 }
 
 static int sched_task(void *) {
     sched_reload();
     while (!task_should_stop()) {
         uint32_t now = task_now_ms() / 1000;
-        for (uint32_t i = 0; i < g_nslots; i++) {
-            if ((int32_t)(now - g_slots[i].next_at_s) < 0) continue;
-            g_slots[i].next_at_s = now + g_slots[i].every_s;
+        for (uint32_t i = 0; ; i++) {
             char copy[160];
-            snprintf(copy, sizeof(copy), "%s", g_slots[i].cmd);
+            {
+                LockGuard _lk(&g_sched_lock);
+                if (i >= g_nslots) break;
+                if ((int32_t)(now - g_slots[i].next_at_s) < 0) continue;
+                g_slots[i].next_at_s = now + g_slots[i].every_s;
+                snprintf(copy, sizeof(copy), "%s", g_slots[i].cmd);
+            }
             shell_run_line_now(copy);
             g_fired++;
         }
@@ -234,7 +275,11 @@ static int cmd_task(int argc, char **argv) {
         g_sched_pid = -1;
         return 0;
     }
-    if (argc >= 2 && !strcmp(argv[1], "reload")) { sched_reload(); out_ok("Schedule reloaded."); return 0; }
+    if (argc >= 2 && !strcmp(argv[1], "reload")) {
+        if (!sched_reload()) return 1;     // CfgBuf has said why
+        out_ok("Schedule reloaded.");
+        return 0;
+    }
 
     int rc = list_command(TASKS_CFG, "Scheduled tasks", true, argc, argv,
                           "Usage: task [list | add <secs> <cmd> | remove <n> | clear"
@@ -357,8 +402,10 @@ static void svc_start_cb(void *v, uint32_t, const char *line) {
 }
 
 void jobs_start_services(void) {
-    static char buf[CFG_BUF];
-    uint32_t len = cfg_read(SERVICE_CFG, buf, sizeof(buf));
+    CfgBuf cfg(SERVICE_CFG);
+    if (!cfg.p) return;
+    const char *buf = cfg.p;
+    uint32_t len = cfg.len;
     if (!joblist_count(buf, len)) return;
     uint32_t n = 0;
     joblist_walk(buf, len, svc_start_cb, &n);
@@ -377,9 +424,9 @@ void jobs_start_services(void) {
 // principle have rewritten the list too. The line the caller stopped is the
 // line it puts back.
 void jobs_services_walk(JobWalkFn cb, void *ctx) {
-    static char buf[CFG_BUF];
-    uint32_t len = cfg_read(SERVICE_CFG, buf, sizeof(buf));
-    joblist_walk(buf, len, cb, ctx);
+    CfgBuf cfg(SERVICE_CFG);
+    if (!cfg.p) return;
+    joblist_walk(cfg.p, cfg.len, cb, ctx);
 }
 
 int jobs_service_start(const char *line) {
