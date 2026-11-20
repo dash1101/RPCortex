@@ -341,6 +341,12 @@ void out_write(const char *data, uint32_t len) {
     if (f) cap_append(data, len, &f->esc);
 }
 
+void out_console(const char *data, uint32_t len) {
+    OutGuard _o;
+    fwrite(data, 1, len, stdout);
+    fflush(stdout);
+}
+
 void out_multi(const char *fmt, ...) {
     va_list ap; va_start(ap, fmt);
     if (!capturing_here()) {

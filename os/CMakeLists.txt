@@ -136,6 +136,8 @@ add_executable(rpcortex_v2
     ${OS_ROOT}/core/textcore.cpp
     ${OS_ROOT}/core/history.cpp
     ${OS_ROOT}/core/sha256.cpp
+    ${OS_ROOT}/core/b64.cpp
+    ${OS_ROOT}/core/linkreq.cpp
     ${OS_ROOT}/core/registry.cpp
     ${OS_ROOT}/core/users.cpp
     ${OS_ROOT}/core/persist.cpp
@@ -144,6 +146,7 @@ add_executable(rpcortex_v2
     ${OS_ROOT}/shell/command.cpp
     ${OS_ROOT}/shell/session.cpp
     ${OS_ROOT}/shell/fs.cpp
+    ${OS_ROOT}/shell/link.cpp
     ${OS_ROOT}/shell/apps.cpp
     ${OS_ROOT}/shell/pkg.cpp
     ${OS_ROOT}/shell/pkgrepo.cpp

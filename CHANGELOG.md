@@ -53,6 +53,8 @@ Summary: The boot recovery ladder now works on hardware, and releases are number
 - `rm -r` could not remove a directory holding a name of 64 characters or more, and two `rm -r`s at once (one in the background) shared one working path. A factory reset had the same name limit. All three keep names whole now and work independently.
 - `/tmp` is really emptied at every boot. Folders inside it were skipped and stayed for ever.
 - A file standing where a system directory belongs is moved aside (to `<name>.displaced`) so the directory can be made again, instead of failing every boot.
+- `link`: a framed mode on the console for programs on a computer (LINK.md). Run a command and get its output and exit status, send and fetch files with a SHA-256 check (about 19 KB/s up, 74 KB/s down on a Pico 2 W), list directories. The command-line and browser tools are built on it.
+- `;`, `&&` and `||` work everywhere a command line is run, not only at the prompt. In scripts, `bg`, services, scheduled tasks and from packages, `a ; b` used to run as one command called `a`.
 - `df` no longer reports a failed measurement as a full disk. When littlefs cannot say how full it is, `df` says so and suggests `fscheck`, rather than printing "100% used" with no warning beside it.
 - Two tasks could be inside I2C transfers on the same block at once (the display flush and a PN532 exchange), which the SDK's transfer calls do not allow. Every transfer, and every change of bus speed, now takes a per-block lock.
 

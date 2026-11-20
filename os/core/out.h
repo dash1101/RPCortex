@@ -81,6 +81,12 @@ void out_restore_error(bool had);
 // an empty y while the content goes to the console.
 void out_write(const char *data, uint32_t len);
 
+// Bytes straight to the console, whole, under the output lock, whether or not
+// this task is capturing. For a protocol that frames its answers (link mode):
+// one call per frame means another task's line can land between two frames
+// but never in the middle of one.
+void out_console(const char *data, uint32_t len);
+
 // --- capture ----------------------------------------------------------------
 //
 // Redirect the DATA channel into a buffer, leaving the status channel on the

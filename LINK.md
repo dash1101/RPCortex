@@ -99,8 +99,10 @@ Sent by the device unprompted on entering, and again on request.
 ```
 
 On entry the `HELLO` frame comes on its own, with no `OK` after it, because there
-was no request. `exec_max` is the most output one `EXEC` returns. Fields may be
-added in later versions; a host ignores keys it does not know.
+was no request. `exec_max` is the most output one `EXEC` returns. `cwd` is
+percent-encoded (a space is `%20`, a percent sign `%25`) so that every field is
+one `key=value` word. Fields may be added in later versions; a host ignores keys
+it does not know.
 
 ### PING
 
@@ -159,6 +161,9 @@ Writes a file. `sha256` is 64 hex characters of the whole file's digest.
 - 10 seconds with no line from the host ends the transfer with `ERR timeout`,
   and the partial file is removed.
 - An existing file at `path` is replaced.
+- A `size` of 0 makes an empty file: `READY` is followed straight away by `OK`,
+  with no `D` lines.
+- Measured on a Pico 2 W: about 19 KB/s. `GET` runs at about 74 KB/s.
 
 ### GET <path>
 
@@ -230,6 +235,9 @@ status or works for files coming the other way.
 - 115200 is the nominal speed. Over USB the number is ignored, but 1200 is
   special: opening the port at 1200 baud resets the board into BOOTSEL.
 - Type nothing at a login prompt that you did not mean to.
+- Read what is waiting rather than a fixed count. A reader that asks for 4096
+  bytes and waits for its timeout when fewer arrive adds that timeout to every
+  chunk's round trip; with pyserial, `read(max(1, port.in_waiting))`.
 - Always read to the final `OK` or `ERR`. A host that sends its next request early
   will have it read as the answer to a question (`A`, `D`, `CANCEL`), or as part
   of a running command's input.
