@@ -165,6 +165,11 @@ test("sudo: refused without a password, PUT into /etc after AUTH, nothing asked 
   eq(await link.auth("rootpw"), 300);
   await link.put(enc.encode("x"), "/etc/x");
   eq(dec.decode(dev.files.get("/etc/x")), "x");
+  dev.grace = false;
+  await rejects(link.get("/os/users.cfg"), Error, "the account file without sudo");
+  link.sudoPassword = async () => "rootpw";
+  link._sudoKnown = null;
+  ok((await link.get("/os/users.cfg")).length > 0, "read after AUTH");
   const plain = await link.exec("pkg install /os/pkg/greet.app");
   ok(plain.rc === 1 && /Run it with sudo/.test(plain.text), "a line without sudo is the device's to refuse");
   await link.bye(); dev.stop();

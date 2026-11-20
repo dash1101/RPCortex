@@ -600,6 +600,12 @@ class MockDevice(object):
         return (self.proto >= 2 and self.user in self.admins and self.is_system(p)
                 and not self.elevated)
 
+    def read_needs_sudo(self, p):
+        """An admin reading the password hashes or a key without sudo."""
+        return (self.proto >= 2 and self.user in self.admins and not self.elevated
+                and (p in ("/os/users.cfg", "/os/users.bak", "/os/device.key")
+                     or p == "/os/ssh" or p.startswith("/os/ssh/")))
+
     def sudo_auth(self, what="use sudo"):
         if self.elevated or self.grace:
             return True
@@ -1012,8 +1018,8 @@ class MockDevice(object):
         if len(p.encode("utf-8", "surrogateescape")) >= 200:
             self.err("toolong", "path too long")
             return None
-        if change and self.needs_sudo(p):
-            self.err("sudo", "{} is part of the system: send AUTH first".format(p))
+        if (self.needs_sudo(p) if change else self.read_needs_sudo(p)):
+            self.err("sudo", "{} needs sudo: send AUTH first".format(p))
             return None
         if not (self.may_change(p) if change else self.may_read(p)):
             self.err("perm", "{} is protected for this account".format(p))
@@ -1120,7 +1126,13 @@ class MockDevice(object):
         self.frame("OK sha=" + hexd)
 
     def l_get(self, rest):
-        p = self._path(rest, False)
+        was = self.elevated
+        if self.grace and self.user in self.admins:
+            self.elevated = True
+        try:
+            p = self._path(rest, False)
+        finally:
+            self.elevated = was
         if p is None:
             return
         if not self.fs.exists(p):

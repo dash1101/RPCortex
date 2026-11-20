@@ -361,7 +361,11 @@ export class LinkClient {
     return this.setHello(h);
   }
 
-  async ls(path) {
+  // LS, STAT and GET of the files holding passwords and keys need sudo on
+  // protocol 2 firmware, like a PUT into /os: AUTH, then the same request.
+  ls(path) { return this._withSudo(() => this._ls(path)); }
+
+  async _ls(path) {
     const { frames } = await this.request("LS " + (path || "."));
     return frames.filter((f) => f.type === "E").map((f) => {
       const a = f.rest.indexOf(" ");
@@ -370,7 +374,9 @@ export class LinkClient {
     });
   }
 
-  async stat(path) {
+  stat(path) { return this._withSudo(() => this._stat(path)); }
+
+  async _stat(path) {
     try {
       const { final } = await this.request("STAT " + path);
       const kv = final.kv();
@@ -468,7 +474,9 @@ export class LinkClient {
   }
 
   // Read a file; resolves to its bytes, checked against the device's digest.
-  async get(path, { progress, signal } = {}) {
+  get(path, opts = {}) { return this._withSudo(() => this._get(path, opts)); }
+
+  async _get(path, { progress, signal } = {}) {
     const req = LinkClient.encode("GET " + path);
     return this._serial(() => this._guard("get", async () => {
       await this.s.write(req);

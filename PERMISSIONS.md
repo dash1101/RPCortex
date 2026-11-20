@@ -50,12 +50,12 @@ device ask every time, and the everyday ones (reading, Wi-Fi, a restart) do not.
 | `task` | | `list` | `add`, `remove`, `clear`, `start`, `stop`, `reload` |
 | `service` | | `list`, `status` | `add`, `remove`, `clear`, `start` |
 | `mkacct` | | an ordinary account (asks the password too) | `--admin` |
-| `passwd` | your own, if you have one | your own, for an account with none | somebody else's |
+| `passwd` | your own (an account with no password cannot give itself one) | | somebody else's: `sudo passwd <name>` |
 | `usermod`, `rmuser` | | | every form |
 | `regreset`, `factoryreset`, `failboot` | | | every form |
 | `safeboot` | | a plain restart into maintenance | with a command to run there |
 | `reg` | | reading; setting anything else | `set` of `System.Autonomous`, `System.Setup`, `System.Active_User`, `System.SafeBoot*`, `SSH.*`, `Alias.*`, `Pkg.Repos` |
-| Files in `/os` and `/etc` | reading (but not the account file, the registry, the device key or `/os/ssh`) | reading all of it | changing anything: `rm`, `mv`, `cp`, `touch`, `mkdir`, `rename`, `edit`, a redirect, `put`, link's `PUT`, a package's file calls |
+| Files in `/os` and `/etc` | reading (but not the account file, the registry, the device key or `/os/ssh`) | reading, but not the account file, the device key or `/os/ssh` | changing anything: `rm`, `mv`, `cp`, `touch`, `mkdir`, `rename`, `edit`, a redirect, `put`, link's `PUT`, a package's file calls; reading the account file, the device key and the SSH host key |
 
 Everything else is as it was. `reboot`, `wifi`, `radio`, `date`, `pulse`, `bt`,
 `settings`, `unload`, `pkgdisable`, `pkgenable`, `fscheck`, `alias` and the rest of
@@ -81,7 +81,13 @@ A few that might look as if they belong in the last column, and why they do not:
 `/os` and `/etc` hold everything the device runs as the console's account at the next
 start: startup items, services and scheduled tasks, installed packages and their
 index, the trusted certificates, a staged update. An ordinary account can never
-change them. An admin can, with sudo. Reading is unchanged.
+change them. An admin can, with sudo.
+
+Reading is as it was, with one exception: the account file (its salted password
+hashes can be guessed offline), the device key that seals the saved Wi-Fi
+passwords, and the SSH host key need sudo to read, for an admin too. Otherwise
+being signed in, by autonomy or over SSH with a key, would be a way to the very
+password sudo asks for.
 
 That rule is for a person's commands, a package's file calls and the host tools'
 `PUT`. The OS's own writes are not commands and are not asked: saving the settings,

@@ -131,10 +131,10 @@ static ReadResult read_line(char *buf, uint32_t cap, uint32_t timeout_ms,
 static bool link_path(LinkState *st, const char *in, char *out, uint32_t cap, bool change) {
     if (!in[0]) { ERR(st, "badreq", "a path is needed"); return false; }
     if (!path_resolve(fs_cwd(), in, out, cap)) { ERR(st, "toolong", "path too long"); return false; }
-    if (change && fs_change_needs_sudo(out)) {
-        // An admin, a system path and no grace: AUTH, then the same request
-        // again, gets it through.
-        ERR(st, "sudo", "%s is part of the system: send AUTH first", out);
+    if (change ? fs_change_needs_sudo(out) : fs_read_needs_sudo(out)) {
+        // An admin, a system path (or, to read, one holding passwords or keys)
+        // and no grace: AUTH, then the same request again, gets it through.
+        ERR(st, "sudo", "%s needs sudo: send AUTH first", out);
         return false;
     }
     if (change ? !fs_may_change(out) : !fs_may_read(out)) {
@@ -313,6 +313,7 @@ static void do_put(LinkState *st, const char *rest) {
 
 static void do_get(LinkState *st, const char *rest) {
     char path[200];
+    LinkSudo sudo;
     if (!link_path(st, rest, path, sizeof(path), /*change*/false)) return;
     bool is_dir = false;
     if (!storage_stat(path, &is_dir, nullptr)) { ERR(st, "nofile", "there is no %s", path); return; }
@@ -353,6 +354,7 @@ struct LsCtx { LinkState *st; uint32_t n; };
 
 static void do_ls(LinkState *st, const char *rest) {
     char path[200];
+    LinkSudo sudo;
     if (!link_path(st, rest[0] ? rest : ".", path, sizeof(path), /*change*/false)) return;
     bool is_dir = false;
     if (!storage_stat(path, &is_dir, nullptr)) { ERR(st, "nofile", "there is no %s", path); return; }
@@ -369,6 +371,7 @@ static void do_ls(LinkState *st, const char *rest) {
 
 static void do_stat(LinkState *st, const char *rest) {
     char path[200];
+    LinkSudo sudo;
     if (!link_path(st, rest, path, sizeof(path), /*change*/false)) return;
     bool is_dir = false;
     uint32_t size = 0;

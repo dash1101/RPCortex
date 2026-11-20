@@ -212,6 +212,9 @@ Reads a file.
 - 10 seconds with no line ends it with `ERR timeout`.
 - `sha` is the SHA-256 of the bytes sent; the host compares it with what it
   received.
+- The account file, the device key and anything in `/os/ssh` need sudo to read:
+  an admin without a grace gets `ERR sudo` (protocol 2), as `LS` and `STAT` of
+  them do.
 - An empty file gives `SIZE 0` and then `OK` straight away, with no `D`.
 
 ### LS <path>
@@ -240,8 +243,9 @@ the name, which may contain spaces. `.` and `..` are not listed.
 
 Proves the signed-in account's password, the way typing it at sudo's prompt
 would, and starts the grace for this session: for the next 5 minutes (each use
-starts it again) `EXEC sudo ...` runs without asking, and `PUT` may write into
-`/os` and `/etc`. The password is standard base64 of its UTF-8 bytes.
+starts it again) `EXEC sudo ...` runs without asking, and the file requests run
+with sudo (`PUT` may write into `/os` and `/etc`, `GET` may read the account
+file and the keys). The password is standard base64 of its UTF-8 bytes.
 
 ```
 > AUTH cm9vdHB3

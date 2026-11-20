@@ -345,7 +345,9 @@ int main(void) {
            !fs_may_change("/"), "root without sudo cannot change /os, /etc, or what reaches them");
         ck(fs_may_change("/home/root/notes.txt") && fs_may_change("/tmp/x") &&
            fs_may_change("/home/bob/notes.txt"), "but everything else is as before");
-        ck(fs_may_read("/os/registry.cfg") && fs_may_read("/os/users.cfg"), "and reading is as before");
+        ck(fs_may_read("/os/registry.cfg") && fs_may_read("/etc/startup.cfg"), "and reading is as before");
+        ck(!fs_may_read("/os/users.cfg") && !fs_may_read("/os/device.key") && !fs_may_read("/os/ssh/hostkey"),
+           "but not the password hashes or the keys: signed in is not the same as knowing the password");
         ck(fs_change_needs_sudo("/etc/startup.cfg") && !fs_change_needs_sudo("/home/root/x"),
            "the refusal is one sudo would fix");
         char cap[512];
@@ -364,7 +366,8 @@ int main(void) {
            g_files["/os/registry.cfg"].find("WiFi.Auto") != std::string::npos,
            "while the registry and the account file are still saved");
         task_shell()->elevated = true;
-        ck(fs_may_change("/etc/startup.cfg") && fs_may_change("/os/pkg/x.app"), "with sudo, root may");
+        ck(fs_may_change("/etc/startup.cfg") && fs_may_change("/os/pkg/x.app") && fs_may_read("/os/users.cfg"),
+           "with sudo, root may");
         task_shell()->elevated = false;
         ident_console_set("bob");
         task_shell()->elevated = true;

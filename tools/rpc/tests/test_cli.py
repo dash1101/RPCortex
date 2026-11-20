@@ -457,6 +457,16 @@ class TestSudo(CliCase):
         rc, out, err = run_cli(self.dev, ["put", src, "/home/root/s.cfg"], env={})
         self.assertEqual(rc, 0, "a home needs no sudo: " + err)
 
+    def test_reading_the_account_file_asks_for_sudo(self):
+        rc, out, err = run_cli(self.dev, ["cat", "/os/users.cfg"], env={})
+        self.assertEqual(rc, 1)
+        self.assertIn("needs sudo", err)
+        rc, out, err = run_cli(self.dev, ["cat", "/os/users.cfg"], env={"RPC_PASSWORD": "rootpw"})
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, self.dev.fs.files["/os/users.cfg"])
+        rc, out, err = run_cli(self.dev, ["cat", "/os/registry.cfg"], env={})
+        self.assertEqual(rc, 0, "the settings need no sudo to read: " + err)
+
     def test_a_guest_gets_nothing_from_it(self):
         self.dev.user = "guest"
         rc, out, err = run_cli(self.dev, ["install", self.local("a.app", make_app("mine"))],

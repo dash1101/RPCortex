@@ -126,11 +126,13 @@ keys (its host key and the key `ssh keygen` makes are ECDSA).
 - **sudo is per session.** What changes the system (packages, accounts, firmware,
   what starts at boot, `/os` and `/etc`) needs the account's own password typed in
   that session, so a login made with a key cannot do those things on the strength
-  of the key alone. A login never inherits sudo from whatever started its task, and
+  of the key alone, nor read the account file's hashes to work the password out
+  (that needs sudo too). A login never inherits sudo from whatever started its task, and
   the recovery that lets the console use sudo without a password (a maintenance
   boot) never applies to a remote session.
 - **Accounts without a password cannot log in**, by password or by key. `guest` is
-  password-less as shipped; `passwd guest` gives it one if it should be reachable.
+  password-less as shipped; `sudo passwd guest` gives it one if it should be
+  reachable.
 - **A remote session is its own user.** A guest logged in over SSH is a guest even
   while root is signed in at the console, and the other way round. Everything a
   session starts (`bg` jobs, packages) keeps that user.

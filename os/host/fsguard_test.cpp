@@ -38,16 +38,21 @@ int main(void) {
     // --- an admin ----------------------------------------------------------------
     ident_console_set("root");
     ck(!fs_session_restricted(), "an admin is not restricted");
-    for (const char *p : {reg, users, key, os_dir, wild, "/", open_file, "/etc", "/os/pkg/x.app"}) {
+    for (const char *p : {reg, os_dir, wild, "/", open_file, "/etc", "/os/pkg/x.app"}) {
         ck(fs_may_read(p) && !fs_may_change(p) && fs_change_needs_sudo(p),
            "an admin may read every protected path, and change none without sudo");
     }
+    for (const char *p : {users, key, "/os/users.bak", "/os/ssh/hostkey", "/os/ssh", "/OS/Users.cfg"}) {
+        ck(!fs_may_read(p) && fs_read_needs_sudo(p),
+           "but the files holding passwords and keys it reads only with sudo");
+    }
+    ck(!fs_read_needs_sudo(reg) && !fs_read_needs_sudo("/os/crash.log"), "and nothing else needs it to read");
     ck(fs_may_change("/home/sam/notes.txt") && fs_may_change("/tmp/x") && !fs_change_needs_sudo("/tmp/x"),
        "everything else is an admin's without it");
     task_shell()->elevated = true;
-    for (const char *p : {reg, users, key, os_dir, wild, "/", open_file}) {
-        ck(fs_may_read(p) && fs_may_change(p) && !fs_change_needs_sudo(p),
-           "with sudo an admin may change every protected path");
+    for (const char *p : {reg, users, key, os_dir, wild, "/", open_file, "/os/ssh/hostkey"}) {
+        ck(fs_may_read(p) && fs_may_change(p) && !fs_change_needs_sudo(p) && !fs_read_needs_sudo(p),
+           "with sudo an admin may read and change every protected path");
     }
     task_shell()->elevated = false;
     {
@@ -58,6 +63,12 @@ int main(void) {
         cap[n < sizeof(cap) ? n : sizeof(cap) - 1] = 0;
         ck(!ok && strstr(cap, "part of the system") && strstr(cap, "sudo") && !strstr(cap, "Permission denied"),
            "an admin is told to use sudo, not that it is forbidden");
+        ck(out_capture_begin_all(cap, sizeof(cap)), "capture starts");
+        ok = fs_allow_read(users);
+        n = out_capture_end();
+        cap[n < sizeof(cap) ? n : sizeof(cap) - 1] = 0;
+        ck(!ok && strstr(cap, "holds passwords or keys. Read it with sudo."),
+           "and to read the account file with sudo"); 
     }
 
     // --- the guest, and an ordinary account --------------------------------------

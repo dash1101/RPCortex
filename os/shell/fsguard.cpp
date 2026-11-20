@@ -15,8 +15,17 @@
 bool fs_session_restricted(void) { return ident_restricted(); }
 
 bool fs_may_read(const char *abs) {
-    if (!fs_session_restricted()) return true;
-    return !protect_secret(abs) && !protect_home(abs, ident_user(), false);
+    if (fs_session_restricted())
+        return !protect_secret(abs) && !protect_home(abs, ident_user(), false);
+    // An admin reads everything, but the files holding passwords and keys only
+    // with sudo: the account file's hashes can be guessed offline, and the
+    // password they give is the one sudo asks for.
+    return task_shell()->elevated || !protect_credential(abs);
+}
+
+bool fs_read_needs_sudo(const char *abs) {
+    if (fs_session_restricted() || task_shell()->elevated) return false;
+    return protect_credential(abs);
 }
 
 // An admin without sudo: everything but the system's own files. What runs
@@ -60,6 +69,10 @@ static bool too_long(const char *abs) {
 bool fs_allow_read(const char *abs) {
     if (too_long(abs)) return false;
     if (fs_may_read(abs)) return true;
+    if (fs_read_needs_sudo(abs)) {
+        out_err("%s holds passwords or keys. Read it with sudo.", abs);
+        return false;
+    }
     refuse(abs, "read");
     return false;
 }

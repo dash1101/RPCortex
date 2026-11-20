@@ -187,7 +187,10 @@ static uint16_t g_root_dom;
 static int root_login(void *) {
     ident_attach("root", &g_term, g_root_dom, "/home/root");
     ck(!fs_session_restricted() && may_run_admin(false), "a remote root is root");
-    ck(fs_may_read(kSecret) && fs_may_change(kRootKeys), "and may touch what root may");
+    ck(!fs_may_read(kSecret) && fs_may_change(kRootKeys), "and may touch what root may, the account file with sudo");
+    task_shell()->elevated = true;
+    ck(fs_may_read(kSecret), "which then reads it");
+    task_shell()->elevated = false;
     ck(!perms_reg_write_ok("SSH.Server", ident_restricted(), ident_remote(), task_shell()->elevated) &&
        perms_reg_write_ok("WiFi.Auto", ident_restricted(), ident_remote(), task_shell()->elevated),
        "including any setting but the ones that need sudo");

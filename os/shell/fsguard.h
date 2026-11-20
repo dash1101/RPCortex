@@ -1,7 +1,7 @@
 // The session's right to touch a path. See core/protect.h for which paths.
 //
-// An admin may read anything, and change anything outside /os and /etc; those
-// two need sudo as well (core/sudo.h). The system itself is not asked: boot,
+// An admin may read anything but the files holding passwords and keys, and
+// change anything outside /os and /etc; those need sudo as well (core/sudo.h). The system itself is not asked: boot,
 // persistence and networking write the registry and the user list directly
 // through storage, and never come through here. What this stops is an ordinary
 // account, including the guest, using a shell command or a package to read the
@@ -33,5 +33,9 @@ bool fs_may_change(const char *abs);
 // for an admin, without sudo, and a path in /os or /etc (or one that reaches
 // them): the cases where the answer is "use sudo" rather than "no".
 bool fs_change_needs_sudo(const char *abs);
+
+// The same for reading: true only for an admin, without sudo, and a file that
+// holds a password or a key (core/protect.h, protect_credential).
+bool fs_read_needs_sudo(const char *abs);
 
 #endif

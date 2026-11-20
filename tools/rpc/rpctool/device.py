@@ -337,17 +337,19 @@ class Device(object):
             return self._with_sudo(lambda: self.link.put(data, path, progress))
         return self.legacy.put(data, path, progress)
 
+    # The file holding the password hashes, and the keys, need sudo to read on
+    # protocol 2 firmware; the device says ERR sudo and AUTH gets them through.
     def get(self, path, progress=None):
         self._need_link("Fetching a file")
-        return self.link.get(path, progress)
+        return self._with_sudo(lambda: self.link.get(path, progress))
 
     def ls(self, path="."):
         self._need_link("Listing a directory")
-        return self.link.ls(path)
+        return self._with_sudo(lambda: self.link.ls(path))
 
     def stat(self, path):
         self._need_link("stat")
-        return self.link.stat(path)
+        return self._with_sudo(lambda: self.link.stat(path))
 
     def is_dir(self, path):
         st = self.stat(path)

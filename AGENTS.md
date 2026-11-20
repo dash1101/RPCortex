@@ -174,7 +174,8 @@ D1's workers do this, on either core), and `link`'s `EXEC`. So:
   `rm -r /home/root/<long name>` into `rm -r /home/root`.
 - **Permission checks:** `fs_allow_read/fs_allow_change` (print a refusal) or
   `fs_may_read/fs_may_change` (silent). Every command that writes must ask, and
-  so must every package file call. An admin needs sudo to change `/os` and `/etc`;
+  so must every package file call. An admin needs sudo to change `/os` and `/etc`,
+  and to read the account file, the device key and `/os/ssh`;
   the OS's own writes (the registry, the account file, `pkg install` writing
   `/os/pkg`) go to storage directly and must keep doing so, never through the
   guard.

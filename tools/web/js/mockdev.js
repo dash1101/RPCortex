@@ -117,6 +117,7 @@ export class MockDevice {
     this.seed = 7;
     const put = (p, s) => this.files.set(p, typeof s === "string" ? enc.encode(s) : s);
     put("/os/registry.cfg", "System.Setup=true\n");
+    put("/os/users.cfg", "root:salted:hash\n");
     put("/os/pkg/greet.app", makeApp("greet"));
     put("/etc/startup.cfg", "# startup\n");
     put("/home/root/notes.txt", "hello from the device\n");
@@ -272,6 +273,11 @@ export class MockDevice {
 
   needsSudo(p) {
     return this.proto >= 2 && this.admins.has(this.user) && MockDevice.isSystem(p) && !this.elevated;
+  }
+
+  readNeedsSudo(p) {
+    return this.proto >= 2 && this.admins.has(this.user) && !this.elevated && !this.grace &&
+      (["/os/users.cfg", "/os/users.bak", "/os/device.key"].includes(p) || p === "/os/ssh" || p.startsWith("/os/ssh/"));
   }
 
   async sudo(a) {
@@ -496,6 +502,7 @@ export class MockDevice {
 
   async lGet(rest) {
     const p = resolve(this.cwd, rest);
+    if (this.readNeedsSudo(p)) return this.frame(`ERR sudo ${p} needs sudo: send AUTH first`);
     if (this.dirs.has(p)) return this.frame(`ERR nofile ${p} is a directory`);
     if (!this.files.has(p)) return this.frame(`ERR nofile there is no ${p}`);
     const data = this.files.get(p);

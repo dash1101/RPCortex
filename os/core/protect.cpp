@@ -50,6 +50,17 @@ bool protect_secret(const char *path) {
     return false;
 }
 
+bool protect_credential(const char *path) {
+    if (!path) return false;
+    char c[CANON_MAX];
+    if (!canon(path, c)) return true;
+    static const char *const kCred[] = { "/os/users.cfg", "/os/users.bak", "/os/device.key" };
+    for (const char *k : kCred)
+        if (strcmp(c, k) == 0) return true;
+    size_t sl = sizeof(kSshDir) - 1;
+    return strncmp(c, kSshDir, sl) == 0 && (c[sl] == 0 || c[sl] == '/');
+}
+
 static bool has_wild(const char *s, size_t n) {
     for (size_t i = 0; i < n; i++) if (s[i] == '*' || s[i] == '?') return true;
     return false;

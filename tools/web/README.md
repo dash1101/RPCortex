@@ -22,8 +22,9 @@ password, which installing a package asks for, is `demo`.
 
 ## sudo
 
-On firmware with link protocol 2, installing a package and changing anything in
-`/os` or `/etc` need sudo (PERMISSIONS.md). The first time the device says so, the
+On firmware with link protocol 2, installing a package, changing anything in
+`/os` or `/etc`, and reading the account file or the keys need sudo
+(PERMISSIONS.md). The first time the device says so, the
 page asks for the signed-in account's password, sends it with `AUTH` (LINK.md) and
 does the request again. A wrong password is asked for again, three times at most.
 The password is kept for as long as the page is connected, so a long job is not

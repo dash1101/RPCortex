@@ -26,6 +26,7 @@ Summary:
 
 - Commands that change the system need `sudo` and the admin's own password, root's included: installing, removing and upgrading packages (and `stock`), accounts (`rmuser`, `usermod`, `mkacct --admin`, another user's `passwd`), firmware (`update install`, `from-file`, `rollback --now`), what starts at boot (`startup`, `service`, `task` changes), `ssh server on` and `off`, `autonomy on` and `off`, `regreset`, `factoryreset`, `failboot`, a command staged with `safeboot`, and `reg set` of the settings that decide who gets in. Being signed in as an admin was enough before, and autonomy signs root in with no password at all. Reading, Wi-Fi, a restart and the rest of the everyday commands are as they were. The table is in `PERMISSIONS.md`.
 - Changing anything in `/os` or `/etc` needs sudo for an admin too, from a command, a package or a host tool. The OS's own writes (settings, accounts, an install) are unaffected.
+- Reading the account file (its password hashes can be guessed offline), the device key that seals saved Wi-Fi passwords, and the SSH host key needs sudo for an admin too. Otherwise being signed in by autonomy, or over SSH with a key, was a way to the very password sudo asks for.
 - sudo never asks for a password where nobody can answer: a background job, a package, the host tools' `EXEC`, or an SSH command without a terminal (`ssh dev 'sudo ...'`, which says to use `ssh -t`). They use the session's 5 minutes, or are refused with one line saying to run `sudo -v` first. Startup items, services and scheduled tasks run with sudo, since only sudo could have put them there.
 - A package run by an ordinary account could set `System.SafeBoot` and `System.SafeBootCmd`, and the next restart would run any command it liked as the console's user; it could also change where `pkg install` fetches from. Both are closed, and an admin's package needs sudo for those and the other settings that decide who gets in.
 - `put`, and a package's `fw_mkdir`, did not ask whether the account may write where they were pointed. They ask now, like every other write.
@@ -39,7 +40,7 @@ Summary:
 - `autonomy on` asks for the password before the warning rather than after, since `sudo` asks first.
 - Nova D1's screen, run as a service, installs packages, resets settings and edits services as before. Started by hand it needs `sudo -v` at the console first. `novad1 setup` and `novad1 selfupdate` are `sudo novad1 setup` and `sudo novad1 selfupdate` now, and say so when run without it.
 - The backup package keeps its snapshots in `/etc/backups`, so `backup create` and `backup restore` need `sudo` in front.
-- sudo costs about 5.3 KB of flash on every board (the Pico W has 4 KB of its slot left, the Pico 2 W 106 KB) and 136 bytes of memory.
+- sudo costs about 5.7 KB of flash on every board (the Pico W has 3 KB of its slot left, the Pico 2 W 105 KB) and 136 bytes of memory.
 
 ### Known issues
 

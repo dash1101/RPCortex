@@ -43,8 +43,9 @@ prompt and `rpc` says what it found.
 
 ## sudo
 
-On firmware with link protocol 2, installing a package and changing anything in
-`/os` or `/etc` (`put`, `rm`, `mkdir`, `mv` there, and `restore`) need sudo, which
+On firmware with link protocol 2, installing a package, changing anything in
+`/os` or `/etc` (`put`, `rm`, `mkdir`, `mv` there, and `restore`) and reading the
+account file or the keys (`get`, `cat`) need sudo, which
 asks for the signed-in account's password (PERMISSIONS.md). `rpc` asks for it the
 first time the device says so, sends it with `AUTH` (LINK.md) and repeats the
 request; a typed password that is wrong is asked for again, three times at most.

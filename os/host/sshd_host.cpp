@@ -275,10 +275,29 @@ static int bgjob(void *) {
     return 0;
 }
 
+static int run_fake(int argc, char **argv);
+
+// sudo, as run_one does it: the word comes off, the gate decides, and the
+// command runs with sudo for as long as it runs.
 int shell_run_input(char *line) {
     char *argv[8]; int argc = 0;
     for (char *t = strtok(line, " "); t && argc < 8; t = strtok(nullptr, " ")) argv[argc++] = t;
     if (!argc) return 0;
+    if (strcmp(argv[0], "sudo") != 0 || argc < 2) return run_fake(argc, argv);
+    if (!strcmp(argv[1], "-v")) return sudo_validate();
+    if (!strcmp(argv[1], "-k")) return sudo_forget();
+    bool el = false;
+    if (!sudo_gate(LEVEL_SYSTEM, FORMS_NONE, argc - 1, argv + 1, true, &el)) return 1;
+    TaskShell *ts = task_shell();
+    bool was = ts->elevated;
+    ts->elevated = el;
+    int rc = run_fake(argc - 1, argv + 1);
+    if (rc == 0 && !strcmp(argv[1], "rmuser")) out_multi("  (with sudo)");
+    ts->elevated = was;
+    return rc;
+}
+
+static int run_fake(int argc, char **argv) {
     const char *c = argv[0];
     if (!strcmp(c, "whoami"))  { out_multi("%s", session_user()); return 0; }
     if (!strcmp(c, "isadmin")) {
@@ -325,16 +344,10 @@ int shell_run_input(char *line) {
         return task_spawn("bgjob", nullptr, bgjob, nullptr, TASK_STACK_SHELL, AFFINITY_ANY) > 0 ? 0 : 1;
     }
     if (!strcmp(c, "ssh") && argc >= 3) return sshd_command(argc, argv);
-    // sudo, as run_one does it: the word comes off, the gate decides.
-    if (!strcmp(c, "sudo") && argc >= 2 && !strcmp(argv[1], "-v")) return sudo_validate();
-    if (!strcmp(c, "sudo") && argc >= 2 && !strcmp(argv[1], "-k")) return sudo_forget();
-    bool prefixed = !strcmp(c, "sudo") && argc >= 2;
-    char **av = prefixed ? argv + 1 : argv;
-    int ac = prefixed ? argc - 1 : argc;
-    if (!strcmp(av[0], "rmuser")) {
+    if (!strcmp(c, "rmuser")) {
         bool el = false;
-        if (!sudo_gate(LEVEL_SYSTEM, FORMS_NONE, ac, av, prefixed, &el)) return 1;
-        out_multi("ran rmuser%s", el ? " with sudo" : "");
+        if (!sudo_gate(LEVEL_SYSTEM, FORMS_NONE, argc, argv, false, &el)) return 1;
+        out_multi("ran rmuser");
         return 0;
     }
     out_err("'%s' is not a command or executable file.", c);

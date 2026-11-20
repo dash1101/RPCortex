@@ -36,6 +36,14 @@ bool protect_reaches(const char *path);
 // too long to judge counts.
 bool protect_home(const char *path, const char *self, bool change);
 
+// Does this file hold a password, or a key that unlocks one? The account file
+// (salted hashes, which can be guessed offline) and its backup, the device key
+// that seals the saved Wi-Fi passwords, and the SSH host key (anything in
+// /os/ssh). An admin reads these only with sudo, so that being signed in (by
+// autonomy, or over SSH with a key) is not a way to the password sudo asks for.
+// An ordinary account never reads them (protect_secret).
+bool protect_credential(const char *path);
+
 // Is this /os or /etc, or inside them? Everything the device runs at boot as
 // the console's user is there — startup items, services, scheduled tasks,
 // installed packages and their index, the trusted certificates, a staged

@@ -344,7 +344,8 @@ check "sshd.cpp: root by key: '$out'" test "$out" = "root"
 out=$(run $D -o BatchMode=yes -i id_ed25519 -o PubkeyAcceptedAlgorithms=ssh-ed25519 root@127.0.0.1 whoami 2>&1)
 check "sshd.cpp: root by an ed25519 key: '$out'" test "$out" = "root"
 out=$(run $DK root@127.0.0.1 readsecret 2>&1)
-check "sshd.cpp: root may read the account file: '$out'" test "$out" = "allowed"
+check "sshd.cpp: root reads the account file only with sudo: '$out'" \
+      test -n "$(grep -F 'holds passwords or keys. Read it with sudo.' <<<"$out")"
 out=$(run $DK root@127.0.0.1 isadmin 2>&1)
 check "sshd.cpp: root is an admin over SSH" test "$out" = "admin"
 
@@ -428,8 +429,8 @@ out, _ = p.communicate(timeout=30)
 print(out.decode(errors="replace").replace("\r", ""))
 PY
 check "sshd.cpp: with a terminal, sudo asks on it" grep -q "Password for root, to run 'rmuser'" dsudo.out
-check "sshd.cpp: ...and runs the command with sudo" grep -q "^ran rmuser with sudo" dsudo.out
-check "sshd.cpp: ...and asks once in the session" test "$(grep -c 'Password for root' dsudo.out)" -eq 1 -a "$(grep -c '^ran rmuser with sudo' dsudo.out)" -eq 2
+check "sshd.cpp: ...and runs the command with sudo" grep -q "(with sudo)" dsudo.out
+check "sshd.cpp: ...and asks once in the session" test "$(grep -c 'Password for root' dsudo.out)" -eq 1 -a "$(grep -c '(with sudo)' dsudo.out)" -eq 2
 check "sshd.cpp: the password is not echoed" test -z "$(grep rootpw dsudo.out)"
 out=$(pw bobpw bob 'sudo rmuser bob'); rc=$?
 check "sshd.cpp: an ordinary account's sudo is refused ($rc)" test $rc -eq 1 -a -n "$(grep 'not an admin' <<<"$out")"
