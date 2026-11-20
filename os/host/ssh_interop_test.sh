@@ -34,6 +34,7 @@ W="$(mktemp -d)"
 cleanup() {
     [ -f "$W/server.pid" ] && kill "$(cat "$W/server.pid")" 2>/dev/null
     [ -f "$W/sshd.pid" ] && kill "$(cat "$W/sshd.pid")" 2>/dev/null
+    [ -n "${SSH_KEEP:-}" ] && { echo "kept $W"; return; }
     rm -rf "$W"
 }
 trap cleanup EXIT
@@ -277,6 +278,155 @@ EOF
         check "client core: 100 KB from sshd ($got bytes)" test "$got" -eq 102400
     fi
 fi
+
+# --- the device's own server code (os/shell/sshd.cpp) ---------------------------------
+#
+# sshd.cpp itself, built against host fakes for the socket and the storage
+# (sshd_host.cpp) with the real scheduler, accounts, identity, guard and output
+# layer: the network task, the session shells, the sink and its spill, Ctrl+C
+# into the right session, and every way a connection ends — including the
+# identity rule end to end, with root signed in at the "console" throughout.
+kill "$(cat server.pid)" 2>/dev/null; rm -f server.pid
+g++ "${CXXF[@]}" -DRPC_HAS_WIFI=1 -I"$OS/../loader-spike/firmware" "$HERE/sshd_host.cpp" "$OS/shell/sshd.cpp" \
+    "$OS/shell/fsguard.cpp" "$CORE/sshserver.cpp" "$CORE/sshsess.cpp" "$CORE/lineedit.cpp" \
+    "$CORE/interrupt.cpp" "$CORE/ident.cpp" "$CORE/users.cpp" "$CORE/sha256.cpp" "$CORE/perms.cpp" \
+    "$CORE/protect.cpp" "$CORE/path.cpp" "$CORE/out.cpp" "$CORE/logring.cpp" "$CORE/registry.cpp" \
+    "$CORE/sshwire.cpp" "$CORE/sshcrypto.cpp" "$CORE/sshtrans.cpp" "$CORE/sshkeys.cpp" \
+    "$CORE/lock.cpp" "$CORE/task.cpp" "$CORE/blackbox.cpp" "$W/libmbed.a" -o "$W/sshd_host" || exit 1
+mkdir -p droot
+DPORT=""
+for try in 1 2 3 4 5 6; do
+    p=$((20000 + RANDOM % 30000))
+    ./sshd_host "$p" droot authorized_keys > dserver.out 2> dserver.err &
+    echo $! > server.pid
+    for _ in $(seq 100); do grep -q READY dserver.out 2>/dev/null && break; sleep 0.05; done
+    if grep -q READY dserver.out 2>/dev/null; then DPORT=$p; break; fi
+    kill "$(cat server.pid)" 2>/dev/null; rm -f server.pid
+done
+[ -n "$DPORT" ] || { echo "    FAIL: sshd_host would not start"; tail -5 dserver.err; exit 1; }
+D="-p $DPORT -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR
+   -o IdentitiesOnly=yes -o ConnectTimeout=10"
+DK="$D -o BatchMode=yes -i id_ecdsa"
+pw() {   # pw <password> <user> <command>: a password login through ssh's askpass
+    printf '#!/bin/sh\necho %s\n' "$1" > askpw.sh; chmod +x askpw.sh
+    SSH_ASKPASS="$W/askpw.sh" SSH_ASKPASS_REQUIRE=force setsid -w timeout 60 \
+        ssh $D -o PreferredAuthentications=password -o PubkeyAuthentication=no \
+        -o NumberOfPasswordPrompts=1 "$2@127.0.0.1" "$3" </dev/null 2>&1
+}
+
+out=$(run $DK root@127.0.0.1 whoami 2>&1)
+check "sshd.cpp: root by key: '$out'" test "$out" = "root"
+out=$(run $DK root@127.0.0.1 readsecret 2>&1)
+check "sshd.cpp: root may read the account file: '$out'" test "$out" = "allowed"
+out=$(run $DK root@127.0.0.1 isadmin 2>&1)
+check "sshd.cpp: root is an admin over SSH" test "$out" = "admin"
+
+# The identity rule end to end: bob over SSH while root is at the console.
+out=$(pw bobpw bob whoami)
+check "sshd.cpp: bob by password: '$out'" test "$out" = "bob"
+out=$(pw bobpw bob readsecret); rc=$?
+check "sshd.cpp: bob cannot read the account file while root is at the console ($rc)" \
+      test $rc -eq 1 -a -n "$(grep 'Permission denied' <<<"$out")" -a -z "$(grep allowed <<<"$out")"
+out=$(pw bobpw bob isadmin); rc=$?
+check "sshd.cpp: bob is not an admin over SSH ($rc: '$out')" test $rc -eq 1 -a "$out" = "not admin"
+out=$(pw bobpw bob bgjob)
+for _ in $(seq 40); do [ -s droot/tmp/bgjob ] && break; sleep 0.1; done
+check "sshd.cpp: a job bob starts is bob's, after he has gone: '$(cat droot/tmp/bgjob 2>/dev/null)'" \
+      test "$(cat droot/tmp/bgjob 2>/dev/null)" = "bob remote"
+out=$(pw wrong bob whoami); rc=$?
+check "sshd.cpp: a wrong password is refused ($rc)" test $rc -eq 255
+# guest has no password: refused with any password, AND with a key it lists.
+out=$(pw anything guest whoami); rc=$?
+check "sshd.cpp: a password-less account is refused by password ($rc)" test $rc -eq 255
+out=$(run $DK guest@127.0.0.1 whoami 2>&1); rc=$?
+check "sshd.cpp: ...and by a key in its own authorized_keys ($rc)" test $rc -eq 255
+check "sshd.cpp: refusals are logged" grep -q "refused password for 'bob'" dserver.err
+# A refused password holds its connection still for the pause, slot and all,
+# even once the client has given up. Wait for those to end before going on.
+settle() {
+    for _ in $(seq 100); do
+        [ "$(grep 'open sockets' dserver.err | tail -1)" = "open sockets: 1" ] && return 0
+        sleep 0.1
+    done
+    return 1
+}
+check "sshd.cpp: held connections end and give their sockets back" settle
+
+run $DK root@127.0.0.1 false >/dev/null 2>&1; rc=$?
+check "sshd.cpp: exit status ($rc)" test $rc -eq 1
+got=$(run $DK root@127.0.0.1 'big 102400' | sha256sum | cut -d' ' -f1)
+check "sshd.cpp: 100 KB through the sink, the ring and the pump" test "$got" = "$(pattern 102400)"
+t0=$(date +%s)
+out=$(run $DK root@127.0.0.1 'locked 40000' 2>&1); rc=$?
+t1=$(date +%s)
+check "sshd.cpp: output under a lock is set aside, then cut with a note ($rc, $((t1 - t0))s)" \
+      test $rc -eq 0 -a -n "$(grep -F '[ssh: output lost]' <<<"$out")" -a $((t1 - t0)) -lt 10
+check "sshd.cpp: ...and what was kept is the start of it, unbroken" \
+      test "$(head -c 4096 <<<"$out" | sha256sum | cut -d' ' -f1)" = "$(python3 -c "
+import hashlib
+p='0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ+/'
+print(hashlib.sha256(''.join('\n' if j%64==63 else p[j%64] for j in range(4096)).encode()).hexdigest())")"
+
+out=$(printf 'whoami\ncd /tmp\nexit\n' | run $D -tt -o BatchMode=yes -i id_ecdsa root@127.0.0.1 2>/dev/null); rc=$?
+check "sshd.cpp: an interactive session ($rc)" test $rc -eq 0 -a -n "$(grep 'root@host:/home/root>' <<<"$out")"
+check "sshd.cpp: ...prints the welcome line" grep -q "Signed in as root" <<<"$out"
+
+# Ctrl+C reaches the command in its own session, and not one next to it.
+run $DK root@127.0.0.1 'sleep 4' > beside.out 2>&1 &
+pbeside=$!
+python3 - "$DPORT" <<'PY' > dctrlc.out 2>&1
+import subprocess, sys, time
+p = subprocess.Popen(["ssh", "-tt", "-p", sys.argv[1], "-o", "StrictHostKeyChecking=no",
+     "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR", "-o", "BatchMode=yes",
+     "-o", "IdentitiesOnly=yes", "-i", "id_ecdsa", "root@127.0.0.1"],
+     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+t0 = time.time()
+p.stdin.write(b"sleep 30\n"); p.stdin.flush()
+time.sleep(1.5)
+p.stdin.write(b"\x03"); p.stdin.flush()
+time.sleep(0.5)
+p.stdin.write(b"echo after\nexit\n"); p.stdin.flush()
+out, _ = p.communicate(timeout=30)
+print(out.decode(errors="replace").replace("\r", ""))
+print("ELAPSED %.1f" % (time.time() - t0))
+PY
+wait $pbeside
+check "sshd.cpp: Ctrl+C interrupted the session's command" grep -q "Interrupted" dctrlc.out
+check "sshd.cpp: the session carried on" grep -q "^after" dctrlc.out
+check "sshd.cpp: the session beside it was not interrupted" test "$(cat beside.out)" = "slept"
+
+# A client that vanishes mid-command: the session is torn down and its
+# socket given back, three times over.
+for i in 1 2 3; do (timeout -s KILL 1.5 ssh $DK root@127.0.0.1 'sleep 30' >/dev/null 2>&1) 2>/dev/null; done
+sleep 1
+run $DK root@127.0.0.1 'sleep 1' > a.out 2>&1 & pa=$!
+run $DK root@127.0.0.1 'sleep 1' > b.out 2>&1 & pb=$!
+wait $pa; ra=$?; wait $pb; rb=$?
+check "sshd.cpp: both slots free again after clients vanished ($ra/$rb)" test $ra -eq 0 -a $rb -eq 0
+# A third while two are busy is turned away.
+settle
+run $DK root@127.0.0.1 'sleep 5' >/dev/null 2>&1 & pa=$!
+run $DK root@127.0.0.1 'sleep 5' >/dev/null 2>&1 & pb=$!
+for _ in $(seq 50); do
+    [ "$(grep 'open sockets' dserver.err | tail -1)" = "open sockets: 3" ] && break
+    sleep 0.1
+done
+sleep 0.5
+run $DK root@127.0.0.1 whoami >/dev/null 2>&1; rc=$?
+wait $pa; wait $pb
+check "sshd.cpp: a third connection is turned away ($rc)" test $rc -eq 255 -a -n "$(grep 'turned away' dserver.err)"
+sleep 1
+check "sshd.cpp: every socket was given back ($(grep 'open sockets' dserver.err | tail -1))" \
+      test "$(grep 'open sockets' dserver.err | tail -1)" = "open sockets: 1"
+
+# Stopping the server from inside one of its own sessions.
+run $DK root@127.0.0.1 'ssh server off' >/dev/null 2>&1; rc=$?
+sleep 1
+run $DK root@127.0.0.1 whoami >/dev/null 2>&1; rc2=$?
+check "sshd.cpp: 'ssh server off' from inside a session ($rc), then nothing listens ($rc2)" \
+      test $rc2 -eq 255
+check "sshd.cpp: ...and the listener was closed too" \
+      test "$(grep 'open sockets' dserver.err | tail -1)" = "open sockets: 0"
 
 echo "  $pass checks passed, $fail failed"
 [ "$fail" -eq 0 ]

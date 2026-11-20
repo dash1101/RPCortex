@@ -74,6 +74,9 @@ void fetch_register(void);
 void ps_register(void);
 void log_register(void);
 void usbdrive_register(void);
+#if defined(RPC_HAS_SSH) && RPC_HAS_SSH
+void ssh_register(void);
+#endif
 void hid_register(void);
 void stock_register(void);
 void stock_install_once(void);
@@ -211,7 +214,7 @@ static void complete_file_cb(void *ctx, const char *name, bool is_dir, uint32_t)
     complete_offer((CompleteWalk *)ctx, name, is_dir);
 }
 
-static bool shell_complete(void *, const char *prefix, uint32_t word_start,
+bool shell_complete(void *, const char *prefix, uint32_t word_start,
                            uint32_t index, char *out, uint32_t cap) {
     CompleteWalk w{prefix, index, 0, out, cap, false, "", 0};
 
@@ -680,6 +683,9 @@ void shell_register_builtins(void) {
     ps_register();          // ps / kill — the task manager
     log_register();         // logdump
     usbdrive_register();    // usbdrive — offer the filesystem over USB, or do not
+#if defined(RPC_HAS_SSH) && RPC_HAS_SSH
+    ssh_register();         // ssh — the client, and `ssh server`
+#endif
     hid_register();         // hid / badusb — the USB keyboard
 #if defined(RPC_HAS_SD) && RPC_HAS_SD
     sd_register();          // sd — the memory card, browsed at /sd
@@ -881,7 +887,17 @@ static int cmd_alias(int argc, char **argv) {
     char *value = cmdline_trim(eq + 1);
     if (!*name)  { out_warn("Alias name cannot be empty."); return 1; }
     if (!*value) { out_warn("Alias value cannot be empty."); return 1; }
+    // An alias is expanded in EVERY user's shell, before any command is looked
+    // up, so defining one changes what the next person types does — an
+    // ordinary account (or a remote one) could otherwise put `exit=<anything>`
+    // in front of the admin. That is the definition of an admin command here.
+    if (!users_is_admin(session_user())) {
+        out_err("Defining an alias needs an admin account: it applies to everyone's shell.");
+        return 1;
+    }
     if (cmd_find(name)) { out_warn("Cannot shadow the built-in command '%s'.", name); return 1; }
+    // Nor a built-in alias (exit, id, exec...), which user aliases would win over.
+    if (cmd_resolve(name)) { out_warn("Cannot shadow '%s', which is already a command.", name); return 1; }
 
     if (!cmd_ualias_set(name, value)) { out_err("Could not define '%s'.", name); return 1; }
     char key[REG_KEY_MAX];
@@ -893,6 +909,10 @@ static int cmd_alias(int argc, char **argv) {
 
 static int cmd_unalias(int argc, char **argv) {
     if (argc < 2) { out_warn("Usage: unalias <name>"); return 1; }
+    if (!users_is_admin(session_user())) {
+        out_err("Removing an alias needs an admin account: it applies to everyone's shell.");
+        return 1;
+    }
     if (!cmd_ualias_remove(argv[1])) { out_warn("No alias named '%s'.", argv[1]); return 1; }
     char key[REG_KEY_MAX];
     snprintf(key, sizeof(key), "Alias.%s", argv[1]);

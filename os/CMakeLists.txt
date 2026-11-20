@@ -404,6 +404,44 @@ if(PICO_CYW43_SUPPORTED)
         RPC_HAS_TLS=1
         MBEDTLS_CONFIG_FILE="${OS_ROOT}/mbedtls_config.h")
 endif()
+
+# --- SSH: a server to log in to, and a client to log in elsewhere ---------------
+#
+# Needs the radio and mbedTLS, so only a W board can have it; ON by default for
+# the RP2350 one (pico2_w), OFF for pico_w, whose slot has too little left for
+# it. pico2 has no radio at all, so the option means nothing there.
+#
+# Everything that speaks the protocol is in core/ and host-tested against a
+# real OpenSSH (os/host/ssh_*); shell/sshd.cpp and sshc.cpp are the device side.
+# All of it at -Os: none of it is on the supervisor-call path the -O3 is for,
+# and the arithmetic underneath is mbedTLS, which is -Os already.
+if(PICO_CYW43_SUPPORTED AND PICO_BOARD STREQUAL "pico2_w")
+    set(RPC_SSH_DEFAULT ON)
+else()
+    set(RPC_SSH_DEFAULT OFF)
+endif()
+option(RPC_SSH "Build the SSH server and client in" ${RPC_SSH_DEFAULT})
+if(RPC_SSH AND NOT PICO_CYW43_SUPPORTED)
+    message(STATUS "SSH needs the wireless part; not built for ${PICO_BOARD}")
+    set(RPC_SSH OFF)
+endif()
+message(STATUS "SSH: ${RPC_SSH}")
+if(RPC_SSH)
+    set(RPC_SSH_SOURCES
+        ${OS_ROOT}/core/sshwire.cpp
+        ${OS_ROOT}/core/sshcrypto.cpp
+        ${OS_ROOT}/core/sshtrans.cpp
+        ${OS_ROOT}/core/sshserver.cpp
+        ${OS_ROOT}/core/sshclient.cpp
+        ${OS_ROOT}/core/sshsess.cpp
+        ${OS_ROOT}/core/sshkeys.cpp
+        ${OS_ROOT}/shell/sshd.cpp
+        ${OS_ROOT}/shell/sshc.cpp)
+    target_sources(rpcortex_v2 PRIVATE ${RPC_SSH_SOURCES})
+    # Also seen by mbedtls_config.h, which adds deterministic ECDSA for it.
+    target_compile_definitions(rpcortex_v2 PRIVATE RPC_HAS_SSH=1)
+    set_source_files_properties(${RPC_SSH_SOURCES} PROPERTIES COMPILE_OPTIONS -Os)
+endif()
 # The trusted roots ride in flash and get written to /os/ca.pem on a first boot,
 # the same way the built-in packages do. A file rather than a compiled-in blob,
 # so a rotated authority is a download instead of a reflash.

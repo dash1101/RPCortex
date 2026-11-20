@@ -15,4 +15,10 @@ int shell_run_input(char *line);
 // directory: user@device:cwd>
 void shell_prompt_text(char *out, unsigned cap);
 
+// Tab completion as the console has it (a LineComplete for core/lineedit.h):
+// commands at the start of a line, paths after, against the caller's cwd.
+#include <stdint.h>
+bool shell_complete(void *ctx, const char *prefix, uint32_t word_start,
+                    uint32_t index, char *out, uint32_t cap);
+
 #endif  // RPC_SHELL_H

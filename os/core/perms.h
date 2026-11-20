@@ -32,4 +32,14 @@ enum CmdLevel {
 // true for the single command a `sudo` applies to.
 bool perms_allows(const char *user, bool is_admin, CmdLevel level, bool elevated);
 
+// May a setting be written by a task that is not an admin's? The registry
+// holds keys that decide who gets in — booting straight to a shell as somebody
+// (System.Autonomous), the SSH server (SSH.*), and aliases every user's shell
+// expands (Alias.*) — and a package can write any key through fw_reg_set. A
+// package run by an ordinary account must not be able to reach those. A
+// REMOTE ordinary account is held to its packages' own settings (Apps.*) and
+// its own (User.*) alone. An admin, or a task with nobody restricted behind
+// it, may write anything.
+bool perms_reg_write_ok(const char *key, bool restricted, bool remote);
+
 #endif  // RPC_PERMS_H

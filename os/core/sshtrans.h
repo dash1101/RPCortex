@@ -60,7 +60,7 @@ enum {
 // this side advertises are small.
 #define SSH_PKT_MAX        35000u
 #define SSH_IN_START       4096u     // input buffer to begin with
-#define SSH_OUT_CAP        6144u     // encrypted bytes waiting for the socket
+#define SSH_OUT_CAP        4096u     // encrypted bytes waiting for the socket
 // What has to be free in the output buffer before another input packet is
 // handled: the largest reply any one packet can provoke (a key exchange reply
 // with its signature, or our KEXINIT plus a NEWKEYS) with room to spare.

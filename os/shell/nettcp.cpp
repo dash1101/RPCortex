@@ -113,6 +113,7 @@ struct TcpSlot {
     struct pbuf *rx;
     volatile bool closed;          // peer sent FIN
     volatile bool failed;
+    volatile bool connected;       // an outbound connection was accepted
 };
 
 static TcpSlot g_slots[TCP_SLOTS];
@@ -407,6 +408,168 @@ unsigned net_pkg_tcp_open(void) {
     return n;
 }
 
+// Compiled only where SSH is: on a Pico W every kilobyte of the slot counts.
+#if defined(RPC_HAS_SSH) && RPC_HAS_SSH
+
+// --- for the SSH server and client: one look, never a wait -------------------
+//
+// The package calls above each wait in a loop, and each turn of the loop
+// takes and gives back the network. The SSH server serves a listener and two
+// connections from one task, so it wants to ask each socket once and move on;
+// and the client has a keyboard to watch as well as a socket. These do exactly
+// one check under the same NetOwn rule and return at once.
+//
+// Firmware only — not in the package ABI. They also do not call intr_check:
+// a Ctrl+C belongs to whatever the SSH session is running, never to the
+// socket underneath it.
+
+int net_tcp_accept_now(int listener) {
+    NetOwn own;
+    if (!own.ok) return -1;
+    LwipLock lk;
+    TcpSlot *lsn = slot_of(listener, true);
+    if (!lsn) return -1;
+    if (!lsn->npending) return 0;
+    struct tcp_pcb *taken = lsn->pending[0];
+    for (int i = 1; i < lsn->npending; i++) lsn->pending[i - 1] = lsn->pending[i];
+    lsn->npending--;
+    TcpSlot *conn = slot_claim();
+    if (!conn) { tcp_abort(taken); return 0; }    // refused: no slot to put it in
+    conn->listening = false;
+    conn->pcb = taken;
+    tcp_arg(taken, conn);
+    tcp_recv(taken, on_recv);
+    tcp_err(taken, on_err);
+    return slot_handle(conn);
+}
+
+int net_tcp_read_now(int handle, void *buf, unsigned cap) {
+    if (!buf || !cap) return 0;
+    NetOwn own;
+    if (!own.ok) return -1;
+    LwipLock lk;
+    TcpSlot *s = slot_of(handle, false);
+    if (!s || s->failed) return -1;
+    if (s->rx) {
+        uint16_t have = s->rx->tot_len;
+        uint16_t take = (uint16_t)(cap < have ? cap : have);
+        pbuf_copy_partial(s->rx, buf, take, 0);
+        s->rx = pbuf_free_header(s->rx, take);
+        if (s->pcb) tcp_recved(s->pcb, take);      // acknowledged as consumed
+        return (int)take;
+    }
+    return s->closed ? -1 : 0;
+}
+
+int net_tcp_write_now(int handle, const void *buf, unsigned len) {
+    if (!buf || !len) return 0;
+    NetOwn own;
+    if (!own.ok) return -1;
+    LwipLock lk;
+    TcpSlot *s = slot_of(handle, false);
+    if (!s || s->failed || !s->pcb) return -1;
+    uint16_t room = tcp_sndbuf(s->pcb);
+    unsigned chunk = len < room ? len : room;
+    if (!chunk) return 0;
+    err_t e = tcp_write(s->pcb, buf, (u16_t)chunk, TCP_WRITE_FLAG_COPY);
+    if (e == ERR_MEM) return 0;                    // out of buffers: try again later
+    if (e != ERR_OK) return -1;
+    tcp_output(s->pcb);
+    return (int)chunk;
+}
+
+// Has everything written been acknowledged by the peer? Before a close, so a
+// DISCONNECT or the last of a command's output is not cut off by the reset an
+// abort sends.
+bool net_tcp_drained(int handle) {
+    NetOwn own;
+    if (!own.ok) return true;
+    LwipLock lk;
+    TcpSlot *s = slot_of(handle, false);
+    if (!s || !s->pcb || s->failed) return true;
+    return tcp_sndqueuelen(s->pcb) == 0;
+}
+
+// The address at the other end, for a log line.
+void net_tcp_peer(int handle, char *out, unsigned cap) {
+    if (!out || !cap) return;
+    out[0] = 0;
+    NetOwn own;
+    if (!own.ok) return;
+    LwipLock lk;
+    TcpSlot *s = slot_of(handle, false);
+    if (s && s->pcb) snprintf(out, cap, "%s", ipaddr_ntoa(&s->pcb->remote_ip));
+}
+
+// Make the calling task the owner of a socket, so the socket is closed if THIS
+// task ends rather than the one that accepted it.
+void net_tcp_adopt(int handle) {
+    NetOwn own;
+    if (!own.ok) return;
+    LwipLock lk;
+    TcpSlot *s = slot_of(handle, false);
+    if (s) s->owner = task_slot_index();
+}
+
+// An outbound connection. lwIP's raw API, the way the slots above use it, with
+// the name resolved by the one resolver net.cpp owns.
+static err_t on_connected_slot(void *arg, struct tcp_pcb *, err_t err) {
+    TcpSlot *s = (TcpSlot *)arg;
+    if (!s || !s->used) return ERR_OK;
+    if (err != ERR_OK) s->failed = true;
+    else s->connected = true;
+    return ERR_OK;
+}
+
+bool net_resolve(const char *host, ip_addr_t *out);   // net.cpp
+
+int net_tcp_connect(const char *host, unsigned port, uint32_t timeout_ms) {
+    if (!host || !port || port > 65535 || !net_is_connected()) return -1;
+    ip_addr_t addr;
+    {
+        NetOwn own;
+        if (!own.ok) return -1;
+        if (!net_resolve(host, &addr)) return -1;
+    }
+    int handle;
+    {
+        NetOwn own;
+        if (!own.ok) return -1;
+        LwipLock lk;
+        TcpSlot *s = slot_claim();
+        if (!s) return -1;
+        struct tcp_pcb *pcb = tcp_new_ip_type(IP_GET_TYPE(&addr));
+        if (!pcb) { s->used = false; return -1; }
+        s->pcb = pcb;
+        tcp_arg(pcb, s);
+        tcp_recv(pcb, on_recv);
+        tcp_err(pcb, on_err);
+        if (tcp_connect(pcb, &addr, (u16_t)port, on_connected_slot) != ERR_OK) {
+            slot_release(s);
+            return -1;
+        }
+        handle = slot_handle(s);
+    }
+    // The wait with the network free, as accept does.
+    absolute_time_t deadline = make_timeout_time_ms(timeout_ms);
+    for (;;) {
+        {
+            NetOwn own;
+            if (!own.ok) return -1;
+            LwipLock lk;
+            TcpSlot *s = slot_of(handle, false);
+            if (!s || s->failed) { if (s) slot_release(s); return -1; }
+            if (s->connected) return handle;
+        }
+        if (absolute_time_diff_us(get_absolute_time(), deadline) < 0 || intr_check()) {
+            net_pkg_tcp_close(handle);
+            return -1;
+        }
+        task_sleep_ms(10);
+    }
+}
+#endif  // RPC_HAS_SSH
+
 #else   // no radio on this board
 
 int net_pkg_tcp_listen(unsigned) { return -1; }
@@ -414,6 +577,13 @@ int net_pkg_tcp_accept(int, uint32_t) { return -1; }
 int net_pkg_tcp_recv(int, void *, unsigned, uint32_t) { return -1; }
 int net_pkg_tcp_send(int, const void *, unsigned) { return -1; }
 int net_pkg_tcp_close(int) { return -1; }
+int  net_tcp_accept_now(int) { return -1; }
+int  net_tcp_read_now(int, void *, unsigned) { return -1; }
+int  net_tcp_write_now(int, const void *, unsigned) { return -1; }
+bool net_tcp_drained(int) { return true; }
+void net_tcp_adopt(int) {}
+void net_tcp_peer(int, char *out, unsigned cap) { if (out && cap) out[0] = 0; }
+int  net_tcp_connect(const char *, unsigned, uint32_t) { return -1; }
 extern "C" void net_tcp_task_ended(int) {}
 unsigned net_pkg_tcp_open(void) { return 0; }
 

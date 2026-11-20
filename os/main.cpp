@@ -46,6 +46,7 @@ uint32_t fs_integrity_check(bool verbose);
 bool fs_accounts_check(void);
 void jobs_run_startup(void);
 void jobs_start_services(void);
+void sshd_boot(void);
 bool safeboot_consume(char *staged, uint32_t cap);
 int  shell_run_line_now(char *line);
 bool crashlog_save(const BlackBox *bb);
@@ -102,6 +103,12 @@ static int shell_task(void *) {
         pkg_load_installed();    // installed packages' commands go live
         jobs_start_services();
         jobs_run_startup();
+#if defined(RPC_HAS_SSH) && RPC_HAS_SSH
+        // The SSH server, if it was left on. After the services and the startup
+        // items, and never in a maintenance boot: a device that is failing to
+        // start should not also be listening on the network.
+        sshd_boot();
+#endif
     }
 
     // A staged command runs with the machine as quiet as it gets, which is the

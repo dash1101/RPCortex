@@ -19,6 +19,8 @@
 #include "out.h"        // out_capture_* for fw_shell_run
 #include "registry.h"   // fw_reg_*
 #include "persist.h"    // fw_reg_save
+#include "perms.h"      // who may write which setting
+#include "ident.h"      // ...as the session that ran the package
 #if defined(RPC_HAS_SD) && RPC_HAS_SD
 #include "sdcard.h"     // the "/sd" root fw_storage_roots offers
 #endif
@@ -409,6 +411,11 @@ extern "C" int fw_reg_get(const char *key, char *out, uint32_t cap) {
 extern "C" int fw_reg_set(const char *key, const char *value) {
     task_alive();
     if (!ok_s(key) || !ok_s(value)) return 0;
+    // As the session that ran the package — the same rule as the file calls.
+    // Without it a package anybody could `run` was a way to set the device to
+    // boot straight into root's shell, turn SSH on, or plant an alias in the
+    // admin's prompt (core/perms.h).
+    if (!perms_reg_write_ok(key, ident_restricted(), ident_remote())) return 0;
     return reg_set(key, value) ? 1 : 0;
 }
 

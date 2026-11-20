@@ -20,7 +20,7 @@
 #include <stdint.h>
 
 #define SSH_SESS_IN    2048u    // = the channel window: input never has to be refused
-#define SSH_SESS_OUT   4096u
+#define SSH_SESS_OUT   2048u
 
 struct SshRing {
     uint8_t *buf;
