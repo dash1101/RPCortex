@@ -39,6 +39,7 @@ Summary: The boot recovery ladder now works on hardware, and releases are number
 - `wc` takes `-l`, `-w` and `-c` (it used to report "No such file: -l"), counts several files with a total, and counts a named file even when a pipe is also feeding it. `capture n wc -l file` in a script now gives a number.
 - A freshly flashed Pico 2 W no longer opens its log with "Last restart was the WATCHDOG - something stopped responding". The boot ROM restarts the chip through the watchdog after a flash; that restart is now told apart and noted as what it is.
 - Boot is about a second faster when no terminal is open (after a reboot, or on battery). It waited up to three seconds for one; it now waits for the computer to recognise the device, then briefly for a terminal.
+- `download` ended on the first key only sometimes: most keys were taken by its own Ctrl+C check and replayed at the next prompt (a `q` came back as `qls`). Commands and full-screen apps that read keys themselves now read them the same way the prompt does, so none go missing.
 - `df` no longer reports a failed measurement as a full disk. When littlefs cannot say how full it is, `df` says so and suggests `fscheck`, rather than printing "100% used" with no warning beside it.
 - Two tasks could be inside I2C transfers on the same block at once (the display flush and a PN532 exchange), which the SDK's transfer calls do not allow. Every transfer, and every change of bus speed, now takes a per-block lock.
 

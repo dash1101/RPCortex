@@ -280,7 +280,7 @@ static int cmd_download(int argc, char **argv) {
             fflush(stdout);
         }
 
-        if (getchar_timeout_us(0) != PICO_ERROR_TIMEOUT) quit = true;
+        if (intr_getkey() >= 0) quit = true;      // not getchar: see intr_getkey
         if (intr_check()) quit = true;
         task_yield();
     }

@@ -13,6 +13,7 @@
 
 #include "command.h"
 #include "out.h"
+#include "interrupt.h"
 #include "registry.h"
 #include "storage.h"
 #include "task.h"
@@ -150,11 +151,11 @@ static int cmd_compat(int argc, char **argv) {
         uint32_t start = task_now_ms();
         int c = PICO_ERROR_TIMEOUT;
         while (task_now_ms() - start < 5000) {
-            c = getchar_timeout_us(0);
-            if (c != PICO_ERROR_TIMEOUT) break;
+            c = intr_getkey();
+            if (c >= 0) break;
             task_yield();
         }
-        if (c == PICO_ERROR_TIMEOUT) probe("keyboard", V_WARN, "no key seen");
+        if (c < 0) probe("keyboard", V_WARN, "no key seen");
         else { snprintf(d, sizeof(d), "byte 0x%02x", (unsigned)c); probe("keyboard", V_OK, d); }
     }
 
@@ -224,8 +225,8 @@ static int cmd_inputstat(int, char **) {
     out_blank();
 
     while (true) {
-        int c = getchar_timeout_us(0);
-        if (c == PICO_ERROR_TIMEOUT) {
+        int c = intr_getkey();
+        if (c < 0) {
             if (task_should_stop()) break;
             task_yield();
             continue;

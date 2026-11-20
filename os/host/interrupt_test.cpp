@@ -111,6 +111,17 @@ int main(void) {
     ck(strcmp(got, "ping 1.1.1.1\r") == 0, "typed-ahead bytes are kept, in order");
     ck(intr_stashed() < 0, "the stash empties");
 
+    // A command reading keys itself gets the stashed ones first, then the wire,
+    // in order: what intr_check took is not lost to it.
+    intr_clear(); intr_stash_clear();
+    feed("qr");
+    intr_check();                         // takes both into the stash
+    feed("s");
+    ck(intr_getkey() == 'q', "getkey returns the stashed key first");
+    ck(intr_getkey() == 'r', "then the next stashed one");
+    ck(intr_getkey() == 's', "then reads the wire");
+    ck(intr_getkey() < 0, "and says when there is nothing");
+
     // Ctrl+C mid-paste: everything BEFORE it is still real input.
     intr_clear(); intr_stash_clear();
     feed("abc\x03");

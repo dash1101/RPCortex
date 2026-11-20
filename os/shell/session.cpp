@@ -61,9 +61,8 @@ static void read_field(const char *prompt, char *buf, size_t max, bool secret) {
         // Anything intr_check set aside while a command ran is type-ahead for the
         // next prompt, which is this one — the same rule the shell's line editor
         // follows, and the same order.
-        int c = intr_stashed();
-        if (c < 0) c = getchar_timeout_us(0);
-        if (c == PICO_ERROR_TIMEOUT) {
+        int c = intr_getkey();
+        if (c < 0) {
             // YIELD, not sleep. This loop waits on a human typing a password,
             // which can take a minute, and the watchdog is only fed by the
             // scheduler — a sleep here fed nothing and the device rebooted every

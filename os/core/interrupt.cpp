@@ -44,6 +44,12 @@ int intr_stashed(void) {
 
 void intr_stash_clear(void) { g_head = g_tail = 0; }
 
+int intr_getkey(void) {
+    int c = intr_stashed();
+    if (c >= 0) return c;
+    return g_poll ? g_poll() : -1;
+}
+
 void intr_set_poll(IntrPollFn fn) { g_poll = fn; }
 
 // Who owns the console byte stream.

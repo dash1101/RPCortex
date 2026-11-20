@@ -283,8 +283,8 @@ bool tuiterm_poll(TuiEvent *out) {
     // limit is far above any real sequence.
     for (int guard = 0; guard < 64; guard++) {
         uint32_t now = task_now_ms();
-        int c = getchar_timeout_us(0);
-        if (c == PICO_ERROR_TIMEOUT) {
+        int c = intr_getkey();          // not getchar: see intr_getkey
+        if (c < 0) {
             // A lone Escape only becomes an Escape once enough time has passed
             // without a following byte. Checking here is what makes the key
             // work rather than appearing dead until some later keypress.

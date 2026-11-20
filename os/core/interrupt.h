@@ -43,6 +43,16 @@ bool intr_check(void);
 int  intr_stashed(void);
 void intr_stash_clear(void);
 
+// One key, without blocking: a stashed byte first, then the wire. -1 if none.
+//
+// EVERY command that reads keys itself must read them through this, not
+// getchar_timeout_us. A command that both polls for a key and calls
+// intr_check (directly, or as fw_task_should_stop) loses any key that arrives
+// between the two: intr_check takes it into the stash, the getchar never sees
+// it, and the line editor replays it at the next prompt. `download` said
+// "press any key" and ignored most of them; the 'q' turned up as "qls".
+int  intr_getkey(void);
+
 // Set by the platform so intr_check can read a byte without blocking. Kept as a
 // seam so the pure core and the host tests do not need the SDK.
 typedef int (*IntrPollFn)(void);      // returns a byte, or -1 if none waiting
