@@ -8,6 +8,7 @@
 // Run with -v to also print a rendered sample, for eyeballing colour choices.
 
 #include "out.h"
+#include <string>
 #include "task.h"
 #include "logring.h"
 
@@ -302,6 +303,23 @@ int main(int argc, char **argv) {
         out_capture_begin_term(tb, sizeof(tb), Fake::sink, nullptr);
         ck(!out_to_screen(), "a remote command without a pty is not (ssh dev cat f > f)");
         out_capture_end();
+        task_shell()->term = was;
+
+        // And what reaches the far side: colour stays for a pty, goes without one.
+        struct Got { static void sink(void *ctx, const char *d, uint32_t n) {
+            std::string *s = (std::string *)ctx; s->append(d, n); } };
+        std::string seen;
+        task_shell()->term = &without;
+        out_capture_begin_term(tb, sizeof(tb), Got::sink, &seen);
+        { const char *m = "\033[96mcyan\033[0m plain"; out_write(m, (uint32_t)strlen(m)); }
+        out_capture_end();
+        ck(seen == "cyan plain", "a remote command without a pty gets no colour codes");
+        seen.clear();
+        task_shell()->term = &with_pty;
+        out_capture_begin_term(tb, sizeof(tb), Got::sink, &seen);
+        { const char *m = "\033[96mcyan\033[0m plain"; out_write(m, (uint32_t)strlen(m)); }
+        out_capture_end();
+        ck(seen.find("\033[96m") != std::string::npos, "a login with a pty keeps them");
         task_shell()->term = was;
     }
 

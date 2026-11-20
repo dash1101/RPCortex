@@ -117,8 +117,24 @@ static void ls_cb(void *ctx, const char *name, bool is_dir, uint32_t size) {
 }
 
 static int cmd_ls(int argc, char **argv) {
+    // `ls -l`, `ls -la`, `ls -lh` are muscle memory. This listing is already
+    // the long one, shows every name and gives sizes readably, so those flags
+    // are accepted and change nothing. Any other flag is an error rather than
+    // being taken for a directory called "-x".
+    const char *target = ".";
+    for (int i = 1; i < argc; i++) {
+        if (argv[i][0] == '-' && argv[i][1]) {
+            for (const char *f = argv[i] + 1; *f; f++)
+                if (*f != 'l' && *f != 'a' && *f != 'h' && *f != 'A') {
+                    out_err("ls: unknown option -%c (the listing is always the long one)", *f);
+                    return 1;
+                }
+            continue;
+        }
+        target = argv[i];
+    }
     char path[128];
-    if (!resolve(argc >= 2 ? argv[1] : ".", path, sizeof(path))) return 1;
+    if (!resolve(target, path, sizeof(path))) return 1;
 
     bool is_dir = false;
     if (!storage_stat(path, &is_dir, nullptr)) { out_err("Cannot list directory '%s'", path); return 1; }

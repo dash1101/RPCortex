@@ -679,7 +679,21 @@ static int sshd_main(void *) {
                 }
             }
         } else {
-            int h = net_tcp_accept_now(lsn);
+            // Every slot taken, but one is only finishing (its login has
+            // ended and its shell is stopping): leave the caller queued in
+            // lwIP for the moment that takes, rather than accept and turn it
+            // away. A login straight after a logout used to be refused as
+            // "two sessions already", 10 ms after the first had gone.
+            bool room = false, finishing = false;
+            for (int i = 0; i < SSHD_SESSIONS; i++) {
+                SshdSession *q = g_slot[i];
+                if (!q) room = true;
+                else if (q->closing ? (uint32_t)(now - q->t_closing) < SSHD_CLOSE_GRACE_MS
+                                    : (q->sock_dead ||
+                                       (q->exit_sent && (uint32_t)(now - q->t_exit) < SSHD_CLOSE_GRACE_MS)))
+                    finishing = true;      // its command is over, or its caller gone
+            }
+            int h = (room || !finishing) ? net_tcp_accept_now(lsn) : 0;
             if (h > 0) accept_one(h, now);
             else if (h < 0) { net_pkg_tcp_close(lsn); lsn = -1; }
         }

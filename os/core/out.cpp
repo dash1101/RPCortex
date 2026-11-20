@@ -336,8 +336,30 @@ __attribute__((noinline)) static CapFrame *term_frame(void) {
     return nullptr;
 }
 
+// A remote command with no pty (`ssh dev ls`) is a program reading the output,
+// not a person: colour codes in it are noise in a file or a pipe on the far
+// side. A login with a pty keeps them, as the console does.
+static bool term_is_plain(void) {
+    const TaskTerm *t = task_shell()->term;
+    uint16_t cols, rows;
+    return t && t->size && !t->size(t->ctx, &cols, &rows);
+}
+
 static void term_put(CapFrame *f, const char *d, uint32_t n) {
-    if (n) f->sink(f->sink_ctx, d, n);
+    if (!n) return;
+    if (!term_is_plain()) { f->sink(f->sink_ctx, d, n); return; }
+    // The same stripper as a buffer's (cap_append), in pieces of 128.
+    char out[128];
+    uint32_t o = 0;
+    for (uint32_t i = 0; i < n; i++) {
+        char c = d[i];
+        if (f->esc == 1)    { f->esc = (c == '[') ? 2 : 0; continue; }
+        if (f->esc == 2)    { if (c >= 0x40 && c <= 0x7e) f->esc = 0; continue; }
+        if (c == '\033')    { f->esc = 1; continue; }
+        out[o++] = c;
+        if (o == sizeof(out)) { f->sink(f->sink_ctx, out, o); o = 0; }
+    }
+    if (o) f->sink(f->sink_ctx, out, o);
 }
 
 // Ends THIS task's newest capture, and only that. A task that is not capturing

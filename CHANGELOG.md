@@ -23,6 +23,9 @@ Summary:
 
 ### Fixed
 
+- `ls -l`, `ls -la` and `ls -lh` took the flag for a folder name. The listing is already the long one, so those flags are accepted; an unknown one is an error.
+- A command run over SSH without a terminal (`ssh dev ls > list.txt`) got the colour codes meant for a screen. They are left out when no pty was asked for.
+- A login straight after another session ended could be turned away as "two sessions already". It now waits the moment the old session takes to finish: 30 logins in a row beside an open session all got in.
 - `wget`, `curl`, `pkg` and `update` could not follow a redirect to a long URL: GitHub's release downloads go to a signed address of about 940 characters, which was dropped, so the 302 read as "server refused". A Location of up to 1 KB is followed now (a longer one is refused, never cut short), and the fetch keeps that state on the heap, not the stack. A download stopped with Ctrl+C says "cancelled" instead of "connection lost".
 - After a restart, network commands in an SSH session failed with "Could not reach the wireless chip from this task": ping, curl and nslookup alike. A task moving to the radio's core was handed straight back to the core it was leaving whenever that core had nothing else to run, so the move never happened. The scheduler now takes it off that core.
 - `wifi off` with the SSH server on restarted v2.03-beta (a hard fault in the server, then the watchdog). Every connection is now closed before the radio goes down, and the SSH server listens again after `wifi connect`.
