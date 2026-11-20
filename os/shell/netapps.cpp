@@ -98,34 +98,6 @@ static int cmd_nslookup(int argc, char **argv) {
 #define PING_ID       0x5243        // 'RC'
 #define PING_DATA_LEN 32
 
-struct PingState {
-    volatile bool got;
-    uint16_t      seq;
-    uint32_t      sent_us;
-    uint32_t      rtt_us;
-    ip_addr_t     target;
-};
-static PingState g_ping;
-
-static u8_t ping_recv(void *, struct raw_pcb *, struct pbuf *p, const ip_addr_t *addr) {
-    // The payload starts after the IP header; lwIP hands the raw PCB the whole
-    // datagram, so the IP header has to be stepped over before the ICMP header
-    // makes sense.
-    if (p->tot_len < PBUF_IP_HLEN + sizeof(struct icmp_echo_hdr)) return 0;
-    if (!ip_addr_eq(addr, &g_ping.target)) return 0;
-
-    struct icmp_echo_hdr hdr;
-    if (pbuf_copy_partial(p, &hdr, sizeof(hdr), PBUF_IP_HLEN) != sizeof(hdr)) return 0;
-    if (ICMPH_TYPE(&hdr) != ICMP_ER) return 0;
-    if (lwip_ntohs(hdr.id) != PING_ID) return 0;
-    if (lwip_ntohs(hdr.seqno) != g_ping.seq) return 0;
-
-    g_ping.rtt_us = (uint32_t)(time_us_64() - g_ping.sent_us);
-    g_ping.got    = true;
-    pbuf_free(p);
-    return 1;                        // consumed
-}
-
 // Scoped form of the begin/end pair this file uses elsewhere. The function
 // below has several exits and a paired call at each one is a lock left held the
 // first time somebody adds another.
@@ -136,6 +108,125 @@ struct LwipLock {
     LwipLock()  { if (!net_op_held()) net_unowned_note(); cyw43_arch_lwip_begin(); }
     ~LwipLock() { cyw43_arch_lwip_end(); }
 };
+
+// A ping's state, in a small static table rather than on the pinging task's
+// stack or in one global.
+//
+// Not one global: two terminals (the console and an SSH session, or two
+// sessions) can ping at once, and each needs its own replies. Each slot gets
+// an ICMP id of its own, so even two pings of the same host keep apart.
+//
+// Not on the stack: the network is no longer held for the whole run (see
+// cmd_ping), so a ping can be ended while it waits, and the raw PCB's callback
+// would then write into a stack that has been freed. A slot is static memory;
+// one whose owner has gone is reclaimed, its PCB removed, by the next ping.
+#define PING_SLOTS 4
+struct PingSlot {
+    volatile bool   got;
+    uint16_t        id, seq;
+    uint32_t        sent_us, rtt_us;
+    ip_addr_t       target;
+    struct raw_pcb *pcb;
+    int             owner;           // pid; 0 when free
+};
+static PingSlot g_pings[PING_SLOTS];
+
+static u8_t ping_recv(void *arg, struct raw_pcb *, struct pbuf *p, const ip_addr_t *addr) {
+    PingSlot *s = (PingSlot *)arg;
+    // The payload starts after the IP header; lwIP hands the raw PCB the whole
+    // datagram, so the IP header has to be stepped over before the ICMP header
+    // makes sense.
+    if (!s || p->tot_len < PBUF_IP_HLEN + sizeof(struct icmp_echo_hdr)) return 0;
+    if (!ip_addr_eq(addr, &s->target)) return 0;
+
+    struct icmp_echo_hdr hdr;
+    if (pbuf_copy_partial(p, &hdr, sizeof(hdr), PBUF_IP_HLEN) != sizeof(hdr)) return 0;
+    if (ICMPH_TYPE(&hdr) != ICMP_ER) return 0;
+    if (lwip_ntohs(hdr.id) != s->id) return 0;        // somebody else's ping
+    if (lwip_ntohs(hdr.seqno) != s->seq) return 0;     // a late reply to an earlier one
+
+    s->rtt_us = (uint32_t)(time_us_64() - s->sent_us);
+    s->got    = true;
+    pbuf_free(p);
+    return 1;                        // consumed
+}
+
+static bool owner_gone(int pid) {
+    const TaskInfo *ti = task_find(pid);
+    return !ti || ti->state == TASK_DONE;
+}
+
+// Claim a slot and open its socket. The caller holds a NetOwn.
+static PingSlot *ping_open(const ip_addr_t *target) {
+    static uint8_t next_id;
+    PingSlot *s = nullptr;
+    for (int i = 0; i < PING_SLOTS; i++) {
+        PingSlot *c = &g_pings[i];
+        if (c->owner && owner_gone(c->owner)) {         // ended mid-ping
+            if (c->pcb) { LwipLock lk; raw_remove(c->pcb); }
+            c->pcb = nullptr;
+            c->owner = 0;
+        }
+        if (!c->owner && !s) s = c;
+    }
+    if (!s) return nullptr;
+    s->got = false;
+    s->seq = 0;
+    s->target = *target;
+    s->id = (uint16_t)((PING_ID & 0xFF00) | ++next_id);
+    s->owner = task_self();
+    {
+        LwipLock lk;
+        s->pcb = raw_new(IP_PROTO_ICMP);
+        if (s->pcb) { raw_recv(s->pcb, ping_recv, s); raw_bind(s->pcb, IP_ADDR_ANY); }
+    }
+    if (!s->pcb) { s->owner = 0; return nullptr; }
+    return s;
+}
+
+// One echo request. The network is held for the allocation and the send only.
+// 0 sent, -1 out of packet buffers, -2 the radio could not be reached, or
+// lwIP's error.
+static int ping_send(PingSlot *s, uint16_t seq) {
+    NetOwn own;
+    if (!own.ok) return -2;
+    struct pbuf *p;
+    { LwipLock lk; p = pbuf_alloc(PBUF_IP, sizeof(struct icmp_echo_hdr) + PING_DATA_LEN, PBUF_RAM); }
+    if (!p) return -1;
+
+    auto *hdr = (struct icmp_echo_hdr *)p->payload;
+    ICMPH_TYPE_SET(hdr, ICMP_ECHO);
+    ICMPH_CODE_SET(hdr, 0);
+    hdr->chksum = 0;
+    hdr->id     = lwip_htons(s->id);
+    hdr->seqno  = lwip_htons(seq);
+    // A recognisable payload makes a capture readable, and matches what
+    // every other ping puts on the wire.
+    char *data = (char *)hdr + sizeof(struct icmp_echo_hdr);
+    for (int b = 0; b < PING_DATA_LEN; b++) data[b] = (char)('a' + b % 23);
+    hdr->chksum = inet_chksum(hdr, (u16_t)(sizeof(struct icmp_echo_hdr) + PING_DATA_LEN));
+
+    s->got     = false;
+    s->seq     = seq;
+    s->sent_us = (uint32_t)time_us_64();
+    err_t e;
+    { LwipLock lk; e = raw_sendto(s->pcb, p, &s->target); pbuf_free(p); }
+    return e == ERR_OK ? 0 : (int)e;
+}
+
+static void ping_close(PingSlot *s) {
+    NetOwn own;
+    if (!own.ok) return;             // left to be reclaimed once this task ends
+    { LwipLock lk; raw_remove(s->pcb); }
+    s->pcb = nullptr;
+    s->owner = 0;
+}
+
+static PingSlot *ping_start(const ip_addr_t *target) {
+    NetOwn own;
+    if (!own.ok) return nullptr;
+    return ping_open(target);
+}
 
 // One echo request, for a package rather than for the screen.
 //
@@ -148,63 +239,23 @@ struct LwipLock {
 // reply before the timeout.
 int net_pkg_ping(const char *host, uint32_t timeout_ms) {
     if (!host || !net_is_connected()) return -1;
-
-    // Held for the whole call, resolve included. A package reaches this from a
-    // task with no affinity; without the migration NetOwn does, the raw_pcb
-    // work below is a __wfe with no way out. See netown.h.
-    NetOwn own;
-    if (!own.ok) return -1;
-
-    if (!resolve_host(host, &g_ping.target)) return -1;
-
-    struct raw_pcb *pcb;
-    {
-        LwipLock lk;
-        pcb = raw_new(IP_PROTO_ICMP);
-        if (pcb) { raw_recv(pcb, ping_recv, nullptr); raw_bind(pcb, IP_ADDR_ANY); }
-    }
-    if (!pcb) return -1;
-
-    // A sequence number that moves, so a late reply to the PREVIOUS call is not
-    // counted as the answer to this one — which would report a round trip of
-    // almost nothing and make a slow link look fast.
-    static uint16_t seq;
-    seq++;
-
+    ip_addr_t target;
+    if (!resolve_host(host, &target)) return -1;     // takes the network itself
+    PingSlot *s = ping_start(&target);
+    if (!s) return -1;
     int rc = -1;
-    {
-        struct pbuf *p;
-        { LwipLock lk; p = pbuf_alloc(PBUF_IP,
-                                     sizeof(struct icmp_echo_hdr) + PING_DATA_LEN,
-                                     PBUF_RAM); }
-        if (p) {
-            auto *hdr = (struct icmp_echo_hdr *)p->payload;
-            ICMPH_TYPE_SET(hdr, ICMP_ECHO);
-            ICMPH_CODE_SET(hdr, 0);
-            hdr->chksum = 0;
-            hdr->id     = lwip_htons(PING_ID);
-            hdr->seqno  = lwip_htons(seq);
-            char *data = (char *)hdr + sizeof(struct icmp_echo_hdr);
-            for (int b = 0; b < PING_DATA_LEN; b++) data[b] = (char)('a' + b % 23);
-            hdr->chksum = inet_chksum(hdr, (u16_t)(sizeof(struct icmp_echo_hdr) +
-                                                   PING_DATA_LEN));
-
-            g_ping.got     = false;
-            g_ping.seq     = seq;
-            g_ping.sent_us = (uint32_t)time_us_64();
-
-            err_t e;
-            { LwipLock lk; e = raw_sendto(pcb, p, &g_ping.target); pbuf_free(p); }
-            if (e == ERR_OK)
-                rc = wait_for(g_ping.got, timeout_ms ? timeout_ms : 2000)
-                         ? (int)g_ping.rtt_us : -2;
-        }
-    }
-
-    { LwipLock lk; raw_remove(pcb); }
+    if (ping_send(s, 1) == 0)
+        rc = wait_for(s->got, timeout_ms ? timeout_ms : 2000) ? (int)s->rtt_us : -2;
+    ping_close(s);
     return rc;
 }
 
+// The network is NOT held for the run. It was, from the first line to the
+// last, and nothing else could use it in the meantime: in an SSH session that
+// included the server sending ping's own output, so four lines arrived at once
+// at the end, and the gaps between pings were raw sleeps under the lock, which
+// kept every other task off that core. Now it is taken to open the socket, for
+// each send, and to close it; the waits yield and hold nothing.
 static int cmd_ping(int argc, char **argv) {
     if (argc < 2) { out_multi("Usage: ping <host> [count]"); return 1; }
     if (!require_network()) return 1;
@@ -212,79 +263,50 @@ static int cmd_ping(int argc, char **argv) {
     uint32_t count = (argc >= 3) ? (uint32_t)strtoul(argv[2], nullptr, 10) : 4;
     if (count == 0 || count > 100) count = 4;
 
-    // One command owns the network at a time, and a ping run is a command. It
-    // is held to the end so the raw PCB opened here is torn down by the same
-    // owner that opened it.
-    NetOwn own;
-    if (!own.ok) { out_err("Could not reach the wireless chip from this task."); return 1; }
-
-    if (!resolve_host(argv[1], &g_ping.target)) {
+    ip_addr_t target;
+    if (!resolve_host(argv[1], &target)) {
         out_err("Could not resolve '%s'.", argv[1]);
         return 1;
     }
+    PingSlot *s = ping_start(&target);
+    if (!s) { out_err("Could not open a raw socket (four pings may already be running)."); return 1; }
 
-    struct raw_pcb *pcb;
-    {
-        LwipLock lk;
-        pcb = raw_new(IP_PROTO_ICMP);
-        if (pcb) { raw_recv(pcb, ping_recv, nullptr); raw_bind(pcb, IP_ADDR_ANY); }
-    }
-    if (!pcb) { out_err("Could not open a raw socket."); return 1; }
-
-    out_info("PING %s (%s): %d data bytes", argv[1], ipaddr_ntoa(&g_ping.target),
-             PING_DATA_LEN);
+    char shown[IPADDR_STRLEN_MAX];
+    ipaddr_ntoa_r(&target, shown, sizeof(shown));
+    out_info("PING %s (%s): %d data bytes", argv[1], shown, PING_DATA_LEN);
 
     uint32_t sent = 0, recvd = 0, total_us = 0, best = 0xFFFFFFFFu, worst = 0;
     for (uint32_t i = 0; i < count; i++) {
-        struct pbuf *p;
-        { LwipLock lk; p = pbuf_alloc(PBUF_IP,
-                                      sizeof(struct icmp_echo_hdr) + PING_DATA_LEN,
-                                      PBUF_RAM); }
-        if (!p) { out_err("Out of packet buffers."); break; }
-
-        auto *hdr = (struct icmp_echo_hdr *)p->payload;
-        ICMPH_TYPE_SET(hdr, ICMP_ECHO);
-        ICMPH_CODE_SET(hdr, 0);
-        hdr->chksum = 0;
-        hdr->id     = lwip_htons(PING_ID);
-        hdr->seqno  = lwip_htons((uint16_t)(i + 1));
-        // A recognisable payload makes a capture readable, and matches what
-        // every other ping puts on the wire.
-        char *data = (char *)hdr + sizeof(struct icmp_echo_hdr);
-        for (int b = 0; b < PING_DATA_LEN; b++) data[b] = (char)('a' + b % 23);
-        hdr->chksum = inet_chksum(hdr, (u16_t)(sizeof(struct icmp_echo_hdr) + PING_DATA_LEN));
-
-        g_ping.got     = false;
-        g_ping.seq     = (uint16_t)(i + 1);
-        g_ping.sent_us = (uint32_t)time_us_64();
-
-        err_t e;
-        { LwipLock lk; e = raw_sendto(pcb, p, &g_ping.target); pbuf_free(p); }
-        if (e != ERR_OK) { out_warn("Send failed (%d).", (int)e); continue; }
+        int e = ping_send(s, (uint16_t)(i + 1));
+        if (e == -1) { out_err("Out of packet buffers."); break; }
+        if (e == -2) { out_err("Could not reach the wireless chip from this task."); break; }
+        if (e != 0) { out_warn("Send failed (%d).", e); continue; }
         sent++;
 
-        if (wait_for(g_ping.got, 2000)) {
-            uint32_t us = g_ping.rtt_us;
+        if (wait_for(s->got, 2000)) {
+            uint32_t us = s->rtt_us;
             recvd++; total_us += us;
             if (us < best)  best  = us;
             if (us > worst) worst = us;
             out_multi("  %d bytes from %s: icmp_seq=%u time=%u.%03u ms",
-                      PING_DATA_LEN, ipaddr_ntoa(&g_ping.target), (unsigned)(i + 1),
+                      PING_DATA_LEN, shown, (unsigned)(i + 1),
                       (unsigned)(us / 1000), (unsigned)(us % 1000));
         } else {
             out_multi("  Request timed out.  icmp_seq=%u", (unsigned)(i + 1));
         }
+        out_flush();
         if (intr_check()) break;
         // Broken into slices so Ctrl+C lands during the gap between pings, not
-        // just during the wait for a reply.
+        // just during the wait for a reply. task_sleep_ms, so the core is
+        // free for everything else meanwhile.
         for (int slice = 0; slice < 7 && i + 1 < count; slice++) {
             if (intr_check()) break;
-            sleep_ms(100);
+            task_sleep_ms(100);
         }
         if (intr_check()) break;
     }
 
-    { LwipLock lk; raw_remove(pcb); }
+    ping_close(s);
 
     out_blank();
     out_multi("  %u packets transmitted, %u received, %u%% packet loss",

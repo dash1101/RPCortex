@@ -1802,51 +1802,54 @@ bool net_resolve(const char *host, ip_addr_t *out) {
     // taken, because nothing here touches the radio.
     if (ip4addr_aton(host, ip_2_ip4(out))) { IP_SET_TYPE(out, IPADDR_TYPE_V4); return true; }
 
-    // Ownership here rather than at each caller. This is the widest lwIP window
-    // in the file — NetLock taken four times around a wait of up to six
-    // seconds — and it is reachable from `nslookup`, `ping`, `ntp` and
-    // fw_net_ping, which is a package's unpinned task. Recursive, so the HTTP
-    // transport holding it across a whole connection pays nothing.
-    NetOwn own;
-    if (!own.ok) return false;
-
+    // The network is held to start the lookup and to collect the answer, NOT
+    // across the wait between (up to six seconds). Held across it, nothing
+    // else could use the network meanwhile: an SSH session's own output and
+    // keystrokes waited behind somebody's nslookup. The record is in a static
+    // table and lwIP's callback reaches it under its own lock, so nothing
+    // needs holding while the answer is on its way. Recursive: a caller that
+    // already holds the network (the HTTP transport) keeps it throughout.
     DnsWait *w = nullptr;
     {
-        NetLock lk;
-        for (int i = 0; i < DNS_WAITS; i++) {
-            if (g_dns[i].state != DNS_FREE) continue;
-            w = &g_dns[i];
-            w->state = DNS_WAITING;
-            w->done  = false;
-            w->ok    = false;
-            break;
+        NetOwn own;
+        if (!own.ok) return false;
+        {
+            NetLock lk;
+            for (int i = 0; i < DNS_WAITS; i++) {
+                if (g_dns[i].state != DNS_FREE) continue;
+                w = &g_dns[i];
+                w->state = DNS_WAITING;
+                w->done  = false;
+                w->ok    = false;
+                break;
+            }
         }
-    }
-    if (!w) {
-        out_err("Too many name lookups are still outstanding. Try again shortly.");
-        return false;
-    }
+        if (!w) {
+            out_err("Too many name lookups are still outstanding. Try again shortly.");
+            return false;
+        }
 
-    err_t e;
-    { NetLock lk; e = dns_gethostbyname(host, &w->addr, dns_found, w); }
+        err_t e;
+        { NetLock lk; e = dns_gethostbyname(host, &w->addr, dns_found, w); }
 
-    // Answered from the cache. No callback is coming for this one, so the
-    // record goes back immediately.
-    if (e == ERR_OK) {
-        *out = w->addr;
-        NetLock lk;
-        w->state = DNS_FREE;
-        return true;
-    }
-    // Refused outright — again, no callback to wait for.
-    if (e != ERR_INPROGRESS) {
-        NetLock lk;
-        w->state = DNS_FREE;
-        return false;
+        // Answered from the cache. No callback is coming for this one, so the
+        // record goes back immediately.
+        if (e == ERR_OK) {
+            *out = w->addr;
+            NetLock lk;
+            w->state = DNS_FREE;
+            return true;
+        }
+        // Refused outright: again, no callback to wait for.
+        if (e != ERR_INPROGRESS) {
+            NetLock lk;
+            w->state = DNS_FREE;
+            return false;
+        }
     }
 
     // Six seconds, not eight. The watchdog reboots at eight, and although this
-    // wait yields — so it does feed it — a network timeout that lands on the
+    // wait yields (so it does feed it) a network timeout that lands on the
     // same number as the reboot threshold is a coincidence waiting to be
     // debugged. Giving up here costs nothing anyway: the record is abandoned
     // rather than freed, so lwIP finishes its own retries in its own time and
@@ -1855,6 +1858,8 @@ bool net_resolve(const char *host, ip_addr_t *out) {
 
     // Re-read under the lock: the callback can land between the wait giving up
     // and this line, and an answer that arrived is still an answer.
+    NetOwn own;
+    if (!own.ok) return false;     // the record stays WAITING: one slot, until a reboot
     bool ok = false;
     NetLock lk;
     if (w->done) {
