@@ -28,8 +28,10 @@ unchanged. It's in beta and still changing from one release to the next.
 
 - **A shell that behaves like one.** Pipes, `&&`, `;`, redirection, history, Tab
   completion, and Ctrl+C that stops whatever is running.
-- **Accounts.** Salted SHA-256 passwords, admin and guest roles, and system files
-  that ordinary accounts can't read or change.
+- **Accounts.** Salted SHA-256 passwords, admin and guest roles, system files
+  that ordinary accounts can't read or change, and `sudo` for anything that
+  changes the system: packages, accounts, firmware, what starts at boot. See
+  [PERMISSIONS.md](PERMISSIONS.md).
 - **Packages at run time.** `pkg install` fetches one from the package repository
   and its commands are live straight away. On the RP2350 each package runs
   unprivileged behind the memory protection unit, and a big one can run from

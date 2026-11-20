@@ -17,6 +17,7 @@ Other documents, and when to read them:
 | `TESTING.md` | To see what each host suite proves and what needs a board. |
 | `RELEASING.md` | Before touching versions or `CHANGELOG.md`. |
 | `LINK.md` | Before changing `link` (`os/shell/link.cpp`) or the host tools in `tools/rpc` and `tools/web`. |
+| `PERMISSIONS.md` | Before adding a command, or changing who may run one, or the file guard. The table of what needs sudo is there. |
 | `CHANGELOG.md` | Every change that a user would notice goes under `## Unreleased`. |
 
 ---
@@ -172,13 +173,44 @@ D1's workers do this, on either core), and `link`'s `EXEC`. So:
   the result can operate on `/`. It used to drop long names silently, turning
   `rm -r /home/root/<long name>` into `rm -r /home/root`.
 - **Permission checks:** `fs_allow_read/fs_allow_change` (print a refusal) or
-  `fs_may_read/fs_may_change` (silent). Every command that writes must ask.
+  `fs_may_read/fs_may_change` (silent). Every command that writes must ask, and
+  so must every package file call. An admin needs sudo to change `/os` and `/etc`;
+  the OS's own writes (the registry, the account file, `pkg install` writing
+  `/os/pkg`) go to storage directly and must keep doing so, never through the
+  guard.
 - **Layout directories** (`/`, `/os`, `/os/pkg`, `/etc`, `/home`, `/tmp`, `/usb`)
   cannot be removed or moved, even by root. `/tmp` is emptied at every boot.
 - littlefs names can be 255 characters. Do not copy a name into a small fixed
   buffer.
 - The filesystem refuses writes above about 98% full; a firmware image is about
   870 KB on a 1792 KB filesystem.
+
+### Permissions and sudo
+
+- **Three levels** on the Command: `LEVEL_USER`, `LEVEL_ADMIN`, `LEVEL_SYSTEM` (runs
+  only as `sudo <command>`). A command whose level depends on its arguments names a
+  `FORMS_*` rule in `core/perms.cpp`. Those rules list the forms that are everyday
+  and give everything else sudo, so a new subcommand that changes something needs
+  nothing done; one that only reads goes on its rule's list. `perms_test` checks
+  each command is registered with the level its rule is about: update it with
+  the registration.
+- **Never ask for a password where nobody can answer.** `sudo_can_ask()` decides:
+  only the console's shell task and a remote login's own shell with a pty may
+  prompt. A `bg` job, a service, a package's worker, `fw_shell_run` and link's
+  `EXEC` (`TaskShell::noprompt`) use the session's grace or are refused with a
+  line saying what to do. A prompt there waits for ever or eats keys.
+- **`TaskShell::elevated`** is "runs with sudo". It is set for one command by
+  `sudo`, for the life of the scheduler task, a service's task and each startup
+  line (their lines come from `/etc`, which only sudo can write), inherited by
+  value at `task_spawn`, and cleared by `ident_attach`. Anything new that starts
+  a long-lived task from inside a sudo'd command and later runs lines a person
+  did not write must clear it, as a login does.
+- **The password check and the grace are `core/sudo.cpp`.** `session_reauth` is a
+  wrapper over it; do not write a second cache. The grace is per session
+  (interrupt domain) and per user, 5 minutes, each use restarting it.
+- In a maintenance boot sudo does not ask at the console's own prompt. That is the
+  recovery path for a forgotten password, and the reason nothing a remote login
+  or a staged command can do may reach the console's prompt in one.
 
 ### Networking (wireless boards)
 
@@ -250,7 +282,10 @@ A Pico 2 W is sometimes attached over USB as `/dev/ttyACM*` (Linux),
 - `/tmp` is emptied at boot; put test files elsewhere and remove them after.
 - `reboot` is clean; `sreboot` is an unclean watchdog restart (for testing crash
   reports); `failboot` exercises the recovery ladder.
-- Admin commands re-ask the root password. Never store a password in a file in
+- Commands that change the system need `sudo`, which asks for the signed-in
+  account's password (PERMISSIONS.md). `rpc` sends it with `AUTH` when the device
+  asks, taking it from `$RPC_PASSWORD` or a prompt; `tools/benchmark.py` and
+  `tools/devsmoke.py` take `--password-file`. Never store a password in a file in
   the repository.
 - `tools/devsmoke.py` is a few-second health check; `tools/soak.py` runs for days.
 
@@ -284,7 +319,9 @@ A Pico 2 W is sometimes attached over USB as `/dev/ttyACM*` (Linux),
 **A new shell command:** write `static int cmd_x(int argc, char **argv)` in the
 right `os/shell/*.cpp`, register it in that file's `*_register()` with a
 `Command{"x", "x <args>  -- what it does", cmd_x, nullptr}` (add `LEVEL_ADMIN`
-for admin-only), and add it to `os/shell/help.cpp`. Return 0 on success, 1 on
+for admin-only, `LEVEL_SYSTEM` if it changes the system as PERMISSIONS.md says,
+or a `FORMS_*` rule if only some forms do), and add it to `os/shell/help.cpp` and,
+when it needs more than a user, the table in PERMISSIONS.md. Return 0 on success, 1 on
 failure, and report failures with `out_err`. Resolve paths with `path_resolve` and
 ask `fs_allow_*`. If it reads keys, use `intr_getkey`. If it waits at the prompt,
 refuse to run when `task_self() != task_shell_pid()`.

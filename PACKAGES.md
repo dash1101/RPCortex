@@ -127,7 +127,7 @@ anything but an append would point existing packages at the wrong function.
 | PWM, PIO | `fw_pwm_*`, `fw_pio_*` and the instruction encoders | PIO state machines are claimed and released |
 | Power | `fw_power_sleep`, `fw_power_dormant`, `fw_power_source` | |
 | Network | `fw_net_*`, `fw_http_get`, `fw_http_download`, `fw_tcp_*` (server side) | verified HTTPS; no outbound TCP or UDP yet |
-| Shell | `fw_shell_run`, `fw_shell_run_detached`, `fw_line_read` | runs with the logged-in user's rights |
+| Shell | `fw_shell_run`, `fw_shell_run_detached`, `fw_line_read` | runs with the logged-in user's rights; never asks for a password (see below) |
 | System | `fw_time_get`/`set`, `fw_random*`, `fw_sha256`, `fw_unique_id`, `fw_board`, `fw_heap_*`, `fw_reboot` | |
 
 The C runtime the compiler assumes is exported too: integer division, 64-bit
@@ -160,6 +160,19 @@ the OS's memory.
 `fw_shell_run`: the shell refuses it by name. `fw_shell_run_detached` runs a line
 on a task of its own and is the way to do it. Firmware commands (`wifi`, `btaudio`,
 `date` …) are fine either way.
+
+**sudo, from a package.** A line that changes the system (`pkg install`, `service
+add`, `regreset` and the rest in PERMISSIONS.md) needs `sudo` in front, as at the
+prompt. A package's line never asks for the password, because the package owns
+the screen and the keys: `sudo` uses the session's grace if there is one and is
+refused otherwise, with a line saying to run `sudo -v` first. A package run with
+sudo (`sudo mypkg setup`), or started by a service or a startup item, already runs
+with it, and so does every task it spawns. Firmware from before sudo takes the
+word `sudo` from an admin as it always did, so putting it in front works on both.
+The file calls follow the same rule for `/os` and `/etc`: they fail for an admin's
+package unless it runs with sudo. `fw_mkdir` is checked like the rest. `fw_reg_set`
+of the settings that decide who gets in (`System.Autonomous`, `SSH.*`, `Alias.*`,
+`System.SafeBoot*`, `Pkg.Repos`) needs sudo too.
 
 **A failed call is an answer.** File, network and bus calls return negative or
 zero on failure. A package that ignores them behaves strangely rather than

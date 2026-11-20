@@ -12,15 +12,38 @@ Summary:
 
 ### New
 
+- `sudo` works the way it does on a computer. `sudo <command>` asks for the account's own password and runs that one command with sudo; the password counts for 5 minutes in that session, each use starting the time again. `sudo -v` asks now, `sudo -k` forgets it, and `sudo -l` lists what needs it. See `PERMISSIONS.md`.
+- Link protocol 2 adds `AUTH`, so a host tool can give the password for sudo, and `ERR sudo` when a request needs it. `rpc` and the browser tool ask for the password once, the first time the device says so, and try again (`rpc --sudo` asks first; `$RPC_PASSWORD` is used if set). `tools/benchmark.py` and `tools/devsmoke.py` take `--password-file`, and skip the package steps and say so without one.
+
 ### Improved
 
 ### Fixed
 
+- `factoryreset` said that reflashing the firmware clears the accounts. It does not; the files are kept. The way back from a forgotten password is a maintenance boot (`safeboot`), where sudo at the console does not ask, and `PERMISSIONS.md` says what to do when nobody can sign in at all.
+- `download <file>` asked whether the account could change the file rather than read it, so an ordinary account could not take a copy of a file it can `cat`.
+
 ### Security
+
+- Commands that change the system need `sudo` and the admin's own password, root's included: installing, removing and upgrading packages (and `stock`), accounts (`rmuser`, `usermod`, `mkacct --admin`, another user's `passwd`), firmware (`update install`, `from-file`, `rollback --now`), what starts at boot (`startup`, `service`, `task` changes), `ssh server on` and `off`, `autonomy on` and `off`, `regreset`, `factoryreset`, `failboot`, a command staged with `safeboot`, and `reg set` of the settings that decide who gets in. Being signed in as an admin was enough before, and autonomy signs root in with no password at all. Reading, Wi-Fi, a restart and the rest of the everyday commands are as they were. The table is in `PERMISSIONS.md`.
+- Changing anything in `/os` or `/etc` needs sudo for an admin too, from a command, a package or a host tool. The OS's own writes (settings, accounts, an install) are unaffected.
+- sudo never asks for a password where nobody can answer: a background job, a package, the host tools' `EXEC`, or an SSH command without a terminal (`ssh dev 'sudo ...'`, which says to use `ssh -t`). They use the session's 5 minutes, or are refused with one line saying to run `sudo -v` first. Startup items, services and scheduled tasks run with sudo, since only sudo could have put them there.
+- A package run by an ordinary account could set `System.SafeBoot` and `System.SafeBootCmd`, and the next restart would run any command it liked as the console's user; it could also change where `pkg install` fetches from. Both are closed, and an admin's package needs sudo for those and the other settings that decide who gets in.
+- `put`, and a package's `fw_mkdir`, did not ask whether the account may write where they were pointed. They ask now, like every other write.
+- On the Pico and Pico W, where a package runs with the OS's own privileges, `run` of a package file needs sudo. Installed packages are unaffected.
+- An ordinary account can change its own password with `passwd`, as the command always meant to allow; it needed an admin before. An account with no password still cannot give itself one.
 
 ### Changed
 
+- `pkg install`, `ssh server on` and the other commands in `PERMISSIONS.md` now need `sudo` in front; without it they say so and do nothing. Scripts, startup items and host-tool commands that ran them need the word added (startup items, services and scheduled tasks already run with sudo).
+- A password given to sudo, or to the commands that asked for one before (`mkacct`, `autonomy`), counts for 5 minutes instead of 2, and for that session only: the console and each SSH login have their own.
+- `autonomy on` asks for the password before the warning rather than after, since `sudo` asks first.
+- Nova D1's screen, run as a service, installs packages, resets settings and edits services as before. Started by hand it needs `sudo -v` at the console first. `novad1 setup` and `novad1 selfupdate` are `sudo novad1 setup` and `sudo novad1 selfupdate` now, and say so when run without it.
+- The backup package keeps its snapshots in `/etc/backups`, so `backup create` and `backup restore` need `sudo` in front.
+- sudo costs about 5.3 KB of flash on every board (the Pico W has 4 KB of its slot left, the Pico 2 W 106 KB) and 136 bytes of memory.
+
 ### Known issues
+
+- sudo has not been run on a board. The rules, the prompt, the grace, link's `AUTH` and SSH with and without a terminal are proven on a computer (`perms_test`, `sudo_test`, `ssh_interop_test.sh`, the host-tool suites); the emulator suites that need it were updated but not run.
 
 ## v2.03-beta (build 598), 2026-11-20
 

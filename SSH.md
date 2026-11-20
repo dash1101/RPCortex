@@ -12,7 +12,7 @@ a Pico 2 W. What has and has not been tried on the board is listed at the end.
 ## Logging in to the device
 
 ```
-ssh server on
+sudo ssh server on
 ```
 
 The first time, this makes the device's host key and shows its fingerprint:
@@ -38,8 +38,27 @@ too, with its exit status passed back:
 ssh root@192.168.1.40 'ls /home'
 ```
 
-`ssh server status` shows who is logged in and from where; `ssh server off` stops
-it, ending any sessions. `ssh server port 2222` moves it (from the next start).
+`ssh server status` shows who is logged in and from where; `sudo ssh server off`
+stops it, ending any sessions. `sudo ssh server port 2222` moves it (from the next
+start). Turning the server on or off, moving it and replacing its key all need
+sudo (PERMISSIONS.md).
+
+### sudo in a remote session
+
+A remote login is its own session for sudo, with its own 5 minutes: a password
+typed at the console does nothing for it, and the other way round. With a terminal
+(an ordinary `ssh root@device`, or `ssh -t ... 'command'`), sudo asks on that
+terminal. A command run without one is refused instead of asking, because the
+password would be typed into something that echoes it:
+
+```
+$ ssh root@192.168.1.40 'sudo pkg install gps'
+[!] sudo needs a terminal to ask for the password; connect with ssh -t.
+$ ssh -t root@192.168.1.40 'sudo pkg install gps'
+Password for root, to run 'pkg install' ••>
+```
+
+A login logged in by key still needs its account's password for sudo.
 
 ### Keys instead of passwords
 
@@ -102,8 +121,14 @@ keys (its host key and the key `ssh keygen` makes are ECDSA).
 
 ## Security
 
-- **Off until turned on**, and only an admin can turn it on. In a maintenance boot
-  it stays off whatever the setting says.
+- **Off until turned on**, and only an admin with sudo can turn it on. In a
+  maintenance boot it stays off whatever the setting says.
+- **sudo is per session.** What changes the system (packages, accounts, firmware,
+  what starts at boot, `/os` and `/etc`) needs the account's own password typed in
+  that session, so a login made with a key cannot do those things on the strength
+  of the key alone. A login never inherits sudo from whatever started its task, and
+  the recovery that lets the console use sudo without a password (a maintenance
+  boot) never applies to a remote session.
 - **Accounts without a password cannot log in**, by password or by key. `guest` is
   password-less as shipped; `passwd guest` gives it one if it should be reachable.
 - **A remote session is its own user.** A guest logged in over SSH is a guest even
@@ -117,9 +142,9 @@ keys (its host key and the key `ssh keygen` makes are ECDSA).
   key lives in `/os/ssh`, which only an admin can read. An ordinary account cannot
   change anything in `/os` or `/etc` (startup items, services, installed packages,
   trusted certificates), or in anyone else's home, and cannot read anyone else's
-  `~/.ssh`, so it cannot add itself to root's `authorized_keys`. A package it runs
-  over SSH may only write its own settings (`Apps.*`), and `kill` stops only its
-  own tasks.
+  `~/.ssh`, so it cannot add itself to root's `authorized_keys`. An admin needs
+  sudo to change `/os` and `/etc`. A package it runs over SSH may only write its
+  own settings (`Apps.*`), and `kill` stops only its own tasks.
 - **It is not audited.** It is built on mbedTLS's primitives, with TweetNaCl's
   public-domain arithmetic for checking Ed25519 signatures (mbedTLS has none), and
   tested against OpenSSH, but nobody independent has reviewed it. Keep it to
@@ -166,6 +191,11 @@ On a computer, from `os/host`:
   `ssh` to test against.
 - `identity_test` proves the per-session identity: a guest session cannot read
   protected files or run admin commands while root is at the console.
+- `sudo_test` proves sudo per session: a remote login with a terminal is asked on
+  it, one without a terminal is refused, a job from a login uses that login's
+  grace and nobody else's, and a login started by a task running with sudo does
+  not have it. `ssh_interop_test.sh` checks the same with a real OpenSSH client,
+  with and without `-tt`.
 
 On a Pico 2 W (OpenSSH 10.0 on Linux as the other end), the server has done:
 logging in with an ECDSA key and with a password, a wrong password refused, a
