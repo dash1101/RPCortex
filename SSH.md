@@ -5,10 +5,9 @@ log in to other machines itself. Both are built into the firmware for that board
 only; the Pico W has no room left for them and the boards without a radio have
 nothing to carry them over.
 
-**Not yet run on a board.** The protocol code is tested on a computer against the
-real OpenSSH client and server (see Testing, below), and the firmware builds. The
-part that only a device has — the sockets, the tasks, the accounts and files — has
-not been tried on a Pico 2 W yet.
+The protocol code is tested on a computer against the real OpenSSH client and
+server (see Testing, below), and the server has been used from a Linux desktop to
+a Pico 2 W. What has and has not been tried on the board is listed at the end.
 
 ## Logging in to the device
 
@@ -124,7 +123,7 @@ Not supported: port forwarding of any kind, agent and X11 forwarding, `scp` and
   is unaffected.
 - A session uses about 25 KB of memory, its 8 KB stack included, and the
   server's own task another 8 KB. A login's key exchange runs on the console's
-  core and can pause the console for a moment — and anyone who can reach the port
+  core and can pause the console for a moment, and anyone who can reach the port
   can keep that core busy by connecting over and over, before logging in.
 - Remote sessions share the device's aliases and settings with the console;
   per-user `User.` settings are the console user's, so a remote session reads

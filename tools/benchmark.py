@@ -207,6 +207,14 @@ def cmd_run(a):
     res["version"] = t.strip().splitlines()[0] if t.strip() else "?"
     log("firmware: %s (%s)" % (res["version"], dev.mode))
 
+    # The SSH server (v2.03-beta on) holds memory and a task. The first
+    # release had none, so it is off for the measurements and put back after.
+    dev, rc, t, _ = run_cmd(port, dev, "ssh server status")
+    ssh_was_on = "Server on" in t
+    res["ssh_server_was_on"] = ssh_was_on
+    if ssh_was_on:
+        run_cmd(port, dev, "ssh server off")
+
     log("clean state: no packages, then a restart")
     dev, rc, t, _ = run_cmd(port, dev, "pkg list")
     for name in re.findall(r"^\s+(\S+)\s+\d", t, re.M):
@@ -272,6 +280,9 @@ def cmd_run(a):
     dev, rc, t, _ = run_cmd(port, dev, "pkg install " + a.repo_package, timeout=300)
     if rc == 0 and "nstalled" in t:
         M["package_install_s"] = round(time.time() - s, 1)
+        dev, rc, t, _ = run_cmd(port, dev, "pkg list")
+        m = re.search(r"^\s+%s\s+(\S+)" % re.escape(a.repo_package), t, re.M)
+        res["installed_package"] = "%s %s" % (a.repo_package, m.group(1) if m else "?")
     else:
         log("    install failed: %s" % t.strip()[-120:])
 
@@ -296,6 +307,8 @@ def cmd_run(a):
     dev, rc, t, _ = run_cmd(port, dev, "pkg install greet", timeout=120)
     dev, res["scenarios"] = scenarios(port, dev)
     dev, rc, t, _ = run_cmd(port, dev, "wifi connect " + a.wifi, timeout=60)
+    if ssh_was_on:
+        dev, *_ = run_cmd(port, dev, "ssh server on")
     try:
         dev.close()
     except Exception:

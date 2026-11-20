@@ -38,6 +38,9 @@ unchanged. It's in beta and still changing from one release to the next.
   `kill`. A runaway task gets preempted after 250 ms.
 - **Networking on the W boards.** Wi-Fi, HTTPS with verified certificates, `curl`,
   NTP, and Bluetooth LE and Classic (it can play a WAV to a Bluetooth speaker).
+- **SSH on the Pico 2 W.** `ssh server on`, then `ssh root@<device>` from a
+  computer on the same network; `ssh` on the device reaches other machines. Off
+  until it's turned on. [SSH.md](SSH.md) has the details.
 - **Files.** littlefs on the onboard flash, and a USB drive mode (`download`) for
   moving files by drag and drop.
 - **Updates and recovery.** `update` installs new firmware over the air and can
@@ -133,6 +136,7 @@ smallest working example.
 
 - [PACKAGES.md](PACKAGES.md): writing a package, the ABI, the sandbox, size limits
 - [LINK.md](LINK.md): the protocol the computer-side tools speak
+- [SSH.md](SSH.md): logging in over the network, keys, and what SSH supports
 - [TESTING.md](TESTING.md): what the host suites prove, and what needs a board
 - [ARCHITECTURE.md](ARCHITECTURE.md): why the scheduler, sandbox and networking are built the way they are
 - [RELEASING.md](RELEASING.md): version numbers and how a release is cut
