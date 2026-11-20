@@ -112,7 +112,11 @@ static int cmd_kill(int argc, char **argv) {
             continue;
         }
         if (!task_kill((int)pid)) {
-            out_err("Cannot stop pid %ld.%s", pid, pid == 1 ? "  It is the shell." : "");
+            // Named by what each is, not by number: the shell is not pid 1
+            // (that is init, the boot task), and it said so for the wrong one.
+            const char *why = pid == task_shell_pid() ? "  It is the shell." :
+                              pid == 1                ? "  It is init, the task the system starts on." : "";
+            out_err("Cannot stop pid %ld.%s", pid, why);
             bad++;
             continue;
         }
