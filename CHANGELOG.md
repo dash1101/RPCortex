@@ -14,6 +14,7 @@ Summary:
 
 ### Improved
 
+- Downloads to a file are about three times faster: 866 KB over HTTPS in 16.5 s, where it took 54.8 s, which is now as fast as the network delivers it. Every packet written used to walk the whole filesystem twice to check the file still fitted; it is measured when the file opens and every 256 KB, and estimated in between. A download that does not fit is still refused before the disk is full, and leaves no partial file.
 ### Fixed
 
 ### Security

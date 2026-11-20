@@ -370,17 +370,19 @@ static uint32_t used_percent_locked(void) {
 //
 // Checked BEFORE the write rather than reported after it, because littlefs
 // discovers it has run out partway through and leaves a half-written file.
+// lfs_fs_size walks every file's blocks, so it is measured ONCE here; this
+// used to call it twice.
 static bool room_for(uint32_t bytes) {
     if (!g_mounted) return false;
-    uint32_t pct = used_percent_locked();
-    if (pct >= FS_BLOCK_STOP) return false;
-    // Blocks needed, rounded up, plus one for the metadata the commit costs.
-    uint32_t need = (bytes + FS_BLOCK_SIZE - 1) / FS_BLOCK_SIZE + 1;
     uint32_t blocks = g_cfg_live.block_count;
+    if (!blocks) return false;
     lfs_ssize_t used = fs_used_blocks();
     if (used < 0) return false;
+    if ((uint64_t)used * 100u / blocks >= FS_BLOCK_STOP) return false;
+    // Blocks needed, rounded up, plus one for the metadata the commit costs.
+    uint32_t need = (bytes + FS_BLOCK_SIZE - 1) / FS_BLOCK_SIZE + 1;
     uint32_t after = (uint32_t)used + need;
-    return after * 100u / (blocks ? blocks : 1u) < FS_BLOCK_STOP;
+    return after * 100u / blocks < FS_BLOCK_STOP;
 }
 
 uint32_t storage_used_percent(void) {
@@ -551,7 +553,35 @@ struct SinkHandle {
     bool       ok;
     uint8_t    buf[SINK_BUF];
     uint32_t   held;
+    // Room is measured, not assumed, but not on every write: see sink_room.
+    uint32_t   written;        // bytes accepted so far
+    uint32_t   base_used;      // blocks in use at the last real measurement
+    uint32_t   base_written;   // `written` at that measurement
 };
+
+// Will `len` more bytes fit? Asked on every write of a stream, which for a
+// download is every packet. It used to answer with room_for, which walks the
+// whole filesystem twice (lfs_fs_size), so a 909 KB download made some 1,800
+// complete traversals, each longer as the file grew: the transfer ran at a
+// third of what the network delivered. Now the filesystem is measured when the
+// sink opens and again every 256 KB, and in between the blocks written since
+// are added to that figure. The real measurement is also taken whenever the
+// estimate comes within 3 points of the stop line, so the line itself is
+// decided by littlefs's own count, as before.
+#define SINK_RECHECK (256u * 1024u)
+static bool sink_room(SinkHandle *h, uint32_t len) {
+    uint32_t blocks = g_cfg_live.block_count;
+    if (!blocks) return false;
+    uint32_t since = h->written + len - h->base_written;
+    uint32_t est = h->base_used + (since + FS_BLOCK_SIZE - 1) / FS_BLOCK_SIZE + 2;
+    if (since < SINK_RECHECK && (uint64_t)est * 100u / blocks + 3 < FS_BLOCK_STOP) return true;
+    lfs_ssize_t used = fs_used_blocks();
+    if (used < 0) return false;
+    h->base_used = (uint32_t)used;
+    h->base_written = h->written;
+    uint32_t need = (len + FS_BLOCK_SIZE - 1) / FS_BLOCK_SIZE + 1;
+    return ((uint64_t)used + need) * 100u / blocks < FS_BLOCK_STOP;
+}
 
 // Push what is buffered. Returns false once anything has failed, so a caller
 // that ignores an intermediate error still finds out at close.
@@ -575,6 +605,12 @@ void *storage_open_sink(const char *name) {
     snprintf(h->name, sizeof(h->name), "%s", name);
     h->ok = true;
     h->held = 0;
+    h->written = 0;
+    h->base_written = 0;
+    {
+        lfs_ssize_t used = fs_used_blocks();
+        h->base_used = used < 0 ? g_cfg_live.block_count : (uint32_t)used;
+    }
     if (lfs_file_open(&g_lfs, &h->f, name, LFS_O_WRONLY | LFS_O_CREAT | LFS_O_TRUNC) < 0) {
         free(h);
         return nullptr;
@@ -588,7 +624,8 @@ bool storage_sink_write(void *handle, const uint8_t *data, uint32_t len) {
     LockGuard _fs(&g_fs_lock);
     if (!g_mounted) { h->ok = false; return false; }
 
-    if (!room_for(len)) { h->ok = false; return false; }
+    if (!sink_room(h, len)) { h->ok = false; return false; }
+    h->written += len;
     while (len && h->ok) {
         uint32_t room = SINK_BUF - h->held;
         uint32_t n = len < room ? len : room;
