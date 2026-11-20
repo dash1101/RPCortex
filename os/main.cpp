@@ -1,3 +1,4 @@
+#include "tusb.h"
 // RPCortex v2 — entry point.
 //
 // Bring up stdio, run the boot sequence, then hand off to the shell.
@@ -133,10 +134,23 @@ int main(void) {
     // breaks. out_flush calls tud_task() unconditionally, and stdio_flush() is
     // the way in.
     //
-    // Three seconds of this is enough to enumerate; after it the printf traffic
-    // through the rest of boot keeps the stack turning, and the usb task takes
-    // over once the scheduler is up.
-    for (int i = 0; i < 300 && !stdio_usb_connected(); i++) { stdio_flush(); sleep_ms(10); }
+    // How long to wait, measured on a Pico 2 W: the host has enumerated the
+    // device about 1.2 s after reset, and a tool that reopens the port as soon
+    // as it reappears has it open about 0.4 s after that. This used to wait up
+    // to three seconds for a terminal, so every boot with nobody watching (the
+    // usual case after a reboot, and always on battery with no host) spent
+    // three seconds here. Now: until the host has enumerated it, at most two
+    // seconds; then three quarters of a second for a terminal to open, so one
+    // that reconnects by itself still sees the banner. Nothing is lost by not
+    // waiting longer: everything printed during boot is in `log` as well.
+    //
+    // After this, the printf traffic through the rest of boot keeps the stack
+    // turning, and the usb task takes over once the scheduler is up.
+    for (int i = 0; i < 200 && !stdio_usb_connected() && !tud_mounted(); i++) {
+        stdio_flush(); sleep_ms(10);
+    }
+    if (tud_mounted())
+        for (int i = 0; i < 75 && !stdio_usb_connected(); i++) { stdio_flush(); sleep_ms(10); }
     sleep_ms(150);
 
     // bb_init FIRST. It lives in memory that survives a reset, so until it has
