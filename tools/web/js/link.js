@@ -237,6 +237,12 @@ export class LinkClient {
     for (;;) {
       const f = await this.frame(ms);
       if (f.final) return f;
+      if (f.type === "BYE") {
+        // The device left link mode (Ctrl+C on its console, or the port was
+        // reopened) instead of answering.
+        this.dropped = true;
+        throw new RpcError("the device left link mode before answering; reconnect");
+      }
       if (keep) keep.push(f);
     }
   }

@@ -20,16 +20,21 @@ account's permissions, exactly as if each request had been typed at the prompt.
 A host enters it from a prompt:
 
 1. Send `0x03` (Ctrl+C) and wait about 200 ms. That abandons anything half-typed.
-2. Send `link\r`.
-3. Read until a `HELLO` frame arrives (below). Everything before it is the echo
+2. Look at what came back. If nothing did, send an empty line (`\r`) and look
+   again. A login prompt ignores Ctrl+C and refuses an empty answer without
+   counting it as a try.
+3. Only at a shell prompt (`user@host:/path>`), send `link\r`. At a login prompt
+   (`Username`) nobody is logged in: log in first, or ask the user to. Never type
+   `link` at a login prompt.
+4. Read until a `HELLO` frame arrives (below). Everything before it is the echo
    of the command and a one-line notice for a person; ignore it.
 
-If the device answers with a login prompt (`Username`) instead, nobody is logged
-in, and the host has to log in first or ask the user to. If it answers
-`'link' is not a command`, the firmware is older than link mode; see
-"Older firmware" below.
+If the device answers `'link' is not a command`, the firmware is older than link
+mode; see "Older firmware" below. A device found already in link mode (a tool
+that crashed and left it there) answers a `HELLO` request with a frame.
 
-It leaves link mode, and the normal prompt comes back, when:
+It leaves link mode, sends a `BYE` frame (`0x1E BYE`), and the normal prompt
+comes back, when:
 
 - the host sends `BYE`;
 - a `0x03` byte arrives while it is waiting for a request (so a person who typed
@@ -39,7 +44,8 @@ It leaves link mode, and the normal prompt comes back, when:
 ## Framing
 
 **Host to device:** one request per line, ending `\n` (a `\r` before it is
-ignored). ASCII. At most 1100 bytes including the newline. The first word is the
+ignored). UTF-8; paths are passed through byte for byte. At most 1100 bytes,
+counted in bytes, including the newline. The first word is the
 verb; words are separated by one space. Where a request ends in a path or a
 command line, that last field is the whole rest of the line, spaces included.
 
@@ -49,6 +55,9 @@ command line, that last field is the whole rest of the line, spaces included.
 ```
 0x1E TYPE [field ...] \n
 ```
+
+Frames may end in `\r\n`. A frame can also follow part of a background line on
+the same line, so look for `0x1E` anywhere in a line, not only at its start.
 
 Any line that does not start with `0x1E` is not part of the protocol. Background
 tasks (a service, the scheduler, a log line from the network) can still print
@@ -94,12 +103,15 @@ Sent by the device unprompted on entering, and again on request.
 
 ```
 > HELLO
-< 0x1E HELLO proto=1 os=v2.01-beta build=552 board=pico2_w user=root cwd=/ chunk=768 exec_max=32768
+< 0x1E HELLO proto=1 os=v2.01-beta build=552 board=pico2_w arch=armv8m user=root cwd=/ chunk=768 exec_max=32768
 < 0x1E OK
 ```
 
 On entry the `HELLO` frame comes on its own, with no `OK` after it, because there
-was no request. `exec_max` is the most output one `EXEC` returns. `cwd` is
+was no request. `exec_max` is the most output one `EXEC` returns. `arch` is the package
+architecture the board runs (`armv8m` on RP2350, `armv6m` on RP2040): a host
+installing a package picks the build for it, since the device does not check.
+`cwd` is
 percent-encoded (a space is `%20`, a percent sign `%25`) so that every field is
 one `key=value` word. Fields may be added in later versions; a host ignores keys
 it does not know.
@@ -131,6 +143,7 @@ command finishes.
 - Output arrives when the command has finished, not as it runs.
 - While a command runs, the host must not send anything except a single `0x03`
   byte, which interrupts it the way Ctrl+C does at the prompt.
+- An interrupted command ends `OK rc=1`, with `[?] Interrupted.` in its output.
 - A command that stops to ask a question (a yes/no confirmation, a password)
   waits for keys the host is not sending. Use the terminal for those, or send
   `0x03` to give up.
@@ -183,6 +196,7 @@ Reads a file.
 - 10 seconds with no line ends it with `ERR timeout`.
 - `sha` is the SHA-256 of the bytes sent; the host compares it with what it
   received.
+- An empty file gives `SIZE 0` and then `OK` straight away, with no `D`.
 
 ### LS <path>
 
@@ -211,6 +225,7 @@ the name, which may contain spaces. `.` and `..` are not listed.
 ```
 > BYE
 < 0x1E OK
+< 0x1E BYE
 ```
 
 The device then returns to the normal prompt.
@@ -221,9 +236,11 @@ Firmware without link mode answers `'link' is not a command`. A host can still:
 
 - send a file with `put <name> <len> <sha256>` and the raw bytes, waiting for one
   `0x06` byte after every 256 bytes (see `tools/putfile.py`);
-- run a command by typing it with `; echo <marker>` appended and reading until the
-  marker appears at the start of a line, keeping in mind that the line editor
-  repaints the line it is typing.
+- run a command by typing it with `&& echo "MK" "<token>0" || echo "MK" "<token>1"`
+  appended, and searching the output (anywhere, not only at a line start, since
+  the output may not end in a newline) for `MK <token>0` or `MK <token>1`. Quoting
+  the halves keeps the echo of the typed line from matching. The prompt takes at
+  most 127 characters, and the line editor repaints the line as it is typed.
 
 Both are what the tools did before this protocol existed. Neither returns an exit
 status or works for files coming the other way.

@@ -149,8 +149,13 @@ static void hello(LinkState *st) {
     }
     cwd[o] = 0;
     const char *u = session_user();
-    frame(st, "HELLO proto=%d os=%s build=%s board=%s user=%s cwd=%s chunk=%d exec_max=%d",
-          LINK_PROTO, RPC_OS_VERSION, RPC_OS_BUILD, PICO_BOARD, u ? u : "", cwd,
+#if PICO_RP2040
+    const char *arch = "armv6m";
+#else
+    const char *arch = "armv8m";
+#endif
+    frame(st, "HELLO proto=%d os=%s build=%s board=%s arch=%s user=%s cwd=%s chunk=%d exec_max=%d",
+          LINK_PROTO, RPC_OS_VERSION, RPC_OS_BUILD, PICO_BOARD, arch, u ? u : "", cwd,
           LINK_CHUNK, LINK_EXEC_MAX);
 }
 
@@ -367,6 +372,10 @@ static int cmd_link(int, char **) {
         else ERR(st, "badreq", "unknown verb %s", q.verb);
     }
 
+    // However it ended (BYE, Ctrl+C, the port closing), the host is told. A
+    // stray 0x03 arriving just after a final frame used to end link mode with
+    // nothing on the wire, and the host's next request landed at the prompt.
+    frame(st, "BYE");
     g_in_link = false;
     intr_clear();
     intr_stash_clear();

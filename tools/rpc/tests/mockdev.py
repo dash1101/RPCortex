@@ -862,8 +862,13 @@ class MockDevice(object):
 
     def hello(self):
         cwd = self.cwd.replace("%", "%25").replace(" ", "%20")
-        self.frame("HELLO proto=1 os=v2.01-beta build=554 board={} user={} cwd={} chunk={} "
-                   "exec_max={}".format(self.board, self.user, cwd, CHUNK, EXEC_MAX))
+        # Firmware from 2026-11-20 says arch; earlier link firmware did not
+        # (send_arch = False), and an unknown board then needs --arch.
+        arch = ""
+        if getattr(self, "send_arch", True):
+            arch = "arch={} ".format("armv6m" if self.board in ("pico", "pico_w") else "armv8m")
+        self.frame("HELLO proto=1 os=v2.01-beta build=554 board={} {}user={} cwd={} chunk={} "
+                   "exec_max={}".format(self.board, arch, self.user, cwd, CHUNK, EXEC_MAX))
 
     def c_link(self, a):
         if self.in_link:
@@ -915,6 +920,7 @@ class MockDevice(object):
                     break
         finally:
             self.in_link = False
+        self.frame("BYE")          # the firmware says so however link mode ends
         self.emit("Left link mode.\n")
         return 0
 

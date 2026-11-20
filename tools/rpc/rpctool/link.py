@@ -231,6 +231,11 @@ class LinkClient(object):
             f = self.frame(timeout)
             if f.final:
                 return f
+            if f.type == "BYE":
+                # The device left link mode (Ctrl+C on its console, or the
+                # port was closed and reopened) instead of answering.
+                self.dropped = True
+                raise RpcError("the device left link mode before answering; reconnect")
             if keep is not None:
                 keep.append(f)
 

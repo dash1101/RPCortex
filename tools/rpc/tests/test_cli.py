@@ -268,6 +268,7 @@ class TestInstall(CliCase):
 
     def test_unknown_board_needs_arch(self):
         self.dev.board = "esp32s3"
+        self.dev.send_arch = False          # firmware that does not say
         rc, out, err = self.rpc("install", "--index", self.index, "hello")
         self.assertEqual(rc, 1)
         self.assertIn("--arch", err)

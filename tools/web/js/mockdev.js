@@ -368,7 +368,7 @@ export class MockDevice {
 
   hello() {
     const cwd = this.cwd.replace(/%/g, "%25").replace(/ /g, "%20");
-    this.frame(`HELLO proto=1 os=v2.01-beta build=554 board=${this.board} user=${this.user} cwd=${cwd} chunk=768 exec_max=32768`);
+    this.frame(`HELLO proto=1 os=v2.01-beta build=554 board=${this.board} arch=${/^pico(_w)?$/.test(this.board) ? "armv6m" : "armv8m"} user=${this.user} cwd=${cwd} chunk=768 exec_max=32768`);
   }
 
   async link() {
@@ -395,6 +395,7 @@ export class MockDevice {
       else this.frame("ERR badreq unknown verb " + verb);
     }
     this.inLink = false;
+    this.frame("BYE");          // the firmware says so however link mode ends
     this.emit("Left link mode.\n");
     return 0;
   }

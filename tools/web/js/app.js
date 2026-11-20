@@ -514,7 +514,10 @@ function renderRepo() {
   if (!S.index) return;
   const q = $("#repo-filter").value.trim().toLowerCase();
   const board = S.link ? S.link.hello.board : null;
-  const arch = boardArch(board);
+  // Firmware from v2.01-beta says which build it runs; older link firmware
+  // leaves it to the board name.
+  const said = S.link ? S.link.hello.arch : null;
+  const arch = (said === "armv6m" || said === "armv8m") ? said : boardArch(board);
   const shown = S.index.filter((p) => !q || (p.name + " " + p.desc).toLowerCase().includes(q))
     .sort((a, b) => a.name.localeCompare(b.name));
   if (!shown.length) rows.append(el("tr", {}, el("td", { colspan: "4", class: "empty" }, "Nothing matches.")));
@@ -536,7 +539,8 @@ function renderRepo() {
 
 async function installFromRepo(name) {
   const link = await needLink();
-  const arch = boardArch(link.hello.board);
+  const said = link.hello.arch;
+  const arch = (said === "armv6m" || said === "armv8m") ? said : boardArch(link.hello.board);
   if (!arch) throw new RpcError(`This page does not know which architecture the board '${link.hello.board}' runs, so it will not guess. Use rpc install --arch.`);
   const pkg = choose(S.index, name, arch);
   pkgLog(`${pkg.name} ${pkg.ver} (${pkg.arch || "any architecture"}), downloading...`);

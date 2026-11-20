@@ -393,6 +393,9 @@ def cmd_cat(ctx, a):
 
 def _board_arch(dev):
     board = dev.hello.get("board")
+    # The device says which build it runs, from the firmware that added it.
+    if dev.hello.get("arch") in ("armv6m", "armv8m"):
+        return dev.hello["arch"], board
     if not board and dev.mode != "link":
         m = re.search(r"Platform\s*:\s*(\S+)", dev.exec("ver").text)
         board = m.group(1) if m else None
