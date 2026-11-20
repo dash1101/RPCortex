@@ -283,14 +283,31 @@ uint32_t line_edit(const LineEdit *le, char *buf, uint32_t cap) {
     buf[0] = 0;
     t.puts(le->prompt);
     Shown shown{0, 0, 0};
+    bool messy = false;               // see tail() below
     // The full redraw, recording what it left on screen.
     auto full = [&]() {
+        messy = true;
         redraw(t, le->prompt, buf, len, pos, ghost);
         uint32_t gn = (ghost[0] && pos == len) ? (uint32_t)strlen(ghost) : 0;
         shown = Shown{len, gn, pos};
     };
     // A paint from `from`, for edits that leave everything before it alone.
-    auto tail = [&](uint32_t from) { paint(t, shown, buf, len, pos, ghost, from); };
+    //
+    // `messy` records whether the bytes sent so far are anything other than
+    // the prompt followed by the line, typed straight through. Programs that
+    // drive this console (devsmoke, soak, the emulator suites, anyone's
+    // script) find a command's output by finding the command and a newline in
+    // the stream, which a redraw-per-key always provided and an incremental
+    // repaint with suggestions and backspaces does not. So a messy line gets
+    // one full redraw before its newline: a terminal shows the same thing, and
+    // the stream ends with the line in one piece. That costs a line per
+    // command, not per key.
+    auto tail = [&](uint32_t from) {
+        bool plain_append = from == shown.len && shown.cur == from && pos == len &&
+                            !ghost[0] && !shown.gn;
+        if (!plain_append) messy = true;
+        paint(t, shown, buf, len, pos, ghost, from);
+    };
 
     while (true) {
         int c = le->io.getch(le->io.ctx, 0);
@@ -301,7 +318,9 @@ uint32_t line_edit(const LineEdit *le, char *buf, uint32_t cap) {
         if (c == '\r' || c == '\n') {
             // Clear the suggestion before the newline, or the grey text is left
             // on screen looking like part of what was submitted.
-            if (ghost[0]) { ghost[0] = 0; tail(len); }
+            ghost[0] = 0;
+            pos = len;                // so nothing trails the line but the newline
+            if (messy) full();        // a suggestion always makes the line messy
             t.put('\n');
             buf[len] = 0;
             return len;
@@ -317,6 +336,7 @@ uint32_t line_edit(const LineEdit *le, char *buf, uint32_t cap) {
             intr_stash_clear();         // and so is anything typed before it
             t.puts(le->prompt);
             shown = Shown{0, 0, 0};
+            messy = false;
             continue;
         }
 

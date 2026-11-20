@@ -269,6 +269,20 @@ static void drive(const char *keys, char *out, uint32_t cap) {
     for (char *w = what; *w; w++) if (*w == '\033') *w = '^';
     eq(f.vt.last, want, what);
     g_drive_bytes = f.vt.bytes;
+
+    // And the raw stream, which is what a program driving the console reads,
+    // has to end with the prompt and the line in one piece before the newline.
+    // (Only checked when the capture did not fill up.)
+    if (f.sn + 2 < sizeof(f.screen)) {
+        char tailwant[300];
+        snprintf(tailwant, sizeof(tailwant), "$ %s\n", out);
+        size_t tl = strlen(tailwant);
+        bool ends = f.sn >= tl && memcmp(f.screen + f.sn - tl, tailwant, tl) == 0;
+        char what2[180];
+        snprintf(what2, sizeof(what2), "raw stream ends with the line for keys \"%s\"", keys);
+        for (char *w = what2; *w; w++) if (*w == '\033') *w = '^';
+        ck(ends, what2);
+    }
 }
 
 // The repaint is incremental now, so the cases where that can go wrong get a
