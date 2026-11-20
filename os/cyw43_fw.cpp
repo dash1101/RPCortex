@@ -10,8 +10,10 @@
 // 3.3 KB of heap, given back before the next opens. Nothing is kept afterwards.
 // The time is the inflate, done inside the driver call that brings the chip up;
 // cyw43_ll_wifi_on already waits until 150 ms after that call began, which
-// covers some of it. DEVICE-UNCONFIRMED: how long the upload takes on each part,
-// and that the radio comes up, joins and starts Bluetooth from the inflated image.
+// covers some of it. On a Pico 2 W the radio comes up from the inflated image,
+// joins, and Bluetooth scans; 'wifi off' then 'wifi connect' took 10.3 to 10.8 s
+// against 10.7 s with the plain image, so the inflate is lost in the join.
+// DEVICE-UNCONFIRMED on a Pico W (RP2040, slower core): the same path, untimed.
 #include "cyw43_fw.h"
 
 #include "fwstream.h"
