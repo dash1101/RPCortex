@@ -1183,6 +1183,11 @@ void shell_run(void) {
         // while the shell carried on fine. Reaching the prompt means whatever
         // was asked to stop has stopped.
         task_clear_stop();
+        // And nothing from the last line runs with sudo at the prompt. sudo
+        // puts the flag back when its command returns; this is the belt to
+        // that brace, because a flag left set here would be sudo for free.
+        task_shell()->elevated = false;
+        task_shell()->noprompt = 0;
 
         // Report a background join here rather than from its own task: printing
         // from there lands in the middle of whatever is being typed, and this

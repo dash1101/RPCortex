@@ -185,6 +185,19 @@ static int fx_build(char *out, unsigned cap, const char *verb,
     return 1;
 }
 
+// /os or /etc, or inside them: what the OS runs at the next start. Changing
+// anything there needs sudo, as it does at the prompt, so a line that copies or
+// moves there goes with the word in front. A package's line cannot ask for the
+// password: it uses the session's grace (`sudo -v` first) or says that it needs
+// one, and that answer is what reaches the status line.
+static int fx_under(const char *p, const char *dir) {
+    unsigned n = (unsigned)strlen(dir);
+    return strncmp(p, dir, n) == 0 && (p[n] == 0 || p[n] == '/');
+}
+static int fx_system(const char *p) {
+    return p && (fx_under(p, "/os") || fx_under(p, "/etc"));
+}
+
 // --- reading a directory ----------------------------------------------------
 
 static void fx_sort(FxEntry *e, int n) {
@@ -603,9 +616,11 @@ static void fx_act_transfer(const char *label, const char *shell_verb, int allow
         snprintf(target, sizeof(target), "%s", dest);
     }
 
-    char from[FX_PATH_MAX], line[FX_LINE_MAX];
+    char from[FX_PATH_MAX], line[FX_LINE_MAX], verb[16];
     if (!fx_join(from, sizeof(from), fx.cwd, e->name)) return;
-    if (!fx_build(line, sizeof(line), shell_verb, from, target)) return;
+    snprintf(verb, sizeof(verb), "%s%s", fx_system(from) || fx_system(target) ? "sudo " : "",
+             shell_verb);
+    if (!fx_build(line, sizeof(line), verb, from, target)) return;
     fx_run(line, "Done.");
     fx_load();
 }
@@ -626,6 +641,7 @@ static void fx_act_delete(void) {
     char name[FW_NAME_MAX];
     snprintf(name, sizeof(name), "%s", e->name);
     if (fw_file_remove(target))  fx_note("Deleted '%s'.", name);
+    else if (fx_system(target))  fx_note("'%s' is a system file: that needs sudo fileexp.", name);
     else if (was_dir)            fx_note("'%s' is not empty - empty it first.", name);
     else                         fx_note("Could not delete '%s'.", name);
     fx_load();
@@ -641,7 +657,9 @@ static void fx_act_install(void) {
 
     char target[FX_PATH_MAX], line[FX_LINE_MAX];
     if (!fx_join(target, sizeof(target), fx.cwd, e->name)) return;
-    if (!fx_build(line, sizeof(line), "pkg install", target, 0)) return;
+    // sudo: installing changes the system. Firmware from before sudo takes
+    // the word from an admin as it always did.
+    if (!fx_build(line, sizeof(line), "sudo pkg install", target, 0)) return;
     fx_run(line, "Installed.");
     fx_load();
 }

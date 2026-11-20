@@ -580,8 +580,8 @@ int main(void) {
         key('m'); type("/home/etc"); key(13);
         key('q');
         run();
-        ck(g_ran.size() && g_ran[0] == "mv \"/etc\" \"/home/etc\"",
-           "moving a folder is allowed");
+        ck(g_ran.size() && g_ran[0] == "sudo mv \"/etc\" \"/home/etc\"",
+           "moving a folder is allowed, and out of /etc it goes with sudo");
     }
 
     // --- installing ---------------------------------------------------------
@@ -591,8 +591,8 @@ int main(void) {
         key('p');
         key('q');
         run();
-        ck(g_ran.size() && g_ran[0] == "pkg install \"/zebra.app\"",
-           "p on a .app asks pkg to install it");
+        ck(g_ran.size() && g_ran[0] == "sudo pkg install \"/zebra.app\"",
+           "p on a .app asks pkg to install it, with sudo");
 
         fs_populate();
         key(FW_KEY_DOWN); key(FW_KEY_DOWN); key(FW_KEY_DOWN);   // Alpha.cfg

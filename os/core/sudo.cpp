@@ -146,7 +146,7 @@ bool sudo_authenticate(const char *what_for) {
     if (users_is_nopass(who)) {
         out_errp("auth", "'%s' signs in without a password, so it cannot "
                          "authorise this.", who);
-        out_multi("  `passwd %s` gives it one.", who);
+        out_multi("  An admin can give it one: sudo passwd %s", who);
         return false;
     }
 
