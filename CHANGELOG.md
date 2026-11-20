@@ -8,13 +8,15 @@ good notes is in `RELEASING.md`.
 
 ## Unreleased
 
-Summary: 
+Summary: A small fix release: the browser tool shows the RPCortex mark instead of its own lettering.
 
 ### New
 
 ### Improved
 
 ### Fixed
+
+- The browser tool (`tools/web`, and the Tool page on rpc.novalabs.app) spelled RPCortex in its own gradient lettering. It shows the RPCortex R mark now, the same one as the website.
 
 ### Security
 

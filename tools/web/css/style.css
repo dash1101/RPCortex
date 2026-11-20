@@ -80,15 +80,21 @@ a { color: var(--accent); }
   background: var(--surface);
   border-bottom: 1px solid var(--line);
 }
-.brand { display: flex; align-items: baseline; gap: 0.6rem; min-width: 0; }
+.brand { display: flex; align-items: baseline; gap: 0.5rem; min-width: 0; }
 .wordmark {
-  font-weight: 800;
-  font-size: 1.3rem;
-  letter-spacing: -0.02em;
-  background: linear-gradient(90deg, var(--mark-1), var(--mark-2) 45%, var(--mark-3) 75%, var(--mark-4));
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+  font-weight: 700;
+  font-size: 1.15rem;
+  color: var(--ink);
+}
+/* The R mark, as on the site. It is drawn for a dark background, so it sits on
+   a dark tile in either theme. */
+.mark {
+  align-self: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  background: #0b1020;
+  padding: 2px;
 }
 .brand-sub { color: var(--muted); font-size: 0.9rem; white-space: nowrap; }
 

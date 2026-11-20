@@ -1,0 +1,11 @@
+<svg viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="RPCortex">
+  <!-- Transparent RPCortex mark for dark backgrounds: bold italic R, red flag,
+       red/blue/purple speed stripes. R is an outlined path (no font dependency). -->
+  <polygon points="196,42 230,42 214,76 180,76" fill="#f7262f"/>
+  <g transform="skewX(-13) translate(79.158,176.0) scale(0.089844,-0.089844)"><path d="M735 831Q856 831 908.5 876.0Q961 921 961 1024Q961 1126 908.5 1170.0Q856 1214 735 1214H573V831ZM573 565V0H188V1493H776Q1071 1493 1208.5 1394.0Q1346 1295 1346 1081Q1346 933 1274.5 838.0Q1203 743 1059 698Q1138 680 1200.5 616.5Q1263 553 1327 424L1536 0H1126L944 371Q889 483 832.5 524.0Q776 565 682 565Z" fill="#ffffff"/></g>
+  <g transform="skewX(-13)">
+    <rect x="92" y="196" width="150" height="12" rx="2" fill="#f7262f"/>
+    <rect x="92" y="212" width="150" height="12" rx="2" fill="#2563ff"/>
+    <rect x="92" y="228" width="150" height="12" rx="2" fill="#a31ff0"/>
+  </g>
+</svg>
