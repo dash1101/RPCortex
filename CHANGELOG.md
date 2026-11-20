@@ -12,6 +12,8 @@ Summary:
 
 ### New
 
+- An SSH session keeps its own command history: up-arrow brings back that session's lines, never another person's, and `history` lists the terminal it is typed at.
+- SSH accepts Ed25519 keys, which is what `ssh-keygen` makes unless told otherwise, so a computer's usual key logs in. A login with one takes about 2 seconds on a Pico 2 W, against 1.8 with ECDSA. The device's own `ssh` client also accepts a server's Ed25519 host key.
 - `sudo` works the way it does on a computer. `sudo <command>` asks for the account's own password and runs that one command with sudo; the password counts for 5 minutes in that session, each use starting the time again. `sudo -v` asks now, `sudo -k` forgets it, and `sudo -l` lists what needs it. See `PERMISSIONS.md`.
 - Link protocol 2 adds `AUTH`, so a host tool can give the password for sudo, and `ERR sudo` when a request needs it. `rpc` and the browser tool ask for the password once, the first time the device says so, and try again (`rpc --sudo` asks first; `$RPC_PASSWORD` is used if set). `tools/benchmark.py` and `tools/devsmoke.py` take `--password-file`, and skip the package steps and say so without one.
 
@@ -21,6 +23,11 @@ Summary:
 
 ### Fixed
 
+- After a restart, network commands in an SSH session failed with "Could not reach the wireless chip from this task": ping, curl and nslookup alike. A task moving to the radio's core was handed straight back to the core it was leaving whenever that core had nothing else to run, so the move never happened. The scheduler now takes it off that core.
+- `wifi off` with the SSH server on restarted v2.03-beta (a hard fault in the server, then the watchdog). Every connection is now closed before the radio goes down, and the SSH server listens again after `wifi connect`.
+- `ping` held the network for its whole run and paused between pings without letting anything else run on its core, and a download held the network from its first byte to its last. Over SSH that meant ping's lines arrived all at once at the end, and a Ctrl+C typed during a download could not reach the device until it finished. They now hold the network only while they use it: a download in one session and a ping in another both run, line by line, and Ctrl+C stops a download in under a second. Name lookups no longer hold it while they wait either.
+- Two pings at once (the console and an SSH session) could read each other's replies. Each has its own now.
+- `~` did not mean the home directory: `cd ~` and `ls ~/notes` looked for a file called `~`. It is expanded as a shell does (`~` and `~/...`, not inside quotes), Tab completes after `~/`, and a bare `cd` goes home instead of to `/`.
 - `factoryreset` said that reflashing the firmware clears the accounts. It does not; the files are kept. The way back from a forgotten password is a maintenance boot (`safeboot`), where sudo at the console does not ask, and `PERMISSIONS.md` says what to do when nobody can sign in at all.
 - `download <file>` asked whether the account could change the file rather than read it, so an ordinary account could not take a copy of a file it can `cat`.
 
@@ -43,11 +50,11 @@ Summary:
 - `autonomy on` asks for the password before the warning rather than after, since `sudo` asks first.
 - Nova D1's screen, run as a service, installs packages, resets settings and edits services as before. Started by hand it needs `sudo -v` at the console first. `novad1 setup` and `novad1 selfupdate` are `sudo novad1 setup` and `sudo novad1 selfupdate` now, and say so when run without it.
 - The backup package keeps its snapshots in `/etc/backups`, so `backup create` and `backup restore` need `sudo` in front.
-- sudo costs about 5.8 KB of flash on every board (the Pico W has 2 KB of its slot left, the Pico 2 W 99 KB, the Pico 64 KB) and 140 bytes of memory.
+- sudo costs about 5.8 KB of flash on every board and 140 bytes of memory. With the radio firmware compressed, the Pico W has 77 KB of its slot left, the Pico 2 W 178 KB and the Pico 64 KB.
 
 ### Known issues
 
-- sudo has not been run on a board. The rules, the prompt, the grace, link's `AUTH` and SSH with and without a terminal are proven on a computer (`perms_test`, `sudo_test`, `ssh_interop_test.sh`, the host-tool suites); the emulator suites that need it were updated but not run.
+- sudo has been run on a Pico 2 W at the console, through `rpc` and over SSH with and without a terminal; not yet on a Pico, a Pico W or a Pico 2, and the emulator suites that now run `sudo -v` first have not been run.
 
 ## v2.03-beta (build 598), 2026-11-20
 
@@ -57,7 +64,6 @@ Summary: SSH on the Pico 2 W, a fix every TCP server on the device needed, and h
 
 - `tools/benchmark.py` measures a board (boot, memory, console traffic, ping, HTTPS, upload, a package install, the CPU benchmark and a set of reliability scenarios) and compares two firmwares in percent. It drives old firmware through the prompt, so it runs on v2.00-beta too.
 - SSH, on the Pico 2 W. `ssh server on` lets a computer log in with `ssh root@<device>` and get the device's shell (pipes, Tab, colours, Ctrl+C for the running command), or run one command and get its exit status. `ssh user@host` logs the device in somewhere else, with the host's key shown and remembered in `~/.ssh/known_hosts` on first use and a changed key refused. `ssh keygen` gives a user a key of their own. Key exchange curve25519-sha256 and ecdh-sha2-nistp256, an ECDSA host key, AES-GCM and AES-CTR with HMAC-SHA2-256, strict key exchange, re-keying; logins by key (ECDSA P-256, RSA with SHA-2) or password. Off until turned on, two sessions at most, no forwarding, and accounts without a password (guest as shipped) cannot log in. Wrong passwords are slowed down, six tries end a connection, and many failures in a minute shut everyone out for a minute; every login and refusal is logged. Costs 32 KB of flash on a Pico 2 W (119 KB of its slot left), and about 25 KB of memory per session, an 8 KB stack included, plus 8 KB for the server's own task while it runs. Proven on a computer against the real OpenSSH client and server, every algorithm forced in turn; not yet run on a board. See `SSH.md`.
-- SSH also takes Ed25519 keys, the kind `ssh-keygen` makes by default, for logging in to the device, and the device's own `ssh` accepts a server's Ed25519 host key; checking one takes about half a second on a Pico 2 W (estimated, not yet timed on a board) and costs 4 KB of flash.
 
 ### Improved
 
