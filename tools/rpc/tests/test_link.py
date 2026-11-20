@@ -190,8 +190,8 @@ class TestFiles(LinkBase):
 
     def test_device_stops_answering(self):
         self.dev.fs.files["/tmp/slow"] = b"s" * 3000
-        self.dev.stall_get = 2.5
-        self.d.timing.transfer = 0.5
+        self.dev.stall_get = 1.0
+        self.d.timing.transfer = 0.3
         with self.assertRaises(DeviceTimeout):
             self.d.get("/tmp/slow")
         self.dev.stall_get = 0

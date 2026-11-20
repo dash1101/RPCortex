@@ -262,6 +262,35 @@ else
     fail=$((fail+1))
 fi
 
+# The host tools (tools/rpc, tools/web) against their mock devices: the link
+# protocol from the computer's side, every rpc command, and the browser tool's
+# protocol client. No board and no serial port is touched.
+printf '  %-16s ' "rpc_tools"
+if python3 -m unittest discover -s ../../tools/rpc/tests > "$OUT/rpc_tools.out" 2>&1; then
+    echo "ok  $(grep -o 'Ran [0-9]* tests' "$OUT/rpc_tools.out")"
+    pass=$((pass+1))
+else
+    echo "FAILED"; sed 's/^/      /' "$OUT/rpc_tools.out" | tail -12
+    fail=$((fail+1))
+fi
+
+# Needs a JavaScript runtime. Without one it says so and counts as neither a
+# pass nor a failure: a skipped test is not a passed one.
+JSRUN=""
+if command -v node > /dev/null 2>&1; then JSRUN="node"
+elif command -v deno > /dev/null 2>&1; then JSRUN="deno run"
+fi
+printf '  %-16s ' "web_link_js"
+if [ -z "$JSRUN" ]; then
+    echo "not run: no node or deno on PATH"
+elif $JSRUN ../../tools/web/test/link.test.js > "$OUT/web_link_js.out" 2>&1; then
+    echo "ok  $(tail -1 "$OUT/web_link_js.out" | tr -s ' ')"
+    pass=$((pass+1))
+else
+    echo "FAILED"; sed 's/^/      /' "$OUT/web_link_js.out" | tail -12
+    fail=$((fail+1))
+fi
+
 echo
 echo "  $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
