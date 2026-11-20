@@ -1053,7 +1053,7 @@ static void test_update_script(void) {
     using namespace nova::screens;
     g_write_path[0] = g_write_body[0] = 0;
     ok(update_write_script(), "the script is written");
-    ok(!strcmp(g_write_path, "/nova/update.rps"),
+    ok(!strcmp(g_write_path, "/etc/novad1-update.rps"),
        "under /nova, which boot does not sweep the way it sweeps /tmp");
     ok(strstr(g_write_body, "\npkg install novad1\n") != nullptr,
        "the install is a line of its own");
@@ -1073,7 +1073,7 @@ static void test_update_script(void) {
     ok(strstr(g_write_body, "\npkg install novad1\n") <
        strstr(g_write_body, "\nreboot\n"),
        "install first, reboot after, unconditionally");
-    ok(!strcmp(update_stage_line(), "sudo safeboot script /nova/update.rps"),
+    ok(!strcmp(update_stage_line(), "sudo safeboot script /etc/novad1-update.rps"),
        "and safeboot is what stages it, with sudo (the staged script runs with it)");
 
     g_write_fails = 1;
@@ -1165,7 +1165,7 @@ static void test_update_screen(void) {
 
     // --- the restart is asked for only after the goodbye has been readable.
     for (int i = 0; i < 40; i++) s->tick(33);
-    ok(!strcmp(g_last_shell, "sudo safeboot script /nova/update.rps"),
+    ok(!strcmp(g_last_shell, "sudo safeboot script /etc/novad1-update.rps"),
        "then safeboot stages it");
 
     // Being here means safeboot did not restart, which on a device is a refusal
@@ -1230,7 +1230,7 @@ static void test_update_report(void) {
     char to[24] = "x";
     fw_reg_get("Apps.NovaD1_UpdTo", to, sizeof(to));
     ok(to[0] == 0, "and is cleared, so it is reported once");
-    ok(!strcmp(g_removed, "/nova/update.rps"), "the spent script is taken away with it");
+    ok(!strcmp(g_removed, "/etc/novad1-update.rps"), "the spent script is taken away with it");
 
     // It did not: the install was refused, the script rebooted anyway, and the
     // device is back on the version it started on.

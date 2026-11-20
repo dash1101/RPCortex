@@ -298,6 +298,12 @@ bool sudo_gate(CmdLevel base, uint8_t forms, int argc, char **argv, bool prefixe
     }
 }
 
+bool sudo_passes_to_script(const char *path, bool typed) {
+    if (typed) return true;
+    if (!path) return false;
+    return strncmp(path, "/os/", 4) == 0 || strncmp(path, "/etc/", 5) == 0;
+}
+
 int sudo_validate(void) {
     const char *who = ident_user();
     if (!who || !who[0] || !users_is_admin(who)) {

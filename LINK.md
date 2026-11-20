@@ -245,7 +245,9 @@ Proves the signed-in account's password, the way typing it at sudo's prompt
 would, and starts the grace for this session: for the next 5 minutes (each use
 starts it again) `EXEC sudo ...` runs without asking, and the file requests run
 with sudo (`PUT` may write into `/os` and `/etc`, `GET` may read the account
-file and the keys). The password is standard base64 of its UTF-8 bytes.
+file and the keys). The password is standard base64 of its UTF-8 bytes. The
+grace ends with link mode: when the session ends (`BYE`, Ctrl+C or the port
+closing), the console is back to asking.
 
 ```
 > AUTH cm9vdHB3

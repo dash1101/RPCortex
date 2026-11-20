@@ -52,6 +52,10 @@ struct LinkState {
 };
 
 static bool g_in_link;
+// AUTH was used in this link session. Its grace is the console's, so it is
+// forgotten when link mode ends: a host tool that has finished must not leave
+// the serial console able to sudo for five more minutes without a password.
+static bool g_link_authed;
 
 // --- writing frames ---------------------------------------------------------
 
@@ -234,7 +238,8 @@ static void do_auth(LinkState *st, const char *rest) {
     SudoCheck r = sudo_check_password(pw);
     for (unsigned i = 0; i < sizeof(pw); i++) ((volatile char *)pw)[i] = 0;
     switch (r) {
-    case SUDO_OK:        frame(st, "OK grace=%u", (unsigned)(SUDO_GRACE_MS / 1000u)); break;
+    case SUDO_OK:        g_link_authed = true;
+                         frame(st, "OK grace=%u", (unsigned)(SUDO_GRACE_MS / 1000u)); break;
     case SUDO_WRONG:     ERR(st, "auth", "wrong password"); break;
     case SUDO_NOPASS:    ERR(st, "auth", "%s has no password, so it cannot use sudo", session_user()); break;
     case SUDO_NOT_ADMIN: ERR(st, "perm", "%s is not an admin", session_user()); break;
@@ -433,6 +438,7 @@ static int cmd_link(int, char **) {
     // stray 0x03 arriving just after a final frame used to end link mode with
     // nothing on the wire, and the host's next request landed at the prompt.
     frame(st, "BYE");
+    if (g_link_authed) { sudo_grace_forget(task_shell()->intr_dom); g_link_authed = false; }
     g_in_link = false;
     intr_clear();
     intr_stash_clear();

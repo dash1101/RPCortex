@@ -1148,8 +1148,8 @@ void open_store(void) {
 //   3. pkg search     what the repo is offering
 //   4. update check   the same question for the firmware, read only
 //   ... the person agrees ...
-//   5. autonomy status, then write /nova/update.rps
-//   6. safeboot script /nova/update.rps    stages it and restarts
+//   5. autonomy status, then write /etc/novad1-update.rps
+//   6. safeboot script /etc/novad1-update.rps    stages it and restarts
 //   7. the maintenance boot runs the script: install, then reboot
 //   8. the device comes back on a normal boot, new version, service running
 //
@@ -1175,7 +1175,11 @@ void open_store(void) {
 // the moment the update is asked for rather than up front, because it is the
 // answer to "why not" and not a standing fact worth a row of a six-row panel.
 
-#define UPD_SCRIPT NOVA_ROOT "/update.rps"
+// In /etc, not /nova: the maintenance boot runs it with sudo, and sudo is only
+// passed on to a script where only sudo can write. One in /nova could be
+// rewritten by any account before the restart. Writing it here needs the
+// same sudo the staging below does (the D1 service has it).
+#define UPD_SCRIPT "/etc/novad1-update.rps"
 // sudo: a staged command runs with sudo at the next start, so staging one
 // needs it. The script's own lines then run with it and need no word of their
 // own.

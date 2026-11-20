@@ -117,6 +117,13 @@ is refused. Nova D1's screen normally runs as a service, so its installs, resets
 service edits work as before; started by hand, they need `sudo -v` at the console
 first.
 
+Sudo is not passed on to a script that an ordinary account could have changed. A
+service or startup item that runs `script /nova/scripts/x.rps`, or a file in `/tmp`
+or a home, runs it as its admin but without sudo, and the log says so. Sudo carries
+into a script only when it sits in `/os` or `/etc`, where only sudo can write, or
+when a person typed `sudo script ...` for that very command. Nova D1 keeps its
+self-update script in `/etc` for this reason.
+
 ## Over SSH
 
 A remote login is its own session, with its own 5 minutes. In a session with a

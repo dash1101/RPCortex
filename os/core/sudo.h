@@ -106,6 +106,13 @@ bool sudo_gate(CmdLevel base, uint8_t forms, int argc, char **argv, bool prefixe
 
 // `sudo -v` (authenticate now, and start the grace) and `sudo -k` (forget it).
 // Returns the exit status. `sudo -l` needs the command table and is the shell's.
+// Does sudo carry into a script file at `path` (absolute)? Only when someone
+// vouched for it (a person typed sudo for this very command) or when the file
+// is in /os or /etc, where only sudo can write. A service or startup item is
+// elevated by the system, and a script in /nova, /tmp or a home could have been
+// rewritten by an ordinary account since. rpscmd.cpp drops sudo otherwise.
+bool sudo_passes_to_script(const char *path, bool typed);
+
 int sudo_validate(void);
 int sudo_forget(void);
 

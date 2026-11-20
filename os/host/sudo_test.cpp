@@ -260,6 +260,18 @@ static Remote *remote(Remote *r) {
 }
 
 int main(void) {
+    // Sudo carries into a script only where only sudo can write, or when a
+    // person typed sudo for it. A service running /nova/scripts/x.rps must not
+    // hand sudo to a file any account can rewrite.
+    ck(sudo_passes_to_script("/etc/novad1-update.rps", false), "a script in /etc keeps the system's sudo");
+    ck(sudo_passes_to_script("/os/setup.rps", false), "and one in /os");
+    ck(!sudo_passes_to_script("/nova/scripts/x.rps", false), "one in /nova/scripts does not");
+    ck(!sudo_passes_to_script("/tmp/x.rps", false), "nor in /tmp");
+    ck(!sudo_passes_to_script("/home/root/x.rps", false), "nor in a home");
+    ck(!sudo_passes_to_script("/etcx/x.rps", false), "nor in a folder that only starts like /etc");
+    ck(sudo_passes_to_script("/home/root/x.rps", true), "typed sudo vouches for any file");
+    ck(!sudo_passes_to_script(nullptr, false), "no path, no sudo");
+
     task_init("console");
     task_mark_shell();
     sudo_set_reader(fake_read);

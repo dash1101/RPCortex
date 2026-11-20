@@ -863,7 +863,11 @@ static int run_one(char *seg, bool *sudo_ran) {
     if (sudo_ran) *sudo_ran = prefixed;
 
     bool saved = task_shell()->elevated;
+    bool saved_typed = task_shell()->sudo_typed;
     task_shell()->elevated = elevated;
+    // A person typed sudo for this command and it went through (sudo_gate
+    // asked, or the grace held): they vouch for what it runs. Only this.
+    task_shell()->sudo_typed = prefixed && elevated;
 
     // Phase markers around the call itself. A package command jumps into code
     // the loader put in RAM, and if THAT is what fails, no checkpoint inside the
@@ -905,6 +909,7 @@ static int run_one(char *seg, bool *sudo_ran) {
     }
 
     task_shell()->elevated = saved;
+    task_shell()->sudo_typed = saved_typed;
     return rc;
 }
 

@@ -184,7 +184,7 @@ static const char *fake_shell(const char *line) {
                "  Size       955 KB\n"
                "[@] Already up to date.\n";
     if (!strncmp(line, "safeboot", 8))
-        return "[:] Safe boot: restarting to run 'script /nova/update.rps' on its own.\n";
+        return "[:] Safe boot: restarting to run 'script /etc/novad1-update.rps' on its own.\n";
     if (!strncmp(line, "ps", 2))
         return "  PID  NAME         STATE  CORE STACK       CPU      \n"
                "  1    init         ready  0    0B/4.0K     1.6s     \n"

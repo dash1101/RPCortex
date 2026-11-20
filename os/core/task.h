@@ -459,6 +459,12 @@ struct TaskShell {
     // value at task_spawn, like the identity below, and cleared when a task
     // becomes a new login.
     bool        elevated;
+    // True for the one command a person typed `sudo` in front of and proved,
+    // on that command's own task. NOT inherited: a service or startup item is
+    // elevated by the system, and no person vouched for what it reads. A
+    // script only keeps sudo when someone vouched for it like this, or when
+    // it sits where only sudo can write (rpscmd.cpp).
+    bool        sudo_typed;
     bool        had_error;
     // Above zero while nothing on this task may stop to ask for a password: a
     // line a package runs (fw_shell_run), and link's EXEC, where the keys

@@ -11,6 +11,8 @@
 
 #include "command.h"
 #include "out.h"
+#include "sudo.h"
+#include "logring.h"
 #include "rps.h"
 #include "storage.h"
 #include "path.h"
@@ -100,9 +102,27 @@ static int cmd_script(int argc, char **argv) {
     h.run = host_run; h.prompt = host_prompt; h.exists = host_exists;
     h.print = host_print; h.poll = host_poll;
 
+    // SUDO IS NOT PASSED ON TO A SCRIPT ANYONE COULD HAVE WRITTEN. A service,
+    // a startup item or a staged command runs with sudo because the system
+    // started it from configuration only sudo can change. A script file it
+    // runs is a different matter: one in /nova/scripts, /tmp or a home can be
+    // rewritten by an ordinary account, and would then run with sudo the next
+    // time the service reached it. So unless a person typed sudo for this very
+    // command (and so vouched for the file), sudo only carries into a script in
+    // /os or /etc, where only sudo can write. The script still runs, as its
+    // admin, just without sudo, and the log says so.
+    TaskShell *ts = task_shell();
+    bool dropped = false;
+    if (ts->elevated && !sudo_passes_to_script(full, ts->sudo_typed)) {
+        ts->elevated = false;
+        dropped = true;
+        log_addf(LOG_K_WARN, "sudo: not passed on to %s, which an ordinary account can change", full);
+    }
+
     RpsResult r;
     bool ok = rps_run(text, &h, &r);
     free(text);
+    if (dropped) ts->elevated = true;
 
     if (!ok) {
         out_err("%s:%lu: %s", argv[1], (unsigned long)r.line, r.error);
