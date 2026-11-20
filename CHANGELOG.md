@@ -12,9 +12,13 @@ Summary:
 
 ### New
 
+- `tools/benchmark.py` measures a board (boot, memory, console traffic, ping, HTTPS, upload, a package install, the CPU benchmark and a set of reliability scenarios) and compares two firmwares in percent. It drives old firmware through the prompt, so it runs on v2.00-beta too.
+
 ### Improved
 
 ### Fixed
+
+- Wi-Fi power saving is applied again after every join. The setting made when the radio came up did not survive associating with a network, so `wifi power` could say off while pings averaged 90 ms; reapplying it brought them back to about 1 ms.
 
 ### Security
 

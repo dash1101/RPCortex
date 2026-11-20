@@ -986,6 +986,14 @@ static int wifi_connect(const char *ssid, const char *pw, bool quiet, bool persi
     net_apply_dns();
     join_phase("status");
     status_refresh();
+    // POWER SAVING AGAIN, AFTER THE JOIN. The setting applied when the radio
+    // came up does not survive associating with a network: measured on a Pico
+    // 2 W, 'wifi power' said off while pings averaged 91 ms (the chip was back
+    // in its power-save mode), and applying it again gave 1.3 ms. The driver
+    // does not touch it during a join, so it is the chip's own firmware; either
+    // way, every successful join (connect, autoconnect, a rejoin) ends here.
+    join_phase("wifi_pm after join");
+    wifi_power_apply(g_status.power);
     snprintf(g_status.ssid, sizeof(g_status.ssid), "%s", ssid);
     if (persist) {
         reg_set("WiFi.Active", ssid);
