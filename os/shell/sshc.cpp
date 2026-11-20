@@ -208,7 +208,10 @@ static int connect_and_run(const char *user, const char *host, uint16_t port, co
 
     // The console's keys are this command's until it ends: without the claim,
     // any task polling for Ctrl+C would take keystrokes meant for the far end.
-    InputClaim console;
+    // Only the CONSOLE needs claiming: run inside a remote session, the keys come
+    // from that session's own ring, and claiming the console from there would
+    // stop the person at the serial port from interrupting their own commands.
+    bool claimed = !task_shell()->term && intr_input_claim();
     bool shown_hint = false;
     uint8_t keys[64];
     uint32_t nkeys = 0;
@@ -259,6 +262,7 @@ static int connect_and_run(const char *user, const char *host, uint16_t port, co
     // Let the last packet (a DISCONNECT) leave before the socket goes.
     for (int i = 0; i < 50 && !lost && !net_tcp_drained(sock); i++) task_sleep_ms(10);
     net_pkg_tcp_close(sock);
+    if (claimed) intr_input_release();
 
     int rc = c->k.have_status ? c->k.exit_status : 255;
     if (c->k.failed[0])      out_err("%s: %s", host, c->k.failed);
