@@ -17,6 +17,7 @@ Summary:
 - Downloads to a file are about three times faster: 866 KB over HTTPS in 16.5 s, where it took 54.8 s, which is now as fast as the network delivers it. Every packet written used to walk the whole filesystem twice to check the file still fitted; it is measured when the file opens and every 256 KB, and estimated in between. A download that does not fit is still refused before the disk is full, and leaves no partial file.
 ### Fixed
 
+- Pinging the device's own address, or 127.0.0.1, timed out. Packets to itself go through a loopback now, as on a computer, and answer in about half a millisecond.
 - A command sent by a host tool ran close to the end of the console's stack: an HTTPS fetch or a package install through `rpc` peaked at 7.3 KB of 8 KB. The shell keeps its alias and redirect buffers off the stack while a command runs, and the fetch keeps its 5 KB of working state on the heap, so the same commands now peak at 4.1 KB. A redirect to a path too long to hold is an error instead of a write to the wrong place.
 ### Security
 

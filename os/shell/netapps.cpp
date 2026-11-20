@@ -37,6 +37,7 @@
 #include "lwip/dns.h"
 #include "lwip/udp.h"
 #include "lwip/raw.h"
+#include "lwip/netif.h"
 #include "lwip/icmp.h"
 #include "lwip/inet_chksum.h"
 #include "lwip/ip4_addr.h"
@@ -238,6 +239,31 @@ static void ping_close(PingSlot *s) {
     s->owner = 0;
 }
 
+// Is this the device itself? Then the echo goes through lwIP's loopback, which
+// delivers only when polled. Under a NetOwn.
+static bool ping_is_self(const ip_addr_t *a) {
+    if (ip_addr_isloopback(a)) return true;
+    LwipLock lk;
+    return netif_default && ip_addr_eq(a, &netif_default->ip_addr);
+}
+
+// The wait for a reply. For the device's own address it also hands lwIP the
+// looped-back packets (the request, then the reply), a millisecond at a time.
+static bool ping_wait(PingSlot *s, bool self, uint32_t ms) {
+    if (!self) return wait_for(s->got, ms);
+    absolute_time_t deadline = make_timeout_time_ms(ms);
+    while (!s->got) {
+        if (absolute_time_diff_us(get_absolute_time(), deadline) < 0) return false;
+        if (intr_check()) return false;
+        {
+            NetOwn own;
+            if (own.ok && ping_live(s)) { LwipLock lk; netif_poll_all(); }
+        }
+        if (!s->got) task_sleep_ms(1);
+    }
+    return true;
+}
+
 static PingSlot *ping_start(const ip_addr_t *target) {
     NetOwn own;
     if (!own.ok) return nullptr;
@@ -260,8 +286,10 @@ int net_pkg_ping(const char *host, uint32_t timeout_ms) {
     PingSlot *s = ping_start(&target);
     if (!s) return -1;
     int rc = -1;
+    bool self;
+    { NetOwn own; self = own.ok && ping_is_self(&target); }
     if (ping_send(s, 1) == 0)
-        rc = wait_for(s->got, timeout_ms ? timeout_ms : 2000) ? (int)s->rtt_us : -2;
+        rc = ping_wait(s, self, timeout_ms ? timeout_ms : 2000) ? (int)s->rtt_us : -2;
     ping_close(s);
     return rc;
 }
@@ -286,6 +314,8 @@ static int cmd_ping(int argc, char **argv) {
     }
     PingSlot *s = ping_start(&target);
     if (!s) { out_err("Could not open a raw socket (four pings may already be running)."); return 1; }
+    bool self;
+    { NetOwn own; self = own.ok && ping_is_self(&target); }
 
     char shown[IPADDR_STRLEN_MAX];
     ipaddr_ntoa_r(&target, shown, sizeof(shown));
@@ -299,7 +329,7 @@ static int cmd_ping(int argc, char **argv) {
         if (e != 0) { out_warn("Send failed (%d).", e); continue; }
         sent++;
 
-        if (wait_for(s->got, 2000)) {
+        if (ping_wait(s, self, 2000)) {
             uint32_t us = s->rtt_us;
             recvd++; total_us += us;
             if (us < best)  best  = us;

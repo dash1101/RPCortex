@@ -99,4 +99,12 @@
 #define LWIP_ALTCP_TLS              1
 #define LWIP_ALTCP_TLS_MBEDTLS      1
 
+// Packets to the device's own address (and 127.0.0.1) are looped back instead
+// of going nowhere, so `ping <own address>` answers as it does on a computer.
+// Nothing here is a thread, so lwIP delivers looped packets only when
+// netif_poll_all() is called; ping does that while it waits on such a target.
+#define LWIP_NETIF_LOOPBACK         1
+#define LWIP_HAVE_LOOPIF            1
+#define LWIP_LOOPBACK_MAX_PBUFS     8
+
 #endif  // RPC_LWIPOPTS_H
