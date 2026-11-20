@@ -2,6 +2,7 @@
 
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include "interrupt.h"
 
 // --- pure buffer operations -------------------------------------------------
@@ -440,12 +441,22 @@ uint32_t line_edit(const LineEdit *le, char *buf, uint32_t cap) {
             memcpy(prefix, buf + ws, plen);
             prefix[plen] = 0;
 
-            static char  store[COMP_MAX][COMP_LEN];
+            // The candidates, on the heap for the length of one Tab. 1.5 KB is
+            // too much for the shell stack under a completion callback that
+            // walks the filesystem, and it was static RAM held for the life of
+            // the device for a key that is pressed now and then. No room means
+            // the Tab does nothing, which is what a Tab with no match does.
+            struct Store { char s[COMP_MAX][COMP_LEN]; };
+            struct Owned {
+                Store *p;
+                ~Owned() { free(p); }
+            } store{(Store *)malloc(sizeof(Store))};
+            if (!store.p) continue;
             const char  *cands[COMP_MAX];
             uint32_t n = 0;
             while (n < COMP_MAX &&
-                   le->complete(le->complete_ctx, prefix, ws, n, store[n], COMP_LEN)) {
-                cands[n] = store[n];
+                   le->complete(le->complete_ctx, prefix, ws, n, store.p->s[n], COMP_LEN)) {
+                cands[n] = store.p->s[n];
                 n++;
             }
 

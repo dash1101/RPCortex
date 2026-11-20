@@ -481,6 +481,44 @@ static void t_ghost(void) {
     ck(strlen(tiny) < sizeof(tiny), "a small destination is respected");
 }
 
+// --- a full candidate store -------------------------------------------------
+//
+// The candidates live in a heap block for the length of one Tab. Every slot is
+// filled here to the last byte the editor offers, and more candidates are on
+// offer than it keeps, so a slot sized or indexed wrongly is an ASan report
+// rather than a quietly corrupted line.
+static uint32_t g_many_asks, g_many_cap;
+
+static bool many_complete(void *, const char *prefix, uint32_t word_start,
+                          uint32_t index, char *out, uint32_t cap) {
+    g_many_asks++;
+    g_many_cap = cap;
+    if (word_start != 0 || strcmp(prefix, "x") != 0 || index >= 40) return false;
+    uint32_t n = (uint32_t)snprintf(out, cap, "x%02u", (unsigned)index);
+    while (n + 1 < cap) out[n++] = 'p';       // as long as a candidate can be
+    out[n] = 0;
+    return true;
+}
+
+static void t_many(void) {
+    char b[64];
+    Fake f{"x\t\r", 0, "", 0};
+    LineEdit le{};
+    le.io.getch = fake_getch;
+    le.io.putch = fake_putch;
+    le.io.ctx   = &f;
+    le.complete = many_complete;
+    le.prompt   = "$ ";
+    g_many_asks = 0;
+    line_edit(&le, b, sizeof(b));
+    // x00…x15 share "x" then "0" or "1", so the word becomes the common "x".
+    eq(b, "x", "a full store of long candidates completes to their common prefix");
+    ck(g_many_cap > 64, "the editor offers a slot longer than this line");
+    // Sixteen kept, and the editor stops asking there: the ghost suggestion asks
+    // for two more on each redraw, so the Tab's share is bounded, not exact.
+    ck(g_many_asks >= 16 && g_many_asks < 40, "the editor stops at its store, not at the source");
+}
+
 int main(void) {
     t_words();
     t_edit();
@@ -489,6 +527,7 @@ int main(void) {
     t_loop();
     t_repaint();
     t_ghost();
+    t_many();
     printf("  lineedit: %d checks, %d failed\n", checks, fails);
     return fails ? 1 : 0;
 }
