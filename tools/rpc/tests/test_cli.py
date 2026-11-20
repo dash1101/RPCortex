@@ -468,8 +468,10 @@ class TestPortsAndFlash(CliCase):
                 mock.patch.object(flash, "find_drives", lambda: drives if state["reset"] or "--no-reset" in argv else []), \
                 mock.patch.object(sys, "stdout", out), mock.patch.object(sys, "stderr", err):
             if which:
-                with mock.patch("shutil.which", which), mock.patch("subprocess.call",
-                                                                   lambda cmd: calls.append(cmd) or 0):
+                with mock.patch("shutil.which", which), mock.patch.object(flash, "_quiet",
+                                                                   lambda cmd: calls.append(cmd) or 0), \
+                        mock.patch("subprocess.run", side_effect=AssertionError("a test must never run a real command")), \
+                        mock.patch("subprocess.call", side_effect=AssertionError("a test must never run a real command")):
                     rc = support.cli.main(argv)
             else:
                 rc = support.cli.main(argv)

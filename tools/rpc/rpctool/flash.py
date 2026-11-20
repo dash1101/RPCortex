@@ -168,11 +168,23 @@ def copy_uf2(data, drive, name="firmware.uf2"):
     return dest
 
 
+def _quiet(cmd):
+    """Run a command, keeping its output unless it fails. picotool redraws a
+    progress bar with carriage returns, which a log or a pipe shows as one long
+    line; on success none of it is worth seeing."""
+    r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    if r.returncode != 0:
+        text = r.stdout.decode("utf-8", "replace")
+        lines = [ln.split("\r")[-1] for ln in text.splitlines()]
+        sys.stderr.write("\n".join(lines[-20:]) + "\n")
+    return r.returncode
+
+
 def picotool_load(uf2_path, runner=None, which=None):
     """`picotool load <uf2>` then `picotool reboot`. False when picotool is not
     installed; raises when it is and fails."""
     which = which or shutil.which
-    runner = runner or subprocess.call
+    runner = runner or _quiet
     tool = which("picotool")
     if not tool:
         return False
