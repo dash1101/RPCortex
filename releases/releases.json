@@ -2,6 +2,131 @@
   "schema": 1,
   "releases": [
     {
+      "tag": "v2.04-beta",
+      "display": "v2.04-beta",
+      "version": "2.04",
+      "build": 622,
+      "commit": "a07800257f25fd83528878a7405ae7c1aa8fb4a1",
+      "codename": "Vela II",
+      "date": "2026-11-20",
+      "prerelease": true,
+      "title": "RPCortex v2.04-beta (build 622)",
+      "summary": "sudo, SSH with Ed25519 keys and per-session history, and fixes for SSH sessions losing the network, a crash on wifi off, and downloads that blocked everything else.",
+      "notes": {
+        "new": [
+          "An SSH session keeps its own command history: up-arrow brings back that session's lines, never another person's, and `history` lists the terminal it is typed at.",
+          "SSH accepts Ed25519 keys, which is what `ssh-keygen` makes unless told otherwise, so a computer's usual key logs in. A login with one takes about 2 seconds on a Pico 2 W, against 1.8 with ECDSA. The device's own `ssh` client also accepts a server's Ed25519 host key.",
+          "`sudo` works the way it does on a computer. `sudo <command>` asks for the account's own password and runs that one command with sudo; the password counts for 5 minutes in that session, each use starting the time again. `sudo -v` asks now, `sudo -k` forgets it, and `sudo -l` lists what needs it. See `PERMISSIONS.md`.",
+          "Link protocol 2 adds `AUTH`, so a host tool can give the password for sudo, and `ERR sudo` when a request needs it. `rpc` and the browser tool ask for the password once, the first time the device says so, and try again (`rpc --sudo` asks first; `$RPC_PASSWORD` is used if set). `tools/benchmark.py` and `tools/devsmoke.py` take `--password-file`, and skip the package steps and say so without one."
+        ],
+        "improved": [
+          "The Pico W and Pico 2 W keep their radio firmware compressed and unpack it on its way to the chip, which frees 76 KB of flash on both. A Pico W had 7 KB of its firmware slot left and now has 83 KB; a Pico 2 W goes from 105 KB to 181 KB. Every 2 KB of the firmware is checked before it is sent, so a damaged copy stops the radio from starting, with the reason in the log, instead of reaching the chip. Starting the radio borrows about 3.3 KB of memory while it unpacks and gives it back. Tested on a computer against the original firmware; not yet run on a board, so how much longer the radio takes to start is not measured yet."
+        ],
+        "fixed": [
+          "`ls -l`, `ls -la` and `ls -lh` took the flag for a folder name. The listing is already the long one, so those flags are accepted; an unknown one is an error.",
+          "A command run over SSH without a terminal (`ssh dev ls > list.txt`) got the colour codes meant for a screen. They are left out when no pty was asked for.",
+          "A login straight after another session ended could be turned away as \"two sessions already\". It now waits the moment the old session takes to finish: 30 logins in a row beside an open session all got in.",
+          "`wget`, `curl`, `pkg` and `update` could not follow a redirect to a long URL: GitHub's release downloads go to a signed address of about 940 characters, which was dropped, so the 302 read as \"server refused\". A Location of up to 1 KB is followed now (a longer one is refused, never cut short), and the fetch keeps that state on the heap, not the stack. A download stopped with Ctrl+C says \"cancelled\" instead of \"connection lost\".",
+          "After a restart, network commands in an SSH session failed with \"Could not reach the wireless chip from this task\": ping, curl and nslookup alike. A task moving to the radio's core was handed straight back to the core it was leaving whenever that core had nothing else to run, so the move never happened. The scheduler now takes it off that core.",
+          "`wifi off` with the SSH server on restarted v2.03-beta (a hard fault in the server, then the watchdog). Every connection is now closed before the radio goes down, and the SSH server listens again after `wifi connect`.",
+          "`ping` held the network for its whole run and paused between pings without letting anything else run on its core, and a download held the network from its first byte to its last. Over SSH that meant ping's lines arrived all at once at the end, and a Ctrl+C typed during a download could not reach the device until it finished. They now hold the network only while they use it: a download in one session and a ping in another both run, line by line, and Ctrl+C stops a download in under a second. Name lookups no longer hold it while they wait either.",
+          "Two pings at once (the console and an SSH session) could read each other's replies. Each has its own now.",
+          "`~` did not mean the home directory: `cd ~` and `ls ~/notes` looked for a file called `~`. It is expanded as a shell does (`~` and `~/...`, not inside quotes), Tab completes after `~/`, and a bare `cd` goes home instead of to `/`.",
+          "`factoryreset` said that reflashing the firmware clears the accounts. It does not; the files are kept. The way back from a forgotten password is a maintenance boot (`safeboot`), where sudo at the console does not ask, and `PERMISSIONS.md` says what to do when nobody can sign in at all.",
+          "`download <file>` asked whether the account could change the file rather than read it, so an ordinary account could not take a copy of a file it can `cat`."
+        ],
+        "security": [
+          "Sudo is not passed on to a script an ordinary account could have changed. A service, startup item or staged command that runs a script from `/nova/scripts`, `/tmp` or a home runs it without sudo (and logs it); only scripts in `/os` or `/etc`, or one a person ran with `sudo script`, keep it. Nova D1's self-update script moved to `/etc` for this. A password given to a host tool (`AUTH`) now stops counting when link mode ends, instead of leaving the console able to sudo for five more minutes.",
+          "Commands that change the system need `sudo` and the admin's own password, root's included: installing, removing and upgrading packages (and `stock`), accounts (`rmuser`, `usermod`, `mkacct --admin`, another user's `passwd`), firmware (`update install`, `from-file`, `rollback --now`), what starts at boot (`startup`, `service`, `task` changes), `ssh server on` and `off`, `autonomy on` and `off`, `regreset`, `factoryreset`, `failboot`, a command staged with `safeboot`, and `reg set` of the settings that decide who gets in. Being signed in as an admin was enough before, and autonomy signs root in with no password at all. Reading, Wi-Fi, a restart and the rest of the everyday commands are as they were. The table is in `PERMISSIONS.md`.",
+          "Changing anything in `/os` or `/etc` needs sudo for an admin too, from a command, a package or a host tool. The OS's own writes (settings, accounts, an install) are unaffected.",
+          "Reading the account file (its password hashes can be guessed offline), the device key that seals saved Wi-Fi passwords, and the SSH host key needs sudo for an admin too. Otherwise being signed in by autonomy, or over SSH with a key, was a way to the very password sudo asks for.",
+          "sudo never asks for a password where nobody can answer: a background job, a package, the host tools' `EXEC`, or an SSH command without a terminal (`ssh dev 'sudo ...'`, which says to use `ssh -t`). They use the session's 5 minutes, or are refused with one line saying to run `sudo -v` first. Startup items, services and scheduled tasks run with sudo, since only sudo could have put them there.",
+          "A package run by an ordinary account could set `System.SafeBoot` and `System.SafeBootCmd`, and the next restart would run any command it liked as the console's user; it could also change where `pkg install` fetches from. Both are closed, and an admin's package needs sudo for those and the other settings that decide who gets in.",
+          "`put`, and a package's `fw_mkdir`, did not ask whether the account may write where they were pointed. They ask now, like every other write.",
+          "On the Pico and Pico W, where a package runs with the OS's own privileges, `run` of a package file needs sudo. Installed packages are unaffected.",
+          "An ordinary account can change its own password with `passwd`, as the command always meant to allow; it needed an admin before. An account with no password still cannot give itself one."
+        ],
+        "changed": [
+          "`pkg install`, `ssh server on` and the other commands in `PERMISSIONS.md` now need `sudo` in front; without it they say so and do nothing. Scripts, startup items and host-tool commands that ran them need the word added (startup items, services and scheduled tasks already run with sudo).",
+          "A password given to sudo, or to the commands that asked for one before (`mkacct`, `autonomy`), counts for 5 minutes instead of 2, and for that session only: the console and each SSH login have their own.",
+          "`autonomy on` asks for the password before the warning rather than after, since `sudo` asks first.",
+          "Nova D1's screen, run as a service, installs packages, resets settings and edits services as before. Started by hand it needs `sudo -v` at the console first. `novad1 setup` and `novad1 selfupdate` are `sudo novad1 setup` and `sudo novad1 selfupdate` now, and say so when run without it.",
+          "The backup package keeps its snapshots in `/etc/backups`, so `backup create` and `backup restore` need `sudo` in front.",
+          "sudo costs about 5.8 KB of flash on every board and 140 bytes of memory. With the radio firmware compressed, the Pico W has 77 KB of its slot left, the Pico 2 W 178 KB and the Pico 64 KB."
+        ],
+        "issues": [
+          "sudo has been run on a Pico 2 W at the console, through `rpc` and over SSH with and without a terminal; not yet on a Pico, a Pico W or a Pico 2, and the emulator suites that now run `sudo -v` first have not been run."
+        ]
+      },
+      "assets": [
+        {
+          "board": "pico2_w",
+          "kind": "bin",
+          "file": "rpcortex-v2.04-beta-pico2_w.bin",
+          "size": 866284,
+          "sha256": "85a7e8ac9aeedb4704b198af9119cad59e4558dbcfc9bb851f86678bf4217da7",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.04-beta/rpcortex-v2.04-beta-pico2_w.bin"
+        },
+        {
+          "board": "pico2_w",
+          "kind": "uf2",
+          "file": "rpcortex-v2.04-beta-pico2_w.uf2",
+          "size": 1733120,
+          "sha256": "226edf0409a55e2f4ed24cc3bcc4b3f0e87653d0cfdc94d54ba1693e3e1b409e",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.04-beta/rpcortex-v2.04-beta-pico2_w.uf2"
+        },
+        {
+          "board": "pico_w",
+          "kind": "bin",
+          "file": "rpcortex-v2.04-beta-pico_w.bin",
+          "size": 773196,
+          "sha256": "9bcebab093bd1ece1c5d92c52ab2b52c07cbbc27a6706118aa62f372d5dc3f23",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.04-beta/rpcortex-v2.04-beta-pico_w.bin"
+        },
+        {
+          "board": "pico_w",
+          "kind": "uf2",
+          "file": "rpcortex-v2.04-beta-pico_w.uf2",
+          "size": 1546752,
+          "sha256": "91ad2953a10652869b582d316b73ad53207424ddbfcb737304bb06588a4f24f6",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.04-beta/rpcortex-v2.04-beta-pico_w.uf2"
+        },
+        {
+          "board": "pico2",
+          "kind": "bin",
+          "file": "rpcortex-v2.04-beta-pico2.bin",
+          "size": 388476,
+          "sha256": "357a0a18b45e73343f5ebdae3a1512fe7f8781175f1f5940c7d7f72646f1a2ae",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.04-beta/rpcortex-v2.04-beta-pico2.bin"
+        },
+        {
+          "board": "pico2",
+          "kind": "uf2",
+          "file": "rpcortex-v2.04-beta-pico2.uf2",
+          "size": 777728,
+          "sha256": "8ef29de22a96ac5f93c6ba205a6eb7bedbdfa817dfe7817cd3b97d7492a732c2",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.04-beta/rpcortex-v2.04-beta-pico2.uf2"
+        },
+        {
+          "board": "pico",
+          "kind": "bin",
+          "file": "rpcortex-v2.04-beta-pico.bin",
+          "size": 327544,
+          "sha256": "d60557d592d7078136a868fc621021cd30f0345c5e553657a7e4121390788830",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.04-beta/rpcortex-v2.04-beta-pico.bin"
+        },
+        {
+          "board": "pico",
+          "kind": "uf2",
+          "file": "rpcortex-v2.04-beta-pico.uf2",
+          "size": 655360,
+          "sha256": "e12c604d7110b1f569a99a65b5206e21453b42b4c0cfae3e9ce6cb14653d01b2",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.04-beta/rpcortex-v2.04-beta-pico.uf2"
+        }
+      ],
+      "url": "https://github.com/dash1101/RPCortex/releases/tag/v2.04-beta"
+    },
+    {
       "tag": "v2.03-beta",
       "display": "v2.03-beta",
       "version": "2.03",
