@@ -771,8 +771,9 @@ static void do_reset(void *) {
     // It clears the registry and leaves files and accounts alone, which is the
     // honest scope of a settings reset and is what this row claims to be.
     char out[112];
-    if (fw_shell_run("regreset --yes", out, sizeof(out)) != 0) {
-        say_later("Reset", out[0] ? out : "Refused. Resetting the registry needs an admin session.");
+    if (fw_shell_run("sudo regreset --yes", out, sizeof(out)) != 0) {
+        say_later("Reset", out[0] ? out : "Refused. Resetting the registry needs sudo: "
+                                          "run `sudo -v` at the console first.");
         return;
     }
     fw_reboot();

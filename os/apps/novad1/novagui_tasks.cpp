@@ -162,7 +162,7 @@ static int remove_task(void *arg) {
             g_tasks_rm = RM_MOVED;
         } else {
             char line[32];
-            snprintf(line, sizeof(line), "service remove %d", at);
+            snprintf(line, sizeof(line), "sudo service remove %d", at);
             g_tasks_out[0] = 0;
             g_tasks_rc = fw_shell_run(line, g_tasks_out, TASKS_OUT_MAX);
             g_tasks_rm = g_tasks_rc ? RM_REFUSED : RM_DONE;
@@ -1147,7 +1147,8 @@ private:
             default:
                 if (!first_complaint(g_tasks_out, g_tasks_reply, sizeof(g_tasks_reply)))
                     nova::copy(g_tasks_reply, sizeof(g_tasks_reply),
-                               "It was refused. Editing services needs an admin session.");
+                               "It was refused. Editing services needs sudo: "
+                               "run `sudo -v` at the console first.");
                 break;
         }
     }

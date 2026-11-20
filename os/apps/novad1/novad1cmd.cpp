@@ -125,7 +125,7 @@ int setup(void) {
         int found = nova::listing_index_of(out, "novad1");
         if (found < 0) break;
         char cmd[32];
-        snprintf(cmd, sizeof(cmd), "startup remove %d", found);
+        snprintf(cmd, sizeof(cmd), "sudo startup remove %d", found);
         if (fw_shell_run(cmd, nullptr, 0) != 0) break;   // stop rather than spin
         migrated++;
     }
@@ -171,7 +171,7 @@ int setup(void) {
         if (found < 0) break;
 
         char cmd[32];
-        snprintf(cmd, sizeof(cmd), "service remove %d", found);
+        snprintf(cmd, sizeof(cmd), "sudo service remove %d", found);
         if (fw_shell_run(cmd, nullptr, 0) != 0) break;   // stop rather than spin
         removed++;
     }
@@ -181,15 +181,16 @@ int setup(void) {
     // `service add <command>` — the whole rest of the line IS the command, with
     // no name in front of it. Passing one made the service "novad1 novad1 gui
     // --bg", which is not a command and failed at every boot saying so.
-    int rc = fw_shell_run("service add novad1 gui --bg", out, sizeof(out));
+    int rc = fw_shell_run("sudo service add novad1 gui --bg", out, sizeof(out));
     if (rc == 0) {
         fw_printf("  service    registered — the screen starts at every boot\n");
     } else {
         fw_printf("  service    could not register\n");
         if (out[0]) fw_printf("             %s", out);
-        // `service` is admin-only, and fw_shell_run runs as whoever is logged
-        // in. That is the usual reason and it is not obvious from the message.
-        fw_printf("             (adding a service needs an admin session)\n");
+        // Adding a service needs sudo, and a package's line cannot ask for the
+        // password. That is the usual reason and it is not obvious from the
+        // message.
+        fw_printf("             (adding a service needs sudo: run `sudo novad1 setup`)\n");
     }
 
     fw_printf("\nReboot, or `novad1 gui` to start it now.\n");
@@ -421,7 +422,7 @@ int service(int argc, char **argv) {
         if (nova::listing_index_of(st, "novad1") >= 0) {
             fw_printf("\nThis board still starts the screen from the old startup list.\n");
             fw_printf("An upgrade with `pkg install` will refuse to stand it aside.\n");
-            fw_printf("Run `novad1 setup` to migrate it to a service.\n");
+            fw_printf("Run `sudo novad1 setup` to migrate it to a service.\n");
         }
         return 0;
     }
@@ -875,7 +876,7 @@ int selfupdate(void) {
     fw_printf("%s", out);
 
     if (!nova::gui::started()) {
-        int rc = fw_shell_run("pkg install novad1", out, sizeof(out));
+        int rc = fw_shell_run("sudo pkg install novad1", out, sizeof(out));
         fw_printf("%s", out);
         if (rc == 0) fw_printf("\nStart the screen when you are ready: `d1 service start`.\n");
         return rc;
@@ -895,7 +896,7 @@ int selfupdate(void) {
         fw_printf("or the staged install never runs. `autonomy status` says:\n\n%s\n", sts);
         fw_printf("Either stop the screen and install from here:\n");
         fw_printf("  novad1 service stop\n");
-        fw_printf("  pkg install novad1\n");
+        fw_printf("  sudo pkg install novad1\n");
         fw_printf("  novad1 service start\n\n");
         fw_printf("or set this account as the autonomous one with `autonomy on`.\n");
         return 1;
@@ -907,8 +908,14 @@ int selfupdate(void) {
     }
 
     fw_printf("Restarting with nothing loaded, installing there, and coming back.\n");
-    // Does not return: safeboot restarts from inside the call.
-    return fw_shell_run(nova::screens::update_stage_line(), out, sizeof(out));
+    // Does not return when it works: safeboot restarts from inside the call.
+    // When it comes back, it was refused (staging needs sudo, and a package's
+    // line cannot ask for the password), and the reason is what was printed.
+    out[0] = 0;
+    int rc = fw_shell_run(nova::screens::update_stage_line(), out, sizeof(out));
+    if (out[0]) fw_printf("%s", out);
+    if (rc != 0) fw_printf("Run it as `sudo novad1 selfupdate`, or `sudo -v` first.\n");
+    return rc;
 }
 
 }  // namespace cmd

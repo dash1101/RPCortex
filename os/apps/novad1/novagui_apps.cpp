@@ -1034,7 +1034,10 @@ private:
             case STEP_INSTALLED: return "pkg list";
             case STEP_UPDATE:    return "pkg update";
             case STEP_INSTALL:
-                snprintf(line, sizeof(line), "pkg install %s", name_);
+                // sudo: installing changes the system. As a service the
+                // screen already has it; started by hand it uses the
+                // session's grace, or the OS says to run `sudo -v`.
+                snprintf(line, sizeof(line), "sudo pkg install %s", name_);
                 return line;
             default:             return "pkg search";
         }
@@ -1173,7 +1176,10 @@ void open_store(void) {
 // answer to "why not" and not a standing fact worth a row of a six-row panel.
 
 #define UPD_SCRIPT NOVA_ROOT "/update.rps"
-#define UPD_STAGE  "safeboot script " UPD_SCRIPT
+// sudo: a staged command runs with sudo at the next start, so staging one
+// needs it. The script's own lines then run with it and need no word of their
+// own.
+#define UPD_STAGE  "sudo safeboot script " UPD_SCRIPT
 
 // How long the goodbye stays up before the restart is asked for. The panel is
 // the only thing this person is looking at, and a device that goes dark without

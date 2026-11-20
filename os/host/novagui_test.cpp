@@ -1073,8 +1073,8 @@ static void test_update_script(void) {
     ok(strstr(g_write_body, "\npkg install novad1\n") <
        strstr(g_write_body, "\nreboot\n"),
        "install first, reboot after, unconditionally");
-    ok(!strcmp(update_stage_line(), "safeboot script /nova/update.rps"),
-       "and safeboot is what stages it");
+    ok(!strcmp(update_stage_line(), "sudo safeboot script /nova/update.rps"),
+       "and safeboot is what stages it, with sudo (the staged script runs with it)");
 
     g_write_fails = 1;
     ok(!update_write_script(), "a filesystem that will not take it says so");
@@ -1165,7 +1165,7 @@ static void test_update_screen(void) {
 
     // --- the restart is asked for only after the goodbye has been readable.
     for (int i = 0; i < 40; i++) s->tick(33);
-    ok(!strcmp(g_last_shell, "safeboot script /nova/update.rps"),
+    ok(!strcmp(g_last_shell, "sudo safeboot script /nova/update.rps"),
        "then safeboot stages it");
 
     // Being here means safeboot did not restart, which on a device is a refusal

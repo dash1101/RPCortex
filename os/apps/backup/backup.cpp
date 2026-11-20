@@ -140,6 +140,9 @@ static int bk_ensure_dir(const char *path) {
     if (fw_file_exists(path)) return 1;
     if (fw_mkdir(path)) return 1;
     fw_printf("Could not create %s.\n", path);
+    // The usual reason: snapshots live in /etc with the system's own files,
+    // and changing those needs sudo.
+    fw_printf("Snapshots are kept with the system's files: try it with sudo in front.\n");
     return 0;
 }
 

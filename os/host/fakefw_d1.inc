@@ -391,11 +391,17 @@ int fw_http_download(const char *, const char *) { return -1; }
 
 int fw_shell_run(const char *line, char *out, uint32_t cap) {
     snprintf(g_last_shell, sizeof(g_last_shell), "%s", line ? line : "");
+    // `sudo X` runs X, as it does on a device where the screen already has
+    // sudo (a service) or the session's grace holds. What is recorded above is
+    // the line as sent, so a test can check the word is there.
+    const char *sent = line;
+    if (line && !strncmp(line, "sudo ", 5)) line += 5;
     if (g_jobs_live && line &&
         (!strncmp(line, "startup", 7) || !strncmp(line, "service", 7)))
         return jobs_shell(line, out, cap);
     if (!out || !cap) return 0;
     snprintf(out, cap, "%s", line ? fake_shell(line) : "");
+    snprintf(g_last_shell, sizeof(g_last_shell), "%s", sent ? sent : "");
     return g_shell_rc;
 }
 
