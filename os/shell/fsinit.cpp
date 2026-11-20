@@ -104,10 +104,14 @@ void fs_layout_check(bool verbose) {
     // used to remove files from inside a walk of the directory, skip
     // subdirectories entirely (so they stayed for ever) and copy each name
     // into 96 bytes.
+    //
+    // At boot only. `fscheck --fix` runs this same check from a live shell,
+    // where a background job may be writing in /tmp at that moment.
     bool has_any = false;
-    storage_walk("/tmp", [](void *ctx, const char *, bool, uint32_t) {
-        *(bool *)ctx = true;
-    }, &has_any);
+    if (!verbose)
+        storage_walk("/tmp", [](void *ctx, const char *, bool, uint32_t) {
+            *(bool *)ctx = true;
+        }, &has_any);
     if (has_any) {
         fs_rmtree("/tmp", 0);
         storage_mkdir("/tmp");
