@@ -56,6 +56,8 @@ Summary: The boot recovery ladder now works on hardware, and releases are number
 - `link`: a framed mode on the console for programs on a computer (LINK.md). Run a command and get its output and exit status, send and fetch files with a SHA-256 check (about 19 KB/s up, 74 KB/s down on a Pico 2 W), list directories. The command-line and browser tools are built on it.
 - `;`, `&&` and `||` work everywhere a command line is run, not only at the prompt. In scripts, `bg`, services, scheduled tasks and from packages, `a ; b` used to run as one command called `a`.
 - Packages are 7 to 19% smaller on disk and to download (Nova D1 440 KB -> 365 KB). The build drops symbol names the loader never reads; the full object is kept beside each one as `<name>.dbg` for debugging.
+- A package command's output can be piped, redirected and captured. `greet | wc` used to count nothing, and output from a package run by another package or by a host tool went to the console instead.
+- Loading a large package reads far less of its file (a traced Nova D1 load and install went from 77 MB to 10 MB of reads). On a Pico 2 W an install is about 10% faster, since erasing and writing flash is most of it; the copy-to-RAM path used on RP2040 gains the most.
 - `df` no longer reports a failed measurement as a full disk. When littlefs cannot say how full it is, `df` says so and suggests `fscheck`, rather than printing "100% used" with no warning beside it.
 - Two tasks could be inside I2C transfers on the same block at once (the display flush and a PN532 exchange), which the SDK's transfer calls do not allow. Every transfer, and every change of bus speed, now takes a per-block lock.
 

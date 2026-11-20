@@ -29,6 +29,10 @@
 // read per 256 patches — small enough to be free, large enough that the read
 // count never matters.
 #define REL_CHUNK 256
+// Entries read around a symbol looked up out of order. A relocation's symbols
+// are scattered across a large package's table, so a full REL_CHUNK refill per
+// lookup read the table over and over (66 MB for one Nova D1 load, traced).
+#define SYM_NEAR  16
 #include <stdlib.h>
 
 // ------------------------------------------------------------- allocation
@@ -804,8 +808,13 @@ LoadResult app_load(const AppSource &src, LoadedApp *out) {
     auto sym_at = [&](uint32_t idx) -> const Elf32_Sym & {
         if (idx >= nsyms) { sym_io = false; return sym_zero; }
         if (idx < symwin_first || idx >= symwin_first + symwin_have) {
-            uint32_t base = idx - (idx % REL_CHUNK);
-            uint32_t cnt  = nsyms - base < REL_CHUNK ? nsyms - base : REL_CHUNK;
+            // A walk in order (the app_main scan) refills the whole window; a
+            // jump elsewhere reads only the 16 entries around the one wanted.
+            // Refilling 4 KB for one 16-byte symbol was most of what a large
+            // package's load read (SYM_NEAR below).
+            uint32_t span = (idx == symwin_first + symwin_have) ? REL_CHUNK : SYM_NEAR;
+            uint32_t base = idx - (idx % span);
+            uint32_t cnt  = nsyms - base < span ? nsyms - base : span;
             if (!read_exact(src, symtab_off + base * sizeof(Elf32_Sym),
                             g_symwin, cnt * sizeof(Elf32_Sym))) {
                 sym_io = false;
@@ -897,6 +906,26 @@ LoadResult app_load(const AppSource &src, LoadedApp *out) {
         return LOAD_OK;
     };
 
+    // RESOLUTIONS ARE MEMOISED, as the slot installer's are. The window above
+    // assumes a section's relocations name clustered symbols; with a package
+    // folded into one .text by ld -r they do not, and every lookup outside the
+    // window refilled all 4 KB of it. A host trace of Nova D1's load read 66 MB
+    // of symbol table for a 365 KB file. 256 direct-mapped entries (3 KB, freed
+    // when the load ends, and skipped if the heap cannot spare them) answer most
+    // lookups without touching the table. Safe because resolving an index is
+    // deterministic: the same symbol, the same address, and veneer_emit dedups by
+    // ABI index, so a hit never skips an allocation that was needed.
+    struct LoadMemo { uint32_t idx, addr; uint8_t func, valid; };
+    struct MemoFree { LoadMemo *p; ~MemoFree() { free(p); } };
+    MemoFree memo{(LoadMemo *)calloc(256, sizeof(LoadMemo))};
+    auto resolve_memo = [&](uint32_t idx, uint32_t *addr, bool *is_func) -> LoadResult {
+        LoadMemo *m = memo.p ? &memo.p[idx & 255u] : nullptr;
+        if (m && m->valid && m->idx == idx) { *addr = m->addr; *is_func = m->func != 0; return LOAD_OK; }
+        LoadResult r = resolve(idx, addr, is_func);
+        if (r == LOAD_OK && m) { m->idx = idx; m->addr = *addr; m->func = *is_func ? 1 : 0; m->valid = 1; }
+        return r;
+    };
+
     // The synthesised GOT: an array of resolved addresses at the base of the
     // writable block, which the package reaches through r9. A GOT_BREL stores the
     // byte offset of a symbol's slot; the code adds it to r9 and loads the slot.
@@ -958,7 +987,7 @@ LoadResult app_load(const AppSource &src, LoadedApp *out) {
             }
 
             if (type != R_ARM_NONE) {
-                rc = resolve(sidx, &S, &is_func);
+                rc = resolve_memo(sidx, &S, &is_func);
                 if (rc != LOAD_OK) break;
             }
 
@@ -1475,8 +1504,13 @@ LoadResult app_pic_install(const AppSource &src, SlotWrite sink, void *sink_ctx,
     auto sym_at = [&](uint32_t idx) -> const Elf32_Sym & {
         if (idx >= nsyms) { sym_io = false; return sym_zero; }
         if (idx < symwin_first || idx >= symwin_first + symwin_have) {
-            uint32_t base = idx - (idx % REL_CHUNK);
-            uint32_t cnt  = nsyms - base < REL_CHUNK ? nsyms - base : REL_CHUNK;
+            // A walk in order (the app_main scan) refills the whole window; a
+            // jump elsewhere reads only the 16 entries around the one wanted.
+            // Refilling 4 KB for one 16-byte symbol was most of what a large
+            // package's load read (SYM_NEAR below).
+            uint32_t span = (idx == symwin_first + symwin_have) ? REL_CHUNK : SYM_NEAR;
+            uint32_t base = idx - (idx % span);
+            uint32_t cnt  = nsyms - base < span ? nsyms - base : span;
             if (!read_exact(src, symtab_off + base * sizeof(Elf32_Sym),
                             g_symwin, cnt * sizeof(Elf32_Sym))) {
                 sym_io = false;
