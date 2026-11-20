@@ -63,10 +63,11 @@ bool net_core_ok(void);
 // Is the operation lock held by this task right now? For the tripwire below.
 bool net_op_held(void);
 
-// Changes every time the radio goes down, which de-initialises lwIP. Anything
-// that keeps a PCB between NetOwn scopes records it at open and, inside each
-// later scope, treats a different value (or a radio that is down) as the
-// connection having gone. Never touch the old PCB then: it no longer exists.
+// Changes every time the radio goes down. Every connection is closed just
+// before that (radio_down), so a PCB kept between NetOwn scopes is null and
+// failed afterwards; the generation is the quick, lock-free test for "this was
+// opened before the radio went". lwIP itself is initialised once and survives;
+// only the driver goes, and nothing may enter lwIP while it is down.
 uint32_t net_radio_gen(void);
 bool     net_radio_is_up(void);
 

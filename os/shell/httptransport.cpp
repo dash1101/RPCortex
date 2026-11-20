@@ -323,7 +323,8 @@ void http_tls_reset(void) {
 // Defined with lw_close, which is the other half of the same idea.
 static void conn_detach(TcpConn *c);
 
-// Is the connection's PCB still a thing? Only inside a NetOwn scope.
+// Is the connection still usable? Only inside a NetOwn scope. A connection
+// opened before the radio last went down was closed by http_radio_down.
 static bool conn_live(const TcpConn *c) {
     return net_radio_is_up() && c->gen == net_radio_gen();
 }
@@ -561,11 +562,11 @@ static int lw_recv(void *ctx, uint8_t *buf, uint32_t cap) {
 // on_connected sets its connected flag before it is, on_recv appends somebody
 // else's bytes to its buffer. A failed fetch quietly breaks the fetch after it.
 //
-// Caller holds a NetOwn and NOT the lwIP lock. A connection from before the
-// radio last went down has no PCB any more: its pointers are dropped, never
-// followed.
+// Caller holds a NetOwn and NOT the lwIP lock. With the radio down there is
+// nothing to detach: http_radio_down did it before the radio went.
 static void conn_detach(TcpConn *c) {
-    if (!conn_live(c)) { c->pcb = nullptr; c->rx = nullptr; return; }
+    if (!c->pcb && !c->rx) return;
+    if (!net_radio_is_up()) { c->pcb = nullptr; c->rx = nullptr; return; }
     cyw43_arch_lwip_begin();
     if (c->rx) { pbuf_free(c->rx); c->rx = nullptr; }
     if (c->pcb) {
@@ -596,6 +597,15 @@ static void lw_close(void *ctx) {
 // One at a time is the right limit here: a shell running two downloads at once
 // is not a thing worth the second buffer.
 static TcpConn g_conn;
+
+// The radio is about to go down: take the connection apart while lwIP may
+// still be entered. Its owner finds it failed. Called by radio_down holding
+// the network.
+void http_radio_down(void) {
+    TcpConn *c = &g_conn;
+    conn_detach(c);
+    c->failed = true;
+}
 
 // What the last transfer did, for an error message worth reading.
 void http_last_detail(char *out, unsigned cap) {

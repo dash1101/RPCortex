@@ -486,12 +486,9 @@ bool net_radio_up(void) { return radio_up(); }
 // file warns about a few lines up — and the GUI task faulted.
 bool net_radio_is_up(void) { return g_radio_up; }
 
-// Raised every time the radio goes down. Taking it down de-initialises lwIP,
-// and bringing it up initialises lwIP afresh, so a PCB or pbuf obtained before
-// is not a thing any more. Whatever holds lwIP objects between operations (an
-// HTTP connection, a TCP slot, a ping) records this when it opens and treats a
-// change as "the connection is gone": it marks itself failed and drops its
-// pointers without touching them.
+// Raised every time the radio goes down. Connections are closed just before
+// (radio_down), and anything that opened before a change treats itself as
+// gone: a quick test that needs no lock.
 static volatile uint32_t g_radio_gen = 1;
 uint32_t net_radio_gen(void) { return g_radio_gen; }
 
@@ -516,8 +513,22 @@ bool net_core_ok(void) {
     return !g_radio_up || task_this_core() == g_radio_core;
 }
 
+// Every lwIP connection is closed here, BEFORE the radio goes. The SDK
+// initialises lwIP once and never again, so PCBs outlive a radio restart; but
+// with the driver down nothing may enter lwIP to close them, and one left open
+// keeps its port (the SSH server could not listen again after 'wifi off' and
+// 'wifi connect'). So they are taken apart while that is still allowed, and
+// their owners find them failed, with nothing left to touch.
+void nettcp_radio_down(void);
+void http_radio_down(void);
+void ping_radio_down(void);
+
 static void radio_down(void) {
     if (!g_radio_up) return;
+    {
+        NetOwn own;
+        if (own.ok) { nettcp_radio_down(); http_radio_down(); ping_radio_down(); }
+    }
     g_radio_gen++;
     cyw43_arch_deinit();
     g_radio_up = false;

@@ -131,9 +131,10 @@ struct PingSlot {
     uint32_t        rgen;            // net_radio_gen() when opened
 };
 
-// The raw socket from before the radio last went down is gone with lwIP.
+// A ping from before the radio last went down had its socket closed by
+// ping_radio_down.
 static bool ping_live(const PingSlot *s) {
-    return net_radio_is_up() && s->rgen == net_radio_gen();
+    return s->pcb && net_radio_is_up() && s->rgen == net_radio_gen();
 }
 static PingSlot g_pings[PING_SLOTS];
 
@@ -169,7 +170,7 @@ static PingSlot *ping_open(const ip_addr_t *target) {
     for (int i = 0; i < PING_SLOTS; i++) {
         PingSlot *c = &g_pings[i];
         if (c->owner && owner_gone(c->owner)) {         // ended mid-ping
-            if (c->pcb && ping_live(c)) { LwipLock lk; raw_remove(c->pcb); }
+            if (c->pcb && net_radio_is_up()) { LwipLock lk; raw_remove(c->pcb); }
             c->pcb = nullptr;
             c->owner = 0;
         }
@@ -221,10 +222,18 @@ static int ping_send(PingSlot *s, uint16_t seq) {
     return e == ERR_OK ? 0 : (int)e;
 }
 
+// The radio is about to go down: close every ping's socket while lwIP may
+// still be entered. Called by radio_down holding the network.
+void ping_radio_down(void) {
+    LwipLock lk;
+    for (int i = 0; i < PING_SLOTS; i++)
+        if (g_pings[i].pcb) { raw_remove(g_pings[i].pcb); g_pings[i].pcb = nullptr; }
+}
+
 static void ping_close(PingSlot *s) {
     NetOwn own;
     if (!own.ok) return;             // left to be reclaimed once this task ends
-    if (ping_live(s)) { LwipLock lk; raw_remove(s->pcb); }
+    if (s->pcb && net_radio_is_up()) { LwipLock lk; raw_remove(s->pcb); }
     s->pcb = nullptr;
     s->owner = 0;
 }

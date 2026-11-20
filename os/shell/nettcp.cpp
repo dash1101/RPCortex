@@ -138,14 +138,11 @@ static void slot_release(TcpSlot *s);
 #define H_INDEX(h)    (int)((uint32_t)(h) & 0xFFu)
 #define H_GEN(h)      (uint16_t)((((uint32_t)(h)) >> 8) & 0x7FFFu)
 
-// A slot from before the radio last went down: taking the radio down
-// de-initialises lwIP, so its PCB and pbufs are gone. Its pointers are dropped,
-// never followed, and it is marked failed, so its user sees the connection
-// end and closes it. The SSH server listens again when its accept fails.
+// A slot from before the radio last went down. radio_down closed its PCB
+// (nettcp_radio_down), so it is failed with nothing to touch; this only makes
+// sure its user sees that. The SSH server listens again when accept fails.
 static void slot_stale_check(TcpSlot *s) {
     if (s->rgen == net_radio_gen()) return;
-    s->pcb = nullptr;
-    s->rx = nullptr;
     s->failed = true;
 }
 
@@ -399,7 +396,8 @@ int net_pkg_tcp_send(int handle, const void *buf, unsigned len) {
 }
 
 // Frees a slot, and a listener's queue, without going near lwIP. For a radio
-// that is down: lwIP's state went with it, so there is nothing to take apart.
+// that is down: nettcp_radio_down closed every PCB before it went, so there is
+// nothing left to take apart.
 static void slot_forget(TcpSlot *s) {
     if (s->listening)
         for (int i = 0; i < s->npending; i++)
@@ -426,6 +424,34 @@ int net_pkg_tcp_close(int handle) {
     if (!s) return -1;
     slot_release(s);
     return 0;
+}
+
+// The radio is about to go down: close every connection and listener now,
+// while lwIP may still be entered. Each slot stays allocated to its owner,
+// failed and with no PCB, until the owner closes it (or ends). Called by
+// radio_down holding the network.
+void nettcp_radio_down(void) {
+    LwipLock lk;
+    for (int i = 0; i < TCP_SLOTS; i++) {
+        TcpSlot *s = &g_slots[i];
+        if (!s->used) continue;
+        if (s->rx) { pbuf_free(s->rx); s->rx = nullptr; }
+        if (s->pcb) {
+            if (s->listening) {
+                tcp_arg(s->pcb, nullptr);
+                tcp_accept(s->pcb, nullptr);
+                if (tcp_close(s->pcb) != ERR_OK) tcp_abort(s->pcb);
+            } else {
+                tcp_arg(s->pcb, nullptr);
+                tcp_recv(s->pcb, nullptr);
+                tcp_err(s->pcb, nullptr);
+                tcp_sent(s->pcb, nullptr);
+                tcp_abort(s->pcb);
+            }
+            s->pcb = nullptr;
+        }
+        s->failed = true;
+    }
 }
 
 // A package's task has gone. Anything it left open is closed here, or the
