@@ -184,6 +184,38 @@ declare -A SRC=(
 # Extra flags for tests that need them. smp_test runs two real threads.
 declare -A FLAGS=( [smp_test]="-pthread" )
 
+# --- SSH: the suites that need mbedTLS ---------------------------------------
+#
+# Built from the SDK's mbedTLS sources with the DEVICE's configuration, as
+# cacerts_test.sh does, so a primitive the device does not have cannot pass
+# here. Compiled once per run into $OUT, in parallel (about two seconds), and
+# under the same sanitizers as everything else. Without an SDK checkout the
+# SSH suites say SKIPPED rather than failing to build.
+SDK_DIR="${PICO_SDK_PATH:-$PWD/../../sdk}"
+MBED_OK=0
+if [ -d "$SDK_DIR/lib/mbedtls/library" ]; then
+    mkdir -p "$OUT/mbed"
+    MBED_CFG="-DMBEDTLS_CONFIG_FILE=\"$PWD/../mbedtls_config.h\""
+    mbed_one() {
+        gcc -c -O1 -g -w -fsanitize=address,undefined -DRPC_HAS_SSH=1 "$MBED_CFG" \
+            -I "$SDK_DIR/lib/mbedtls/include" -o "$OUT/mbed/$(basename "$1" .c).o" "$1"
+    }
+    export -f mbed_one; export MBED_CFG SDK_DIR OUT
+    if ls "$SDK_DIR"/lib/mbedtls/library/*.c | xargs -P "$(nproc)" -I{} bash -c 'mbed_one "$1"' _ {} \
+            2>"$OUT/mbed.err" && ar rcs "$OUT/libmbed.a" "$OUT"/mbed/*.o; then
+        MBED_OK=1
+    fi
+fi
+SSH_FLAGS="-DRPC_HAS_SSH=1 $MBED_CFG -I$SDK_DIR/lib/mbedtls/include"
+SSH_CORE="$CORE/sshwire.cpp $CORE/sshcrypto.cpp $CORE/sshtrans.cpp $CORE/sshserver.cpp $CORE/sshclient.cpp $CORE/sshkeys.cpp $CORE/lock.cpp $CORE/task.cpp $CORE/blackbox.cpp host_task_stub.cpp"
+# The protocol core against published vectors and a misbehaving peer.
+SRC[ssh_test]="$SSH_CORE $CORE/sshsess.cpp $CORE/sha256.cpp $OUT/libmbed.a"
+FLAGS[ssh_test]="$SSH_FLAGS"
+# Mutation fuzzing of everything a peer can send, before and after login.
+SRC[ssh_fuzz_test]="$SSH_CORE $OUT/libmbed.a"
+FLAGS[ssh_fuzz_test]="$SSH_FLAGS"
+NEEDS_MBED="ssh_test ssh_fuzz_test"
+
 # Tests worth running a SECOND time with no sanitizer.
 #
 # AddressSanitizer replaces malloc with its own allocator, and that allocator
@@ -195,10 +227,14 @@ declare -A FLAGS=( [smp_test]="-pthread" )
 # uninstrumented run is the one that can catch it.
 PLAIN="task_test ptrcheck_test"
 
-pass=0; fail=0
+pass=0; fail=0; skip=0
 for t in "${!SRC[@]}"; do
     [ -f "$t.cpp" ] || continue
     printf '  %-16s ' "$t"
+    if [ "$MBED_OK" -eq 0 ] && [[ " $NEEDS_MBED " == *" $t "* ]]; then
+        echo "SKIPPED (no mbedTLS at $SDK_DIR/lib/mbedtls)"
+        skip=$((skip+1)); continue
+    fi
     if ! $CXX $INC ${FLAGS[$t]:-} "$t.cpp" ${SRC[$t]} -o "$OUT/$t" 2>"$OUT/$t.err"; then
         echo "BUILD FAILED"; sed 's/^/      /' "$OUT/$t.err" | head -15
         fail=$((fail+1)); continue
@@ -291,6 +327,26 @@ else
     fail=$((fail+1))
 fi
 
+# SSH against the system's real OpenSSH, client and (when installed) sshd.
+# Exit 77 is "could not run here": no ssh, no mbedTLS. That is counted as
+# skipped and said so, never as passed.
+printf '  %-16s ' "ssh_interop"
+PICO_SDK_PATH="$SDK_DIR" ./ssh_interop_test.sh > "$OUT/ssh_interop.out" 2>&1
+rc=$?
+if [ $rc -eq 0 ]; then
+    echo "ok   $(grep -oE '[0-9]+ checks' "$OUT/ssh_interop.out" | tail -1)"
+    grep '^  (' "$OUT/ssh_interop.out" | sed 's/^/    /'
+    pass=$((pass+1))
+elif [ $rc -eq 77 ]; then
+    echo "SKIPPED $(grep -o 'SKIPPED: .*' "$OUT/ssh_interop.out" | head -1 | cut -c10-)"
+    skip=$((skip+1))
+else
+    echo "FAILED"; sed 's/^/      /' "$OUT/ssh_interop.out" | tail -20
+    fail=$((fail+1))
+fi
+
 echo
-echo "  $pass passed, $fail failed"
+skipped=""
+[ "$skip" -gt 0 ] && skipped=", $skip skipped"
+echo "  $pass passed, $fail failed$skipped"
 [ "$fail" -eq 0 ]

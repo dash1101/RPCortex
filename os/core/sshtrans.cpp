@@ -65,16 +65,16 @@ bool ssh_conn_init(SshConn *c, bool server, const char *ident) {
     if (!c->in || !c->out) { free(c->in); free(c->out); c->in = c->out = nullptr; return false; }
     c->in_cap = SSH_IN_START;
     snprintf(c->v_mine, sizeof(c->v_mine), "SSH-2.0-%s", ident);
-    // The version line, then our KEXINIT at once rather than after the peer's
-    // version: one round trip fewer, and strict KEX wants KEXINIT to be the
-    // first packet either way, which it is.
+    // The version line now; our KEXINIT on the first ssh_process, which is
+    // still before the peer's version has been read — one round trip fewer
+    // than waiting for it, and strict KEX wants KEXINIT to be the first packet
+    // either way. Not here, so a caller can set hostkey_algs in between.
     uint32_t n = (uint32_t)strlen(c->v_mine);
     memcpy(c->out, c->v_mine, n);
     c->out[n] = '\r'; c->out[n + 1] = '\n';
     c->out_len = n + 2;
     c->state = SSH_ST_VERSION;
-    send_kexinit(c);
-    return c->state != SSH_ST_CLOSED;
+    return true;
 }
 
 void ssh_conn_free(SshConn *c) {
@@ -750,6 +750,7 @@ uint32_t ssh_feed(SshConn *c, const uint8_t *data, uint32_t n) {
 }
 
 void ssh_process(SshConn *c) {
+    if (!c->first_kex_done && !c->kexinit_sent && c->state != SSH_ST_CLOSED) send_kexinit(c);
     while (c->state != SSH_ST_CLOSED) {
         if (c->state == SSH_ST_VERSION) {
             if (!version_line(c)) return;
