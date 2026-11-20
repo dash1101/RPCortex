@@ -63,6 +63,13 @@ bool net_core_ok(void);
 // Is the operation lock held by this task right now? For the tripwire below.
 bool net_op_held(void);
 
+// Changes every time the radio goes down, which de-initialises lwIP. Anything
+// that keeps a PCB between NetOwn scopes records it at open and, inside each
+// later scope, treats a different value (or a radio that is down) as the
+// connection having gone. Never touch the old PCB then: it no longer exists.
+uint32_t net_radio_gen(void);
+bool     net_radio_is_up(void);
+
 // Someone entered cyw43 or lwIP without holding the operation lock. Counted
 // rather than fatal: this is a latent wedge, not a present one, and a board
 // that panics on it is worse than a board that reports it. `wifi` prints the

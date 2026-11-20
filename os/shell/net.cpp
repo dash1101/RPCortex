@@ -486,6 +486,15 @@ bool net_radio_up(void) { return radio_up(); }
 // file warns about a few lines up — and the GUI task faulted.
 bool net_radio_is_up(void) { return g_radio_up; }
 
+// Raised every time the radio goes down. Taking it down de-initialises lwIP,
+// and bringing it up initialises lwIP afresh, so a PCB or pbuf obtained before
+// is not a thing any more. Whatever holds lwIP objects between operations (an
+// HTTP connection, a TCP slot, a ping) records this when it opens and treats a
+// change as "the connection is gone": it marks itself failed and drops its
+// pointers without touching them.
+static volatile uint32_t g_radio_gen = 1;
+uint32_t net_radio_gen(void) { return g_radio_gen; }
+
 // The one-owner rule is about TASKS. This is the other half of it: the core.
 //
 // g_net_op guarantees one task at a time inside the driver, which is not the
@@ -509,6 +518,7 @@ bool net_core_ok(void) {
 
 static void radio_down(void) {
     if (!g_radio_up) return;
+    g_radio_gen++;
     cyw43_arch_deinit();
     g_radio_up = false;
     // THE CACHE GOES WITH IT.
@@ -1903,6 +1913,7 @@ void net_autoconnect_now(void) {}
 void net_autoconnect_report(void) {}
 bool net_available(void) { return false; }
 bool net_radio_is_up(void) { return false; }
+uint32_t net_radio_gen(void) { return 0; }
 bool net_is_connected(void) { return false; }
 const char *net_active_ssid(void) { return "(no radio)"; }
 int  net_setup_scan_and_join(void) { return 1; }

@@ -128,7 +128,13 @@ struct PingSlot {
     ip_addr_t       target;
     struct raw_pcb *pcb;
     int             owner;           // pid; 0 when free
+    uint32_t        rgen;            // net_radio_gen() when opened
 };
+
+// The raw socket from before the radio last went down is gone with lwIP.
+static bool ping_live(const PingSlot *s) {
+    return net_radio_is_up() && s->rgen == net_radio_gen();
+}
 static PingSlot g_pings[PING_SLOTS];
 
 static u8_t ping_recv(void *arg, struct raw_pcb *, struct pbuf *p, const ip_addr_t *addr) {
@@ -163,13 +169,14 @@ static PingSlot *ping_open(const ip_addr_t *target) {
     for (int i = 0; i < PING_SLOTS; i++) {
         PingSlot *c = &g_pings[i];
         if (c->owner && owner_gone(c->owner)) {         // ended mid-ping
-            if (c->pcb) { LwipLock lk; raw_remove(c->pcb); }
+            if (c->pcb && ping_live(c)) { LwipLock lk; raw_remove(c->pcb); }
             c->pcb = nullptr;
             c->owner = 0;
         }
         if (!c->owner && !s) s = c;
     }
-    if (!s) return nullptr;
+    if (!s || !net_radio_is_up()) return nullptr;
+    s->rgen = net_radio_gen();
     s->got = false;
     s->seq = 0;
     s->target = *target;
@@ -189,7 +196,7 @@ static PingSlot *ping_open(const ip_addr_t *target) {
 // lwIP's error.
 static int ping_send(PingSlot *s, uint16_t seq) {
     NetOwn own;
-    if (!own.ok) return -2;
+    if (!own.ok || !ping_live(s)) return -2;
     struct pbuf *p;
     { LwipLock lk; p = pbuf_alloc(PBUF_IP, sizeof(struct icmp_echo_hdr) + PING_DATA_LEN, PBUF_RAM); }
     if (!p) return -1;
@@ -217,7 +224,7 @@ static int ping_send(PingSlot *s, uint16_t seq) {
 static void ping_close(PingSlot *s) {
     NetOwn own;
     if (!own.ok) return;             // left to be reclaimed once this task ends
-    { LwipLock lk; raw_remove(s->pcb); }
+    if (ping_live(s)) { LwipLock lk; raw_remove(s->pcb); }
     s->pcb = nullptr;
     s->owner = 0;
 }

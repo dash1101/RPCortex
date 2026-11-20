@@ -115,9 +115,19 @@ struct TcpSlot {
     volatile bool closed;          // peer sent FIN
     volatile bool failed;
     volatile bool connected;       // an outbound connection was accepted
+    uint32_t rgen;                 // net_radio_gen() when claimed
 };
 
 static TcpSlot g_slots[TCP_SLOTS];
+
+// The network AND a radio that is up. With the radio down there is no lwIP to
+// lock: cyw43_arch_lwip_begin on a de-initialised driver does not fail, it
+// waits on a context that no longer runs.
+struct TcpOwn {
+    NetOwn n;
+    bool   ok;
+    TcpOwn() : ok(n.ok && net_radio_is_up()) {}
+};
 static void slot_release(TcpSlot *s);
 
 // --- handles -----------------------------------------------------------------
@@ -128,6 +138,17 @@ static void slot_release(TcpSlot *s);
 #define H_INDEX(h)    (int)((uint32_t)(h) & 0xFFu)
 #define H_GEN(h)      (uint16_t)((((uint32_t)(h)) >> 8) & 0x7FFFu)
 
+// A slot from before the radio last went down: taking the radio down
+// de-initialises lwIP, so its PCB and pbufs are gone. Its pointers are dropped,
+// never followed, and it is marked failed, so its user sees the connection
+// end and closes it. The SSH server listens again when its accept fails.
+static void slot_stale_check(TcpSlot *s) {
+    if (s->rgen == net_radio_gen()) return;
+    s->pcb = nullptr;
+    s->rx = nullptr;
+    s->failed = true;
+}
+
 static TcpSlot *slot_of(int handle, bool want_listener) {
     if (handle <= 0) return nullptr;
     if (((uint32_t)handle & 0x800000u) == 0) return nullptr;
@@ -136,6 +157,7 @@ static TcpSlot *slot_of(int handle, bool want_listener) {
     TcpSlot *s = &g_slots[i];
     if (!s->used || s->gen != H_GEN(handle)) return nullptr;
     if (s->listening != want_listener) return nullptr;
+    slot_stale_check(s);
     return s;
 }
 
@@ -149,6 +171,7 @@ static TcpSlot *slot_claim(void) {
         s->used  = true;
         s->gen   = g;
         s->owner = task_slot_index();
+        s->rgen  = net_radio_gen();
         return s;
     }
     return nullptr;
@@ -161,6 +184,7 @@ static int slot_handle(const TcpSlot *s) {
 // Caller holds the lwIP lock. Tears the slot down completely.
 static void slot_release(TcpSlot *s) {
     if (!s->used) return;
+    slot_stale_check(s);
     if (s->listening) {
         // Anything queued but never accepted is aborted, not leaked: the peer
         // is owed an answer either way, and a reset is the honest one.
@@ -250,7 +274,7 @@ static TcpSlot *pending_take(TcpSlot *lsn) {
 int net_pkg_tcp_listen(unsigned port) {
     if (!net_is_connected() || port == 0 || port > 65535) return -1;
 
-    NetOwn own;
+    TcpOwn own;
     if (!own.ok) return -1;
     LwipLock lk;
     TcpSlot *s = slot_claim();
@@ -282,11 +306,11 @@ int net_pkg_tcp_accept(int listener, uint32_t timeout_ms) {
             // Inside the loop, so the wait between polls happens with the
             // network free. Holding it across the sleep would let a server with
             // a 250 ms accept tick own the radio essentially all the time.
-            NetOwn own;
+            TcpOwn own;
             if (!own.ok) return -1;
             LwipLock lk;
             TcpSlot *lsn = slot_of(listener, true);
-            if (!lsn) return -1;
+            if (!lsn || lsn->failed) return -1;
             TcpSlot *conn = pending_take(lsn);
             if (conn) return slot_handle(conn);
         }
@@ -303,7 +327,7 @@ int net_pkg_tcp_recv(int handle, void *buf, unsigned cap, uint32_t timeout_ms) {
     absolute_time_t deadline = make_timeout_time_ms(timeout_ms);
     for (;;) {
         {
-            NetOwn own;
+            TcpOwn own;
             if (!own.ok) return -1;
             LwipLock lk;
             TcpSlot *s = slot_of(handle, false);
@@ -338,7 +362,7 @@ int net_pkg_tcp_send(int handle, const void *buf, unsigned len) {
     while (sent < len) {
         unsigned chunk = 0;
         {
-            NetOwn own;
+            TcpOwn own;
             if (!own.ok) return sent ? (int)sent : -1;
             LwipLock lk;
             TcpSlot *s = slot_of(handle, false);
@@ -374,9 +398,28 @@ int net_pkg_tcp_send(int handle, const void *buf, unsigned len) {
     return (int)sent;
 }
 
+// Frees a slot, and a listener's queue, without going near lwIP. For a radio
+// that is down: lwIP's state went with it, so there is nothing to take apart.
+static void slot_forget(TcpSlot *s) {
+    if (s->listening)
+        for (int i = 0; i < s->npending; i++)
+            if (s->pending[i]) { s->pending[i]->pcb = nullptr; s->pending[i]->rx = nullptr; s->pending[i]->used = false; }
+    s->npending = 0;
+    s->pcb = nullptr;
+    s->rx = nullptr;
+    s->used = false;
+}
+
 int net_pkg_tcp_close(int handle) {
-    NetOwn own;
-    if (!own.ok) return -1;
+    NetOwn n;
+    if (!n.ok) return -1;
+    if (!net_radio_is_up()) {
+        TcpSlot *s = slot_of(handle, false);
+        if (!s) s = slot_of(handle, true);
+        if (!s) return -1;
+        slot_forget(s);
+        return 0;
+    }
     LwipLock lk;
     TcpSlot *s = slot_of(handle, false);
     if (!s) s = slot_of(handle, true);
@@ -405,6 +448,11 @@ extern "C" void net_tcp_task_ended(int slot) {
     // leak but a fault somewhere unrelated, minutes later.
     NetOwn own;
     if (!own.ok) return;
+    if (!net_radio_is_up()) {        // nothing in lwIP to take apart: just let them go
+        for (int i = 0; i < TCP_SLOTS; i++)
+            if (g_slots[i].used && g_slots[i].owner == slot) slot_forget(&g_slots[i]);
+        return;
+    }
     LwipLock lk;
     for (int i = 0; i < TCP_SLOTS; i++)
         if (g_slots[i].used && g_slots[i].owner == slot) slot_release(&g_slots[i]);
@@ -433,18 +481,18 @@ unsigned net_pkg_tcp_open(void) {
 // socket underneath it.
 
 int net_tcp_accept_now(int listener) {
-    NetOwn own;
+    TcpOwn own;
     if (!own.ok) return -1;
     LwipLock lk;
     TcpSlot *lsn = slot_of(listener, true);
-    if (!lsn) return -1;
+    if (!lsn || lsn->failed) return -1;      // failed: from before the radio went down
     TcpSlot *conn = pending_take(lsn);
     return conn ? slot_handle(conn) : 0;
 }
 
 int net_tcp_read_now(int handle, void *buf, unsigned cap) {
     if (!buf || !cap) return 0;
-    NetOwn own;
+    TcpOwn own;
     if (!own.ok) return -1;
     LwipLock lk;
     TcpSlot *s = slot_of(handle, false);
@@ -462,7 +510,7 @@ int net_tcp_read_now(int handle, void *buf, unsigned cap) {
 
 int net_tcp_write_now(int handle, const void *buf, unsigned len) {
     if (!buf || !len) return 0;
-    NetOwn own;
+    TcpOwn own;
     if (!own.ok) return -1;
     LwipLock lk;
     TcpSlot *s = slot_of(handle, false);
@@ -481,7 +529,7 @@ int net_tcp_write_now(int handle, const void *buf, unsigned len) {
 // DISCONNECT or the last of a command's output is not cut off by the reset an
 // abort sends.
 bool net_tcp_drained(int handle) {
-    NetOwn own;
+    TcpOwn own;
     if (!own.ok) return true;
     LwipLock lk;
     TcpSlot *s = slot_of(handle, false);
@@ -493,7 +541,7 @@ bool net_tcp_drained(int handle) {
 void net_tcp_peer(int handle, char *out, unsigned cap) {
     if (!out || !cap) return;
     out[0] = 0;
-    NetOwn own;
+    TcpOwn own;
     if (!own.ok) return;
     LwipLock lk;
     TcpSlot *s = slot_of(handle, false);
@@ -503,7 +551,7 @@ void net_tcp_peer(int handle, char *out, unsigned cap) {
 // Make the calling task the owner of a socket, so the socket is closed if THIS
 // task ends rather than the one that accepted it.
 void net_tcp_adopt(int handle) {
-    NetOwn own;
+    TcpOwn own;
     if (!own.ok) return;
     LwipLock lk;
     TcpSlot *s = slot_of(handle, false);
@@ -526,13 +574,13 @@ int net_tcp_connect(const char *host, unsigned port, uint32_t timeout_ms) {
     if (!host || !port || port > 65535 || !net_is_connected()) return -1;
     ip_addr_t addr;
     {
-        NetOwn own;
+        TcpOwn own;
         if (!own.ok) return -1;
         if (!net_resolve(host, &addr)) return -1;
     }
     int handle;
     {
-        NetOwn own;
+        TcpOwn own;
         if (!own.ok) return -1;
         LwipLock lk;
         TcpSlot *s = slot_claim();
@@ -553,7 +601,7 @@ int net_tcp_connect(const char *host, unsigned port, uint32_t timeout_ms) {
     absolute_time_t deadline = make_timeout_time_ms(timeout_ms);
     for (;;) {
         {
-            NetOwn own;
+            TcpOwn own;
             if (!own.ok) return -1;
             LwipLock lk;
             TcpSlot *s = slot_of(handle, false);

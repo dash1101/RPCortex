@@ -28,6 +28,8 @@
 #include "path.h"
 #include "fsguard.h"
 #include "blackbox.h"
+#include "netown.h"
+#include "task.h"
 #include "kernel.h"
 
 #include <string.h>
@@ -37,9 +39,13 @@
 #include "pico/stdlib.h"
 
 bool net_is_connected(void);
-// Only one task may be inside cyw43 or lwIP at a time — see net.cpp. A
-// connection holds that ownership from open to close, so a download and a WiFi
-// join can never be part-way through each other.
+// Only one task may be inside cyw43 or lwIP at a time; see netown.h. A
+// connection takes that ownership for each operation on it, not from open to
+// close: held for a whole download, it kept every other user of the network
+// waiting, an SSH session's own keystrokes and output included. What used to
+// keep a WiFi join from landing part-way through a transfer is now the radio
+// generation (net_radio_gen): a connection that sees the radio has been down
+// since it opened stops, and never touches the PCB it had.
 void net_op_acquire(void);
 void net_op_release(void);
 bool net_core_ok(void);
@@ -129,6 +135,7 @@ struct TcpConn {
     volatile bool closed;        // peer sent FIN
     volatile bool failed;
     volatile uint32_t unsent;    // bytes still in flight
+    uint32_t gen;                // net_radio_gen() when it opened
 
     // Enough to say WHAT went wrong rather than that something did. "connection
     // lost" covers a refused handshake, a peer that hung up, and a read that
@@ -316,80 +323,126 @@ void http_tls_reset(void) {
 // Defined with lw_close, which is the other half of the same idea.
 static void conn_detach(TcpConn *c);
 
+// Is the connection's PCB still a thing? Only inside a NetOwn scope.
+static bool conn_live(const TcpConn *c) {
+    return net_radio_is_up() && c->gen == net_radio_gen();
+}
+
+// ONE HTTP CONNECTION AT A TIME, device-wide: g_conn is a single static. It
+// used to be kept to one by holding the network lock from open to close. It
+// is a claim of its own now, made and checked under the lock but not held
+// with it, so a download no longer keeps the rest of the network waiting. A
+// second fetch waits for the first (Ctrl+C gets out). A claim left by a task
+// that ended mid-transfer is taken over, and its connection taken apart.
+static volatile int g_conn_owner;     // pid; 0 when free
+
+static bool conn_owner_gone(int pid) {
+    const TaskInfo *ti = task_find(pid);
+    return !ti || ti->state == TASK_DONE;
+}
+
+// Under a NetOwn.
+static bool conn_claim(TcpConn *c) {
+    int me = task_self();
+    if (g_conn_owner && g_conn_owner != me && !conn_owner_gone(g_conn_owner)) return false;
+    if (g_conn_owner && g_conn_owner != me) conn_detach(c);    // ended mid-transfer
+    g_conn_owner = me;
+    return true;
+}
+
+static void conn_release(TcpConn *c) {
+    {
+        NetOwn own;
+        if (own.ok) conn_detach(c);
+        else { c->pcb = nullptr; c->rx = nullptr; }   // unreachable radio: let it go
+    }
+    if (g_conn_owner == task_self()) g_conn_owner = 0;
+}
+
 static int lw_open(void *ctx, const char *host, uint16_t port, bool tls) {
     TcpConn *c = (TcpConn *)ctx;
-    // Taken here and released in lw_close, which the fetch driver always calls
-    // — including on every failure path and between redirect hops.
     // A hang inside a fetch used to leave "entered fw_http_get" as the last
     // phase and nothing else, so every stage of a connection had to be ruled out
     // by argument. Each one says so now: the crash report names the last one
     // reached, which is the one that did not finish.
-    bb_note_phase("http: waiting for the network lock");
-    net_op_acquire();
-    c->tls = tls;
-    c->free_at_open = heap_free();
-
-    // The wireless driver only works on the core that initialised it. Nothing
-    // reaches this from the wrong core today; saying so plainly beats finding
-    // out through corruption if something ever does.
-    if (!net_core_ok()) {
-        out_err("Networking is not available from this core.");
-        net_op_release();
-        return -1;
+    bb_note_phase("http: waiting for the connection");
+    for (;;) {
+        {
+            NetOwn own;
+            // The wireless driver only works on the core that initialised it,
+            // and NetOwn could not get this task there.
+            if (!own.ok) { out_err("Networking is not available from this core."); return -1; }
+            if (conn_claim(c)) break;
+        }
+        if (intr_check()) return -1;
+        task_sleep_ms(50);
     }
+    // The connection is this task's from here, and every failure below gives
+    // it back through conn_release.
 
     struct altcp_tls_config *cfg = nullptr;
-    if (tls) {
-        bb_note_phase("http: loading roots");
-        cfg = tls_config();
-        if (!cfg) { net_op_release(); return -1; }   // no roots: refuse, never downgrade
+    {
+        NetOwn own;
+        if (!own.ok) { conn_release(c); return -1; }
+        if (tls) {
+            bb_note_phase("http: loading roots");
+            cfg = tls_config();
+            if (!cfg) { conn_release(c); return -1; }    // no roots: refuse, never downgrade
+        }
+        // Anything still attached from a previous transfer goes now, BEFORE
+        // the memset that would orphan it. Every path that abandons a
+        // connection is supposed to have detached it already; this is what
+        // makes "supposed to" not matter.
+        conn_detach(c);
+        memset(c, 0, sizeof(*c));
+        c->tls = tls;
+        c->free_at_open = heap_free();
+        c->gen = net_radio_gen();
     }
-
-    // Anything still attached from a previous transfer goes now, BEFORE the
-    // memset that would orphan it. Every path that abandons a connection is
-    // supposed to have detached it already; this is what makes "supposed to"
-    // not matter.
-    conn_detach(c);
-    memset(c, 0, sizeof(*c));
 
     ip_addr_t addr;
     bb_note_phase("http: resolving");
-    if (!resolve(host, &addr)) { net_op_release(); return -1; }
+    if (!resolve(host, &addr)) { conn_release(c); return -1; }     // takes the network itself
 
-    bb_note_phase(tls ? "http: opening (tls)" : "http: opening");
-    cyw43_arch_lwip_begin();
-    c->pcb = tls ? altcp_tls_new(cfg, IP_GET_TYPE(&addr))
-                 : altcp_tcp_new_ip_type(IP_GET_TYPE(&addr));
+    err_t e = ERR_MEM;
+    {
+        NetOwn own;
+        if (!own.ok || !conn_live(c)) { conn_release(c); return -1; }
+        bb_note_phase(tls ? "http: opening (tls)" : "http: opening");
+        cyw43_arch_lwip_begin();
+        c->pcb = tls ? altcp_tls_new(cfg, IP_GET_TYPE(&addr))
+                     : altcp_tcp_new_ip_type(IP_GET_TYPE(&addr));
 
-    // SNI. Without it a shared host answers with the wrong certificate and the
-    // handshake fails for a reason that looks nothing like the cause —
-    // raw.githubusercontent.com is exactly such a host.
-    if (c->pcb && tls)
-        mbedtls_ssl_set_hostname((mbedtls_ssl_context *)altcp_tls_context(c->pcb), host);
-    if (c->pcb) {
-        altcp_arg(c->pcb, c);
-        altcp_recv(c->pcb, on_recv);
-        altcp_err(c->pcb, on_err);
-        altcp_sent(c->pcb, on_sent);
+        // SNI. Without it a shared host answers with the wrong certificate and
+        // the handshake fails for a reason that looks nothing like the cause:
+        // raw.githubusercontent.com is exactly such a host.
+        if (c->pcb && tls)
+            mbedtls_ssl_set_hostname((mbedtls_ssl_context *)altcp_tls_context(c->pcb), host);
+        if (c->pcb) {
+            altcp_arg(c->pcb, c);
+            altcp_recv(c->pcb, on_recv);
+            altcp_err(c->pcb, on_err);
+            altcp_sent(c->pcb, on_sent);
+        }
+        e = c->pcb ? altcp_connect(c->pcb, &addr, port, on_connected) : ERR_MEM;
+        cyw43_arch_lwip_end();
     }
-    err_t e = c->pcb ? altcp_connect(c->pcb, &addr, port, on_connected) : ERR_MEM;
-    cyw43_arch_lwip_end();
 
     // From here on the pcb exists and its callbacks point at `c`, so no exit may
     // simply return: the connection has to be taken apart first. lw_close is not
-    // called for an open that failed — the driver only closes what it opened —
+    // called for an open that failed (the driver only closes what it opened),
     // which is why these say so themselves.
-    if (!c->pcb || e != ERR_OK)  { conn_detach(c); net_op_release(); return -1; }
+    if (!c->pcb || e != ERR_OK) { conn_release(c); return -1; }
     bb_note_phase(tls ? "http: handshaking" : "http: connecting");
-    if (!wait_flag(c->connected, g_connect_ms, &c->failed)) {
+    // The handshake happens in lwIP's callbacks; nothing is held while it does.
+    if (!wait_flag(c->connected, g_connect_ms, &c->failed) || c->gen != net_radio_gen()) {
         // Distinct phases, because "still waiting" and "gave up and is tearing
         // down" are eight seconds apart and were indistinguishable: both left
         // "http: handshaking" as the last note, so a reboot during the teardown
         // read exactly like a reboot during the wait.
         bb_note_phase("http: handshake gave up");
-        conn_detach(c);
+        conn_release(c);
         bb_note_phase("http: handshake torn down");
-        net_op_release();
         return -1;
     }
     return 0;
@@ -404,15 +457,20 @@ static int lw_send(void *ctx, const uint8_t *data, uint32_t len) {
     while (at < len) {
         if (c->failed || !c->pcb) return -1;
 
-        cyw43_arch_lwip_begin();
-        uint32_t room = c->pcb ? altcp_sndbuf(c->pcb) : 0;
-        uint32_t n = len - at < room ? len - at : room;
+        uint32_t n = 0;
         err_t e = ERR_OK;
-        if (n) {
-            e = altcp_write(c->pcb, data + at, (u16_t)n, TCP_WRITE_FLAG_COPY);
-            if (e == ERR_OK) { c->unsent += n; e = altcp_output(c->pcb); }
+        {
+            NetOwn own;
+            if (!own.ok || !conn_live(c)) { c->failed = true; return -1; }
+            cyw43_arch_lwip_begin();
+            uint32_t room = c->pcb ? altcp_sndbuf(c->pcb) : 0;
+            n = len - at < room ? len - at : room;
+            if (n) {
+                e = altcp_write(c->pcb, data + at, (u16_t)n, TCP_WRITE_FLAG_COPY);
+                if (e == ERR_OK) { c->unsent += n; e = altcp_output(c->pcb); }
+            }
+            cyw43_arch_lwip_end();
         }
-        cyw43_arch_lwip_end();
 
         if (e == ERR_MEM) { task_sleep_ms(2); continue; }   // transient; retry
         if (e != ERR_OK) { c->last_err = (int)e; return -1; }
@@ -437,10 +495,12 @@ static int lw_recv(void *ctx, uint8_t *buf, uint32_t cap) {
     TcpConn *c = (TcpConn *)ctx;
     bb_note_phase("http: receiving");
 
+    // The wait holds nothing: the data arrives through lwIP's callbacks.
     absolute_time_t deadline = make_timeout_time_ms(g_read_ms);
     while (rx_available(c) == 0) {
         if (c->failed) return -1;
         if (c->closed) return 0;                 // clean end of body
+        if (c->gen != net_radio_gen()) { c->failed = true; return -1; }   // the radio went down
         if (absolute_time_diff_us(get_absolute_time(), deadline) < 0) {
             c->last_err = -101;                  // "nothing arrived in time"
             return -1;
@@ -449,6 +509,8 @@ static int lw_recv(void *ctx, uint8_t *buf, uint32_t cap) {
         task_sleep_ms(2);
     }
 
+    NetOwn own;
+    if (!own.ok || !conn_live(c)) { c->failed = true; return -1; }
     cyw43_arch_lwip_begin();
     uint16_t avail = rx_available(c);
     uint16_t n = (uint16_t)(cap < avail ? cap : avail);
@@ -459,7 +521,7 @@ static int lw_recv(void *ctx, uint8_t *buf, uint32_t cap) {
     // Waiting until the chain emptied looked simpler and could not work: more
     // data keeps arriving and being appended, so tot_len grows as fast as the
     // reader advances and the end is never reached. Nothing is freed, the pbuf
-    // pool runs dry, and the driver has nowhere to put the next packet — the
+    // pool runs dry, and the driver has nowhere to put the next packet: the
     // transfer stops a few hundred bytes in.
     //
     // That is why a 1 KB manifest downloaded fine and a 694 KB image stalled at
@@ -475,7 +537,7 @@ static int lw_recv(void *ctx, uint8_t *buf, uint32_t cap) {
     //
     // Acking on ARRIVAL instead loses it entirely: the sender keeps sending
     // while this device is busy writing flash, the buffers fill, packets get
-    // dropped — and the sender believes they were delivered, so it never
+    // dropped, and the sender believes they were delivered, so it never
     // retransmits. A download then died partway with no error at around 145 KB,
     // which is simply where writing to flash fell far enough behind.
     //
@@ -499,8 +561,11 @@ static int lw_recv(void *ctx, uint8_t *buf, uint32_t cap) {
 // on_connected sets its connected flag before it is, on_recv appends somebody
 // else's bytes to its buffer. A failed fetch quietly breaks the fetch after it.
 //
-// Caller must NOT hold the lwIP lock.
+// Caller holds a NetOwn and NOT the lwIP lock. A connection from before the
+// radio last went down has no PCB any more: its pointers are dropped, never
+// followed.
 static void conn_detach(TcpConn *c) {
+    if (!conn_live(c)) { c->pcb = nullptr; c->rx = nullptr; return; }
     cyw43_arch_lwip_begin();
     if (c->rx) { pbuf_free(c->rx); c->rx = nullptr; }
     if (c->pcb) {
@@ -519,8 +584,7 @@ static void conn_detach(TcpConn *c) {
 
 static void lw_close(void *ctx) {
     bb_note_phase("http: closing");
-    conn_detach((TcpConn *)ctx);
-    net_op_release();
+    conn_release((TcpConn *)ctx);
 }
 
 // How much free heap a TLS handshake wants. A measured threshold with a margin,
