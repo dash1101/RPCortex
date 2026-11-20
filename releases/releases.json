@@ -2,6 +2,101 @@
   "schema": 1,
   "releases": [
     {
+      "tag": "v2.05-beta",
+      "display": "v2.05-beta",
+      "version": "2.05",
+      "build": 635,
+      "commit": "b90245b1704950451dc64370fb00ad1e592e25a9",
+      "codename": "Vela II",
+      "date": "2026-11-20",
+      "prerelease": true,
+      "title": "RPCortex v2.05-beta (build 635)",
+      "summary": "images built with only the features a board needs, downloads three times faster, and more stack headroom for commands sent by host tools.",
+      "notes": {
+        "new": [
+          "An image can be built without the parts a board does not need: `./build.sh pico_w --without wifi` (Bluetooth and SSH go with it) leaves a Pico W 529 KB of its firmware slot free instead of 75, and 93 KB more memory. `bluetooth`, `ssh`, `sd` and `peripherals` (the NFC, iButton, sub-GHz and LoRa drivers) can be left out the same way; `./build.sh --features` lists them with what each saves, and `tools/buildconf.py` asks the questions. `ver` lists the features an image was built with, a command whose feature was left out says so, and a custom image is named for what it leaves out and is never published as a release. Custom images have not yet run on a board."
+        ],
+        "improved": [
+          "Downloads to a file are about three times faster: 866 KB over HTTPS in 16.5 s, where it took 54.8 s, which is now as fast as the network delivers it. Every packet written used to walk the whole filesystem twice to check the file still fitted; it is measured when the file opens and every 256 KB, and estimated in between. A download that does not fit is still refused before the disk is full, and leaves no partial file.",
+          "On the Pico and Pico 2, the network commands (`wget`, `curl`, `pkg update`, `update check` and the rest) say the board has no wireless hardware instead of trying, and the code behind them is no longer in those images, which are about 15 KB smaller."
+        ],
+        "fixed": [
+          "Pinging the device's own address, or 127.0.0.1, timed out. Packets to itself go through a loopback now, as on a computer, and answer in about half a millisecond.",
+          "A command sent by a host tool ran close to the end of the console's stack: an HTTPS fetch or a package install through `rpc` peaked at 7.3 KB of 8 KB. The shell keeps its alias and redirect buffers off the stack while a command runs, and the fetch keeps its 5 KB of working state on the heap, so the same commands now peak at 4.1 KB. A redirect to a path too long to hold is an error instead of a write to the wrong place."
+        ],
+        "security": [],
+        "changed": [],
+        "issues": []
+      },
+      "assets": [
+        {
+          "board": "pico2_w",
+          "kind": "bin",
+          "file": "rpcortex-v2.05-beta-pico2_w.bin",
+          "size": 868492,
+          "sha256": "63da875b29a229ec19fc21e59c0f20874df9c0d1fa479340f6d191fbf6462140",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.05-beta/rpcortex-v2.05-beta-pico2_w.bin"
+        },
+        {
+          "board": "pico2_w",
+          "kind": "uf2",
+          "file": "rpcortex-v2.05-beta-pico2_w.uf2",
+          "size": 1737728,
+          "sha256": "45420a32303bdede2318abf6b1542ee911137fb88d028efc955f10dc067a90f2",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.05-beta/rpcortex-v2.05-beta-pico2_w.uf2"
+        },
+        {
+          "board": "pico_w",
+          "kind": "bin",
+          "file": "rpcortex-v2.05-beta-pico_w.bin",
+          "size": 775412,
+          "sha256": "b5bae9ac0b9fe3f847d407d6c6ac9d5f99ee9c035106e0e9b44ec23e7bacaa65",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.05-beta/rpcortex-v2.05-beta-pico_w.bin"
+        },
+        {
+          "board": "pico_w",
+          "kind": "uf2",
+          "file": "rpcortex-v2.05-beta-pico_w.uf2",
+          "size": 1550848,
+          "sha256": "4c546bb829078be3b5dc3265948cf6bdb687d46ad0e6720f7d38ff484bd4e16b",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.05-beta/rpcortex-v2.05-beta-pico_w.uf2"
+        },
+        {
+          "board": "pico2",
+          "kind": "bin",
+          "file": "rpcortex-v2.05-beta-pico2.bin",
+          "size": 373516,
+          "sha256": "3eb2c87b27642d0c6153660e3af641bd1e70d7d82192d153096f59405c29c660",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.05-beta/rpcortex-v2.05-beta-pico2.bin"
+        },
+        {
+          "board": "pico2",
+          "kind": "uf2",
+          "file": "rpcortex-v2.05-beta-pico2.uf2",
+          "size": 748032,
+          "sha256": "e1851286c210417d73980c6a51e4770afd6c6525a7d8fd0cce9e149e5f7f1a61",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.05-beta/rpcortex-v2.05-beta-pico2.uf2"
+        },
+        {
+          "board": "pico",
+          "kind": "bin",
+          "file": "rpcortex-v2.05-beta-pico.bin",
+          "size": 311992,
+          "sha256": "57bcac13ce243378a20ef11669726f7f6be92dedf199aa48fc5934bd1453ba08",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.05-beta/rpcortex-v2.05-beta-pico.bin"
+        },
+        {
+          "board": "pico",
+          "kind": "uf2",
+          "file": "rpcortex-v2.05-beta-pico.uf2",
+          "size": 624128,
+          "sha256": "839eb61c643ab32ffbb061083315a79fad1eed4756aa3df9485dfe4d429d9117",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.05-beta/rpcortex-v2.05-beta-pico.uf2"
+        }
+      ],
+      "url": "https://github.com/dash1101/RPCortex/releases/tag/v2.05-beta"
+    },
+    {
       "tag": "v2.04-beta",
       "display": "v2.04-beta",
       "version": "2.04",

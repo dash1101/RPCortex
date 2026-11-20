@@ -8,6 +8,22 @@ good notes is in `RELEASING.md`.
 
 ## Unreleased
 
+Summary: 
+
+### New
+
+### Improved
+
+### Fixed
+
+### Security
+
+### Changed
+
+### Known issues
+
+## v2.05-beta (build 635), 2026-11-20
+
 Summary: images built with only the features a board needs, downloads three times faster, and more stack headroom for commands sent by host tools.
 
 ### New
