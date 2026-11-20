@@ -31,6 +31,11 @@ extern "C" int fault_report_contained(void);
 static LoadedApp g_apps[APPS_MAX];
 static bool      g_used[APPS_MAX];
 
+// See LoaderGuard in apps.h.
+static RpcLock   g_loader_lock;
+LoaderGuard::LoaderGuard()  { lock_acquire(&g_loader_lock); }
+LoaderGuard::~LoaderGuard() { lock_release(&g_loader_lock); }
+
 static LoadedApp *find(const char *name) {
     for (int i = 0; i < APPS_MAX; i++)
         if (g_used[i] && strcmp(g_apps[i].header.name, name) == 0) return &g_apps[i];
@@ -1049,7 +1054,11 @@ int apps_launch(const char *file, int arg, bool quiet) {
     }
     uint32_t before = heap_free();
     LoadedApp app;
-    LoadResult rc = app_load(src, &app);
+    LoadResult rc;
+    {
+        LoaderGuard parse;             // the parse only; the app runs without it
+        rc = app_load(src, &app);
+    }
     storage_close_source(handle);
     if (rc != LOAD_OK) {
         if (!quiet) out_err("Load failed: %s%s%s", load_result_str(rc),

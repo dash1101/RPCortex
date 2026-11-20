@@ -46,8 +46,10 @@ void loader_set_allocator(LoaderAlloc a, LoaderFree f) {
 
 // Windows into the ELF, shared by the two functions that parse one.
 //
-// app_load and app_pic_install are never in flight at the same time — a package
-// is being installed or it is being loaded — and a private copy of each in both
+// app_load and app_pic_install are never in flight at the same time — the OS
+// holds LoaderGuard (shell/apps.h) around every call that parses an ELF, because
+// a load from a background task can otherwise overlap an install on the shell —
+// and a private copy of each in both
 // would be six kilobytes of bss for nothing. Named here rather than declared
 // static inside each function so the sharing is a decision instead of an
 // accident, and so the consequence is written down once: NOTHING may call one of
@@ -488,9 +490,11 @@ LoadResult app_load(const AppSource &src, LoadedApp *out) {
     // app_load, which is the shell during `pkg install` and the boot task
     // before that. Neither has room for it, and neither should have to.
     //
-    // Safe because loading is one at a time by construction: packages load
-    // sequentially at boot, and installing is a shell command. Nothing in the
-    // ABI lets a package load another one.
+    // Safe only because loading is one at a time, and that is ENFORCED by the
+    // caller rather than true by construction: a `bg run` or a scheduled line
+    // can load while the shell installs. The OS holds LoaderGuard (apps.h)
+    // around every call into app_peek, app_load, app_pic_measure and
+    // app_pic_install. Nothing in the ABI lets a package load another one.
     Elf32_Shdr *const sh = g_shdr;                 // shared; see the note above
     if (!read_exact(src, eh.e_shoff, sh, eh.e_shnum * sizeof(Elf32_Shdr)))
         return LOAD_ERR_READ;

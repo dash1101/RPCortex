@@ -9,6 +9,7 @@
 #include "pkgslot.h"
 #include "task.h"
 #include "joblist.h"
+#include "lock.h"
 
 // Declared where it is used rather than in apps.h, matching sys.cpp: the pool is
 // an implementation detail of apps.cpp and only two callers have any business
@@ -231,8 +232,10 @@ static LoadResult slot_write(const AppSource &src, uint32_t i,
     SlotFlash fl; storage_pkg_slot_flash(&fl);
     // Static, not on the stack: the writer carries a 256-byte page buffer and
     // this runs on the shell's 8 KB stack. loader.cpp makes the same choice for
-    // the same reason. It also means one install at a time, which is true of the
-    // loader's own buffers already.
+    // the same reason. It also means one slot write at a time, which the
+    // LoaderGuard held across the whole of this makes true rather than assumed:
+    // the erase, the write and the commit, not only app_pic_install.
+    LoaderGuard parse;
     static PkgSlotWriter w;
     static PicManifest   m;
 
@@ -505,7 +508,62 @@ static bool install_finish(const char *file, const char *name, const char *versi
     return true;
 }
 
+// ONE INSTALL AT A TIME.
+//
+// An install is not only a parse: it stops and restarts services through one
+// held list, rewrites the index, unloads and reloads packages and writes a flash
+// slot. LoaderGuard serialises the parse and the slot write; this keeps a second
+// install (from `bg`, a scheduled line, or a package's detached shell run) out
+// of the rest. A claim rather than a lock, because the install ends by RUNNING
+// the package it installed, and a held lock would stop a stalled package from
+// being forced off its core. Held against a task: an install whose task has
+// gone does not count. Nested calls on the same task are let through, which is
+// how the stock updater and `pkg update` install several in a row.
+static volatile int g_install_pid;
+static uint32_t     g_install_depth;
+
+static bool install_owner_alive(int pid) {
+    const TaskInfo *t = task_find(pid);
+    return t && t->state != TASK_DONE && t->state != TASK_FREE;
+}
+
+struct InstallClaim {
+    bool ok = false;
+    InstallClaim() {
+        int self = task_self();
+        if (self <= 0) self = -2;      // before the scheduler: lock.cpp's convention
+        lock_hw_enter();
+        int owner = g_install_pid;
+        lock_hw_exit();
+        // The liveness test is outside the spinlock (it reads the task table),
+        // and the claim is made again inside it, so two tasks that both saw a
+        // dead owner cannot both take it.
+        bool stale = owner && owner != self && !install_owner_alive(owner);
+        lock_hw_enter();
+        if (g_install_pid == 0 || g_install_pid == self ||
+            (stale && g_install_pid == owner)) {
+            if (g_install_pid != self) g_install_depth = 0;
+            g_install_pid = self;
+            g_install_depth++;
+            ok = true;
+        }
+        lock_hw_exit();
+    }
+    ~InstallClaim() {
+        if (!ok) return;
+        lock_hw_enter();
+        if (--g_install_depth == 0) g_install_pid = 0;
+        lock_hw_exit();
+    }
+};
+
 bool pkg_install_file(const char *file, bool quiet, bool consume) {
+    InstallClaim claim;
+    if (!claim.ok) {
+        out_errp("pkg", "Another package install is running. Try again when it finishes.");
+        return false;
+    }
+
     // THE NAME COMES FROM THE HEADER, NOT FROM A FULL LOAD, and the order below
     // is the whole point of this function.
     //
@@ -524,7 +582,8 @@ bool pkg_install_file(const char *file, bool quiet, bool consume) {
     if (!storage_open_source(file, &src, &h)) { out_err("No such file: %s", file); return false; }
 
     RpcAppHeader hdr;
-    LoadResult rc = app_peek(src, &hdr);
+    LoadResult rc;
+    { LoaderGuard parse; rc = app_peek(src, &hdr); }
     if (rc != LOAD_OK) {
         storage_close_source(h);
         out_err("Not a valid package: %s", load_result_str(rc));
@@ -574,7 +633,8 @@ bool pkg_install_file(const char *file, bool quiet, bool consume) {
     int         slot = -1;
     const char *occupant = nullptr;
     if (storage_pkg_slot_count()) {
-        LoadResult mrc = app_pic_measure(src, &pm);
+        LoadResult mrc;
+        { LoaderGuard parse; mrc = app_pic_measure(src, &pm); }
         if (mrc == LOAD_OK) {
             slot          = slot_available(name, &occupant);
             ri.pic        = pm.pic;
@@ -680,7 +740,7 @@ bool pkg_install_file(const char *file, bool quiet, bool consume) {
     apps_pool_reclaim();
 
     LoadedApp probe;
-    rc = app_load(src, &probe);
+    { LoaderGuard parse; rc = app_load(src, &probe); }
     storage_close_source(h);
     if (rc != LOAD_OK) {
         out_err("Not a valid package: %s%s%s", load_result_str(rc),

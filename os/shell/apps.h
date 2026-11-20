@@ -92,6 +92,26 @@ int apps_launch(const char *file, int arg, bool quiet);
 // value, or -1.
 int apps_launch_pic(const void *blob, const PicManifest *m, int arg, bool quiet);
 
+// ONE ELF PARSE AT A TIME, across every task and both cores.
+//
+// app_peek, app_load, app_pic_measure and app_pic_install share their windows
+// into the file — the section table, the relocation and symbol windows, the page
+// buffer — as statics in loader.cpp, on the understanding that only one of them
+// is ever in flight. That stopped being true by construction once a command
+// could run off the shell task: `bg run x.app`, a scheduled line, or a package's
+// detached shell run can load while the shell is in `pkg install`, and the two
+// parses then overwrite each other's section table. Every call into those four
+// holds this. It is held for the parse only, NEVER while a package runs: a
+// package that started a detached `run` and waited for it would never get it.
+//
+// Recursive, so a caller that already holds it may call another that takes it.
+struct LoaderGuard {
+    LoaderGuard();
+    ~LoaderGuard();
+    LoaderGuard(const LoaderGuard &) = delete;
+    LoaderGuard &operator=(const LoaderGuard &) = delete;
+};
+
 // Register the `apps` (list) and `unload` commands.
 void apps_register(void);
 
