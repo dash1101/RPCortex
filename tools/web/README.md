@@ -24,8 +24,8 @@ against a pretend device in the page itself, with no board attached.
 Chrome and Edge on a desktop computer (Windows, macOS, Linux, ChromeOS), and
 other browsers built on Chromium. The page talks to the board through the
 [Web Serial API](https://developer.mozilla.org/docs/Web/API/Web_Serial_API),
-and Firefox and Safari do not implement it; neither do mobile browsers for USB
-serial. On a browser without it the page says so, and the command-line tool
+which Firefox and Safari do not implement. Phones and tablets have not been
+tried. On a browser without it the page says so, and the command-line tool
 (`tools/rpc`) does the same jobs from a terminal.
 
 The browser asks which port to use the first time. The list shows Raspberry Pi

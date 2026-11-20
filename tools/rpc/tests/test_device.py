@@ -93,6 +93,10 @@ class TestEntering(DeviceCase):
             d.put(b"", "/tmp/empty")
         with self.assertRaises(NotSupported):
             d.put(b"x", "/tmp/café")
+        # The prompt holds 127 characters; past that the marker would be lost.
+        with self.assertRaises(NotSupported):
+            d.exec("echo " + "x" * 80)
+        self.assertEqual(d.exec("echo " + "y" * 60).text, "y" * 60 + "\n")
         d.close()
 
     def test_old_firmware_digest_refused(self):

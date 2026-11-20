@@ -161,6 +161,7 @@ async function doSwitch(target) {
       S.cwd = S.link.hello.cwd || "/";
       setMode("link");
       renderFacts();
+      renderRepo();
       return S.link;
     } catch (e) {
       if (S.line && S.mode === "switching") { S.line.setSink(termWrite); setMode("terminal"); }
@@ -512,26 +513,31 @@ function renderRepo() {
   rows.textContent = "";
   if (!S.index) return;
   const q = $("#repo-filter").value.trim().toLowerCase();
-  const arch = S.link ? boardArch(S.link.hello.board) : null;
+  const board = S.link ? S.link.hello.board : null;
+  const arch = boardArch(board);
   const shown = S.index.filter((p) => !q || (p.name + " " + p.desc).toLowerCase().includes(q))
     .sort((a, b) => a.name.localeCompare(b.name));
   if (!shown.length) rows.append(el("tr", {}, el("td", { colspan: "4", class: "empty" }, "Nothing matches.")));
   for (const p of shown) {
-    const runs = !arch || archRunsHere(p.arch, arch);
+    // `pkg install <file>` does not check the architecture, so a board this
+    // page cannot place gets no Install buttons rather than a guess.
+    const runs = !!arch && archRunsHere(p.arch, arch);
     rows.append(el("tr", {},
       el("td", {}, el("span", { class: "name" }, p.name), p.kind && p.kind !== "app" ? el("span", { class: "tag" }, p.kind) : null),
       el("td", { class: "mono" }, p.ver),
       el("td", { class: "wide" }, p.desc),
       el("td", { class: "acts" }, el("button", {
-        disabled: !runs, title: runs ? `Install ${p.name} ${p.ver}` : `Built for ${p.arch}; this board is ${arch}`,
+        disabled: !runs,
+        title: runs ? `Install ${p.name} ${p.ver}` : arch ? `Built for ${p.arch}; this board is ${arch}` : "Connect first, so the board's architecture is known",
         onclick: () => installFromRepo(p.name).catch(fail),
-      }, runs ? "Install" : "Not for this board"))));
+      }, runs ? "Install" : arch ? "Not for this board" : "Connect first"))));
   }
 }
 
 async function installFromRepo(name) {
   const link = await needLink();
   const arch = boardArch(link.hello.board);
+  if (!arch) throw new RpcError(`This page does not know which architecture the board '${link.hello.board}' runs, so it will not guess. Use rpc install --arch.`);
   const pkg = choose(S.index, name, arch);
   pkgLog(`${pkg.name} ${pkg.ver} (${pkg.arch || "any architecture"}), downloading...`);
   const { data, verified } = await download(pkg);

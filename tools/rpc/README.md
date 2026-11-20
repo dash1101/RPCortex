@@ -99,9 +99,9 @@ updates the firmware.
 
 **Linux.** The port is `/dev/ttyACM0` or similar, owned by the `dialout` group
 (`uucp` on Arch). Add yourself and log in again:
-`sudo usermod -aG dialout $USER`. ModemManager on some distributions probes new
-serial ports for a few seconds after they appear; if the first command after
-plugging in sees garbage, wait a moment or disable it for this device. `rpc
+`sudo usermod -aG dialout $USER`. On distributions that run ModemManager, it
+can probe a newly plugged-in serial port for a few seconds; if the first command
+after plugging in gets a garbled answer, wait a moment and run it again. `rpc
 flash` needs the BOOTSEL drive mounted, which desktop environments do on their
 own; without a desktop, mount it by hand or install `picotool`, which `rpc
 flash` uses when no drive appears.

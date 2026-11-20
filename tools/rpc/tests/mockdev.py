@@ -485,7 +485,7 @@ class MockDevice(object):
                 while k is not None and not (0x40 <= k <= 0x7E and k != ord("[")):
                     k = self.getkey(0.05)
                 continue
-            if 32 <= c < 127 and len(buf) < 255:
+            if 32 <= c < 127 and len(buf) < 127:      # char line[128] in shell.cpp
                 buf.append(c)
                 self.emit(bytes([c]))
                 if self.repaint and self.rng.random() < 0.15:
@@ -597,8 +597,8 @@ class MockDevice(object):
         self.out(self.user + "\n")
 
     def c_ver(self, a):
-        self.out("RPCortex v2.01-beta (build 554)\nGCC 14.2.1   Platform: {} (armv8m)\n"
-                 .format(self.board))
+        self.out("RPCortex v2.01-beta (build 554)\nGCC 14.2.1   Platform: {} ({})\n"
+                 .format(self.board, "RP2350" if self.board.startswith("pico2") else "RP2040"))
 
     def c_ls(self, a):
         p = resolve(self.cwd, a[1] if len(a) > 1 else ".")

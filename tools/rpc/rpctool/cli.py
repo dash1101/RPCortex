@@ -394,7 +394,7 @@ def cmd_cat(ctx, a):
 def _board_arch(dev):
     board = dev.hello.get("board")
     if not board and dev.mode != "link":
-        m = re.search(r"Platform:?\s*(\S+)", dev.exec("ver").text)
+        m = re.search(r"Platform\s*:\s*(\S+)", dev.exec("ver").text)
         board = m.group(1) if m else None
     return _repo.board_arch(board), board
 
@@ -422,6 +422,12 @@ def cmd_install(ctx, a):
                 index = _repo.load_index(a.index)
             arch, board = _board_arch(dev)
             arch = a.arch or arch
+            if arch is None:
+                # `pkg install <file>` does not check the architecture, so this
+                # is the only thing standing between ARMv8-M code and an RP2040.
+                raise RpcError("rpc does not know which architecture the board '{}' runs; "
+                               "say with --arch armv6m (RP2040) or --arch armv8m (RP2350)"
+                               .format(board or "?"))
             pkg = _repo.choose(index, target, arch)
             ctx.note("Installing {} {} ({}) for {}".format(
                 pkg.name, pkg.ver, pkg.arch or "any architecture", board or arch or "this board"))

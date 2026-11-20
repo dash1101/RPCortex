@@ -266,6 +266,15 @@ class TestInstall(CliCase):
         self.assertEqual(rc, 1)
         self.assertIn("built for armv8m; this board is armv6m", err)
 
+    def test_unknown_board_needs_arch(self):
+        self.dev.board = "esp32s3"
+        rc, out, err = self.rpc("install", "--index", self.index, "hello")
+        self.assertEqual(rc, 1)
+        self.assertIn("--arch", err)
+        self.assertNotIn("hello", self.dev.installed)
+        rc, out, err = self.rpc("install", "--index", self.index, "--arch", "armv6m", "hello")
+        self.assertEqual(rc, 0, err)
+
     def test_checksum_mismatch_installs_nothing(self):
         before = dict(self.dev.fs.files)
         rc, out, err = self.rpc("install", "--index", self.index, "tampered")
@@ -378,6 +387,12 @@ class TestLegacyCli(CliCase):
         self.assertIn("oldpkg", self.dev.installed)
         rc, out, err = self.rpc("info")
         self.assertIn(b"legacy", out)
+        index = self.local("idx.json", json.dumps({"packages": [
+            {"name": "only8", "arch": "armv8m", "url": "o.app"}]}).encode())
+        self.dev.board = "pico_w"           # read from `ver` on this firmware
+        rc, out, err = self.rpc("install", "--index", index, "only8")
+        self.assertEqual(rc, 1)
+        self.assertIn("this board is armv6m", err)
 
 
 class TestLoginCli(CliCase):

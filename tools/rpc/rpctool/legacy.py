@@ -22,6 +22,9 @@ from .util import quote
 
 PUT_CHUNK = 256      # PUT_CHUNK in os/shell/shell.cpp
 PUT_ACK = 0x06
+# The prompt's buffer is `char line[128]` in os/shell/shell.cpp, and the line
+# editor silently stops taking characters when it is full.
+PROMPT_MAX = 127
 
 
 class LegacyShell(object):
@@ -43,6 +46,12 @@ class LegacyShell(object):
             # in it would silently become a different name.
             raise NotSupported("this firmware's prompt takes printable ASCII only; "
                                "{!r} cannot be typed there".format(text))
+        if len(data) > PROMPT_MAX:
+            # Typed anyway, the end of it (the marker, or the digest) would be
+            # dropped and the answer would never come.
+            raise NotSupported("this firmware's prompt takes at most {} characters, and this "
+                               "needs {}; shorten it, or update the firmware"
+                               .format(PROMPT_MAX, len(data)))
         for i in range(len(data)):
             self.t.write(data[i:i + 1])
             if self.timing.type_delay:
@@ -79,9 +88,9 @@ class LegacyShell(object):
             raise RpcError("a command line cannot contain a line break")
         if not line.strip():
             raise RpcError("nothing to run")
-        tok = binascii.hexlify(os.urandom(5)).decode()
-        typed = '{} && echo "__RPC_" "{}0" || echo "__RPC_" "{}1"'.format(line, tok, tok)
-        done = re.compile(r"__RPC_ " + tok + r"([01])")
+        tok = binascii.hexlify(os.urandom(4)).decode()
+        typed = '{} && echo "RPCM" "{}0" || echo "RPCM" "{}1"'.format(line, tok, tok)
+        done = re.compile(r"RPCM " + tok + r"([01])")
         self.clear_line()
         self.type_line(typed)
 
@@ -171,14 +180,14 @@ def _output(text):
     """What the command printed: after the echo of the typed line, up to the
     marker.
 
-    The echo is found by the quoted half of the marker rather than by the
-    token: the line editor may draw a grey suggestion from history in the
+    The echo is found by the quoted half of the marker ("RPCM") rather than by
+    the token: the line editor may draw a grey suggestion from history in the
     middle of the token while it is typed, but the whole echo, suggestions and
     all, stays on one line."""
     lines = [ln.rstrip("\r") for ln in text.split("\n")]
     start = 0
     for i, ln in enumerate(lines):
-        if '"__RPC_"' in ln:
+        if '"RPCM" "' in ln:
             start = i + 1
             break
     out = [ln.split("\r")[-1] for ln in lines[start:]]
