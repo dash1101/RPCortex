@@ -321,10 +321,20 @@ static void fuzz_keys(uint32_t iters) {
         // with its type word in front of it.
         if (m) {
             Bytes probe = a; probe.push_back(0);
-            const char *at = strstr((const char *)probe.data(), b64);
-            ck(at != nullptr && at - (const char *)probe.data() >= 20 &&
-               !strncmp(at - 20, "ecdsa-sha2-nistp256", 19),
-               "a match only with the key's base64 present", it);
+            // The type word in front, with any run of blanks between (a
+            // second space is still one field separator).
+            const char *base = (const char *)probe.data();
+            const char *at = strstr(base, b64);
+            const char *w = at;
+            while (w && w > base && (w[-1] == ' ' || w[-1] == '\t')) w--;
+            bool good = at != nullptr && w < at && w - base >= 19 &&
+                        !strncmp(w - 19, "ecdsa-sha2-nistp256", 19);
+            ck(good, "a match only with the key's base64 present", it);
+            if (!good && fails < 5) {
+                printf("    input: ");
+                for (uint8_t ch : a) printf(ch >= 32 && ch < 127 ? "%c" : "\\x%02x", ch);
+                printf("\n");
+            }
         }
         Bytes k = kb; mutate(k, 1024);
         SshKnown v = ssh_known_hosts_check((const char *)k.data(), (uint32_t)k.size(), "host", 2222, blob, bn);
