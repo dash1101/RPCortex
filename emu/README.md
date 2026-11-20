@@ -57,10 +57,10 @@ looping script in a background task, which used to silence the machine) and
 `service_restart` (the supervisor restarting a failing service). Each is one test
 in its own file: a second boot in the same Renode, after `Reset Emulation`,
 stalled at the login prompt, and nothing here has needed to explain that yet.
-Two things about driving it: the line editor redraws the whole prompt on every
-echoed character, so waiting for the prompt says nothing about whether a command
-has finished; and two spaces inside an expected line are a cell boundary to
-Robot, so such lines are matched as regexes.
+Two things about driving it: the prompt is on the wire before a command has run,
+so waiting for it says nothing about whether the command has finished (every
+suite appends `; echo =done=` and waits for that); and two spaces inside an
+expected line are a cell boundary to Robot, so such lines are matched as regexes.
 
 **The RP2040 stack guard, and why boot once stopped after POST.** It used to:
 core 0 spun forever on one load in `guard_ok()` (`os/core/task.cpp`) in the first

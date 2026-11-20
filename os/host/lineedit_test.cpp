@@ -162,11 +162,53 @@ static void t_escapes(void) {
 
 // --- the interactive loop, driven by a scripted keyboard --------------------
 
+// A terminal, as far as the editor uses one: printable characters overwrite at
+// the cursor, \r and \b move it, ESC[nD / ESC[nC move it n cells, ESC[K clears
+// to the end of the row, colour sequences change nothing on the grid. \n starts
+// a new row and keeps the old one as `last`, which for a drive is the row the
+// line was submitted on. Comparing that row with what the editor returned is
+// what proves an incremental repaint left nothing stale and nothing missing.
+struct Vt {
+    char     row[256];
+    uint32_t n, cur;
+    char     last[256];
+    int      esc;            // 0 none, 1 after ESC, 2 inside CSI
+    uint32_t arg;
+    uint32_t bytes;          // everything written, for the cost checks
+};
+static void vt_put(Vt *v, char c) {
+    v->bytes++;
+    if (v->esc == 1) { v->esc = (c == '[') ? 2 : 0; v->arg = 0; return; }
+    if (v->esc == 2) {
+        if (c >= '0' && c <= '9') { v->arg = v->arg * 10 + (uint32_t)(c - '0'); return; }
+        if (c == ';') return;
+        uint32_t k = v->arg ? v->arg : 1;
+        if (c == 'D') v->cur = v->cur > k ? v->cur - k : 0;
+        if (c == 'C') v->cur += k;
+        if (c == 'K') { if (v->n > v->cur) v->n = v->cur; }
+        v->esc = 0;
+        return;
+    }
+    if (c == '\033') { v->esc = 1; return; }
+    if (c == '\r') { v->cur = 0; return; }
+    if (c == '\b') { if (v->cur) v->cur--; return; }
+    if (c == '\n') {
+        memcpy(v->last, v->row, v->n); v->last[v->n] = 0;
+        v->n = 0; v->cur = 0;
+        return;
+    }
+    if (v->cur >= sizeof(v->row) - 1) return;
+    while (v->n < v->cur) v->row[v->n++] = ' ';
+    v->row[v->cur++] = c;
+    if (v->cur > v->n) v->n = v->cur;
+}
+
 struct Fake {
     const char *keys;
     uint32_t    at;
     char        screen[512];
     uint32_t    sn;
+    Vt          vt;
 };
 
 static int fake_getch(void *ctx, uint32_t) {
@@ -177,6 +219,7 @@ static int fake_getch(void *ctx, uint32_t) {
 static void fake_putch(void *ctx, char c) {
     Fake *f = (Fake *)ctx;
     if (f->sn + 1 < sizeof(f->screen)) { f->screen[f->sn++] = c; f->screen[f->sn] = 0; }
+    vt_put(&f->vt, c);
 }
 
 static const char *kCmds[] = {"reboot", "reg", "rename", "ls", "sysinfo"};
@@ -201,8 +244,12 @@ static const char *fake_history(void *, int depth) {
 }
 
 // Run the editor over a scripted key sequence and return the resulting line.
+static uint32_t g_drive_bytes;        // what the last drive wrote, prompt included
+
 static void drive(const char *keys, char *out, uint32_t cap) {
-    Fake f{keys, 0, "", 0};
+    static Fake f;
+    memset(&f, 0, sizeof(f));
+    f.keys = keys;
     LineEdit le{};
     le.io.getch = fake_getch;
     le.io.putch = fake_putch;
@@ -211,6 +258,62 @@ static void drive(const char *keys, char *out, uint32_t cap) {
     le.history  = fake_history;
     le.prompt   = "$ ";
     line_edit(&le, out, cap);
+
+    // What the person saw when they pressed Enter has to be exactly the prompt
+    // and the line that was submitted: no leftover characters, no leftover
+    // grey suggestion, nothing missing.
+    char want[300];
+    snprintf(want, sizeof(want), "$ %s", out);
+    char what[160];
+    snprintf(what, sizeof(what), "screen matches the line for keys \"%s\"", keys);
+    for (char *w = what; *w; w++) if (*w == '\033') *w = '^';
+    eq(f.vt.last, want, what);
+    g_drive_bytes = f.vt.bytes;
+}
+
+// The repaint is incremental now, so the cases where that can go wrong get a
+// drive of their own: deleting, editing in the middle, and the suggestion
+// growing, shrinking and being taken. Each is checked against the screen by
+// drive() itself.
+static void t_repaint(void) {
+    char b[64];
+
+    // Typing with nothing to suggest costs one byte a key: "$ " then "hello",
+    // then the newline. It used to be the whole prompt and line every time.
+    drive("hello\r", b, sizeof(b));
+    eq(b, "hello", "plain typing still gives the line");
+    eqn(g_drive_bytes, 2 + 5 + 1, "and costs exactly a byte a key");
+
+    drive("hellox\x7f\x7fp\r", b, sizeof(b));
+    eq(b, "hellp", "backspace twice, then type");
+
+    drive("abcdef\033[D\033[D\x7f\x7fZ\r", b, sizeof(b));
+    eq(b, "abZef", "backspace in the middle closes the gap");
+
+    drive("abcdef\033[D\033[D\033[DXY\r", b, sizeof(b));
+    eq(b, "abcXYdef", "inserting in the middle pushes the rest along");
+
+    drive("one two three\x17\x17" "four\r", b, sizeof(b));
+    eq(b, "one four", "ctrl+w twice then type");
+
+    drive("one two\033[D\033[D\033[D\x0b\r", b, sizeof(b));
+    eq(b, "one ", "ctrl+k clears to the end");
+
+    drive("abc\033[D\x15X\r", b, sizeof(b));
+    eq(b, "Xc", "ctrl+u from the middle");
+
+    // The suggestion for "reb" is "oot". Typing on shrinks it, backspace grows
+    // it back, and Enter must not leave it on screen.
+    drive("reb\r", b, sizeof(b));
+    eq(b, "reb", "a suggestion is not submitted");
+    drive("rebo\x7f\x7fn\r", b, sizeof(b));
+    eq(b, "ren", "the suggestion changes word as the prefix does");
+    drive("syst\x7f\x7f\x7f\x7f\x7fls\r", b, sizeof(b));
+    eq(b, "ls", "deleting a suggested word entirely, then a new one");
+    drive("sys\033[C\r", b, sizeof(b));
+    eq(b, "sysinfo", "right arrow still takes the suggestion");
+    drive("sysx\x7f\033[C z\r", b, sizeof(b));
+    eq(b, "sysinfo z", "a suggestion lost and found again, taken, then typed past");
 }
 
 static void t_loop(void) {
@@ -370,6 +473,7 @@ int main(void) {
     t_prefix();
     t_escapes();
     t_loop();
+    t_repaint();
     t_ghost();
     printf("  lineedit: %d checks, %d failed\n", checks, fails);
     return fails ? 1 : 0;

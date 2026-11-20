@@ -176,7 +176,9 @@ struct Term {
 // Redraw from scratch: carriage return, clear to end of line, prompt, text, then
 // put the cursor back where it belongs. Simpler and more robust than tracking
 // incremental terminal state, and at 115200 a 128-character line is under 12 ms.
-void redraw(const Term &t, const char *prompt, const char *buf,
+// noinline here and on paint(): at -O3 each was copied into every key handler,
+// which took this file from 6 KB of code to 12.
+__attribute__((noinline)) void redraw(const Term &t, const char *prompt, const char *buf,
             uint32_t len, uint32_t pos, const char *ghost) {
     t.put('\r');
     t.puts("\033[K");
@@ -203,6 +205,45 @@ void redraw(const Term &t, const char *prompt, const char *buf,
     // The line just drawn has no newline in it, so on a buffered stdout none
     // of it reaches the terminal until something else emits one. Optional: the
     // host tests drive a string buffer and have nothing to flush.
+    if (t.io->flush) t.io->flush(t.io->ctx);
+}
+
+// What is on the terminal right now, in buffer coordinates: how much of the
+// line is drawn, how much grey suggestion trails it, and where the cursor sits.
+// Every paint leaves this true, which is what lets the next one be small.
+struct Shown { uint32_t len, gn, cur; };
+
+__attribute__((noinline)) void left(const Term &t, uint32_t n) {
+    if (n == 1) { t.put('\b'); return; }
+    if (n) { t.puts("\033["); t.num(n); t.put('D'); }
+}
+
+// Repaint from buffer index `from` to the end, given that nothing before it has
+// changed since the last paint. Typing at the end of a line is then the
+// character and nothing else, where a full redraw is the prompt and the whole
+// line again for every key: 75 bytes a keystroke on a 48-character line,
+// measured, which is 6.5 ms each on a 115200 UART and the reason a pasted
+// script came back as tens of kilobytes. The full redraw stays for everything
+// that moves the cursor a long way or replaces the line (arrows, history,
+// completion), where it is the simpler thing to get right.
+__attribute__((noinline)) void paint(const Term &t, Shown &s, const char *buf, uint32_t len,
+           uint32_t pos, const char *ghost, uint32_t from) {
+    if (from > s.len) from = s.len;                  // nothing drawn past there yet
+    if (s.cur > from) left(t, s.cur - from);
+    else if (s.cur < from) { t.puts("\033["); t.num(from - s.cur); t.put('C'); }
+    for (uint32_t i = from; i < len; i++) t.put(buf[i]);
+
+    uint32_t gn = 0;
+    if (ghost && ghost[0] && pos == len) {
+        t.puts("\033[90m");
+        for (const char *g = ghost; *g; g++) { t.put(*g); gn++; }
+        t.puts("\033[0m");
+    }
+    // Only when there is something left over to clear: the old line, or the old
+    // suggestion, reaching further than the new one.
+    if (len + gn < s.len + s.gn) t.puts("\033[K");
+    left(t, (len - pos) + gn);
+    s = Shown{len, gn, pos};
     if (t.io->flush) t.io->flush(t.io->ctx);
 }
 
@@ -241,6 +282,15 @@ uint32_t line_edit(const LineEdit *le, char *buf, uint32_t cap) {
 
     buf[0] = 0;
     t.puts(le->prompt);
+    Shown shown{0, 0, 0};
+    // The full redraw, recording what it left on screen.
+    auto full = [&]() {
+        redraw(t, le->prompt, buf, len, pos, ghost);
+        uint32_t gn = (ghost[0] && pos == len) ? (uint32_t)strlen(ghost) : 0;
+        shown = Shown{len, gn, pos};
+    };
+    // A paint from `from`, for edits that leave everything before it alone.
+    auto tail = [&](uint32_t from) { paint(t, shown, buf, len, pos, ghost, from); };
 
     while (true) {
         int c = le->io.getch(le->io.ctx, 0);
@@ -251,7 +301,7 @@ uint32_t line_edit(const LineEdit *le, char *buf, uint32_t cap) {
         if (c == '\r' || c == '\n') {
             // Clear the suggestion before the newline, or the grey text is left
             // on screen looking like part of what was submitted.
-            if (ghost[0]) { ghost[0] = 0; redraw(t, le->prompt, buf, len, pos, ghost); }
+            if (ghost[0]) { ghost[0] = 0; tail(len); }
             t.put('\n');
             buf[len] = 0;
             return len;
@@ -262,10 +312,11 @@ uint32_t line_edit(const LineEdit *le, char *buf, uint32_t cap) {
         if (c == 0x03) {
             intr_raise();
             t.puts("^C\n");
-            len = 0; pos = 0; buf[0] = 0;
+            len = 0; pos = 0; buf[0] = 0; ghost[0] = 0;
             intr_clear();               // consumed here; the next line is clean
             intr_stash_clear();         // and so is anything typed before it
             t.puts(le->prompt);
+            shown = Shown{0, 0, 0};
             continue;
         }
 
@@ -282,27 +333,27 @@ uint32_t line_edit(const LineEdit *le, char *buf, uint32_t cap) {
         // sends the same byte for it.
         if (c == 0x7F || c == 0x08) {                // Backspace: one character
             len = line_delete_back(buf, len, pos, 1, &pos);
-            browse = -1; refresh_ghost(); redraw(t, le->prompt, buf, len, pos, ghost);
+            browse = -1; refresh_ghost(); tail(pos);
             continue;
         }
         if (c == 0x17) {                             // Ctrl+W: back one word
             uint32_t start = line_word_start(buf, len, pos);
             len = line_delete_back(buf, len, pos, pos - start, &pos);
-            browse = -1; refresh_ghost(); redraw(t, le->prompt, buf, len, pos, ghost);
+            browse = -1; refresh_ghost(); tail(pos);
             continue;
         }
         if (c == 0x15) {                             // Ctrl+U: to start of line
             len = line_delete_back(buf, len, pos, pos, &pos);
-            browse = -1; refresh_ghost(); redraw(t, le->prompt, buf, len, pos, ghost);
+            browse = -1; refresh_ghost(); tail(pos);
             continue;
         }
         if (c == 0x0B) {                             // Ctrl+K: to end of line
             len = pos; buf[len] = 0;
-            refresh_ghost(); redraw(t, le->prompt, buf, len, pos, ghost);
+            refresh_ghost(); tail(pos);
             continue;
         }
-        if (c == 0x01) { pos = 0;   refresh_ghost(); redraw(t, le->prompt, buf, len, pos, ghost); continue; }  // Ctrl+A
-        if (c == 0x05) { pos = len; refresh_ghost(); redraw(t, le->prompt, buf, len, pos, ghost); continue; }  // Ctrl+E
+        if (c == 0x01) { pos = 0;   refresh_ghost(); full(); continue; }  // Ctrl+A
+        if (c == 0x05) { pos = len; refresh_ghost(); full(); continue; }  // Ctrl+E
 
         if (c == 0x1b) {
             // Collect the sequence until its final byte (@ to ~) or the cap.
@@ -355,7 +406,7 @@ uint32_t line_edit(const LineEdit *le, char *buf, uint32_t cap) {
                 }
                 default: break;
             }
-            refresh_ghost(); redraw(t, le->prompt, buf, len, pos, ghost);
+            refresh_ghost(); full();
             continue;
         }
 
@@ -409,7 +460,7 @@ uint32_t line_edit(const LineEdit *le, char *buf, uint32_t cap) {
                     len = line_insert(buf, len, cap, pos++, common[i]);
                 if (n == 1 && len + 1 < cap && (pos == len || buf[pos] != ' '))
                     len = line_insert(buf, len, cap, pos++, ' ');
-                refresh_ghost(); redraw(t, le->prompt, buf, len, pos, ghost);
+                refresh_ghost(); full();
             } else {
                 // Nothing more can be added — the prefix is already as far as
                 // the candidates agree. Show them NOW rather than waiting for a
@@ -423,24 +474,23 @@ uint32_t line_edit(const LineEdit *le, char *buf, uint32_t cap) {
                     if ((i % 4) == 3 || i + 1 == n) t.put('\n');
                 }
                 if (n == COMP_MAX) t.puts("  ...\n");
-                refresh_ghost(); redraw(t, le->prompt, buf, len, pos, ghost);
+                refresh_ghost(); full();
             }
             continue;
         }
 
         if (c >= 32 && c < 127) {
             uint32_t before = len;
+            uint32_t at = pos;
             len = line_insert(buf, len, cap, pos, (char)c);
             if (len != before) {
                 pos++;
                 browse = -1;
-                // A full redraw on every keystroke now, rather than echoing the
-                // one character: the suggestion trails the cursor and has to be
-                // recomputed and redrawn as the word changes. At 115200 a
-                // 128-character line is about 12 ms, which is well under the
-                // gap between keystrokes.
+                // Everything before the insertion point is unchanged, so only
+                // the rest is repainted: the character, what followed it, and
+                // the suggestion, which is recomputed as the word changes.
                 refresh_ghost();
-                redraw(t, le->prompt, buf, len, pos, ghost);
+                tail(at);
             }
         }
     }
