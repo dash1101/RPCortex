@@ -31,6 +31,7 @@
 #include "blackbox.h"
 #include "joinguard.h"
 #include "netown.h"
+#include "radio.h"
 #include "scanlist.h"
 #include "rpc_app.h"
 
@@ -78,105 +79,10 @@ struct NetLock {
 
 // --- one owner at a time ----------------------------------------------------
 //
-// NetLock above blocks the CORE. That is right for excluding the driver's
-// interrupt, and fatal between tasks under cooperative scheduling: a task that
-// blocks the core waiting for a lock another task holds has stopped the only
-// thing that could release it.
-//
-// So the rule is that only ONE task is ever inside cyw43 or lwIP. This lock
-// enforces it, and it is an RpcLock rather than the driver's — RpcLock YIELDS
-// while it waits, so a task holding it keeps running and the waiter does not
-// take the core down with it.
-//
-// Every network OPERATION takes it. Reads do not, because reads no longer
-// touch lwIP at all — see NetStatus.
-static RpcLock g_net_op;
-
-// Exposed so the HTTP transport can hold ownership for the length of a
-// connection. It lives here rather than there because this is where the rule
-// is stated, and a second lock would defeat the point of having one.
-// Taking the network lock also puts the caller on the radio's core, and gives
-// it back on release.
-//
-// The one-owner rule was about TASKS, and that turned out to be half the rule.
-// A package task is spawned with no affinity and, measured on a real device,
-// runs on core 1 essentially always — so "one task at a time" was satisfied
-// while every call was still arriving on the wrong core. Refusing was the
-// honest thing to do while there was no way to move a task; now there is.
-//
-// The old affinity is remembered per task so a package that was free to run
-// anywhere goes back to being free afterwards, rather than being quietly
-// pinned to core 0 for the rest of its life by having once used the network.
-// Declared below, with the radio lifecycle they belong to.
-static bool g_radio_up;
-static uint32_t g_radio_core;
-
-#define NET_OWNERS 8
-static struct { int pid; TaskAffinity was; } g_net_prev[NET_OWNERS];
-
-void net_op_acquire(void) {
-    lock_acquire(&g_net_op);
-
-    uint32_t target = g_radio_up ? g_radio_core : 0;
-    if (task_this_core() == target) return;
-
-    int me = task_self();
-    int slot = -1;
-    for (int i = 0; i < NET_OWNERS; i++)
-        if (!g_net_prev[i].pid) { slot = i; break; }
-
-    // No room to remember where this task came from. Migrating anyway would
-    // pin it to core 0 for the rest of its life, since nothing would ever put
-    // its affinity back — a slow leak that ends with every task on one core.
-    // Better to leave it where it is: net_core_ok then refuses the call with a
-    // message, which is visible and recoverable.
-    if (slot < 0) {
-        out_warnp("net", "Too many tasks using the network at once.");
-        return;
-    }
-
-    g_net_prev[slot].pid = me;
-    g_net_prev[slot].was = task_affinity(me);
-
-    // A failure here is not fatal either: net_core_ok still refuses the call,
-    // so the outcome is a clear message rather than corruption.
-    task_migrate_to(target);
-}
-
-void net_op_release(void) {
-    int me = task_self();
-    for (int i = 0; i < NET_OWNERS; i++) {
-        if (g_net_prev[i].pid != me) continue;
-        // Only on the OUTERMOST release. The lock is recursive, and restoring
-        // on an inner one would drop this task back to core 1 halfway through
-        // somebody else's connection.
-        if (!lock_held_once(&g_net_op)) break;
-        task_set_affinity(me, g_net_prev[i].was);
-        g_net_prev[i].pid = 0;
-        break;
-    }
-    lock_release(&g_net_op);
-}
-
-bool net_op_held(void) { return lock_held_by_me(&g_net_op); }
-
-// The tripwire. One counter and the caller that tripped it first.
-//
-// Every entry into cyw43 or lwIP is supposed to be under the operation lock,
-// and three files have quietly not been. Counting is enough: the count is zero
-// on a correct build, so `wifi` says nothing, and the first time somebody adds
-// a fourth the number appears with an address to look up.
-static uint32_t g_unowned;
-static uint32_t g_unowned_pc;
-
-// The address recorded is where this call returns to, which after the guard's
-// constructor is inlined is the offending scope itself. addr2line on the ELF
-// names the line.
-void net_unowned_note(void) {
-    if (!g_unowned) g_unowned_pc = (uint32_t)(uintptr_t)__builtin_return_address(0);
-    g_unowned++;
-}
-uint32_t net_unowned_count(void) { return g_unowned; }
+// The operation lock (g_net_op), net_op_acquire/net_op_release and the
+// tripwire for an unowned entry live in radio.cpp now, beside the code that
+// brings the chip up: Bluetooth needs all of it too, and an image can carry
+// Bluetooth without this file. The rule they enforce is stated in netown.h.
 
 // What the last operation saw, in plain memory.
 //
@@ -202,9 +108,9 @@ struct NetStatus {
 };
 static NetStatus g_status = { false, {0}, {0}, {0}, {0}, 0, 0, false, -1 };
 
-// Whether the radio has been powered up. Declared here because the status
-// refresh below needs it.
-// Which core brought the chip up. cyw43's threadsafe_background async_context
+// Whether the radio has been powered up (g_radio_up), and which core brought it
+// up, are radio.cpp's; the status refresh below reads the first. The core
+// matters because cyw43's threadsafe_background async_context
 // records the core it was initialised on and drives lwIP from an IRQ there;
 // calling in from the other core is undefined, and the SDK's own asserts for it
 // compile out in a release build, so it fails silently rather than loudly.
@@ -387,57 +293,15 @@ int net_power_source(void) {
     return g_status.power;
 }
 
-// --- radio lifecycle --------------------------------------------------------
-
-// Bring the chip up on demand. cyw43_arch_init loads the firmware blob over
-// SPI, which takes a moment and is why this is not done at boot.
-// The privacy latch. Checked HERE rather than in the command, because every
-// path that needs the chip comes through this one — including the background
-// join at boot, which would otherwise bring the radio up behind a lock the user
-// set deliberately. A switch that only stops the polite callers is not a switch.
-bool radio_locked(void) {
-    return strcmp(reg_get("System.RadioLock", "false"), "true") == 0;
-}
-
-// Checkpoints through the radio bring-up and join.
+// --- the chip coming up and going down ----------------------------------------
 //
-// Every one of these steps is a call INTO the driver that does not yield, so if
-// one of them never returns the device hangs with nothing printed — the USB
-// buffer dies with it. bb_note_phase writes to memory the reset does not clear,
-// so the next boot can say which call it was.
-//
-// Worth knowing what these are NOT. The phase is one slot shared with every
-// package, and fw_millis writes it on every call, so on a device that is
-// drawing anything these are overwritten within a millisecond of being set —
-// by the OTHER core, which is still running, because only one core has stopped.
-// They are the answer on a quiet device and nothing at all on a busy one. The
-// fields that survive a running package are the ones in BlackBox with a single
-// writer each; max_stall_pc is what actually named the hang this path had.
-static inline void join_phase(const char *what) { bb_note_phase(what); }
+// radio.cpp brings the chip up and takes it down, for Wi-Fi and Bluetooth alike.
+// These are the parts of that which are Wi-Fi's, called at the points they
+// always ran.
 
-static bool radio_up(void) {
-    if (radio_locked()) {
-        out_err("Radios are locked off. 'radio on' to release the lock.");
-        return false;
-    }
-    if (g_radio_up) return true;
-
-    // Ownership HERE, not only in the callers. Bringing the chip up is the
-    // single most core-sensitive thing in this file — g_radio_core is set to
-    // whatever core runs it, and every later call has to match — and two of the
-    // three callers reach it without holding anything (`radio on`, and
-    // bluetooth through net_radio_up). Recursive, so the caller that does hold
-    // it pays nothing.
-    NetOwn own;
-    if (!own.ok) {
-        out_err("Could not reach the wireless chip from this task.");
-        return false;
-    }
-    join_phase("cyw43_arch_init");
-    if (cyw43_arch_init() != 0) {
-        out_err("Could not start the wireless chip.");
-        return false;
-    }
+// After cyw43_arch_init, before the chip is marked up. False when the chip did
+// not start, after taking the driver down again and saying so.
+bool wifi_radio_starting(void) {
     join_phase("enable_sta_mode");
     cyw43_arch_enable_sta_mode();
 
@@ -461,10 +325,11 @@ static bool radio_up(void) {
     // enough and it survives every rejoin.
     join_phase("wifi_pm");
     wifi_power_apply(cyw43_arch_gpio_get(CYW43_WL_GPIO_VBUS_PIN) ? 1 : 0);
+    return true;
+}
 
-    g_radio_core = task_this_core();
-    g_radio_up = true;
-
+// After the chip is marked up, on the core that brought it up.
+void wifi_radio_started(void) {
     // One reading now, while this core is by definition the radio's core.
     //
     // Without it the cache has never held anything and a status bar shows an
@@ -475,57 +340,6 @@ static bool radio_up(void) {
     // "never answered". A battery icon that is permanently blank is its own bug,
     // and trading this one for it would be no trade.
     chip_reads_refresh();
-
-    join_phase("radio up");
-    return true;
-}
-
-// Shared with bt.cpp, which needs the same chip up and must not decide for
-// itself whether it already is. Bluetooth calling cyw43_arch_init directly
-// re-initialised a chip the WiFi side had already started — a second firmware
-// download over a bus with a live async_context on it — and the driver hard
-// asserted on the bus errors that produced. It also walked straight past the
-// radio lock, which is the "switch that only stops the polite callers" this
-// file warns about a few lines up.
-bool net_radio_up(void) { return radio_up(); }
-
-// Is the radio up RIGHT NOW — a pure question, with no power to change the
-// answer. net_radio_up() above is misnamed for a query: it is radio_up(), an
-// ACTIVATOR that brings the chip up (and errors, or faults mid-teardown, when
-// it cannot). A per-frame status read must never do that. fw_power_source draws
-// a battery icon every frame and only wants to know whether it is safe to read
-// VBUS off the chip; it asks THIS. The freeze it caused: incognito took the
-// radio down, the next status frame called the activator, and it tried to
-// re-initialise the chip from the render task's core straight into the driver's
-// own teardown — the "second firmware download on a live async_context" this
-// file warns about a few lines up — and the GUI task faulted.
-bool net_radio_is_up(void) { return g_radio_up; }
-
-// Raised every time the radio goes down. Connections are closed just before
-// (radio_down), and anything that opened before a change treats itself as
-// gone: a quick test that needs no lock.
-static volatile uint32_t g_radio_gen = 1;
-uint32_t net_radio_gen(void) { return g_radio_gen; }
-
-// The one-owner rule is about TASKS. This is the other half of it: the core.
-//
-// g_net_op guarantees one task at a time inside the driver, which is not the
-// same as one CORE — a task with AFFINITY_ANY can be scheduled onto either, and
-// the driver only works on the one that initialised it.
-//
-// It DOES fire. A package doing its own networking from an unpinned task was
-// the hypothetical this was written for, and TCP for packages made it real:
-// fw_tcp_* and fw_net_ping are reached from a task spawned with no affinity,
-// which on this chip means core 1 almost always.
-//
-// net_op_acquire migrates the caller here rather than leaving it to fail, so by
-// the time anything asks this the answer is normally yes. It is still asked,
-// because the migration can be refused — the table that remembers where a task
-// came from is finite, and a migration that cannot be undone later is worse
-// than one not made. What is NOT allowed is going ahead anyway: see netown.h
-// for what the driver does to a caller on the wrong core.
-bool net_core_ok(void) {
-    return !g_radio_up || task_this_core() == g_radio_core;
 }
 
 // Every lwIP connection is closed here, BEFORE the radio goes. The SDK
@@ -538,15 +352,14 @@ void nettcp_radio_down(void);
 void http_radio_down(void);
 void ping_radio_down(void);
 
-static void radio_down(void) {
-    if (!g_radio_up) return;
-    {
-        NetOwn own;
-        if (own.ok) { nettcp_radio_down(); http_radio_down(); ping_radio_down(); }
-    }
-    g_radio_gen++;
-    cyw43_arch_deinit();
-    g_radio_up = false;
+// radio.cpp calls this before cyw43_arch_deinit; it takes the network itself.
+void wifi_radio_stopping(void) {
+    NetOwn own;
+    if (own.ok) { nettcp_radio_down(); http_radio_down(); ping_radio_down(); }
+}
+
+// After cyw43_arch_deinit.
+void wifi_radio_stopped(void) {
     // THE CACHE GOES WITH IT.
     //
     // net_is_connected() reads g_status.connected, and seven subsystems ask it
@@ -1910,16 +1723,6 @@ bool net_resolve(const char *host, ip_addr_t *out) {
 
 #else   // no CYW43 part on this board
 
-void net_op_acquire(void) {}
-void net_op_release(void) {}
-// No radio, so no core to be wrong about. The transport still calls it.
-bool net_core_ok(void) { return true; }
-// ...and nothing to own, so the rule is trivially kept and the tripwire is
-// permanently silent.
-bool net_op_held(void) { return true; }
-void net_unowned_note(void) {}
-uint32_t net_unowned_count(void) { return 0; }
-
 // No radio, so no reading — and false rather than a made-up zero, because
 // 0 dBm is a valid and extraordinary value, not an absence.
 bool net_signal(int *) { return false; }
@@ -1929,7 +1732,6 @@ bool net_signal(int *) { return false; }
 int net_power_source(void) { return -1; }
 const char *signal_bars(int) { return "____"; }
 const char *signal_word(int) { return "no radio"; }
-bool radio_locked(void) { return false; }   // nothing to lock
 int  net_pkg_scan(FwNetAp *, unsigned) { return -1; }
 int  net_pkg_scan2(FwNetAp2 *, unsigned) { return -1; }
 int  net_pkg_ssid(char *out, unsigned cap) { if (out && cap) out[0] = 0; return 0; }
@@ -1938,8 +1740,6 @@ void net_autoconnect(void) {}
 void net_autoconnect_now(void) {}
 void net_autoconnect_report(void) {}
 bool net_available(void) { return false; }
-bool net_radio_is_up(void) { return false; }
-uint32_t net_radio_gen(void) { return 0; }
 bool net_is_connected(void) { return false; }
 const char *net_active_ssid(void) { return "(no radio)"; }
 int  net_setup_scan_and_join(void) { return 1; }
@@ -1958,51 +1758,8 @@ static int cmd_net(int, char **) {
 
 #endif
 
-// radio [on|off|status] — the hard stop for every radio.
-//
-// Persistent on purpose: a privacy switch that forgets itself over a reboot is
-// not one. `airplane` is the same command, as it was in v1.
-static int cmd_radio(int argc, char **argv) {
-    const char *a = argc > 1 ? argv[1] : "status";
-
-    if (strcmp(a, "off") == 0 || strcmp(a, "lock") == 0) {
-        reg_set("System.RadioLock", "true");
-        persist_save_dirty();
-#if defined(RPC_HAS_WIFI) && RPC_HAS_WIFI
-        radio_down();          // down now, not just refused next time
-#endif
-        out_ok("Radios locked off. This survives a reboot.");
-        log_add(LOG_K_WARN, "radio: locked off");
-        return 0;
-    }
-    if (strcmp(a, "on") == 0 || strcmp(a, "unlock") == 0) {
-        reg_set("System.RadioLock", "false");
-        persist_save_dirty();
-        out_ok("Radio lock released.");
-        log_add(LOG_K_INFO, "radio: lock released");
-        return 0;
-    }
-    if (strcmp(a, "status") == 0) {
-#if defined(RPC_HAS_WIFI) && RPC_HAS_WIFI
-        if (radio_locked()) out_warnp("radio", "Locked off.");
-        else                out_okp("radio", "Available.");
-#else
-        out_infop("radio", "This board has no radio.");
-#endif
-        return 0;
-    }
-
-    out_multi("Usage: radio off      lock every radio down (survives a reboot)");
-    out_multi("       radio on       release the lock");
-    out_multi("       radio status   show the current state");
-    return a[0] ? 1 : 0;
-}
-
 void net_register(void) {
-    static const Command cr{"radio", "lock every radio off, or release it", cmd_radio,
-                            nullptr, LEVEL_ADMIN};
-    cmd_register(&cr);
-    cmd_alias("airplane", "radio");
+    radio_register();          // `radio` and `airplane`, which live with the chip (radio.cpp)
 
     static const Command cn{"net", "addressing, DNS and connection detail", cmd_net, nullptr};
     cmd_register(&cn);

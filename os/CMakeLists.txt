@@ -405,6 +405,10 @@ if(PICO_CYW43_SUPPORTED)
     target_compile_definitions(rpcortex_v2 PRIVATE
         RPC_HAS_TLS=1
         MBEDTLS_CONFIG_FILE="${OS_ROOT}/mbedtls_config.h")
+    # The chip and the one-owner rule, shared by Wi-Fi and Bluetooth.
+    target_sources(rpcortex_v2 PRIVATE ${OS_ROOT}/shell/radio.cpp)
+else()
+    target_sources(rpcortex_v2 PRIVATE ${OS_ROOT}/shell/radio_off.cpp)
 endif()
 
 # --- the radio firmware, stored deflated --------------------------------------
