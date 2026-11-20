@@ -13,9 +13,12 @@
 // element to seal them with — anyone holding the flash can read them either way,
 // and pretending otherwise would be the only thing worse.
 //
-// This file compiles to a set of "no radio on this board" stubs when built for a
-// board without the CYW43 part, so the RP2040/non-W images still build and the
-// command still exists to say why it cannot work.
+// Compiled only into an image with Wi-Fi in it (RPC_FEATURE_WIFI in
+// os/CMakeLists.txt). Without it, on the plain boards or in an image built
+// without Wi-Fi, net_off.cpp stands in: every question about the network gets a
+// plain "no", and `wifi` and `net` still exist to say why they cannot work.
+// Bringing the chip up and the one-owner rule are radio.cpp's, shared with
+// Bluetooth.
 
 #include "command.h"
 #include "out.h"
@@ -38,13 +41,6 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
-
-// RPC_HAS_WIFI comes from CMakeLists when the board has the CYW43 part.
-// Deliberately NOT PICO_CYW43_SUPPORTED: that one is a CMake variable the board
-// header sets via pico_board_cmake_set, so it never reaches the preprocessor and
-// testing it here silently compiles the "no hardware" stub onto a Pico W.
-#if defined(RPC_HAS_WIFI) && RPC_HAS_WIFI
-
 
 #include "pico/cyw43_arch.h"
 #include "pico/stdlib.h"
@@ -1720,43 +1716,6 @@ bool net_resolve(const char *host, ip_addr_t *out) {
     }
     return ok;
 }
-
-#else   // no CYW43 part on this board
-
-// No radio, so no reading — and false rather than a made-up zero, because
-// 0 dBm is a valid and extraordinary value, not an absence.
-bool net_signal(int *) { return false; }
-
-// Likewise unknown. A board without the part reads VBUS off an ordinary pin,
-// and api.cpp does that itself rather than asking here.
-int net_power_source(void) { return -1; }
-const char *signal_bars(int) { return "____"; }
-const char *signal_word(int) { return "no radio"; }
-int  net_pkg_scan(FwNetAp *, unsigned) { return -1; }
-int  net_pkg_scan2(FwNetAp2 *, unsigned) { return -1; }
-int  net_pkg_ssid(char *out, unsigned cap) { if (out && cap) out[0] = 0; return 0; }
-int  net_pkg_ip(char *out, unsigned cap)   { if (out && cap) out[0] = 0; return 0; }
-void net_autoconnect(void) {}
-void net_autoconnect_now(void) {}
-void net_autoconnect_report(void) {}
-bool net_available(void) { return false; }
-bool net_is_connected(void) { return false; }
-const char *net_active_ssid(void) { return "(no radio)"; }
-int  net_setup_scan_and_join(void) { return 1; }
-
-static int cmd_wifi(int, char **) {
-    out_err("This board has no wireless hardware.");
-    return 1;
-}
-
-// Present so the command exists and explains itself, rather than being absent
-// and looking like a feature that was forgotten.
-static int cmd_net(int, char **) {
-    out_err("This board has no network interface to configure.");
-    return 1;
-}
-
-#endif
 
 void net_register(void) {
     radio_register();          // `radio` and `airplane`, which live with the chip (radio.cpp)

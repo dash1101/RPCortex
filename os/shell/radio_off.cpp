@@ -1,9 +1,9 @@
 // No wireless chip in this image: radio.cpp's stand-in.
 //
-// Compiled on the boards without the CYW43 part, so the commands and the code
-// that ask about the radio still build and get a plain answer. There is
-// nothing to own, so the one-owner rule is trivially kept and its tripwire is
-// permanently silent.
+// Compiled on the boards without the CYW43 part, and on a W board built without
+// both Wi-Fi and Bluetooth, so the commands and the code that ask about the
+// radio still build and get a plain answer. There is nothing to own, so the
+// one-owner rule is trivially kept and its tripwire is permanently silent.
 
 #include "command.h"
 #include "out.h"
@@ -11,6 +11,7 @@
 #include "logring.h"
 #include "persist.h"
 #include "radio.h"
+#include "imagefeatures.h"
 
 #include <string.h>
 
@@ -51,7 +52,9 @@ static int cmd_radio(int argc, char **argv) {
         return 0;
     }
     if (strcmp(a, "status") == 0) {
-        out_infop("radio", "This board has no radio.");
+        out_infop("radio", feature_board_can(FEAT_WIFI)
+                               ? "This image was built without Wi-Fi or Bluetooth."
+                               : "This board has no radio.");
         return 0;
     }
 

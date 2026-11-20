@@ -29,8 +29,6 @@
 #include <string.h>
 #include <stdlib.h>
 
-#if defined(RPC_HAS_WIFI) && RPC_HAS_WIFI
-
 #include "pico/cyw43_arch.h"
 #include "pico/stdlib.h"
 #include "pico/aon_timer.h"
@@ -486,16 +484,6 @@ static int cmd_ntp(int argc, char **argv) {
     }
     return ntp_sync(server, /*set*/true);
 }
-
-#else   // no radio on this board
-
-int net_pkg_ping(const char *, uint32_t) { return -1; }
-
-static int cmd_ping(int, char **)     { out_err("This board has no wireless hardware."); return 1; }
-static int cmd_nslookup(int, char **) { out_err("This board has no wireless hardware."); return 1; }
-static int cmd_ntp(int, char **)      { out_err("This board has no wireless hardware."); return 1; }
-
-#endif
 
 void netapps_register(void) {
     static const Command cmds[] = {

@@ -1,0 +1,311 @@
+// Fetching packages from the repository: `pkg update`, `pkg install <name>`,
+// `pkg upgrade` and `pkg certs`.
+//
+// The half of the package manager that needs a network, split out of
+// pkgrepo.cpp so that an image built without Wi-Fi leaves it out; net_off.cpp
+// stands in for it there. pkgrepo.cpp keeps what works offline (the catalogue:
+// search, info and the repository list) and still installs a package from a
+// file. The design notes on why an install goes in the order it does are at the
+// top of pkgrepo.cpp.
+
+#include "command.h"
+#include "out.h"
+#include "httpfetch.h"
+#include "repoindex.h"
+#include "storage.h"
+#include "sha256.h"
+#include "interrupt.h"
+#include "pkg.h"
+#include "registry.h"
+#include "persist.h"
+#include "pkgrepo.h"
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+
+bool http_transport_get(HttpTransport *t);
+bool http_tls_available(void);
+const char *http_tls_why(void);
+void http_tls_reset(void);
+bool stock_install_cacerts(bool force);
+void http_last_detail(char *out, unsigned cap);
+
+#define TMP_PKG    "/os/pkg/.download"
+
+struct DlSink { void *fh; Sha256Ctx sha; };
+
+static int dl_sink(void *ctx, const uint8_t *data, uint32_t len) {
+    DlSink *d = (DlSink *)ctx;
+    sha256_update(&d->sha, data, len);      // hashed as it streams; never buffered
+    return storage_sink_write(d->fh, data, len) ? 0 : -1;
+}
+
+static int poll_intr(void *) { return intr_check() ? 1 : 0; }
+
+static void progress(void *, uint64_t got, uint64_t total) {
+    static uint64_t last;
+    if (got < last) last = 0;
+    if (got - last < 4096 && got != total) return;
+    last = got;
+    out_progress("Downloading", got, total);
+}
+
+static void hex_of(const uint8_t *digest, char *out) {
+    static const char *h = "0123456789abcdef";
+    for (int i = 0; i < 32; i++) { out[i * 2] = h[digest[i] >> 4]; out[i * 2 + 1] = h[digest[i] & 15]; }
+    out[64] = 0;
+}
+
+// Download `url` to `dest`, returning the hex digest of what arrived.
+static bool download(const char *url, const char *dest, char *hex_out, uint64_t *bytes) {
+    HttpTransport t;
+    if (!http_transport_get(&t)) {
+        out_err("No network. Connect with 'wifi connect <ssid>' first.");
+        return false;
+    }
+    if (!strncmp(url, "https://", 8) && !http_tls_available()) {
+        out_err("HTTPS cannot be verified: %s", http_tls_why());
+        out_multi("  Try 'pkg certs install' — the bundle ships in the firmware.");
+        out_multi("  Unverified HTTPS is not offered: anything on the path could");
+        out_multi("  serve a package and it would be installed.");
+        return false;
+    }
+
+    DlSink d{nullptr, {}};
+    sha256_init(&d.sha);
+    d.fh = storage_open_sink(dest);
+    if (!d.fh) { out_err("Could not write to %s.", dest); return false; }
+
+    FetchOpts o{};
+    o.poll = poll_intr;
+    o.progress = progress;
+    uint32_t room = storage_free_bytes();
+    o.max_bytes = room > 8192 ? room - 8192 : 1;
+
+    FetchResult r;
+    bool good = http_fetch(&t, url, dl_sink, &d, &o, &r);
+    if (!storage_close_sink(d.fh) && good) { good = false; r.error = FETCH_ERR_SINK; }
+    out_progress_done();
+
+    if (!good) {
+        storage_remove(dest);
+        out_err("%s%s%s", fetch_error_str(r.error), r.detail[0] ? " - " : "", r.detail);
+        // A transport failure on its own says almost nothing. What the
+        // connection actually managed is what points at the cause.
+        if (r.error == FETCH_ERR_RECV || r.error == FETCH_ERR_CONNECT ||
+            r.error == FETCH_ERR_SEND) {
+            char d[192];
+            http_last_detail(d, sizeof(d));
+            out_multi("  %s", d);
+        }
+        return false;
+    }
+    uint8_t digest[32];
+    sha256_final(&d.sha, digest);
+    hex_of(digest, hex_out);
+    *bytes = r.bytes;
+    return true;
+}
+
+struct UpdCtx { int ok; int failed; uint32_t total; };
+
+static bool update_one(void *ctx, const char *url, int index) {
+    UpdCtx *u = (UpdCtx *)ctx;
+    char path[40]; cache_path(index, path, sizeof(path));
+
+    out_info("%s", url);
+    char hex[65]; uint64_t n = 0;
+    if (!download(url, path, hex, &n)) { u->failed++; return true; }
+
+    uint32_t len = 0;
+    char *buf = (char *)malloc(INDEX_MAX);
+    uint32_t got = buf ? storage_read_file(path, (uint8_t *)buf, INDEX_MAX - 1) : 0;
+    if (buf) buf[got] = 0;
+    len = got;
+    uint32_t count = buf ? repo_walk(buf, len, nullptr, nullptr) : 0;
+    free(buf);
+
+    if (count == 0) {
+        // Keeping an unreadable list would make every later command fail with a
+        // confusing "not found" instead of pointing here.
+        storage_remove(path);
+        out_warn("  nothing readable at this repo");
+        u->failed++;
+        return true;
+    }
+    out_ok("  %lu package%s", (unsigned long)count, count == 1 ? "" : "s");
+    u->ok++;
+    u->total += count;
+    return true;
+}
+
+int pkg_fetch_update(void) {
+    out_info("Fetching package lists...");
+    UpdCtx u{0, 0, 0};
+    repo_each(update_one, &u);
+
+    if (u.ok == 0) { out_err("No package list could be fetched."); return 1; }
+    out_ok("%lu package%s from %d repo%s.%s", (unsigned long)u.total,
+           u.total == 1 ? "" : "s", u.ok, u.ok == 1 ? "" : "s",
+           u.failed ? "  Some repos failed." : "");
+    return 0;
+}
+
+int pkg_fetch_install(const char *name) {
+    char *buf; uint32_t len;
+    if (!require_index(&buf, &len)) return 1;
+    free(buf);
+    RepoEntry e;
+    if (!find_in_any_repo(name, &e)) {
+        out_err("No package called '%s'.", name);
+        out_multi("  'pkg search' lists what is available.");
+        return 1;
+    }
+
+    // Refuse what cannot run here BEFORE spending a download on it. A package
+    // for the other architecture loads happily and then executes instructions
+    // this chip does not have.
+    if (!arch_runs_here(e.arch)) {
+        out_err("%s is built for %s; this board is %s.", e.name, e.arch, MY_ARCH);
+        out_multi("  A package can list several architectures, or target one deliberately.");
+        return 1;
+    }
+
+    out_info("Installing %s %s", e.name, e.ver);
+    char hex[65]; uint64_t got = 0;
+    if (!download(e.url, TMP_PKG, hex, &got)) return 1;
+
+    // The hash is what makes this an install rather than a hope. TLS proved who
+    // served the bytes; this proves they are the bytes the index describes.
+    if (e.sha256[0]) {
+        if (strcmp(hex, e.sha256) != 0) {
+            storage_remove(TMP_PKG);
+            out_err("Checksum mismatch - the download does not match the index.");
+            out_multi("  expected  %s", e.sha256);
+            out_multi("  received  %s", hex);
+            out_multi("  Nothing was installed. Try 'pkg update' and again.");
+            return 1;
+        }
+        out_ok("Checksum verified.");
+    } else {
+        // Loud, because silently installing an unverified package is exactly
+        // the habit this design exists to avoid.
+        out_warn("The index publishes no checksum for this package.");
+        out_multi("  Installed unverified - only the transport was authenticated.");
+    }
+
+    if (!pkg_install_file(TMP_PKG, /*quiet*/true, /*consume*/true)) {
+        storage_remove(TMP_PKG);
+        out_err("The package downloaded but would not install.");
+        return 1;
+    }
+    storage_remove(TMP_PKG);
+    out_ok("Installed %s %s (%lu bytes).", e.name, e.ver, (unsigned long)got);
+    return 0;
+}
+
+struct UpCtx { int found; int done; int failed; };
+
+// Whether the installed copy is byte-for-byte what the index describes.
+//
+// Version numbers are the normal signal, and they miss one real case: a package
+// REBUILT without its version changing. That is not a corner case during
+// development, it is what happens every time — and the symptom is a repo
+// serving new bytes while `pkg upgrade` reports everything up to date, with no
+// way to tell from the device that the two disagree.
+//
+// Hashing the installed file costs one read of a few KB and only happens for
+// packages whose version already matched, so it is off the common path.
+static bool installed_matches(const char *name, const char *want_hex) {
+    if (!want_hex || !want_hex[0]) return true;      // nothing published to compare
+
+    char path[48];
+    snprintf(path, sizeof(path), "/os/pkg/%s.app", name);
+
+    // Whole file in one read. A package is a few KB against a heap with
+    // hundreds free, and the alternative is a chunked reader this is the only
+    // caller of.
+    #define PKG_HASH_MAX 65536
+    uint8_t *buf = (uint8_t *)malloc(PKG_HASH_MAX);
+    if (!buf) return true;                            // cannot check: do not nag
+
+    uint32_t n = storage_read_file(path, buf, PKG_HASH_MAX);
+    if (n == 0) { free(buf); return true; }           // no file to compare
+
+    Sha256Ctx c; sha256_init(&c);
+    sha256_update(&c, buf, n);
+    free(buf);
+
+    uint8_t dg[SHA256_DIGEST_LEN];
+    sha256_final(&c, dg);
+    char hex[65];
+    for (int i = 0; i < SHA256_DIGEST_LEN; i++) {
+        static const char *H = "0123456789abcdef";
+        hex[i * 2]     = H[dg[i] >> 4];
+        hex[i * 2 + 1] = H[dg[i] & 15];
+    }
+    hex[64] = 0;
+    return strcmp(hex, want_hex) == 0;
+}
+
+static bool upgrade_cb(void *ctx, const RepoEntry *e) {
+    UpCtx *u = (UpCtx *)ctx;
+    char have[24];
+    if (!pkg_installed_version(e->name, have, sizeof(have))) return true;   // not installed
+
+    bool newer = repo_version_cmp(e->ver, have) > 0;
+    if (!newer) {
+        // Same version. Rebuilt, or genuinely identical?
+        if (installed_matches(e->name, e->sha256)) return true;
+        u->found++;
+        out_info("%s %s - rebuilt, the installed copy differs", e->name, e->ver);
+        if (pkg_fetch_install(e->name) == 0) u->done++; else u->failed++;
+        return !intr_check();
+    }
+
+    u->found++;
+    out_info("%s %s -> %s", e->name, have, e->ver);
+    if (pkg_fetch_install(e->name) == 0) u->done++; else u->failed++;
+    return !intr_check();
+}
+
+int pkg_fetch_upgrade(void) {
+    char *buf; uint32_t len;
+    if (!require_index(&buf, &len)) return 1;
+    free(buf);
+    UpCtx u{0, 0, 0};
+    walk_all_repos(upgrade_cb, &u);
+    if (!u.found) { out_ok("Everything is up to date."); return 0; }
+    out_ok("%d upgraded, %d failed.", u.done, u.failed);
+    return u.failed ? 1 : 0;
+}
+
+// `pkg certs` — what the trust store looks like, and a way to put it back.
+//
+// The bundle ships in flash and is written on a first boot, but a write can
+// fail, a file can be truncated, and neither announces itself: the only symptom
+// is `pkg update` refusing to verify. This turns that into a readable answer
+// and a one-word repair, without a reflash.
+int pkg_fetch_certs(int argc, char **argv) {
+    if (argc >= 3 && !strcmp(argv[2], "install")) {
+        if (!stock_install_cacerts(/*force*/true)) return 1;
+        http_tls_reset();          // so the repair takes effect immediately
+        out_ok("Trusted roots reinstalled.");
+    }
+
+    bool is_dir = false; uint32_t size = 0;
+    bool present = storage_stat("/os/ca.pem", &is_dir, &size);
+    out_info("Trusted roots");
+    out_multi("  Built in   always available; the image carries its own copy");
+    out_multi("  Override   /os/ca.pem  %s", present ? "present" : "not set");
+    if (present) out_multi("  Size       %lu bytes", (unsigned long)size);
+
+    if (http_tls_available()) {
+        out_ok("HTTPS can be verified.");
+    } else {
+        out_warn("HTTPS cannot be verified: %s", http_tls_why());
+        out_multi("  'pkg certs install' writes the bundle that ships in firmware.");
+    }
+    return 0;
+}

@@ -89,11 +89,8 @@ add_executable(rpcortex_v2
     ${OS_ROOT}/core/arena.cpp
     ${OS_ROOT}/kernel/kernel.cpp
     ${OS_ROOT}/core/path.cpp
-    ${OS_ROOT}/core/httpparse.cpp
-    ${OS_ROOT}/core/httpfetch.cpp
     ${OS_ROOT}/core/repoindex.cpp
     ${OS_ROOT}/core/preempt.cpp
-    ${OS_ROOT}/core/joinguard.cpp
     ${OS_ROOT}/core/excframe.cpp
     ${OS_ROOT}/core/tui.cpp
     ${OS_ROOT}/core/tuikey.cpp
@@ -102,20 +99,8 @@ add_executable(rpcortex_v2
     ${OS_ROOT}/core/cmdline.cpp
     ${OS_ROOT}/core/interrupt.cpp
     ${OS_ROOT}/shell/power.cpp
-    ${OS_ROOT}/shell/bt.cpp
-    ${OS_ROOT}/shell/btaudio.cpp
-    ${OS_ROOT}/shell/nfc.cpp
-    ${OS_ROOT}/shell/ibutton.cpp
-    ${OS_ROOT}/shell/cc1101.cpp
-    ${OS_ROOT}/shell/sx1276.cpp
-    ${OS_ROOT}/core/pcmring.cpp
-    ${OS_ROOT}/core/wav.cpp
-    ${OS_ROOT}/core/btname.cpp
-    ${OS_ROOT}/core/nfcframe.cpp
-    ${OS_ROOT}/core/scanlist.cpp
     ${OS_ROOT}/core/stagesink.cpp
     ${OS_ROOT}/core/svcpolicy.cpp
-    ${OS_ROOT}/core/onewire.cpp
     ${OS_ROOT}/core/powerpolicy.cpp
     ${OS_ROOT}/core/framebuf.cpp
     ${OS_ROOT}/core/task.cpp
@@ -163,10 +148,7 @@ add_executable(rpcortex_v2
     ${OS_ROOT}/shell/sys.cpp
     ${OS_ROOT}/shell/user.cpp
     ${OS_ROOT}/shell/help.cpp
-    ${OS_ROOT}/shell/net.cpp
-    ${OS_ROOT}/shell/netapps.cpp
-    ${OS_ROOT}/shell/nettcp.cpp
-    ${OS_ROOT}/shell/httptransport.cpp
+    ${OS_ROOT}/shell/imagefeatures.cpp
     ${OS_ROOT}/shell/fetch.cpp
     ${OS_ROOT}/shell/ps.cpp
     ${OS_ROOT}/shell/logcmd.cpp
@@ -192,6 +174,58 @@ target_include_directories(rpcortex_v2 PRIVATE
     ${LFS_DIR}
 )
 
+# --- features: what this image is built with ------------------------------------
+#
+# An image can be built with or without the optional parts: Wi-Fi, Bluetooth,
+# SSH, the microSD driver, the add-on drivers and the development packages.
+# Each one is whole files in or out of the build (and its libraries linked or
+# not), never a command switched off at run time. A feature that is out is
+# represented by a small stand-in file (net_off.cpp, bt_off.cpp, ssh_off.cpp,
+# periph_off.cpp, sd_off.cpp, radio_off.cpp) that keeps its commands and package
+# calls in place and has them say why they cannot work.
+#
+# THE TABLE IS tools/features.py, not this file: which boards can have each
+# feature, what is on by default, and what needs what. build.sh, the
+# interactive tools/buildconf.py and tools/release.py read the same table, so
+# they cannot disagree with the build. This asks it once per configure, passing
+# on whatever was given:
+#
+#     -DRPC_FEATURE_WIFI=OFF  -DRPC_FEATURE_BLUETOOTH=OFF  -DRPC_SSH=OFF
+#     -DRPC_FEATURE_SD=OFF    -DRPC_FEATURE_PERIPHERALS=OFF  -DRPC_DEV_PACKAGES=ON
+#
+# Anything not given takes the board's standard setting: every feature the
+# board can have, except SSH on the Pico W (too tight a slot) and the
+# development packages. Asking for a feature the board cannot have stops the
+# configure. build.sh always passes every one of
+# them, because a build directory remembers what it was configured with, and a
+# setting left over from an earlier configure is how a -Os default once went
+# unnoticed for a whole rebuild.
+#
+# The flash layout below (RPC_FW_RESERVE, the package slot) does NOT depend on
+# the features. A custom image saves slot headroom and RAM, never filesystem,
+# so moving a board between a standard and a custom image keeps its files.
+set(RPC_FEATURE_OPTIONS
+    RPC_FEATURE_WIFI RPC_FEATURE_BLUETOOTH RPC_SSH RPC_FEATURE_SD
+    RPC_FEATURE_PERIPHERALS RPC_DEV_PACKAGES)
+set(_rpc_given "")
+foreach(_opt ${RPC_FEATURE_OPTIONS})
+    if(DEFINED ${_opt})
+        list(APPEND _rpc_given "${_opt}=${${_opt}}")
+    endif()
+endforeach()
+execute_process(
+    COMMAND python3 ${OS_ROOT}/../tools/features.py cmake ${PICO_BOARD}
+            ${CMAKE_BINARY_DIR}/features.cmake ${_rpc_given}
+    RESULT_VARIABLE _rpc_rc ERROR_VARIABLE _rpc_err)
+if(NOT _rpc_rc EQUAL 0)
+    message(FATAL_ERROR "Feature selection for ${PICO_BOARD}: ${_rpc_err}")
+endif()
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${OS_ROOT}/../tools/features.py)
+include(${CMAKE_BINARY_DIR}/features.cmake)
+if(RPC_FEATURE_NOTES)
+    message(STATUS "Features: ${RPC_FEATURE_NOTES}")
+endif()
+
 # --- microSD: on the boards that have room for it ------------------------------
 #
 # The SD driver is an SPI block layer, a FAT16/32 reader and a `sd` command, and
@@ -210,28 +244,25 @@ target_include_directories(rpcortex_v2 PRIVATE
 # D1 — the thing with a card slot wired to it — targets the RP2350 boards, and
 # novaboard's own detect() refuses to claim an RP2040 board for exactly the same
 # reason: the header matches and the part cannot carry the software. A Pico W
-# with this compiled in would carry a driver for a slot it does not have.
+# with this compiled in would carry a driver for a slot it does not have. So
+# tools/features.py offers `sd` on the RP2350 boards only, where it is standard
+# and can be left out.
 #
 # THE DEFINE HAS TO BE A DEFINE. PICO_CYW43_SUPPORTED is a CMake variable and
 # testing it with #if was silently always false for a whole release — the note
 # further down this file is about that exact bug. So RPC_HAS_SD is passed as a
-# compile definition below, and `nm` on the two images is what proves it landed:
-# a pico2_w image has sd_mount in it and a pico_w image does not.
-if(PICO_BOARD STREQUAL "pico2_w" OR PICO_BOARD STREQUAL "pico2")
-    set(RPC_HAS_SD ON)
-else()
-    set(RPC_HAS_SD OFF)
-endif()
-message(STATUS "microSD support: ${RPC_HAS_SD}")
+# compile definition (with the other features, at the end of this file), and
+# `nm` on the two images is what proves it landed: a pico2_w image has sd_mount
+# in it and a pico_w image does not.
+message(STATUS "microSD support: ${RPC_FEATURE_SD}")
 
-if(RPC_HAS_SD)
+if(RPC_FEATURE_SD)
     set(RPC_SD_SOURCES
         ${OS_ROOT}/core/sdproto.cpp
         ${OS_ROOT}/core/fatro.cpp
         ${OS_ROOT}/sdcard_rp2.cpp
         ${OS_ROOT}/shell/sd.cpp)
     target_sources(rpcortex_v2 PRIVATE ${RPC_SD_SOURCES})
-    target_compile_definitions(rpcortex_v2 PRIVATE RPC_HAS_SD=1)
 
     # -Os for these four, against the -O3 the rest of an RP2350 image gets.
     #
@@ -242,6 +273,29 @@ if(RPC_HAS_SD)
     # at — and the flash is not free after all: pico2_w has 85 KB of slot
     # headroom, and at -O3 this cost 16 KB of it.
     set_source_files_properties(${RPC_SD_SOURCES} PROPERTIES COMPILE_OPTIONS -Os)
+else()
+    # `sd` says the driver was left out, on a board that could have had it.
+    target_sources(rpcortex_v2 PRIVATE ${OS_ROOT}/shell/sd_off.cpp)
+endif()
+
+# --- add-on drivers -----------------------------------------------------------
+#
+# NFC (PN532 over I2C), iButton (DS1990A over 1-Wire), sub-GHz (CC1101) and LoRa
+# (SX1276) over SPI: the drivers the OS itself carries for add-on boards, with
+# their commands and the fw_nfc_* package calls. Nothing else in the OS calls
+# into them, so they come out as a block. Without them periph_off.cpp keeps the
+# commands and the NFC calls, which answer as a reader that is not there.
+set(RPC_PERIPHERALS_SOURCES
+    ${OS_ROOT}/shell/nfc.cpp
+    ${OS_ROOT}/shell/ibutton.cpp
+    ${OS_ROOT}/shell/cc1101.cpp
+    ${OS_ROOT}/shell/sx1276.cpp
+    ${OS_ROOT}/core/nfcframe.cpp
+    ${OS_ROOT}/core/onewire.cpp)
+if(RPC_FEATURE_PERIPHERALS)
+    target_sources(rpcortex_v2 PRIVATE ${RPC_PERIPHERALS_SOURCES})
+else()
+    target_sources(rpcortex_v2 PRIVATE ${OS_ROOT}/shell/periph_off.cpp)
 endif()
 
 # COLD CODE AT -Os, HOT CODE AT -O3.
@@ -368,30 +422,62 @@ target_compile_options(rpcortex_v2 PRIVATE
 # has to carry them even when nothing in the OS itself uses a pin.
 target_link_libraries(rpcortex_v2 pico_stdlib hardware_flash hardware_sync pico_rand pico_aon_timer pico_multicore pico_flash hardware_adc hardware_i2c hardware_gpio hardware_pio hardware_spi hardware_pwm hardware_uart pico_low_power)
 
+# --- the radios: Wi-Fi and Bluetooth, on the W boards ------------------------
+#
 # Wireless is per-BOARD, not per-architecture: the CYW43 part is on the W boards
-# only. PICO_CYW43_SUPPORTED comes from the board header, and net.cpp compiles to
-# "no radio on this board" stubs without it — so a non-W image still builds, and
-# `wifi` still exists to say why it cannot work rather than being missing.
+# only. Which of its two radios an image carries is a feature (see the features
+# section above), and each is whole files in or out:
+#
+#   Wi-Fi      RPC_WIFI_SOURCES, lwIP, mbedTLS and the trusted roots, the
+#              CYW43 driver and its firmware, and radio.cpp (the chip and the
+#              one-owner rule both radios share)
+#   Bluetooth  RPC_BLUETOOTH_SOURCES and btstack, on top of Wi-Fi
+#   no Wi-Fi   radio_off.cpp, and no CYW43 driver or firmware at all
+#
+# Bluetooth needs Wi-Fi (tools/features.py): the chip's driver and its
+# firmware come in with Wi-Fi, so an image without Wi-Fi has no radio at all.
+#
+# Without Wi-Fi, net_off.cpp stands in for the network files and without
+# Bluetooth bt_off.cpp does, so the commands still exist and say why they
+# cannot run. The plain boards are simply boards on which neither can be on.
 #
 # threadsafe_background, not poll: the shell blocks in getchar, so a poll-mode
 # stack would never get a turn and DHCP would never complete.
+#
 # PICO_CYW43_SUPPORTED is a CMake variable, NOT a preprocessor define — the
 # board header sets it through pico_board_cmake_set, which only CMake parses.
 # Testing it with #if in C++ is therefore always false, which is exactly the bug
 # that made a Pico 2 W report "no wireless hardware" while still linking the
-# whole driver. The define has to be passed explicitly.
+# whole driver. So every define the source tests is passed explicitly, and the
+# board fact (RPC_HAS_CYW43: GPIO 23/24/25/29 belong to the chip) is passed
+# separately from the features, because it holds whatever the image carries.
+set(RPC_WIFI_SOURCES
+    ${OS_ROOT}/shell/net.cpp
+    ${OS_ROOT}/shell/netapps.cpp
+    ${OS_ROOT}/shell/nettcp.cpp
+    ${OS_ROOT}/shell/httptransport.cpp
+    ${OS_ROOT}/shell/pkgfetch.cpp
+    ${OS_ROOT}/shell/update_net.cpp
+    ${OS_ROOT}/core/httpfetch.cpp
+    ${OS_ROOT}/core/httpparse.cpp
+    ${OS_ROOT}/core/scanlist.cpp
+    ${OS_ROOT}/core/joinguard.cpp)
+set(RPC_BLUETOOTH_SOURCES
+    ${OS_ROOT}/shell/bt.cpp
+    ${OS_ROOT}/shell/btaudio.cpp
+    ${OS_ROOT}/core/btname.cpp
+    ${OS_ROOT}/core/pcmring.cpp
+    ${OS_ROOT}/core/wav.cpp)
+
 if(PICO_CYW43_SUPPORTED)
+    target_compile_definitions(rpcortex_v2 PRIVATE RPC_HAS_CYW43=1)
+else()
+    target_compile_definitions(rpcortex_v2 PRIVATE RPC_HAS_CYW43=0)
+endif()
+
+if(RPC_FEATURE_WIFI)
+    target_sources(rpcortex_v2 PRIVATE ${RPC_WIFI_SOURCES})
     target_link_libraries(rpcortex_v2 pico_cyw43_arch_lwip_threadsafe_background)
-    # Bluetooth. Both radios are the same chip, which is what makes this
-    # possible at all — and Classic is the capability MicroPython could not
-    # reach, so a media player is a v2 thing and was never a v1 one.
-    target_link_libraries(rpcortex_v2
-        pico_btstack_ble
-        pico_btstack_classic
-        pico_btstack_cyw43
-        pico_btstack_run_loop_async_context
-        pico_btstack_sbc_encoder)
-    target_compile_definitions(rpcortex_v2 PRIVATE RPC_HAS_WIFI=1)
 
     # TLS, for the package repo. GitHub serves over HTTPS only, so without this
     # `pkg install <name>` cannot exist — plain HTTP is a testing path, not a
@@ -405,6 +491,39 @@ if(PICO_CYW43_SUPPORTED)
     target_compile_definitions(rpcortex_v2 PRIVATE
         RPC_HAS_TLS=1
         MBEDTLS_CONFIG_FILE="${OS_ROOT}/mbedtls_config.h")
+
+    # The trusted roots ride in flash and get written to /os/ca.pem on a first
+    # boot, the same way the built-in packages do. A file rather than a
+    # compiled-in blob, so a rotated authority is a download instead of a reflash.
+    add_custom_command(
+        OUTPUT ${CMAKE_BINARY_DIR}/stock_cacerts.cpp
+        COMMAND ${CMAKE_COMMAND} -E env python3 ${OS_ROOT}/tools_bin2c.py
+                ${OS_ROOT}/ca_certs.pem ${CMAKE_BINARY_DIR}/stock_cacerts.cpp stock_cacerts
+        DEPENDS ${OS_ROOT}/ca_certs.pem ${OS_ROOT}/tools_bin2c.py
+    )
+    add_custom_target(stock_cacerts_src DEPENDS ${CMAKE_BINARY_DIR}/stock_cacerts.cpp)
+    target_sources(rpcortex_v2 PRIVATE ${CMAKE_BINARY_DIR}/stock_cacerts.cpp)
+    add_dependencies(rpcortex_v2 stock_cacerts_src)
+else()
+    target_sources(rpcortex_v2 PRIVATE ${OS_ROOT}/shell/net_off.cpp)
+endif()
+
+if(RPC_FEATURE_BLUETOOTH)
+    # Bluetooth. Both radios are the same chip, which is what makes this
+    # possible at all — and Classic is the capability MicroPython could not
+    # reach, so a media player is a v2 thing and was never a v1 one.
+    target_sources(rpcortex_v2 PRIVATE ${RPC_BLUETOOTH_SOURCES})
+    target_link_libraries(rpcortex_v2
+        pico_btstack_ble
+        pico_btstack_classic
+        pico_btstack_cyw43
+        pico_btstack_run_loop_async_context
+        pico_btstack_sbc_encoder)
+else()
+    target_sources(rpcortex_v2 PRIVATE ${OS_ROOT}/shell/bt_off.cpp)
+endif()
+
+if(RPC_FEATURE_WIFI)
     # The chip and the one-owner rule, shared by Wi-Fi and Bluetooth.
     target_sources(rpcortex_v2 PRIVATE ${OS_ROOT}/shell/radio.cpp)
 else()
@@ -435,14 +554,28 @@ endif()
 #                      driver as it was.
 #
 # Off with -DRPC_CYW43_FW_STREAM=OFF, which builds the SDK's driver untouched.
+#
+# Only where the driver is in the image at all, which is when Wi-Fi is (the
+# features section): an image built without Wi-Fi has no CYW43 firmware to
+# store, and neither the patch step nor cyw43_fw.cpp is in it.
 option(RPC_CYW43_FW_STREAM "Store the CYW43 firmware deflated" ON)
-if(PICO_CYW43_SUPPORTED AND RPC_CYW43_FW_STREAM)
+if(PICO_CYW43_SUPPORTED AND RPC_CYW43_FW_STREAM AND RPC_FEATURE_WIFI)
     set(CYW43_FW_DIR   ${CMAKE_BINARY_DIR}/cyw43_fw)
     set(CYW43_LL_SDK   ${PICO_CYW43_DRIVER_PATH}/src/cyw43_ll.c)
     set(CYW43_FW_PATCH ${OS_ROOT}/patches/cyw43-fw-stream.patch)
-    # The firmware the SDK picks when Bluetooth is linked, which on these boards
-    # it always is; cyw43_fw.h refuses to build otherwise.
-    set(CYW43_FW_BLOB  ${PICO_CYW43_DRIVER_PATH}/firmware/wb43439A0_7_95_49_00_combined.h)
+    # The firmware the SDK picks: the Bluetooth-capable one when Bluetooth is
+    # linked (every standard wireless image), the plain one in an image built
+    # without Bluetooth. The two are the same layout, the Wi-Fi firmware and
+    # then the CLM. cyw43_fw.h checks that the stream matches the driver's
+    # choice (RPC_CYW43_FW_BT). DEVICE-UNCONFIRMED: an image streaming the
+    # plain firmware has not run on a board.
+    if(RPC_FEATURE_BLUETOOTH)
+        set(CYW43_FW_BLOB  ${PICO_CYW43_DRIVER_PATH}/firmware/wb43439A0_7_95_49_00_combined.h)
+        set(RPC_CYW43_FW_BT 1)
+    else()
+        set(CYW43_FW_BLOB  ${PICO_CYW43_DRIVER_PATH}/firmware/w43439A0_7_95_49_00_combined.h)
+        set(RPC_CYW43_FW_BT 0)
+    endif()
 
     find_program(RPC_PATCH_TOOL patch)
     if(NOT RPC_PATCH_TOOL)
@@ -494,6 +627,7 @@ if(PICO_CYW43_SUPPORTED AND RPC_CYW43_FW_STREAM)
     target_include_directories(rpcortex_v2 PRIVATE ${CYW43_FW_DIR} ${OS_ROOT}/uzlib)
     target_compile_definitions(rpcortex_v2 PRIVATE
         CYW43_FW_STREAM=1
+        RPC_CYW43_FW_BT=${RPC_CYW43_FW_BT}
         CYW43_CHIPSET_FIRMWARE_INCLUDE_FILE="cyw43_fw.h")
     # uzlib's extra checks on a damaged stream: two compares, worth having on
     # input that is only ever trusted after its CRC. One of them compares an int
@@ -516,20 +650,16 @@ endif()
 # the RP2350 one (pico2_w), OFF for pico_w, whose slot has too little left for
 # it. pico2 has no radio at all, so the option means nothing there.
 #
+# The option is RPC_SSH, and like every feature its value comes from
+# tools/features.py (the features section above): `./build.sh pico2_w --without
+# ssh`, or `-DRPC_SSH=OFF`. It is switched off with Wi-Fi, which it runs on, so
+# an image built without Wi-Fi has no SSH either. Without it, ssh_off.cpp keeps
+# `ssh` on a board whose standard image has it, saying it was left out.
+#
 # Everything that speaks the protocol is in core/ and host-tested against a
 # real OpenSSH (os/host/ssh_*); shell/sshd.cpp and sshc.cpp are the device side.
 # All of it at -Os: none of it is on the supervisor-call path the -O3 is for,
 # and the arithmetic underneath is mbedTLS, which is -Os already.
-if(PICO_CYW43_SUPPORTED AND PICO_BOARD STREQUAL "pico2_w")
-    set(RPC_SSH_DEFAULT ON)
-else()
-    set(RPC_SSH_DEFAULT OFF)
-endif()
-option(RPC_SSH "Build the SSH server and client in" ${RPC_SSH_DEFAULT})
-if(RPC_SSH AND NOT PICO_CYW43_SUPPORTED)
-    message(STATUS "SSH needs the wireless part; not built for ${PICO_BOARD}")
-    set(RPC_SSH OFF)
-endif()
 message(STATUS "SSH: ${RPC_SSH}")
 if(RPC_SSH)
     set(RPC_SSH_SOURCES
@@ -544,19 +674,63 @@ if(RPC_SSH)
         ${OS_ROOT}/shell/sshd.cpp
         ${OS_ROOT}/shell/sshc.cpp)
     target_sources(rpcortex_v2 PRIVATE ${RPC_SSH_SOURCES})
-    # Also seen by mbedtls_config.h, which adds deterministic ECDSA for it.
-    target_compile_definitions(rpcortex_v2 PRIVATE RPC_HAS_SSH=1)
+    # RPC_HAS_SSH (below, with the other features) is also seen by
+    # mbedtls_config.h, which adds deterministic ECDSA for it.
     set_source_files_properties(${RPC_SSH_SOURCES} PROPERTIES COMPILE_OPTIONS -Os)
+else()
+    target_sources(rpcortex_v2 PRIVATE ${OS_ROOT}/shell/ssh_off.cpp)
 endif()
-# The trusted roots ride in flash and get written to /os/ca.pem on a first boot,
-# the same way the built-in packages do. A file rather than a compiled-in blob,
-# so a rotated authority is a download instead of a reflash.
-add_custom_command(
-    OUTPUT ${CMAKE_BINARY_DIR}/stock_cacerts.cpp
-    COMMAND ${CMAKE_COMMAND} -E env python3 ${OS_ROOT}/tools_bin2c.py
-            ${OS_ROOT}/ca_certs.pem ${CMAKE_BINARY_DIR}/stock_cacerts.cpp stock_cacerts
-    DEPENDS ${OS_ROOT}/ca_certs.pem ${OS_ROOT}/tools_bin2c.py
-)
+
+# --- what the source sees of the features ----------------------------------------
+#
+# Each feature as a define that is ALWAYS 0 or 1 (RPC_HAS_<X>), so the source can
+# test it in a plain `if` as well as an #if; whether this board could carry it at
+# all (RPC_CAN_<X>), so a stand-in can say "this image was built without Wi-Fi"
+# on a Pico W and "this board has no wireless hardware" on a Pico; the list `ver`
+# prints; and the variant: "standard", or the name a custom image's file carries
+# ("nobt"). An emulator image is never the standard one, so it says "emu" too.
+# tools/release.py reads the variant back out of the built image and publishes
+# nothing that is not "standard".
+if(RPC_SSH)
+    set(_rpc_has_SSH 1)
+else()
+    set(_rpc_has_SSH 0)
+endif()
+foreach(_f WIFI BLUETOOTH SD PERIPHERALS)
+    if(RPC_FEATURE_${_f})
+        set(_rpc_has_${_f} 1)
+    else()
+        set(_rpc_has_${_f} 0)
+    endif()
+endforeach()
+string(REPLACE ";" " " _rpc_list "${RPC_FEATURE_LIST}")
+set(_rpc_variant "${RPC_FEATURE_VARIANT}")
+if(RPC_CONSOLE_UART)
+    if(_rpc_variant)
+        set(_rpc_variant "${_rpc_variant}-emu")
+    else()
+        set(_rpc_variant "emu")
+    endif()
+endif()
+if(NOT _rpc_variant)
+    set(_rpc_variant "standard")
+endif()
+message(STATUS "Features: ${_rpc_list} (image: ${_rpc_variant})")
+target_compile_definitions(rpcortex_v2 PRIVATE
+    RPC_HAS_WIFI=${_rpc_has_WIFI}
+    RPC_HAS_BLUETOOTH=${_rpc_has_BLUETOOTH}
+    RPC_HAS_SSH=${_rpc_has_SSH}
+    RPC_HAS_SD=${_rpc_has_SD}
+    RPC_HAS_PERIPHERALS=${_rpc_has_PERIPHERALS}
+    RPC_CAN_WIFI=${RPC_CAN_WIFI}
+    RPC_CAN_BLUETOOTH=${RPC_CAN_BLUETOOTH}
+    RPC_CAN_SSH=${RPC_CAN_SSH}
+    RPC_CAN_SD=${RPC_CAN_SD}
+    RPC_CAN_PERIPHERALS=${RPC_CAN_PERIPHERALS}
+    RPC_STD_SSH=${RPC_STD_SSH}
+    RPC_FEATURES="${_rpc_list}"
+    RPC_IMAGE_VARIANT="${_rpc_variant}")
+
 # The package index rides along too, so `pkg available` works on a device that
 # has never been online. v1 shipped its catalogue the same way. It goes stale
 # between releases, which is what `pkg update` is for — but a fresh device
@@ -579,10 +753,6 @@ add_custom_command(
 add_custom_target(stock_index_src DEPENDS ${CMAKE_BINARY_DIR}/stock_index.cpp)
 target_sources(rpcortex_v2 PRIVATE ${CMAKE_BINARY_DIR}/stock_index.cpp)
 add_dependencies(rpcortex_v2 stock_index_src)
-
-add_custom_target(stock_cacerts_src DEPENDS ${CMAKE_BINARY_DIR}/stock_cacerts.cpp)
-target_sources(rpcortex_v2 PRIVATE ${CMAKE_BINARY_DIR}/stock_cacerts.cpp)
-add_dependencies(rpcortex_v2 stock_cacerts_src)
 
 # The USB serial buffers, raised from the SDK's 64 bytes.
 #
@@ -989,12 +1159,13 @@ rpc_add_app(novad1 PIC)
 # having to fetch them is a device that can be diagnosed before the network is
 # working, which is exactly when it usually matters.
 #
-# Turning them off is ONE flag, and that is deliberate — shipping the OS should
-# not mean picking them back out of the build by hand:
+# OFF unless asked for, and asking is one flag: they are the `devpkgs` feature
+# (tools/features.py), so RPC_DEV_PACKAGES comes from the features section above
+# like every other one, and an image with them is a custom image that a release
+# refuses:
 #
-#     ./build.sh --no-dev-packages
+#     ./build.sh pico2_w --with devpkgs        (or --dev-packages)
 #
-option(RPC_DEV_PACKAGES "Bake the development test suite into the image" ON)
 
 if(RPC_DEV_PACKAGES)
     target_compile_definitions(rpcortex_v2 PRIVATE RPC_DEV_PACKAGES=1)

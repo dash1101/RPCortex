@@ -21,6 +21,7 @@
 #include "interrupt.h"
 #include "clockcfg.h"
 #include "logring.h"
+#include "imagefeatures.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -149,6 +150,12 @@ static int cmd_sysinfo(int, char **) {
     // used to read defaults to "1" and nothing writes it, so every image said so.
     out_multi("  Build       : %s  (%s)", RPC_OS_BUILD, reg_get("System.Stage", "dev"));
     out_multi("  Image       : C++ native (%s)", RPC_ARCH);
+    // What the image was built with, so "does this board have Bluetooth" has an
+    // answer that does not depend on remembering how it was flashed.
+    if (features_standard())
+        out_multi("  Features    : %s", features_list());
+    else
+        out_multi("  Features    : %s  (custom image: %s)", features_list(), features_variant());
     const char *owner = reg_get("System.Owner", nullptr);
     if (owner && owner[0]) out_multi("  Owner       : %s", owner);
     out_multi("  Device ID   : %s", reg_get("System.Device_ID", "vela"));
@@ -246,6 +253,12 @@ static int cmd_ver(int, char **) {
     out_multi("Commit: %s  (%s)  [C++ native]", RPC_BUILD_ID,
               reg_get("System.Stage", "dev"));
     out_multi("GCC %s   Platform: %s (%s)", __VERSION__, PICO_BOARD, RPC_ARCH);
+    // The features in this image, and whether it is the standard one a release
+    // publishes. The first thing to ask about a board that cannot do something.
+    if (features_standard())
+        out_multi("Features: %s", features_list());
+    else
+        out_multi("Features: %s  (custom image: %s)", features_list(), features_variant());
     return 0;
 }
 

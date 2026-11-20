@@ -41,6 +41,7 @@ extern "C" bool     fault_stack_overflowed(int core);
 #include "users.h"
 #include "session.h"
 #include "pkg.h"
+#include "imagefeatures.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -145,7 +146,8 @@ static int cmd_compat(int argc, char **argv) {
 
     probe("wireless", net_available() ? (net_is_connected() ? V_OK : V_WARN) : V_NA,
           net_available() ? (net_is_connected() ? "connected" : "present, not connected")
-                          : "no radio on this board");
+                          : feature_board_can(FEAT_WIFI) ? "not in this image"
+                                                         : "no radio on this board");
 
     // Only with the radio up: the roots are parsed onto lwIP's heap, which does
     // not exist before then (see tls_config).

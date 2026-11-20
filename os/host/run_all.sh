@@ -351,6 +351,19 @@ else
     fail=$((fail+1))
 fi
 
+# Feature selection: what each board's standard image has, what --with and
+# --without turn into for CMake, what a custom image is called, and the marker
+# a release reads back out of an image. build.sh, os/CMakeLists.txt,
+# tools/buildconf.py and tools/release.py all go through tools/features.py.
+printf '  %-16s ' "features_py"
+if python3 ../../tools/test_features.py > "$OUT/features_py.out" 2>&1; then
+    echo "ok  $(grep -o 'Ran [0-9]* tests' "$OUT/features_py.out")"
+    pass=$((pass+1))
+else
+    echo "FAILED"; sed 's/^/      /' "$OUT/features_py.out" | tail -12
+    fail=$((fail+1))
+fi
+
 # The host tools (tools/rpc, tools/web) against their mock devices: the link
 # protocol from the computer's side, every rpc command, and the browser tool's
 # protocol client. No board and no serial port is touched.

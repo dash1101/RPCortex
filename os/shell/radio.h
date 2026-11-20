@@ -45,9 +45,9 @@ void radio_register(void);
 
 // What the Wi-Fi layer does as the chip comes up and goes down: station mode,
 // the power-save setting and the first status reading on the way up; closing
-// every connection and then clearing the status cache on the way down. net.cpp defines them; an image
-// without Wi-Fi gets the empty ones in net_off.cpp, so a Bluetooth-only image
-// brings the chip up for Bluetooth and nothing else.
+// every connection and then clearing the status cache on the way down.
+// net.cpp defines them. Bluetooth needs Wi-Fi (tools/features.py), so
+// radio.cpp is only ever built beside net.cpp.
 bool wifi_radio_starting(void);    // after cyw43_arch_init, before the chip is marked up;
                                    // false: the chip did not start (and is down again)
 void wifi_radio_started(void);     // after it is marked up, on the radio's core

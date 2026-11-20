@@ -200,20 +200,18 @@
 #include "btname.h"
 #include "interrupt.h"
 
-#if defined(RPC_HAS_WIFI) && RPC_HAS_WIFI
-
 #include "pico/cyw43_arch.h"
 #include "pico/btstack_cyw43.h"
 #include "btstack.h"
 
 // The radio owner, shared with WiFi rather than duplicated. Declared here
-// because net.cpp owns it: two locks over one chip would defeat the point.
+// because radio.cpp owns it: two locks over one chip would defeat the point.
 void net_op_acquire(void);
 void net_op_release(void);
 bool net_core_ok(void);
 // Brings the shared chip up if it is not already, honours the radio lock, and
 // records which core owns it. Bluetooth must go through this rather than call
-// cyw43_arch_init itself — see the note beside it in net.cpp.
+// cyw43_arch_init itself — see the note beside it in radio.cpp.
 bool net_radio_up(void);
 
 static bool g_bt_up;
@@ -648,15 +646,6 @@ static int cmd_bt(int argc, char **argv) {
     out_multi("  LE finds anything advertising; classic finds discoverable devices.");
     return argc > 1 ? 1 : 0;
 }
-
-#else   // no radio on this board
-
-static int cmd_bt(int, char **) {
-    out_err("This board has no Bluetooth hardware.");
-    return 1;
-}
-
-#endif
 
 void bt_register(void) {
     static const Command c{"bt", "Bluetooth status, scanning and advertising", cmd_bt,

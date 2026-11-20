@@ -686,8 +686,12 @@ extern "C" int fw_shell_done(int handle, int *status) {
 // Pins the OS owns, which a package must not have. On the wireless boards the
 // radio is wired to GPIO 23/24/25/29 through the CYW43, and driving those from
 // a package takes the network down in a way that looks like a WiFi fault.
+//
+// A fact about the BOARD, so RPC_HAS_CYW43 and not RPC_HAS_WIFI: the pins are
+// wired to the chip whether or not the image was built with Wi-Fi, and none of
+// them is broken out to a header for a package to use instead.
 static bool pin_reserved(unsigned pin) {
-#if defined(RPC_HAS_WIFI) && RPC_HAS_WIFI
+#if defined(RPC_HAS_CYW43) && RPC_HAS_CYW43
     return pin == 23 || pin == 24 || pin == 25 || pin == 29;
 #else
     (void)pin;
@@ -971,6 +975,9 @@ extern "C" int fw_power_source(void) {
     gpio_set_dir(PICO_VBUS_PIN, GPIO_IN);
     return gpio_get(PICO_VBUS_PIN) ? FW_POWER_USB : FW_POWER_BATTERY;
 #else
+    // A wireless board built without Wi-Fi: VBUS is behind the radio chip, and
+    // the cache that reads it safely is Wi-Fi's (net.cpp). Unknown, as it is on
+    // a full image before the radio first comes up.
     return FW_POWER_UNKNOWN;
 #endif
 }

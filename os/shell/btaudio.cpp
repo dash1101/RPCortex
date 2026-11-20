@@ -46,8 +46,6 @@
 #include <string.h>
 #include <stdlib.h>
 
-#if defined(RPC_HAS_WIFI) && RPC_HAS_WIFI
-
 #include "pico/cyw43_arch.h"
 #include "pico/stdlib.h"
 #include "btstack.h"
@@ -435,15 +433,6 @@ static int cmd_btaudio(int argc, char **argv) {
     out_multi("  Find a speaker with 'bt scan classic'. 16-bit WAV only.");
     return argc > 1 ? 1 : 0;
 }
-
-#else
-
-static int cmd_btaudio(int, char **) {
-    out_err("This board has no Bluetooth hardware.");
-    return 1;
-}
-
-#endif
 
 void btaudio_register(void) {
     static const Command c{"btaudio", "play audio to a Bluetooth speaker", cmd_btaudio,

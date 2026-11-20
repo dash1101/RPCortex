@@ -1,20 +1,39 @@
 #!/usr/bin/env bash
 # Build the RPCortex v2 firmware images.
 #
-#   ./build.sh              both boards
+#   ./build.sh              every board
 #   ./build.sh pico2_w      one board
 #   ./build.sh --clean      wipe the build directories first
-#   ./build.sh --dev-packages      bake bench, probe, stress and havoc in
-#   ./build.sh --release           what gets published: no dev packages
+#   ./build.sh --features   what an image can be built with or without, and the cost
+#   ./build.sh pico2_w --without bluetooth      a custom image: rpcortex-v2-pico2_w-nobt
+#   ./build.sh pico_w --without wifi,bluetooth  (several at once, comma separated)
+#   ./build.sh pico2_w --with devpkgs           (or --dev-packages) bench, probe, stress, havoc
+#   ./build.sh --release           the standard images a release publishes (the default)
 #   ./build.sh --fast              -O3 on every board, for comparison
 #   ./build.sh --small             -Os on every board, for comparison
+#   ./build.sh pico --emu          the emulator image (console on UART0)
+#
+# tools/buildconf.py asks which board and which features and runs the command.
 #
 # Output lands in out/rpcortex-v2-<board>.uf2. Flashing is drag-and-drop: hold
 # BOOTSEL, plug in, copy the .uf2 onto the RPI-RP2 drive. There is no rawrepl
 # paste step any more — the whole OS is one image.
+#
+# A CUSTOM IMAGE (any feature set other than the board's standard one) is named
+# for how it differs, rpcortex-v2-pico2_w-nobt.uf2, and built in its own
+# directory, os/build_pico2_w-nobt, so it is never mistaken for the standard
+# image and switching back and forth does not rebuild everything. `ver` on the
+# device says which it is, and tools/release.py refuses to publish one.
 
 set -euo pipefail
 cd "$(dirname "$0")"
+
+# Answered before anything else, because it needs no SDK.
+for arg in "$@"; do
+    if [ "$arg" = "--features" ]; then
+        exec python3 tools/features.py list
+    fi
+done
 
 export PICO_SDK_PATH="${PICO_SDK_PATH:-$PWD/sdk}"
 if [ ! -f "$PICO_SDK_PATH/pico_sdk_init.cmake" ]; then
@@ -33,30 +52,48 @@ for sub in lib/cyw43-driver lib/lwip; do
 done
 
 CLEAN=0
-# OFF by default. bench, probe, stress and havoc are development tools: they
-# exist to break the OS and to measure it, and they are of no use to somebody
-# who wants an operating system. Baked in they cost 42 KB of an image that has
-# 43 KB of headroom on a Pico W. They are published to the package repository
-# instead, so a board that wants them installs them.
-DEVPKGS=OFF
+# What to add to or leave out of each board's standard image. The table of what
+# exists, which boards can have it and what is on by default is
+# tools/features.py; this only collects the names.
+#
+# The development packages are one of those features, and OFF by default.
+# bench, probe, stress and havoc are development tools: they exist to break the
+# OS and to measure it, and they are of no use to somebody who wants an
+# operating system. Baked in they cost 42 KB of an image that has 43 KB of
+# headroom on a Pico W. They are published to the package repository instead,
+# so a board that wants them installs them.
+WITH=""
+WITHOUT=""
+RELEASE=0
 BUILDTYPE=""              # empty: os/CMakeLists.txt picks per part
 BOARDS=()
 CONSOLE_UART=OFF
 SUFFIX=""
+want=""                   # the option whose value is the next argument
 for arg in "$@"; do
+    if [ -n "$want" ]; then
+        case "$want" in
+            with)    WITH="$WITH,$arg" ;;
+            without) WITHOUT="$WITHOUT,$arg" ;;
+        esac
+        want=""
+        continue
+    fi
     case "$arg" in
         --clean) CLEAN=1 ;;
-        # bench, probe and stress are baked into the image so a board can be
-        # diagnosed before it has a network. They are of no use to somebody who
-        # just wants the OS, so a shipping build leaves them out — and this is
-        # the whole of doing that, rather than picking them out of the build.
-        --no-dev-packages) DEVPKGS=OFF ;;      # the default; kept so scripts do not break
-        --dev-packages)    DEVPKGS=ON ;;       # bake bench/probe/stress/havoc in
-        # What a published image is: no dev packages, built for size. Passed
-        # explicitly rather than left to the cache, because a build directory
-        # configured once keeps whatever it was configured with — which is how
-        # a -Os default went unnoticed for a whole rebuild.
-        --release) DEVPKGS=OFF ;;   # the default now; kept for clarity at a release
+        --with)        want=with ;;
+        --with=*)      WITH="$WITH,${arg#--with=}" ;;
+        --without)     want=without ;;
+        --without=*)   WITHOUT="$WITHOUT,${arg#--without=}" ;;
+        # The old spellings for the development packages, kept so scripts and
+        # habits do not break.
+        --dev-packages)    WITH="$WITH,devpkgs" ;;
+        --no-dev-packages) WITHOUT="$WITHOUT,devpkgs" ;;
+        # What a published image is: the board's standard features
+        # (tools/features.py) and no dev packages. Passed explicitly rather than left to the cache, because a
+        # build directory configured once keeps whatever it was configured with
+        # — which is how a -Os default went unnoticed for a whole rebuild.
+        --release) RELEASE=1 ;;
         --fast) BUILDTYPE=Release ;;      # -O3 everywhere, for comparing
         # The emulator's RP2040 model has no USB, so an --emu image puts the
         # console on the UART it does have. Built into its own directory so it
@@ -67,9 +104,18 @@ for arg in "$@"; do
         *)       BOARDS+=("$arg") ;;
     esac
 done
-# Every RP2 board this runs on. The wireless ones and the plain ones: net.cpp
-# compiles to "no radio on this board" stubs without the CYW43 part, so the
-# non-W images are a real build rather than a broken one.
+if [ -n "$want" ]; then
+    echo "--$want needs a list of features, like --$want wifi,bluetooth (./build.sh --features)" >&2
+    exit 1
+fi
+if [ "$RELEASE" -eq 1 ] && [ -n "${WITH//,/}${WITHOUT//,/}" ]; then
+    echo "--release builds the standard images; it cannot be combined with --with or --without" >&2
+    exit 1
+fi
+# Every RP2 board this runs on. The wireless ones and the plain ones: a plain
+# board is one on which Wi-Fi and Bluetooth cannot be on, and net_off.cpp and
+# bt_off.cpp stand in for them, so the non-W images are a real build rather
+# than a broken one.
 #
 # ESP32-S3 is NOT here. It is a different architecture with a different SDK —
 # the pure core/ layer moves over unchanged, but the context switch, storage and
@@ -79,13 +125,26 @@ done
 
 mkdir -p out
 for board in "${BOARDS[@]}"; do
-    dir="os/build_${board}${SUFFIX}"
+    # Which features, as CMake options, and the name a custom image carries.
+    # Refused here, before any building, when the board cannot have something.
+    feat=$(python3 tools/features.py resolve "$board" --with "$WITH" --without "$WITHOUT") || exit 1
+    eval "$feat"
+    VARIANT="${FEAT_TAG:+-$FEAT_TAG}"
+    name="rpcortex-v2-${board}${VARIANT}${SUFFIX}"
+    dir="os/build_${board}${VARIANT}${SUFFIX}"
+    # What the image must say it is: the marker check below compares.
+    expect="${FEAT_TAG}"
+    [ -n "$SUFFIX" ] && expect="${expect:+$expect-}emu"
+    [ -n "$expect" ] || expect="standard"
     case "$board" in
         pico|pico_w) board_flash_kb=2048 ;;
         *)           board_flash_kb=4096 ;;
     esac
     [ "$CLEAN" -eq 1 ] && rm -rf "$dir"
-    echo "==> $board"
+    echo "==> $board${VARIANT:+  (custom image: $FEAT_TAG)}"
+    if [ -n "$FEAT_NOTES" ]; then
+        printf '%s\n' "$FEAT_NOTES" | sed 's/^/    note: /'
+    fi
     # picotool: the system copy is 2.1.1 and the SDK requires 2.3.0, so a fresh
     # board directory refuses to configure while an existing one is fine. Point
     # every board at the copy the first build fetched instead of downloading it
@@ -99,19 +158,24 @@ for board in "${BOARDS[@]}"; do
     for d in os/build_*/_deps/picotool loader-spike/build*/_deps/picotool; do
         [ -x "$d/picotool" ] && PT="$(cd "$d" && pwd)" && break
     done
+    # Every feature option is passed, on or off, every time: a build directory
+    # remembers what it was configured with, and one left to remember would
+    # build the last feature set rather than this one.
+    # shellcheck disable=SC2086
     if [ -n "$PT" ]; then
-        cmake -S os -B "$dir" -DPICO_BOARD="$board" -DRPC_DEV_PACKAGES="$DEVPKGS" \
+        cmake -S os -B "$dir" -DPICO_BOARD="$board" $FEAT_CMAKE \
             -DRPC_CONSOLE_UART="$CONSOLE_UART" \
               ${BUILDTYPE:+-DCMAKE_BUILD_TYPE="$BUILDTYPE"} -Dpicotool_DIR="$PT" >/dev/null
     else
-        cmake -S os -B "$dir" -DPICO_BOARD="$board" -DRPC_DEV_PACKAGES="$DEVPKGS" \
+        cmake -S os -B "$dir" -DPICO_BOARD="$board" $FEAT_CMAKE \
             -DRPC_CONSOLE_UART="$CONSOLE_UART" \
               ${BUILDTYPE:+-DCMAKE_BUILD_TYPE="$BUILDTYPE"} >/dev/null
     fi
     cmake --build "$dir" -j"$(nproc)" >/dev/null
-    cp "$dir/rpcortex_v2.uf2" "out/rpcortex-v2-$board.uf2"
-    size=$(stat -c%s "out/rpcortex-v2-$board.uf2")
-    printf '    out/rpcortex-v2-%s.uf2  (%s KB)\n' "$board" "$((size / 1024))"
+    cp "$dir/rpcortex_v2.uf2" "out/$name.uf2"
+    size=$(stat -c%s "out/$name.uf2")
+    printf '    out/%s.uf2  (%s KB)\n' "$name" "$((size / 1024))"
+    printf '    features: %s\n' "${FEAT_LIST:-none}"
 
     # The firmware-writing routine must be in RAM, with every call it makes also
     # in RAM — it runs while the flash holding everything else is being erased.
@@ -132,11 +196,21 @@ for board in "${BOARDS[@]}"; do
     # block with a header, which is right for the boot ROM's drag-and-drop and
     # pure overhead for an update that writes flash directly.
     if [ -f "$dir/rpcortex_v2.bin" ]; then
-        cp "$dir/rpcortex_v2.bin" "out/rpcortex-v2-$board.bin"
-        bsize=$(stat -c%s "out/rpcortex-v2-$board.bin")
-        printf '    out/rpcortex-v2-%s.bin  (%s KB)  sha256 %s\n' \
-            "$board" "$((bsize / 1024))" \
-            "$(sha256sum "out/rpcortex-v2-$board.bin" | cut -c1-16)..."
+        cp "$dir/rpcortex_v2.bin" "out/$name.bin"
+        bsize=$(stat -c%s "out/$name.bin")
+        printf '    out/%s.bin  (%s KB)  sha256 %s\n' \
+            "$name" "$((bsize / 1024))" \
+            "$(sha256sum "out/$name.bin" | cut -c1-16)..."
+
+        # THE IMAGE SAYS WHAT IT IS. imagefeatures.cpp bakes "rpcimage:<variant>" into
+        # every build, and tools/release.py publishes only "standard". Checked
+        # here, on the image just built, so that what the file is called, what the
+        # build was asked for and what the device will say cannot drift apart.
+        got=$(python3 tools/features.py image-variant "out/$name.bin") || exit 1
+        if [ "$got" != "$expect" ]; then
+            printf '    [!] the image says it is "%s"; this build asked for "%s"\n' "$got" "$expect"
+            exit 1
+        fi
 
         # DOES IT STILL FIT?
         #
@@ -197,8 +271,12 @@ for board in "${BOARDS[@]}"; do
         # can be pointed at what grew rather than bisected for. A readout, never a
         # gate — `|| true` keeps a reporting hiccup from failing a good build.
         python3 "$(dirname "$0")/tools/size-report.py" "$dir/rpcortex_v2.elf.map" --groups 2>/dev/null || true
-        # And whether it moved a lot since the size somebody last accepted.
-        python3 "$(dirname "$0")/tools/size-guard.py" check "$board" "out/rpcortex-v2-$board.bin" || true
+        # And whether it moved a lot since the size somebody last accepted. Only
+        # for the standard image: a custom one is meant to differ, and recording
+        # it as the baseline would hide the next real growth.
+        if [ "$expect" = "standard" ]; then
+            python3 "$(dirname "$0")/tools/size-guard.py" check "$board" "out/$name.bin" || true
+        fi
     fi
 done
 

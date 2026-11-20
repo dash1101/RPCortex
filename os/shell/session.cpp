@@ -26,6 +26,7 @@
 #include "storage.h"
 #include "ident.h"
 #include "sudo.h"
+#include "imagefeatures.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -292,7 +293,10 @@ static void setup_device_name(void) {
 static bool setup_wifi(void) {
     out_info("[4/5] WiFi");
     if (!net_available()) {
-        out_ok("  No WiFi hardware detected - skipping.");
+        // A W board built without Wi-Fi has the hardware; it is the image that
+        // does not. The plain-board wording is what the emulator tests wait for.
+        out_ok(feature_board_can(FEAT_WIFI) ? "  This image was built without Wi-Fi - skipping."
+                                            : "  No WiFi hardware detected - skipping.");
         return false;
     }
     out_multi("  Connect now so the device can reach the package repo.");

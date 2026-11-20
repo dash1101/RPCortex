@@ -52,12 +52,11 @@ void net_register(void);
 void power_register(void);
 void bt_register(void);
 void btaudio_register(void);
-// Only on the boards the SD driver is compiled for — see os/CMakeLists.txt.
-// Declared inside the guard as well as called inside it, so a build without it
-// cannot accidentally link against a function that is not there.
-#if defined(RPC_HAS_SD) && RPC_HAS_SD
+// Every *_register below exists in every image. A feature the image was built
+// without (os/CMakeLists.txt, tools/features.py) is represented by a stand-in
+// file whose register function adds commands that say why they cannot run:
+// net_off.cpp, bt_off.cpp, ssh_off.cpp, periph_off.cpp, sd_off.cpp, radio_off.cpp.
 void sd_register(void);
-#endif
 void nfc_register(void);
 void ibutton_register(void);
 void subghz_register(void);
@@ -75,9 +74,7 @@ void fetch_register(void);
 void ps_register(void);
 void log_register(void);
 void usbdrive_register(void);
-#if defined(RPC_HAS_SSH) && RPC_HAS_SSH
-void ssh_register(void);
-#endif
+void ssh_register(void);           // sshc.cpp, or ssh_off.cpp
 void hid_register(void);
 void stock_register(void);
 void stock_install_once(void);
@@ -727,13 +724,9 @@ void shell_register_builtins(void) {
     ps_register();          // ps / kill — the task manager
     log_register();         // logdump
     usbdrive_register();    // usbdrive — offer the filesystem over USB, or do not
-#if defined(RPC_HAS_SSH) && RPC_HAS_SSH
     ssh_register();         // ssh — the client, and `ssh server`
-#endif
     hid_register();         // hid / badusb — the USB keyboard
-#if defined(RPC_HAS_SD) && RPC_HAS_SD
     sd_register();          // sd — the memory card, browsed at /sd
-#endif
     jobs_register();        // startup / task / service / watch
     fsinit_register();      // fscheck
     diag_register();        // diag / compat / inputstat / regreset / pkgdisable / pkgenable

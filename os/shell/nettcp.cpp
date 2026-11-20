@@ -66,8 +66,6 @@
 
 bool net_is_connected(void);
 
-#if defined(RPC_HAS_WIFI) && RPC_HAS_WIFI
-
 #include "pico/cyw43_arch.h"
 #include "lwip/tcp.h"
 #include "lwip/pbuf.h"
@@ -642,22 +640,3 @@ int net_tcp_connect(const char *host, unsigned port, uint32_t timeout_ms) {
     }
 }
 #endif  // RPC_HAS_SSH
-
-#else   // no radio on this board
-
-int net_pkg_tcp_listen(unsigned) { return -1; }
-int net_pkg_tcp_accept(int, uint32_t) { return -1; }
-int net_pkg_tcp_recv(int, void *, unsigned, uint32_t) { return -1; }
-int net_pkg_tcp_send(int, const void *, unsigned) { return -1; }
-int net_pkg_tcp_close(int) { return -1; }
-int  net_tcp_accept_now(int) { return -1; }
-int  net_tcp_read_now(int, void *, unsigned) { return -1; }
-int  net_tcp_write_now(int, const void *, unsigned) { return -1; }
-bool net_tcp_drained(int) { return true; }
-void net_tcp_adopt(int) {}
-void net_tcp_peer(int, char *out, unsigned cap) { if (out && cap) out[0] = 0; }
-int  net_tcp_connect(const char *, unsigned, uint32_t) { return -1; }
-extern "C" void net_tcp_task_ended(int) {}
-unsigned net_pkg_tcp_open(void) { return 0; }
-
-#endif

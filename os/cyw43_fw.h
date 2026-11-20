@@ -20,10 +20,16 @@
 
 #include "cyw43_fw_data.h"      // generated: the lengths and the stored bytes
 
-// The stream holds the Bluetooth-capable firmware, which is the one the SDK
-// picks whenever Bluetooth is linked in, and every wireless board here links it.
-#if !CYW43_ENABLE_BLUETOOTH
-#error "cyw43_fw_data holds the Bluetooth-capable firmware; generate it from the plain one to build without Bluetooth"
+// The stream holds the firmware the driver would pick: the Bluetooth-capable
+// one when Bluetooth is linked in (every standard wireless image), the plain
+// one in an image built without Bluetooth. os/CMakeLists.txt makes it from the
+// right header and says which in RPC_CYW43_FW_BT; a mismatch would send the
+// chip firmware the driver does not expect.
+#ifndef RPC_CYW43_FW_BT
+#define RPC_CYW43_FW_BT 1
+#endif
+#if (CYW43_ENABLE_BLUETOOTH ? 1 : 0) != RPC_CYW43_FW_BT
+#error "cyw43_fw_data was made from the other firmware than the driver picks; see os/CMakeLists.txt"
 #endif
 
 #ifdef __cplusplus

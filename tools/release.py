@@ -237,6 +237,22 @@ def build_number():
     return out(["git", "rev-list", "--count", "HEAD"])
 
 
+def not_standard(board, path):
+    """Why the image at `path` cannot be published for `board`, or None when it is the
+    standard image. The variant is read out of the image itself (tools/features.py),
+    so renaming a custom build does not get it through."""
+    import features
+    v = features.image_variant(features.image_bytes(path))
+    shown = os.path.relpath(path, ROOT)
+    if v is None:
+        return ("%s carries no feature marker, so it was not built by this tree's build.sh; "
+                "rebuild it with ./build.sh %s" % (shown, board))
+    if v != "standard":
+        return ("%s is a custom image (%s). A release publishes only the standard image for each "
+                "board; rebuild it with ./build.sh %s" % (shown, v, board))
+    return None
+
+
 def sha256(path):
     h = hashlib.sha256()
     with open(path, "rb") as f:
@@ -368,6 +384,16 @@ def cmd_cut(a):
             if dry and not a.skip_build:
                 continue
             raise SystemExit("out/rpcortex-v2-%s.bin was not built as %s; rebuild it" % (b, want.decode()))
+        # And the image must be the STANDARD one, whatever its file is called: a
+        # custom build (built without Bluetooth, with the development packages,
+        # for the emulator) carries its variant inside it, and a release publishes
+        # one image per board for everybody.
+        for path in (binp, uf2p):
+            problem = not_standard(b, path)
+            if problem:
+                if dry and not a.skip_build:
+                    break
+                raise SystemExit(problem)
         for kind, path in (("bin", binp), ("uf2", uf2p)):
             name = "rpcortex-%s-%s.%s" % (tag, b, kind)
             assets.append({"board": b, "kind": kind, "file": name,

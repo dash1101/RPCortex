@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Checks for tools/release.py: the parts that decide what a release says and is called."""
-import os, sys, unittest
+import os, sys, tempfile, unittest
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import release as r
 
@@ -151,6 +151,55 @@ class Categories(unittest.TestCase):
         body = r.render_notes({"summary": "S.", "notes": n, "assets": []}, {"boards": []})
         self.assertLess(body.index("### New"), body.index("### Fixed"))
         self.assertLess(body.index("### Fixed"), body.index("### Security"))
+
+
+def uf2(payload):
+    """Wrap bytes in UF2 blocks the way the SDK's tools do: 256 bytes per 512-byte block."""
+    out = b""
+    chunks = [payload[i:i + 256] for i in range(0, len(payload), 256)]
+    for n, c in enumerate(chunks):
+        hdr = (b"UF2\n" + (0x9E5D5157).to_bytes(4, "little") + (0).to_bytes(4, "little")
+               + (0x10000000 + 256 * n).to_bytes(4, "little") + len(c).to_bytes(4, "little")
+               + n.to_bytes(4, "little") + len(chunks).to_bytes(4, "little") + (0).to_bytes(4, "little"))
+        out += hdr + c.ljust(476, b"\0") + (0x0AB16F30).to_bytes(4, "little")
+    return out
+
+
+class OnlyTheStandardImage(unittest.TestCase):
+    """A custom build (fewer features, the development packages, the emulator) is refused
+    whatever its file is called: the variant is read out of the image."""
+    def image(self, d, name, body):
+        p = os.path.join(d, name)
+        with open(p, "wb") as fh:
+            fh.write(body)
+        return p
+
+    def test_the_standard_image_passes(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = self.image(d, "a.bin", b"\0" * 300 + b"rpcimage:standard\0" + b"\xff" * 300)
+            self.assertIsNone(r.not_standard("pico2_w", p))
+
+    def test_a_custom_image_is_refused_and_says_what_it_is(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = self.image(d, "rpcortex-v2-pico2_w.bin", b"\0" * 300 + b"rpcimage:nobt\0")
+            why = r.not_standard("pico2_w", p)
+        self.assertIn("custom image (nobt)", why)
+        self.assertIn("./build.sh pico2_w", why)
+
+    def test_an_image_with_no_marker_is_refused(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = self.image(d, "a.bin", b"\0" * 600)
+            self.assertIn("no feature marker", r.not_standard("pico", p))
+
+    def test_the_uf2_is_read_through_its_blocks(self):
+        # The marker straddles the boundary between the first two blocks, so only an
+        # unwrapped read can find it.
+        body = b"\0" * 250 + b"rpcimage:emu\0" + b"\xff" * 300
+        with tempfile.TemporaryDirectory() as d:
+            p = self.image(d, "a.uf2", uf2(body))
+            self.assertIn("custom image (emu)", r.not_standard("pico", p))
+            p = self.image(d, "b.uf2", uf2(body.replace(b"rpcimage:emu", b"rpcimage:standard")))
+            self.assertIsNone(r.not_standard("pico", p))
 
 
 if __name__ == "__main__":
