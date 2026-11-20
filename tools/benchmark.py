@@ -245,10 +245,8 @@ def cmd_run(a):
     dev, rc, t, _ = run_cmd(port, dev, "wifi status")
     ip = a.ip or device_ip(t)
     if ip:
-        # Not straight after the join: for about fifteen seconds after a new
-        # association pings are slow on any firmware and say nothing about it.
-        time.sleep(30)
-        ping(ip, 10)
+        time.sleep(5)
+        ping(ip, 60)        # 15 s of traffic first: the start of a new association is slow on any firmware
         p = ping(ip)
         if p:
             M["ping_avg_ms"], M["ping_max_ms"], M["ping_loss_pct"] = p["avg"], p["max"], p["loss_pct"]

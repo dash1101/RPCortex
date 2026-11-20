@@ -8,6 +8,7 @@
 // Run with -v to also print a rendered sample, for eyeballing colour choices.
 
 #include "out.h"
+#include "task.h"
 #include "logring.h"
 
 #include <stdio.h>
@@ -267,6 +268,41 @@ int main(int argc, char **argv) {
         capture(emit_usage, buf, sizeof(buf));
         ck(log_count() == before, "a usage line is not logged");
         ck(strstr(buf, "Usage: thing <file>") != nullptr, "but it is still printed");
+    }
+
+    // Is it a screen? A file's missing last newline is added only for one
+    // (cat), so whether the output is data has to be answered right: a
+    // buffer is data, and a remote command without a pty is data too.
+    {
+        ck(out_to_screen(), "the console is a screen");
+        char cb[64];
+        out_capture_begin(cb, sizeof(cb));
+        ck(!out_to_screen(), "a pipe or redirect is not");
+        out_capture_end();
+
+        struct Fake { static int key(void *) { return -1; }
+                      static void hang(void *) {}
+                      static bool pty(void *, uint16_t *c, uint16_t *r) { *c = 80; *r = 24; return true; }
+                      static bool nopty(void *, uint16_t *, uint16_t *) { return false; }
+                      static void sink(void *, const char *, uint32_t) {} };
+        TaskTerm with_pty = { Fake::key, Fake::hang, Fake::pty, nullptr };
+        TaskTerm without  = { Fake::key, Fake::hang, Fake::nopty, nullptr };
+        const TaskTerm *was = task_shell()->term;
+        char tb[64];
+
+        task_shell()->term = &with_pty;
+        out_capture_begin_term(tb, sizeof(tb), Fake::sink, nullptr);
+        ck(out_to_screen(), "a remote login with a pty is a screen");
+        out_capture_begin(cb, sizeof(cb));
+        ck(!out_to_screen(), "and a pipe inside it is not");
+        out_capture_end();
+        out_capture_end();
+
+        task_shell()->term = &without;
+        out_capture_begin_term(tb, sizeof(tb), Fake::sink, nullptr);
+        ck(!out_to_screen(), "a remote command without a pty is not (ssh dev cat f > f)");
+        out_capture_end();
+        task_shell()->term = was;
     }
 
     printf("  out: %d checks, %d failed\n", checks, fails);

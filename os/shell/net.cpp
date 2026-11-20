@@ -247,7 +247,13 @@ static WifiPower wifi_power_effective(int on_usb) {
 
 // On the radio's core, holding g_net_op or inside radio_up. Not inside a NetLock:
 // cyw43_wifi_pm takes the driver's own lock.
+//
+// `on_usb` is 1 (USB), 0 (battery) or -1 (not known). Not known is asked of the
+// chip here rather than guessed: auto treats anything but 1 as battery, and
+// the cached reading is -1 after the radio has been off, so a rejoin after
+// `wifi off` turned power saving ON while plugged in (pings of 70-90 ms).
 static void wifi_power_apply(int on_usb) {
+    if (on_usb < 0) on_usb = cyw43_arch_gpio_get(CYW43_WL_GPIO_VBUS_PIN) ? 1 : 0;
     WifiPower p = wifi_power_effective(on_usb);
     uint32_t pm = p == WP_OFF      ? CYW43_NONE_PM
                 : p == WP_SAVE     ? CYW43_DEFAULT_PM
@@ -986,14 +992,14 @@ static int wifi_connect(const char *ssid, const char *pw, bool quiet, bool persi
     net_apply_dns();
     join_phase("status");
     status_refresh();
-    // POWER SAVING AGAIN, AFTER THE JOIN. The setting applied when the radio
-    // came up does not survive associating with a network: measured on a Pico
-    // 2 W, 'wifi power' said off while pings averaged 91 ms (the chip was back
-    // in its power-save mode), and applying it again gave 1.3 ms. The driver
-    // does not touch it during a join, so it is the chip's own firmware; either
-    // way, every successful join (connect, autoconnect, a rejoin) ends here.
+    // Power saving again, after the join, from the power source as it is now
+    // (-1 asks the chip). A safeguard rather than a cure: every successful
+    // join ends here, so the setting in force is the one 'wifi power' reports.
+    // Measured on a Pico 2 W, pings in the first few seconds of traffic after
+    // a join average 60-80 ms with the chip reporting power saving OFF, then
+    // settle to about 1 ms; that settling is the network's, not this setting.
     join_phase("wifi_pm after join");
-    wifi_power_apply(g_status.power);
+    wifi_power_apply(-1);
     snprintf(g_status.ssid, sizeof(g_status.ssid), "%s", ssid);
     if (persist) {
         reg_set("WiFi.Active", ssid);
@@ -1569,6 +1575,21 @@ static int wifi_power_cmd(int argc, char **argv, int first) {
     if (g_radio_up)
         out_multi("  In effect    : %s%s", wp_name(g_pm_applied),
                   set == WP_AUTO ? (g_status.power == 1 ? "  (on USB power)" : "  (on battery)") : "");
+    // What the chip says, not what was last sent to it: the two have been seen
+    // to differ, and only this one decides how quickly the radio answers.
+    if (g_radio_up) {
+        uint32_t pm = 0;
+        bool ok = false;
+        net_op_acquire();
+        if (net_core_ok()) ok = cyw43_wifi_get_pm(&cyw43_state, &pm) == 0;
+        net_op_release();
+        if (ok) {
+            unsigned mode = pm & 0xf;
+            out_multi("  Chip reports : %s", mode == CYW43_NO_POWERSAVE_MODE ? "off"
+                                           : mode == CYW43_PM1_POWERSAVE_MODE ? "save (PM1)"
+                                           : mode == CYW43_PM2_POWERSAVE_MODE ? "balanced (PM2)" : "?");
+        }
+    }
     out_multi("  off is fastest (the radio always listens) and draws the most; save draws the least.");
     return 0;
 }

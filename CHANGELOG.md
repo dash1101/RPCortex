@@ -17,9 +17,13 @@ Summary:
 
 ### Improved
 
+- `wifi power` shows the mode the chip reports beside the one that was set, so the two can be compared.
+
 ### Fixed
 
-- Wi-Fi power saving is applied again after every join. The setting made when the radio came up did not survive associating with a network, so `wifi power` could say off while pings averaged 90 ms; reapplying it brought them back to about 1 ms.
+- A TCP connection to the device lost whatever it sent before the program serving it got round to accepting it. A package's TCP server could miss the start of a request, and an SSH client's opening line was always lost. A connection that was reset while it waited also left a dangling pointer behind. Both are fixed for every TCP server on the device.
+- `cat` of a file without a final newline added one into pipes, redirects and host tools as well as on screen, so `cat a > b` and `ssh dev cat f > f` changed the file. It only adds one on a screen now.
+- `wifi power`, when the power source had not been read yet (just after the radio came back on), took it to be a battery and could turn power saving on while plugged in. It asks the chip instead.
 
 ### Security
 
@@ -35,6 +39,8 @@ Summary:
 - These cost the Pico W 2.8 KB of slot (15.5 KB left), where SSH itself is not built.
 
 ### Known issues
+
+- For the first few seconds of traffic after joining a network, pings can average 60 to 80 ms whatever the power setting; the chip reports power saving off throughout, and it settles to about 1 ms.
 
 ## v2.02-beta (build 582), 2026-11-20
 

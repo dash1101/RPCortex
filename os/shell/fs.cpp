@@ -150,9 +150,11 @@ static bool cat_one(const char *path) {
         ends_nl = (chunk[n - 1] == '\n');
         off += (uint32_t)n;
     }
-    // Only add a newline when the file did not end with one, so `cat a > b`
-    // reproduces the file byte for byte instead of growing it each round trip.
-    if (off && !ends_nl) out_write("\n", 1);
+    // A file whose last line has no newline gets one, so the prompt does not
+    // start halfway along it. On a screen only: into a pipe, a redirect, a
+    // host tool or `ssh dev cat f > f`, the bytes are data and arrive exactly
+    // as they are. (It was added everywhere, so a round trip grew the file.)
+    if (off && !ends_nl && out_to_screen()) out_write("\n", 1);
     storage_close_source(h);
     return true;
 }

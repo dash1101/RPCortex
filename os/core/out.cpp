@@ -318,6 +318,14 @@ static bool capture_takes_tags(void) { CapFrame *f = cur(); return f && f->tags;
 // terminal frame is not one — progress bars and prompts belong on it.
 static bool capturing_buffer(void) { CapFrame *f = cur(); return f && !f->term; }
 
+bool out_to_screen(void) {
+    if (capturing_buffer()) return false;
+    const TaskTerm *t = task_shell()->term;
+    if (!t) return true;                       // the console
+    uint16_t cols, rows;
+    return t->size && t->size(t->ctx, &cols, &rows);   // false: no pty asked for
+}
+
 // The task's terminal frame, under whatever pipes are capturing over it.
 __attribute__((noinline)) static CapFrame *term_frame(void) {
     int me = task_self();

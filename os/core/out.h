@@ -120,6 +120,12 @@ uint32_t out_capture_end(void);       // bytes captured; ends the capture
 // watchdog never reaches its out_capture_end, and the frame table is small.
 void     out_capture_reclaim(int pid);
 bool     out_capturing(void);
+// Is a person's screen what this task is printing to? False when the output is
+// going into a buffer (a pipe, a redirect, fw_shell_run, a link EXEC) and when
+// it is a remote command with no terminal (`ssh dev cat f`): there, the bytes
+// are data and must arrive exactly as they are. True at the console and in a
+// remote login with a pty. For niceties such as ending a file's last line.
+bool     out_to_screen(void);
 // True if the capture ran out of room. A truncated pipe should say so rather
 // than quietly hand the next stage half its input.
 bool     out_capture_overflowed(void);
