@@ -8,6 +8,22 @@ good notes is in `RELEASING.md`.
 
 ## Unreleased
 
+Summary: 
+
+### New
+
+### Improved
+
+### Fixed
+
+### Security
+
+### Changed
+
+### Known issues
+
+## v2.03-beta (build 598), 2026-11-20
+
 Summary: SSH on the Pico 2 W, a fix every TCP server on the device needed, and how this build measures against the first release.
 
 ### New

@@ -2,6 +2,122 @@
   "schema": 1,
   "releases": [
     {
+      "tag": "v2.03-beta",
+      "display": "v2.03-beta",
+      "version": "2.03",
+      "build": 598,
+      "commit": "1d0d2f92287cc45d89a7f6dc2dc7c7c3d6e265e3",
+      "codename": "Vela II",
+      "date": "2026-11-20",
+      "prerelease": true,
+      "title": "RPCortex v2.03-beta (build 598)",
+      "summary": "SSH on the Pico 2 W, a fix every TCP server on the device needed, and how this build measures against the first release.",
+      "notes": {
+        "new": [
+          "`tools/benchmark.py` measures a board (boot, memory, console traffic, ping, HTTPS, upload, a package install, the CPU benchmark and a set of reliability scenarios) and compares two firmwares in percent. It drives old firmware through the prompt, so it runs on v2.00-beta too.",
+          "SSH, on the Pico 2 W. `ssh server on` lets a computer log in with `ssh root@<device>` and get the device's shell (pipes, Tab, colours, Ctrl+C for the running command), or run one command and get its exit status. `ssh user@host` logs the device in somewhere else, with the host's key shown and remembered in `~/.ssh/known_hosts` on first use and a changed key refused. `ssh keygen` gives a user a key of their own. Key exchange curve25519-sha256 and ecdh-sha2-nistp256, an ECDSA host key, AES-GCM and AES-CTR with HMAC-SHA2-256, strict key exchange, re-keying; logins by key (ECDSA P-256, RSA with SHA-2) or password. Off until turned on, two sessions at most, no forwarding, and accounts without a password (guest as shipped) cannot log in. Wrong passwords are slowed down, six tries end a connection, and many failures in a minute shut everyone out for a minute; every login and refusal is logged. Costs 32 KB of flash on a Pico 2 W (119 KB of its slot left), and about 25 KB of memory per session, an 8 KB stack included, plus 8 KB for the server's own task while it runs. Proven on a computer against the real OpenSSH client and server, every algorithm forced in turn; not yet run on a board. See `SSH.md`."
+        ],
+        "improved": [
+          "`wifi power` shows the mode the chip reports beside the one that was set, so the two can be compared.",
+          "Measured against v2.00-beta, the first release, on the same Pico 2 W with `tools/benchmark.py` (USB power, a clean boot with no packages, SSH off). Ping from a computer on the same network averages 1.1 ms where it was 94 ms (86x faster), and the worst of 40 is 2.4 ms where it was 363 ms. On battery, `wifi power auto` picks balanced, which measured about 150 ms.",
+          "Boot to a mounted filesystem takes 2.2 s, down from 3.2 s (30% faster).",
+          "Typing at the console sends back 2.7 bytes per key, down from 75 (96% less). It matters most on a UART console.",
+          "An HTTPS request (`curl -I https://github.com`) takes 1.26 s, down from 2.21 s (43% faster).",
+          "Copying a file to the board runs at 18 KB/s, up from 9.5 KB/s (89% faster). That compares link mode with typing through the old firmware's prompt, which is what a host tool gets from each.",
+          "304 KB is free after boot, up from 295 KB (3% more), and the largest free block is 302 KB, up from 290 KB (4% more).",
+          "Installing Nova D1 1.7.1 from the repository, download included, takes 22.6 s, down from 23.7 s (5% faster). The CPU benchmark (`bench`) is 1% higher, within its noise.",
+          "Seven things that went wrong on v2.00-beta are now checked by the benchmark, and all of them work: `;` inside a script, `wc -l`, a looping script under `bg` (it restarted the board), a package's output through a pipe, a file name of 40 characters or more, `rm` of a system folder (it removed `/usb`), and `compat` with the radio off (it restarted the board)."
+        ],
+        "fixed": [
+          "A TCP connection to the device lost whatever it sent before the program serving it got round to accepting it. A package's TCP server could miss the start of a request, and an SSH client's opening line was always lost. A connection that was reset while it waited also left a dangling pointer behind. Both are fixed for every TCP server on the device.",
+          "`cat` of a file without a final newline added one into pipes, redirects and host tools as well as on screen, so `cat a > b` and `ssh dev cat f > f` changed the file. It only adds one on a screen now.",
+          "`wifi power`, when the power source had not been read yet (just after the radio came back on), took it to be a battery and could turn power saving on while plugged in. It asks the chip instead."
+        ],
+        "security": [
+          "An ordinary account can no longer change anything in `/os` or `/etc` (startup items, services and scheduled tasks, installed packages and their index, the trusted certificates, a staged update: all of it runs as the console's user at the next boot), nor anything in another user's home, and it cannot read another user's `~/.ssh`. Reading is otherwise as before. `/os/ssh`, where the SSH host key lives, is closed to everyone but an admin. `/etc` used to be open to every account, which was a way to root at the next restart; with SSH it would have been one from the network.",
+          "`kill` by an ordinary account stops only its own tasks: from a remote login, that login's; at the console, the ones that follow the console. The SSH server, another person's session and the device's services are an admin's to stop.",
+          "Defining or removing an alias needs an admin now. Aliases are expanded in everyone's shell before any command is looked up, so an ordinary account could put `exit=<anything>` in front of the admin; a built-in alias (`exit`, `id`, `exec`) can no longer be shadowed at all.",
+          "A package run by an ordinary account can no longer write the settings that decide who gets in (`System.Autonomous`, `System.Setup`, `SSH.*`, `Alias.*`), and one run from a remote login only its own (`Apps.*`; not `User.*`, which is the console user's). Before, any package anybody could `run` could set the device to boot straight into root's shell."
+        ],
+        "changed": [
+          "Who a command runs as belongs to the task now, not to the console. A remote login's shell, and everything it starts, acts for that login's user, in its own working directory, with its own Ctrl+C; every other task follows whoever is signed in at the console, as before. So a guest logged in over SSH stays a guest while root is at the serial port, and a remote root does not make the console's guest an admin. `logout` in a remote session ends that session and leaves the console alone. Each task carries 160 bytes more for this (about 2 KB in all).",
+          "A full-screen app belongs to the terminal that opened it; one started on a second terminal while another is open is refused instead of drawing into the first.",
+          "The identity and security changes above cost the Pico W 2.8 KB of its slot (15.5 KB left); SSH itself is not built there."
+        ],
+        "issues": [
+          "The filesystem part of `bench` scores 108 against 120 on v2.00-beta (10% slower). v2.00-beta rebuilt from source scored 112 to 117 on the same board, and one firmware varies from 100 to 126 between boots, so part of the gap is the state of the filesystem, but it has not been traced.",
+          "For the first few seconds of traffic after joining a network, pings can average 60 to 80 ms whatever the power setting; the chip reports power saving off throughout, and it settles to about 1 ms."
+        ]
+      },
+      "assets": [
+        {
+          "board": "pico2_w",
+          "kind": "bin",
+          "file": "rpcortex-v2.03-beta-pico2_w.bin",
+          "size": 931196,
+          "sha256": "c838bf2ce9ab7ec26588b9119dfff453890a6003f7f68f4639df0f39ada592a2",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.03-beta/rpcortex-v2.03-beta-pico2_w.bin"
+        },
+        {
+          "board": "pico2_w",
+          "kind": "uf2",
+          "file": "rpcortex-v2.03-beta-pico2_w.uf2",
+          "size": 1863168,
+          "sha256": "e0d719980415c265f93a6cd3e4fb1e6d8480ade13cfca6ea75c29f8746906781",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.03-beta/rpcortex-v2.03-beta-pico2_w.uf2"
+        },
+        {
+          "board": "pico_w",
+          "kind": "bin",
+          "file": "rpcortex-v2.03-beta-pico_w.bin",
+          "size": 842452,
+          "sha256": "891e58ee9a5aa4c1aa1ccd0d4032b0c4a434b2c80d4f4054344f1f23e667eda0",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.03-beta/rpcortex-v2.03-beta-pico_w.bin"
+        },
+        {
+          "board": "pico_w",
+          "kind": "uf2",
+          "file": "rpcortex-v2.03-beta-pico_w.uf2",
+          "size": 1684992,
+          "sha256": "3003a90f92253dce1d5d9fe59c55974c4704665f5d6feb00aa2e1d3b8b67ecc9",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.03-beta/rpcortex-v2.03-beta-pico_w.uf2"
+        },
+        {
+          "board": "pico2",
+          "kind": "bin",
+          "file": "rpcortex-v2.03-beta-pico2.bin",
+          "size": 380940,
+          "sha256": "d87254ecbbfbea52909aa9b02a63c5a92e3cc3bf567b453088a531b8551ced20",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.03-beta/rpcortex-v2.03-beta-pico2.bin"
+        },
+        {
+          "board": "pico2",
+          "kind": "uf2",
+          "file": "rpcortex-v2.03-beta-pico2.uf2",
+          "size": 762880,
+          "sha256": "c02d8a41fd99a10119651ee53a6c4c1a13e1810b464d73c241936f2f52c83f98",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.03-beta/rpcortex-v2.03-beta-pico2.uf2"
+        },
+        {
+          "board": "pico",
+          "kind": "bin",
+          "file": "rpcortex-v2.03-beta-pico.bin",
+          "size": 319976,
+          "sha256": "69a4656ea0ca75e0830e49c7634a290545572312a74ce00b55dac08c61411aef",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.03-beta/rpcortex-v2.03-beta-pico.bin"
+        },
+        {
+          "board": "pico",
+          "kind": "uf2",
+          "file": "rpcortex-v2.03-beta-pico.uf2",
+          "size": 640000,
+          "sha256": "643ced9132c153fcc4644d607b385a5770dfa89e1aebc91ab656edc516b0d32c",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.03-beta/rpcortex-v2.03-beta-pico.uf2"
+        }
+      ],
+      "url": "https://github.com/dash1101/RPCortex/releases/tag/v2.03-beta"
+    },
+    {
       "tag": "v2.02-beta",
       "display": "v2.02-beta",
       "version": "2.02",
