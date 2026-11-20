@@ -791,6 +791,13 @@ def main(argv=None, timing=None):
     except RpcError as e:
         err("error: {}".format(e))
         return 1
+    except BrokenPipeError:
+        # `rpc ... | head`: the reader has gone, which is not an error here.
+        try:
+            os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        except (OSError, AttributeError, ValueError):
+            pass
+        return 0
     except OSError as e:
         err("error: {}".format(e))
         return 1
