@@ -158,6 +158,12 @@ struct CompleteWalk {
     char       *out;
     uint32_t    cap;
     bool        found;
+    // What was typed up to and including the last '/', put back in front of
+    // every candidate. The line editor REPLACES the word with the candidate (so
+    // a quoted name completes properly), and this offered the bare name: `ls
+    // /ho<Tab>` became `ls home/`, a different path. Empty for a command.
+    const char *lead;
+    uint32_t    lead_len;
 };
 
 // Case-INSENSITIVE matching, and the whole name.
@@ -193,8 +199,10 @@ static void complete_offer(CompleteWalk *w, const char *name, bool is_dir) {
     bool spaced = false;
     for (const char *p = name; *p; p++) if (*p == ' ') { spaced = true; break; }
 
-    if (spaced) snprintf(w->out, w->cap, "\"%s%s\"", name, is_dir ? "/" : "");
-    else        snprintf(w->out, w->cap, "%s%s",      name, is_dir ? "/" : "");
+    int ll = (int)w->lead_len;
+    const char *lead = w->lead ? w->lead : "";
+    if (spaced) snprintf(w->out, w->cap, "\"%.*s%s%s\"", ll, lead, name, is_dir ? "/" : "");
+    else        snprintf(w->out, w->cap, "%.*s%s%s",      ll, lead, name, is_dir ? "/" : "");
     w->found = true;
 }
 
@@ -204,7 +212,7 @@ static void complete_file_cb(void *ctx, const char *name, bool is_dir, uint32_t)
 
 static bool shell_complete(void *, const char *prefix, uint32_t word_start,
                            uint32_t index, char *out, uint32_t cap) {
-    CompleteWalk w{prefix, index, 0, out, cap, false};
+    CompleteWalk w{prefix, index, 0, out, cap, false, "", 0};
 
     if (word_start == 0) {
         for (uint32_t i = 0; i < cmd_count() && !w.found; i++)
@@ -228,7 +236,9 @@ static bool shell_complete(void *, const char *prefix, uint32_t word_start,
             memcpy(head, prefix, n); head[n] = 0;
         }
         if (!path_resolve(fs_cwd(), head, dir, sizeof(dir))) return false;
-        w.prefix = slash + 1;
+        w.prefix   = slash + 1;
+        w.lead     = prefix;
+        w.lead_len = (uint32_t)(slash + 1 - prefix);
     } else {
         snprintf(dir, sizeof(dir), "%s", fs_cwd());
     }

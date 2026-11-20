@@ -47,6 +47,9 @@ Summary: The boot recovery ladder now works on hardware, and releases are number
 - `mkdir` now asks the same permission question as every other command that writes.
 - `kill 1` said "It is the shell"; pid 1 is init, and the shell is told apart by what it is rather than by number.
 - Usage messages, and `logdump`'s own "lines dropped" note, no longer go into the 48-line log, where a few of them pushed out the boot and crash entries it is there to keep.
+- Tab completion of a path kept only the name: `ls /ho` became `ls home/`, a different path. The directory typed is kept now (`ls /home/`, `ls ../os/`).
+- 14 KB more free memory on every board: buffers that were reserved for the whole time the device runs, but used only by one command (the boot scan, `download`, the USB drive's import, the task and service lists, Tab's candidate list), are taken when that command runs instead.
+- Several pieces of shared state could be used by two tasks at once: the package loader's working buffers, `pkg install`, the task and service list files, the scheduler's table, and the `download` drive. Two `pkg install`s or two `download`s at once are now refused with a message; the rest take turns.
 - `df` no longer reports a failed measurement as a full disk. When littlefs cannot say how full it is, `df` says so and suggests `fscheck`, rather than printing "100% used" with no warning beside it.
 - Two tasks could be inside I2C transfers on the same block at once (the display flush and a PN532 exchange), which the SDK's transfer calls do not allow. Every transfer, and every change of bus speed, now takes a per-block lock.
 
