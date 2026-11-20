@@ -81,6 +81,7 @@ void jobs_register(void);
 void jobs_run_startup(void);
 void jobs_start_services(void);
 void fsinit_register(void);
+void link_register(void);
 void fs_layout_check(bool verbose);
 
 // --- line input -------------------------------------------------------------
@@ -689,6 +690,7 @@ void shell_register_builtins(void) {
     settings_register();    // settings — the TUI panel
     editor_register();      // edit / nano / vi
     rps_register();         // script — .rps files
+    link_register();        // link — framed mode for host tools (LINK.md)
     update_register();      // update — OTA firmware
     apps_register();        // apps / unload for resident packages
     pkg_init();             // ensure /pkg exists
@@ -990,13 +992,19 @@ static int run_segment(char *seg) {
 // Run one line through the full parser. Exposed so startup, the scheduler and
 // watch get pipes, chaining and redirection for free instead of each growing
 // its own half-parser.
+static int run_line(char *line, bool top);
+
 int shell_run_line_now(char *line) {
     bb_note_command(line);
     // A line run from inside a command on this same task (fw_shell_run) clears
     // the error flag to judge itself; the outer command's error must survive it.
     bool outer_error = out_had_error();
     out_clear_error();
-    int rc = run_segment(line);
+    // The whole line, chaining included. This called run_segment, which knows
+    // pipes and redirects but not ; && ||, so every caller but the prompt
+    // (scripts, bg, services, the scheduler, fw_shell_run, link) ran
+    // `a ; b` as one command named a with arguments "; b".
+    int rc = run_line(line, /*top*/false);
     if (rc == 0 && out_had_error()) rc = 1;
     out_restore_error(outer_error);
     persist_save_dirty();
@@ -1004,7 +1012,14 @@ int shell_run_line_now(char *line) {
 }
 
 // Execute a whole input line: ; sequencing, && / || conditionals, | pipes.
-static void run_line(char *line) {
+// Returns the status of the last segment that ran.
+//
+// `top` is the prompt. There, a Ctrl+C left over from before is cleared ahead of
+// each segment, and one that interrupts a segment is reported and consumed.
+// Nested (a script line, bg, a service, fw_shell_run, link's EXEC), the flag is
+// not this function's to clear: the caller is interruptible too and has to see
+// it, so the chain simply stops.
+static int run_line(char *line, bool top) {
     Connector kind = CON_FIRST;
     int  last_status = 0;
     char *rest = line;
@@ -1022,12 +1037,14 @@ static void run_line(char *line) {
                        (kind == CON_OR  && last_status == 0);
         if (*seg && !skip_it) {
             out_clear_error();
-            intr_clear();      // a stray Ctrl+C at the prompt must not kill this
+            if (top) intr_clear();     // a stray Ctrl+C at the prompt must not kill this
+            else if (intr_pending()) return 130;
             last_status = run_segment(seg);
             // A command that printed an error but returned 0 still failed, as
             // far as && is concerned. v1's had_error() served the same purpose.
             if (last_status == 0 && out_had_error()) last_status = 1;
             if (intr_pending()) {
+                if (!top) return 130;       // the caller's to report and clear
                 out_warn("Interrupted.");
                 last_status = 130;          // 128 + SIGINT, the usual convention
                 intr_clear();
@@ -1036,6 +1053,7 @@ static void run_line(char *line) {
         }
         kind = next_kind;
     }
+    return last_status;
 }
 
 void shell_run(void) {
@@ -1080,7 +1098,7 @@ void shell_run(void) {
         }
         hist_add(line);          // record before the parser chops it up
         bb_note_command(line);   // so a hang can name the command, not just the task
-        run_line(line);
+        run_line(line, /*top*/true);
         bb_note_command("");     // finished cleanly; do not blame it for the next hang
     }
 }
