@@ -1697,6 +1697,49 @@ LoadResult app_pic_install(const AppSource &src, SlotWrite sink, void *sink_ctx,
     // orphan the tail of a patch already applied. That is a property of the
     // compiler's output rather than of the format, so it is CHECKED — the highest
     // patched byte is compared against the cut before anything is written.
+    //
+    // ONE PASS OVER THE RELOCATIONS, NOT ONE PER PAGE, when they allow it. The
+    // walk below used to read every relocation section whose target overlaps a
+    // page for every page: Nova D1 folds its code into one .text with about
+    // 9,000 relocations, so an install re-read its 70 KB table some sixty times,
+    // and a host trace of realapp_test showed 77 MB read from a 365 KB file.
+    // Compilers and ld -r emit a section's relocations in offset order, so for
+    // such a table a cursor that only moves forward finds the same entries.
+    //
+    // Sortedness is PROVEN by a pre-scan, not assumed, and the pre-scan also
+    // checks every entry's site, so a malformed relocation is refused before the
+    // first page reaches the sink, as it was when page one read the whole table.
+    // A table that is not in order (none built here, but a hostile file need not
+    // be) takes the old full scan for every page.
+    struct RelCursor { uint32_t next; uint8_t sorted; };
+    RelCursor *cur = (RelCursor *)pic_calloc((uint32_t)eh.e_shnum * sizeof(RelCursor));
+    if (!cur) rc = LOAD_ERR_OOM;
+    for (int i = 0; i < eh.e_shnum && rc == LOAD_OK; i++) {
+        if (sh[i].sh_type != SHT_REL) continue;
+        uint32_t tgt = sh[i].sh_info;
+        if (tgt >= (uint32_t)eh.e_shnum || !placed[tgt] || (sh[tgt].sh_flags & SHF_WRITE))
+            continue;
+        uint32_t n = sh[i].sh_size / sizeof(Elf32_Rel), have = 0, first = 0, prev = 0;
+        bool sorted = true;
+        for (uint32_t r = 0; r < n && rc == LOAD_OK; r++) {
+            if (r >= first + have) {
+                first = r; have = n - r < REL_CHUNK ? n - r : REL_CHUNK;
+                if (!read_exact(src, sh[i].sh_offset + first * sizeof(Elf32_Rel),
+                                g_relbuf, have * sizeof(Elf32_Rel))) { rc = LOAD_ERR_READ; break; }
+            }
+            const Elf32_Rel *rels = g_relbuf - first;
+            uint32_t type = ELF32_R_TYPE(rels[r].r_info);
+            if (type == R_ARM_NONE) continue;
+            if (!reloc_site_ok(type, rels[r].r_offset, sh[tgt].sh_size)) {
+                rc = LOAD_ERR_RELOC_RANGE;
+                break;
+            }
+            if (rels[r].r_offset < prev) sorted = false;
+            prev = rels[r].r_offset;
+        }
+        if (rc == LOAD_OK) cur[i].sorted = sorted ? 1 : 0;
+    }
+
     static uint8_t page[PIC_PAGE];
     uint32_t pos = 0;
     while (pos < veneer_off && rc == LOAD_OK) {
@@ -1728,7 +1771,10 @@ LoadResult app_pic_install(const AppSource &src, SlotWrite sink, void *sink_ctx,
             if (blob_off[tgt] >= end || blob_off[tgt] + sh[tgt].sh_size <= pos) continue;
 
             uint32_t n = sh[i].sh_size / sizeof(Elf32_Rel), have = 0, first = 0;
-            for (uint32_t r = 0; r < n && rc == LOAD_OK; r++) {
+            // A sorted table resumes where the last page left it; anything before
+            // that cursor belongs to a page already emitted.
+            uint32_t start = cur[i].sorted ? cur[i].next : 0;
+            for (uint32_t r = start; r < n && rc == LOAD_OK; r++) {
                 if (r >= first + have) {
                     first = r; have = n - r < REL_CHUNK ? n - r : REL_CHUNK;
                     if (!read_exact(src, sh[i].sh_offset + first * sizeof(Elf32_Rel),
@@ -1736,7 +1782,7 @@ LoadResult app_pic_install(const AppSource &src, SlotWrite sink, void *sink_ctx,
                 }
                 const Elf32_Rel *rels = g_relbuf - first;
                 uint32_t type = ELF32_R_TYPE(rels[r].r_info);
-                if (type == R_ARM_NONE) continue;
+                if (type == R_ARM_NONE) { if (cur[i].sorted && r == cur[i].next) cur[i].next = r + 1; continue; }
                 // r_offset is the package's. Inside the target section and, for a
                 // Thumb instruction, on an even address — or this patches bytes of
                 // some other section, or reads a halfword off an odd address.
@@ -1745,6 +1791,12 @@ LoadResult app_pic_install(const AppSource &src, SlotWrite sink, void *sink_ctx,
                     break;
                 }
                 uint32_t site = blob_off[tgt] + rels[r].r_offset;   // blob-relative
+                if (cur[i].sorted) {
+                    // Behind this page: an earlier page's, already emitted. They
+                    // are contiguous at the cursor, so it moves past them.
+                    if (site < pos) { if (r == cur[i].next) cur[i].next = r + 1; continue; }
+                    if (site >= end) break;                         // all later ones are later pages'
+                }
                 if (site < pos || site >= end) continue;            // another page's
                 if (site + 4 > end) {                               // straddles the edge
                     if (site < emit_end) emit_end = site;
@@ -1815,6 +1867,7 @@ LoadResult app_pic_install(const AppSource &src, SlotWrite sink, void *sink_ctx,
         if (!sink(sink_ctx, pos, page, emit_end - pos)) { rc = LOAD_ERR_READ; break; }
         pos = emit_end;
     }
+    pic_free(cur);
 
     // --- ABS32 fixups against the writable sections, and the .data initialisers.
     // These are the pointers that live in RAM: recorded as {site, class, value}
