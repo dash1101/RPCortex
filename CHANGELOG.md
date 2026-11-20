@@ -8,7 +8,7 @@ good notes is in `RELEASING.md`.
 
 ## Unreleased
 
-Summary: 
+Summary: sudo, SSH with Ed25519 keys and per-session history, and fixes for SSH sessions losing the network, a crash on wifi off, and downloads that blocked everything else.
 
 ### New
 
