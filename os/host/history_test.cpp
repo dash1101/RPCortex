@@ -24,5 +24,16 @@ int main(){
     snprintf(b,sizeof(b),"c%d",HIST_N+4);
     t(strcmp(hist_get(0),b)==0,"most recent after wraparound is the last added");
     t(strcmp(hist_get(HIST_N-1),"c5")==0,"oldest surviving entry is correct after wraparound");
+    // A remote login's ring is its own: nothing typed in one shows in another
+    // or at the console.
+    static HistRing a, bb;
+    hist_reset(); hist_add("console-only");
+    hist_ring_add(&a, "ls /secret"); hist_ring_add(&a, "ls /secret");
+    hist_ring_add(&bb, "whoami");
+    t(a.count==1,"a session's ring drops a repeated line too");
+    t(strcmp(hist_ring_get(&a,0),"ls /secret")==0,"a session recalls its own line");
+    t(strcmp(hist_ring_get(&bb,0),"whoami")==0 && hist_ring_get(&bb,1)==nullptr,"another session sees only its own");
+    t(hist_count()==1 && strcmp(hist_get(0),"console-only")==0,"and the console's ring is untouched by either");
+    t(hist_ring_get(nullptr,0)==nullptr,"no ring, no line");
     printf("\n%d/%d passed\n",ck-f,ck); return f?1:0;
 }

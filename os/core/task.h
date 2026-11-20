@@ -477,6 +477,7 @@ struct TaskTerm {
     void (*hangup)(void *ctx);                        // `logout`: end this login
     bool (*size)(void *ctx, uint16_t *cols, uint16_t *rows);
     void *ctx;
+    struct HistRing *hist;     // this terminal's command history, or null
 };
 
 // Read back what this task holds, so an entry into package code can put the

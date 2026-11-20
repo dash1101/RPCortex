@@ -288,7 +288,7 @@ fi
 # identity rule end to end, with root signed in at the "console" throughout.
 kill "$(cat server.pid)" 2>/dev/null; rm -f server.pid
 g++ "${CXXF[@]}" -DRPC_HAS_WIFI=1 -I"$OS/../loader-spike/firmware" "$HERE/sshd_host.cpp" "$OS/shell/sshd.cpp" \
-    "$OS/shell/fsguard.cpp" "$CORE/sshserver.cpp" "$CORE/sshsess.cpp" "$CORE/lineedit.cpp" \
+    "$OS/shell/fsguard.cpp" "$CORE/sshserver.cpp" "$CORE/sshsess.cpp" "$CORE/lineedit.cpp" "$CORE/history.cpp" \
     "$CORE/interrupt.cpp" "$CORE/ident.cpp" "$CORE/users.cpp" "$CORE/sha256.cpp" "$CORE/perms.cpp" \
     "$CORE/protect.cpp" "$CORE/path.cpp" "$CORE/out.cpp" "$CORE/logring.cpp" "$CORE/registry.cpp" \
     "$CORE/sshwire.cpp" "$CORE/sshcrypto.cpp" "$CORE/sshtrans.cpp" "$CORE/sshkeys.cpp" \

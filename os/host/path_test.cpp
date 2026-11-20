@@ -59,6 +59,35 @@ int main(void) {
         checks++;
         if (!ok || strcmp(small, "/abcdef")) { fails++; printf("  FAIL: a path that exactly fits was refused\n"); }
     }
+    // ~, as a shell expands it.
+    {
+        struct { const char *in, *want; } t[] = {
+            {"cd ~",                     "cd /home/root"},
+            {"ls ~/notes",               "ls /home/root/notes"},
+            {"~",                        "/home/root"},
+            {"cat ~/a | grep x > ~/b",   "cat /home/root/a | grep x > /home/root/b"},
+            {"echo hi >~/b",             "echo hi >/home/root/b"},
+            {"ls ~bob",                  "ls ~bob"},          // ~word is left alone
+            {"echo a~b",                 "echo a~b"},         // not the start of a word
+            {"echo \"~\" '~/x'",       "echo \"~\" '~/x'"}, // quoted
+            {"ls;cd ~",                  "ls;cd /home/root"},
+            {"no tilde here",            "no tilde here"},
+        };
+        for (auto &c : t) {
+            char out[128];
+            int n = tilde_expand(c.in, "/home/root", out, sizeof(out));
+            checks++;
+            if (n < 0 || strcmp(out, c.want) || (size_t)n != strlen(c.want) ||
+                tilde_expanded_len(c.in, "/home/root") != strlen(c.want)) {
+                fails++; printf("  FAIL: tilde '%s' gave '%s', wanted '%s'\n", c.in, out, c.want);
+            }
+        }
+        char small[12] = "junk";
+        checks++;
+        if (tilde_expand("ls ~/abc", "/home/root", small, sizeof(small)) != -1 || small[0]) {
+            fails++; printf("  FAIL: an expansion that does not fit was not refused\n");
+        }
+    }
     printf("\n%d/%d passed\n", checks - fails, checks);
     return fails ? 1 : 0;
 }

@@ -53,6 +53,7 @@
 #include "lock.h"
 #include "nettcp.h"
 #include "lineedit.h"
+#include "history.h"
 #include "kernel.h"
 
 #include "sshserver.h"
@@ -77,6 +78,7 @@ bool net_is_connected(void);
 #define HOSTKEY_PATH         "/os/ssh/hostkey"
 
 struct SshdSession {
+    HistRing  hist;               // up-arrow, this session's own lines only
     int       sock;
     SshServer srv;
     SshSess   sess;
@@ -291,6 +293,10 @@ static void shell_sink(void *ctx, const char *d, uint32_t n) {
     }
 }
 
+static const char *sess_history(void *ctx, int depth) {
+    return hist_ring_get(&of_ctx(ctx)->hist, depth);
+}
+
 static int term_getkey(void *ctx) { return ssh_sess_getch(&of_ctx(ctx)->sess); }
 static void term_hangup(void *ctx) { of_ctx(ctx)->logout = true; }
 static bool term_size(void *ctx, uint16_t *cols, uint16_t *rows) {
@@ -342,12 +348,15 @@ static int sshd_shell(void *arg) {
                 le.io.putch = le_putch;
                 le.io.ctx = s;
                 le.complete = shell_complete;
+                le.history = sess_history;
+                le.history_ctx = s;
                 le.prompt = prompt;
                 char line[128];
                 s->line_ended = false;
                 line_edit(&le, line, sizeof(line));
                 if (s->sess.hangup || s->logout) break;
                 if (line[0]) {
+                    hist_ring_add(&s->hist, line);   // before the parser chops it up
                     intr_clear();
                     s->sess.running = true;
                     rc = shell_run_input(line);
@@ -387,6 +396,7 @@ static void op_start(void *ctx) {
     s->term.hangup = term_hangup;
     s->term.size = term_size;
     s->term.ctx = s;
+    s->term.hist = &s->hist;
     s->dom = intr_domain_new();
     char name[TASK_NAME_MAX];
     snprintf(name, sizeof(name), "ssh-%.11s", s->user);

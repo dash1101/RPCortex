@@ -239,7 +239,14 @@ bool shell_complete(void *, const char *prefix, uint32_t word_start,
             if (n >= sizeof(head)) n = sizeof(head) - 1;
             memcpy(head, prefix, n); head[n] = 0;
         }
-        if (!path_resolve(fs_cwd(), head, dir, sizeof(dir))) return false;
+        // `ls ~/Do<Tab>`: the directory is looked up with ~ as home, while
+        // what was typed (the lead) keeps its ~.
+        if (head[0] == '~' && (head[1] == 0 || head[1] == '/')) {
+            char home[USR_NAME_MAX + 8], full[128];
+            snprintf(home, sizeof(home), "/home/%s", session_user());
+            if (tilde_expand(head, home, full, sizeof(full)) < 0) return false;
+            if (!path_resolve(fs_cwd(), full, dir, sizeof(dir))) return false;
+        } else if (!path_resolve(fs_cwd(), head, dir, sizeof(dir))) return false;
         w.prefix   = slash + 1;
         w.lead     = prefix;
         w.lead_len = (uint32_t)(slash + 1 - prefix);
@@ -1059,7 +1066,20 @@ static int run_line(char *line, bool top) {
             out_clear_error();
             if (top) intr_clear();     // a stray Ctrl+C at the prompt must not kill this
             else if (intr_pending()) return 130;
+            // ~ is expanded here, a segment at a time and before its pipes and
+            // redirect are split, so `cat ~/a | grep x > ~/b` works and so do
+            // scripts and link. On the heap and only when there is a ~: an
+            // expanded line can be longer than the buffer it came in.
+            char *tx = nullptr;
+            if (strchr(seg, '~')) {
+                char home[USR_NAME_MAX + 8];
+                snprintf(home, sizeof(home), "/home/%s", session_user());
+                size_t need = tilde_expanded_len(seg, home) + 1;
+                tx = (char *)malloc(need);
+                if (tx && tilde_expand(seg, home, tx, need) >= 0) seg = tx;
+            }
             last_status = run_segment(seg);
+            free(tx);
             // A command that printed an error but returned 0 still failed, as
             // far as && is concerned. v1's had_error() served the same purpose.
             if (last_status == 0 && out_had_error()) last_status = 1;

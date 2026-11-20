@@ -14,4 +14,14 @@
 // result is not safe either; the storage calls that destroy refuse "" as well.
 bool path_resolve(const char *cwd, const char *in, char *out, size_t cap);
 
+// `~` as a shell has it: a word that is `~` alone, or starts `~/`, becomes the
+// home directory (`~/notes` is `/home/root/notes`). `~word` is left alone, and
+// so is anything inside quotes. A word starts at the beginning of the line or
+// after a space, tab, `|`, `;`, `&` or `>`, so `cat ~/a | grep x > ~/b` works.
+//
+// Returns the length of the expanded line in `out`, or -1 if it does not fit in
+// `cap` (and `out` is then ""). tilde_expanded_len() says how big `out` must be.
+int    tilde_expand(const char *in, const char *home, char *out, size_t cap);
+size_t tilde_expanded_len(const char *in, const char *home);
+
 #endif

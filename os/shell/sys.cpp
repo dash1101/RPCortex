@@ -285,12 +285,16 @@ static int cmd_which(int argc, char **argv) {
 }
 
 static int cmd_history(int, char **) {
-    int n = hist_count();
+    // The history of the terminal it is typed at: a remote login's own, or
+    // the console's. Never another session's.
+    const TaskTerm *t = task_shell()->term;
+    const HistRing *r = (t && t->hist) ? t->hist : nullptr;
+    int n = r ? r->count : hist_count();
     if (!n) { out_multi("  (no history yet)"); return 0; }
-    // hist_get(0) is the most recent; print oldest-first with 1-based numbers so
-    // the listing reads like v1's.
+    // 0 is the most recent; print oldest-first with 1-based numbers so the
+    // listing reads like v1's.
     for (int i = n - 1; i >= 0; i--)
-        out_multi("  %4d  %s", n - i, hist_get(i));
+        out_multi("  %4d  %s", n - i, r ? hist_ring_get(r, i) : hist_get(i));
     return 0;
 }
 

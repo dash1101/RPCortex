@@ -13,6 +13,8 @@
 #include "fmt.h"
 #include "interrupt.h"
 #include "task.h"
+#include "session.h"
+#include "users.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -59,7 +61,11 @@ static bool resolve_change(const char *in, char *out, size_t cap) {
 static int cmd_pwd(int, char **) { out_multi("%s", cwd_buf()); return 0; }
 
 static int cmd_cd(int argc, char **argv) {
-    const char *arg = (argc >= 2) ? argv[1] : "/";
+    // Bare `cd` goes home, as it does on Linux (and `cd ~` is expanded by the
+    // shell before it gets here). It used to go to /.
+    char home[USR_NAME_MAX + 8];
+    snprintf(home, sizeof(home), "/home/%s", session_user());
+    const char *arg = (argc >= 2) ? argv[1] : home;
     char path[128];
     if (!resolve(arg, path, sizeof(path))) return 1;
     bool is_dir = false;

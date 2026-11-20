@@ -50,3 +50,51 @@ bool path_resolve(const char *cwd, const char *in, char *out, size_t cap) {
     out[w] = 0;
     return true;
 }
+
+// --- ~ ------------------------------------------------------------------------
+
+static bool word_start(const char *in, size_t i) {
+    if (i == 0) return true;
+    char c = in[i - 1];
+    return c == ' ' || c == '\t' || c == '|' || c == ';' || c == '&' || c == '>';
+}
+
+// Walks the line once, calling `emit` for each piece. The same walk measures
+// and writes, so the two can never disagree about what expands.
+template <typename F>
+static void tilde_walk(const char *in, const char *home, F emit) {
+    char quote = 0;
+    for (size_t i = 0; in[i]; i++) {
+        char c = in[i];
+        if (quote) { if (c == quote) quote = 0; emit(&in[i], 1); continue; }
+        if (c == '"' || c == '\'') { quote = c; emit(&in[i], 1); continue; }
+        if (c == '~' && word_start(in, i) &&
+            (in[i + 1] == 0 || in[i + 1] == '/' || in[i + 1] == ' ' || in[i + 1] == '\t' ||
+             in[i + 1] == '|' || in[i + 1] == ';' || in[i + 1] == '&' || in[i + 1] == '>')) {
+            emit(home, strlen(home));
+            continue;
+        }
+        emit(&in[i], 1);
+    }
+}
+
+size_t tilde_expanded_len(const char *in, const char *home) {
+    if (!in) return 0;
+    if (!home) home = "/";
+    size_t n = 0;
+    tilde_walk(in, home, [&](const char *, size_t l) { n += l; });
+    return n;
+}
+
+int tilde_expand(const char *in, const char *home, char *out, size_t cap) {
+    if (!out || !cap) return -1;
+    out[0] = 0;
+    if (!in) return 0;
+    if (!home) home = "/";
+    size_t need = tilde_expanded_len(in, home);
+    if (need + 1 > cap) return -1;
+    size_t w = 0;
+    tilde_walk(in, home, [&](const char *p, size_t l) { memcpy(out + w, p, l); w += l; });
+    out[w] = 0;
+    return (int)w;
+}
