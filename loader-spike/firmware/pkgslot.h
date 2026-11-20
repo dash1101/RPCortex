@@ -48,9 +48,13 @@
 // is intact, because the body is untouched) or has lost enough of its header to
 // fail the magic or the metadata CRC. Both are answers; neither runs a hybrid.
 //
-// DEVICE-UNCONFIRMED: erase and program themselves, and executing from the slot.
-// Everything in this file is exercised on the host against a fake flash; that
-// proves the format and the ordering, not the chip.
+// CONFIRMED ON A PICO 2 W (2026-11-20): erase, program, commit and executing from
+// the slot. Nova D1 1.7.1 was installed into it three times over, loaded with
+// 80 KB resident (its read-only half is about 190 KB, so the code stayed in
+// flash), and its screen task ran and rendered from there.
+// DEVICE-UNCONFIRMED: power lost in the middle of an erase or a program, which
+// the header ordering above exists for. That is exercised on the host against a
+// fake flash only; it proves the format and the ordering, not the chip.
 
 // The erase unit and the program unit of RP2 flash. A slot begins on an erase
 // boundary and its header occupies a whole erase sector, so committing the

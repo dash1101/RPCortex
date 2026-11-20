@@ -57,6 +57,10 @@ looping script in a background task, which used to silence the machine) and
 `service_restart` (the supervisor restarting a failing service). Each is one test
 in its own file: a second boot in the same Renode, after `Reset Emulation`,
 stalled at the login prompt, and nothing here has needed to explain that yet.
+The same stall turns up now and then when suites run back to back (a suite
+times out right after "Welcome, root!" and passes when run again on the same
+image), so a single timeout there is worth one rerun before it is called a
+regression.
 Two things about driving it: the prompt is on the wire before a command has run,
 so waiting for it says nothing about whether the command has finished (every
 suite appends `; echo =done=` and waits for that); and two spaces inside an
