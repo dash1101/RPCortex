@@ -190,6 +190,14 @@ static uint32_t reap_deleted(const SyncList *l) {
 }
 
 static int cmd_download(int argc, char **argv) {
+    // A mode with a person at it: it waits for a key to finish, and draws its
+    // status line over the console. From `bg`, a service or the scheduler it
+    // can never see a key (only the shell's task reads them), so it ran until
+    // killed with its spinner drawn over the prompt and half a core spent.
+    if (task_shell_pid() && task_self() != task_shell_pid()) {
+        out_err("'download' waits for a key at the prompt, so it cannot run in the background.");
+        return 1;
+    }
     // The drive and the keyboard are never on together. Take STORAGE mode
     // first, so a keyboard that is mid-payload is reported plainly rather than
     // as a vague failure to prepare the transfer area.

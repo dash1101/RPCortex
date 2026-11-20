@@ -44,7 +44,13 @@ int intr_stashed(void) {
 
 void intr_stash_clear(void) { g_head = g_tail = 0; }
 
+// Only the shell's task reads keys, for the reason intr_check gives: anything
+// else reading the wire takes keystrokes meant for whoever is at the prompt.
+// `bg download` would have. And not while a transfer has claimed the console.
+static bool may_read_keys(void);
+
 int intr_getkey(void) {
+    if (!may_read_keys()) return -1;
     int c = intr_stashed();
     if (c >= 0) return c;
     return g_poll ? g_poll() : -1;
@@ -147,6 +153,12 @@ bool intr_input_may_read(int pid) {
 void intr_raise(void)  { g_pending = true; }
 bool intr_pending(void){ return g_pending; }
 void intr_clear(void)  { g_pending = false; }
+
+static bool may_read_keys(void) {
+    int shell = task_shell_pid();
+    if (shell && task_self() != shell) return false;
+    return intr_input_may_read(task_self());
+}
 
 bool intr_check(void) {
     // Every place that polls for Ctrl+C is also a place where it is safe to give

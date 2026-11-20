@@ -228,6 +228,11 @@ int main(void) {
     ck(!intr_check(), "a non-owner does not turn a claimed stream into an interrupt");
     ck(g_polls == 0, "a non-owner does not read the claimed stream at all");
     ck(intr_stashed() < 0, "and nothing of the payload lands in the stash");
+    // A command reading keys for itself follows the same rule: a claimed
+    // stream is not keystrokes.
+    g_polls = 0;
+    ck(intr_getkey() < 0, "getkey does not read a stream someone else claimed");
+    ck(g_polls == 0, "it does not even look");
     intr_stash_clear();
 
     // --- releasing a claim when its owner goes -------------------------------
