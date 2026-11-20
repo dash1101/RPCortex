@@ -243,8 +243,22 @@ static char g_tls_why[80];
 extern "C" const unsigned char stock_cacerts_data[];
 extern "C" const unsigned int  stock_cacerts_len;
 
+bool net_radio_is_up(void);
+
 static struct altcp_tls_config *tls_config(void) {
     if (g_tls_tried) return g_tls_cfg;
+    // Not before the radio has been started. The parsed roots live on lwIP's
+    // heap (altcp_tls allocates through mem_calloc), and lwIP is initialised
+    // with the radio, so with the radio still off mem_malloc walks a free list
+    // that was never built and does not come back. `compat` and `pkg certs`
+    // both asked from a board whose radio had not been switched on, and the
+    // watchdog restarted it 16 s later (seen on a Pico 2 W). Not cached: the
+    // answer is different once the radio is up.
+    if (!net_radio_is_up()) {
+        snprintf(g_tls_why, sizeof(g_tls_why),
+                 "the radio is off, so the certificates have not been loaded yet");
+        return nullptr;
+    }
     g_tls_tried = true;
 
     uint8_t *pem = nullptr;

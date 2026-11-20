@@ -40,6 +40,8 @@ Summary: The boot recovery ladder now works on hardware, and releases are number
 - A freshly flashed Pico 2 W no longer opens its log with "Last restart was the WATCHDOG - something stopped responding". The boot ROM restarts the chip through the watchdog after a flash; that restart is now told apart and noted as what it is.
 - Boot is about a second faster when no terminal is open (after a reboot, or on battery). It waited up to three seconds for one; it now waits for the computer to recognise the device, then briefly for a terminal.
 - `download` ended on the first key only sometimes: most keys were taken by its own Ctrl+C check and replayed at the next prompt (a `q` came back as `qls`). Commands and full-screen apps that read keys themselves now read them the same way the prompt does, so none go missing.
+- `compat` and `pkg certs` froze a Pico 2 W whose radio had not been switched on, until the watchdog restarted it. Checking the certificates needs the network stack, which starts with the radio; with the radio off they now say so instead.
+- `compat` warned "0 bytes free on the boot stack" on every board. It was measuring the wrong stack; it now reports the boot stack's real deepest point.
 - `df` no longer reports a failed measurement as a full disk. When littlefs cannot say how full it is, `df` says so and suggests `fscheck`, rather than printing "100% used" with no warning beside it.
 - Two tasks could be inside I2C transfers on the same block at once (the display flush and a PN532 exchange), which the SDK's transfer calls do not allow. Every transfer, and every change of bus speed, now takes a per-block lock.
 

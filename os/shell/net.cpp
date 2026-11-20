@@ -1798,6 +1798,7 @@ void net_autoconnect(void) {}
 void net_autoconnect_now(void) {}
 void net_autoconnect_report(void) {}
 bool net_available(void) { return false; }
+bool net_radio_is_up(void) { return false; }
 bool net_is_connected(void) { return false; }
 const char *net_active_ssid(void) { return "(no radio)"; }
 int  net_setup_scan_and_join(void) { return 1; }

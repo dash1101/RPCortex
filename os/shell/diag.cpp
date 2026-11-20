@@ -60,6 +60,7 @@ static bool require_admin(const char *what) {
 bool net_available(void);
 bool net_is_connected(void);
 bool http_tls_available(void);
+bool net_radio_is_up(void);
 
 // --- compat -----------------------------------------------------------------
 
@@ -117,10 +118,21 @@ static int cmd_compat(int argc, char **argv) {
         free(p);
     }
 
+    // The boot stack's deepest point, by its paint, as `mpu` reports it. Not
+    // task_main_stack_headroom(): that is the room below the CURRENT stack
+    // pointer, which is only the boot stack's when pid 1 asks. This runs on the
+    // shell's own stack, so it always read "0 bytes free" and warned on a
+    // board using 31% of it.
     {
-        uint32_t h = task_main_stack_headroom();
-        snprintf(d, sizeof(d), "%lu bytes free on the boot stack", (unsigned long)h);
-        probe("stacks", h > 256 ? V_OK : V_WARN, d);
+        uint32_t used = task_main_stack_used(), size = task_main_stack_size();
+        if (!used) {
+            probe("stacks", V_NA, "boot stack not measured");
+        } else {
+            uint32_t left = size > used ? size - used : 0;
+            snprintf(d, sizeof(d), "%lu of %lu bytes free on the boot stack at its deepest",
+                     (unsigned long)left, (unsigned long)size);
+            probe("stacks", left > 512 ? V_OK : V_WARN, d);
+        }
     }
 
     // Clock. Unset reads as 1970 and every log timestamp is then meaningless,
@@ -135,10 +147,16 @@ static int cmd_compat(int argc, char **argv) {
           net_available() ? (net_is_connected() ? "connected" : "present, not connected")
                           : "no radio on this board");
 
-    probe("tls", net_available() ? (http_tls_available() ? V_OK : V_WARN) : V_NA,
-          net_available() ? (http_tls_available() ? "trusted roots loaded"
-                                                  : "no roots parsed - pkg install will refuse")
-                          : "needs wireless");
+    // Only with the radio up: the roots are parsed onto lwIP's heap, which does
+    // not exist before then (see tls_config).
+    if (!net_available())
+        probe("tls", V_NA, "needs wireless");
+    else if (!net_radio_is_up())
+        probe("tls", V_NA, "radio off - checked once it is on");
+    else
+        probe("tls", http_tls_available() ? V_OK : V_WARN,
+              http_tls_available() ? "trusted roots loaded"
+                                   : "no roots parsed - pkg install will refuse");
 
     // The log ring and black box survive a reset; if they do not, a crash
     // report cannot either, and that is worth knowing BEFORE the crash.
