@@ -35,6 +35,7 @@
 #include "task.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "tusb.h"
@@ -354,12 +355,38 @@ static bool wipe_locked(void) {
     return true;
 }
 
+// The import's name list, allocated when the drive opens and released when it
+// closes. Defined with the import below.
+static bool import_reserve(void);
+static void import_release(void);
+
+// ONE SESSION AT A TIME. A second `download` (from `bg`, or a detached run)
+// used to be let in, and opening wipes the volume — the files the first
+// session's host had just dropped were erased under it.
+//
+// Held against the task that opened it, and a session whose task is gone does
+// not count: one killed before it could close would otherwise keep the drive
+// refused until a reboot.
+static int g_open_pid;
+
+bool usbmsc_busy(void) {
+    if (!g_open) return false;
+    const TaskInfo *t = task_find(g_open_pid);
+    return t && t->state != TASK_DONE && t->state != TASK_FREE;
+}
+
 bool usbmsc_open(void) {
     LockGuard _lk(&g_usb_lock);
+    if (usbmsc_busy()) return false;
+    g_open_pid = task_self();
+    // Taken BEFORE the drive is offered rather than when the import runs: a
+    // failure at the end of a session would leave the host's files on a volume
+    // that is wiped as it closes.
+    if (!import_reserve()) return false;
     g_full = false;
     // Emptied on the way IN. A session that ended in a reset or a pulled cable
     // cannot leave yesterday's files on a drive somebody else plugs in.
-    if (!wipe_locked()) return false;
+    if (!wipe_locked()) { import_release(); return false; }
     g_open = true;
     return true;
 }
@@ -388,6 +415,7 @@ void usbmsc_close(void) {
     // matches what it is allowed to have: nothing. Everything on it has already
     // been copied into /usb by the time this runs.
     wipe_locked();
+    import_release();
 }
 
 void usbmsc_init(void) { g_open = false; }
@@ -462,9 +490,26 @@ static bool     g_import_pending;
 // could not hold this array plus the FAT12 call chain underneath it, and the
 // device rebooted in a loop. Beyond the stack, a scan that runs on a timer is a
 // scan nobody asked for, at a moment nobody chose.
+//
+// The 1.6 KB list is not a stack frame, and since it is only needed while the
+// drive is open it is not static RAM either: usbmsc_open takes it from the heap
+// and usbmsc_close gives it back.
+static Scan *g_import;
+
+static bool import_reserve(void) {
+    if (!g_import) g_import = (Scan *)malloc(sizeof(Scan));
+    return g_import != nullptr;
+}
+
+static void import_release(void) {
+    free(g_import);
+    g_import = nullptr;
+}
+
 uint32_t usbmsc_import_all(bool *refused) {
     if (refused) *refused = false;
-    static Scan s;                 // 1.6 KB: static, not a stack frame
+    if (!g_import) return 0;       // the drive was never opened
+    Scan &s = *g_import;
     s.n = 0;
     {
         LockGuard _lk(&g_usb_lock);

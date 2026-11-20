@@ -46,6 +46,7 @@
 #if CFG_TUD_MSC
 
 bool     usbmsc_open(void);
+bool     usbmsc_busy(void);
 void     usbmsc_close(void);
 bool     usbmsc_full(void);
 uint32_t usbmsc_import_all(bool *refused);
@@ -197,9 +198,17 @@ static int cmd_download(int argc, char **argv) {
                 "drive cannot be on together.");
         return 1;
     }
+    // One session at a time. The mode is not counted, so a refused second
+    // session must NOT leave it: that would end the first one's mode too.
+    if (usbmsc_busy()) {
+        out_err("The drive is already open in another 'download'.");
+        return 1;
+    }
     if (!usbmsc_open()) {
-        usb_mode_leave(USB_MODE_STORAGE);
-        out_err("The transfer area could not be prepared.");
+        bool other = usbmsc_busy();        // lost a race to another session
+        if (!other) usb_mode_leave(USB_MODE_STORAGE);
+        out_err(other ? "The drive is already open in another 'download'."
+                      : "The transfer area could not be prepared.");
         return 1;
     }
 
