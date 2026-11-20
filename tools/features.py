@@ -288,7 +288,7 @@ def headroom(sizes, board, tag):
 
 def describe_saving(sizes, board, f):
     """One plain phrase for what leaving out (or adding) f does on a board."""
-    if f.default is False:
+    if f.name not in standard(board):     # added: devpkgs anywhere, SSH on a Pico W
         s = saving(sizes, board, f.tag)
         if not s:
             return "not measured"
@@ -318,7 +318,7 @@ def cmd_list(_a):
             print("      " + line)
         std = [b for b in f.boards if f.name in standard(b)]
         extra = [b for b in f.boards if b not in std]
-        if f.default is False:
+        if not std:
             print("      Boards: any, never in a standard image.")
         else:
             print("      Boards: %s%s." % (", ".join(f.boards) if f.boards != BOARDS else "all",
@@ -425,6 +425,8 @@ def measured_variants():
     for f in FEATURES:
         out.append(([f.name], []) if f.default is False else ([], [f.name]))
     out.append(([], ["wifi", "bluetooth"]))
+    # And SSH added where the standard image leaves it out (the Pico W).
+    out.append((["ssh"], []))
     return out
 
 

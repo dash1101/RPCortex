@@ -189,5 +189,42 @@ class Sizes(unittest.TestCase):
             self.assertIn(f.name, out)
 
 
+class BuildConf(unittest.TestCase):
+    """tools/buildconf.py, answered through a pipe, never told to build."""
+    def answers(self, text):
+        p = subprocess.run([sys.executable, os.path.join(HERE, "buildconf.py")], input=text,
+                           capture_output=True, text=True, timeout=30)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        lines = p.stdout.splitlines()
+        return lines[lines.index("The command:") + 1].strip(), p.stdout
+
+    def test_enter_everywhere_is_the_standard_image(self):
+        cmd, out = self.answers("\n" * 12)
+        self.assertEqual(cmd, "./build.sh pico2_w")
+        self.assertIn("the standard pico2_w image", out)
+        self.assertIn("Not built", out)
+
+    def test_leaving_out_bluetooth_on_a_pico_w(self):
+        # board 2; keep Wi-Fi; no Bluetooth; no SSH (not standard there); keep the
+        # drivers; no dev packages; do not build
+        cmd, out = self.answers("2\n\nn\n\n\nn\nn\n")
+        self.assertEqual(cmd, "./build.sh pico_w --without bluetooth")
+        self.assertIn("rpcortex-v2-pico_w-nobt.uf2", out)
+        self.assertIn("Add SSH?", out)
+
+    def test_adding_ssh_on_a_pico_w(self):
+        cmd, _ = self.answers("pico_w\n\n\ny\n\n\nn\n")
+        self.assertEqual(cmd, "./build.sh pico_w --with ssh")
+
+    def test_no_wifi_means_no_ssh_question(self):
+        cmd, out = self.answers("pico2_w\nn\n\n\n\n\nn\n")
+        self.assertEqual(cmd, "./build.sh pico2_w --without wifi")
+        self.assertNotIn("Keep SSH?", out)
+
+    def test_adding_and_removing_on_a_pico(self):
+        cmd, _ = self.answers("4\nn\ny\nn\n")
+        self.assertEqual(cmd, "./build.sh pico --with devpkgs --without peripherals")
+
+
 if __name__ == "__main__":
     unittest.main()
