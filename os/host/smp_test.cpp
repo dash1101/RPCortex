@@ -97,6 +97,15 @@ void task_ctx_switch(void **save_sp, void *to_sp, volatile bool *live_out) {
         *save_sp = &g_slot[from];        // the store the assembly does
         g_slot[from].on_cpu--;           // ...before advertising, so that a
     }                                    //    cleared flag implies a dropped claim
+    // The scheduler context switching into a task parks itself, as the
+    // assembly does: g_sched_sp[core] becomes non-null and something can come
+    // back to it. Without this the harness never had a parked scheduler, and
+    // the path that returns to one (a finished task, or one moved off the
+    // core) could not be reached here at all.
+    else if (save_sp) {
+        static int sched_ctx;
+        *save_sp = &sched_ctx;
+    }
     if (live_out) *live_out = false;
 }
 
@@ -291,9 +300,9 @@ int main(void) {
     //
     // What the network lock depends on. NOT task_migrate_to itself: this
     // harness models a core as a thread, so a task cannot move between them
-    // and migrate_to would either return instantly or spin — either way
-    // proving nothing. That half is device-verified only, and the comment says
-    // so rather than a green check implying otherwise.
+    // and migrate_to would either return instantly or spin, proving nothing.
+    // Phase 4 drives the same steps by hand (set the affinity, yield, the other
+    // core picks it up), which is where the move was found to fail.
     //
     // What IS testable is the mechanism underneath it: once a task's affinity
     // says core 0, the other core must stop picking it up. Without that,
@@ -326,6 +335,65 @@ int main(void) {
     ck(stolen.load() == 0, "core 1 never picks up a task pinned to core 0");
 
     ck(task_set_affinity(pinned, AFFINITY_ANY), "and it can be unpinned again");
+
+    // --- phase 4: a task told to move really leaves an idle core ------------
+    //
+    // task_migrate_to's mechanism, end to end on the scheduler's side: set the
+    // affinity to the other core, yield, and the other core picks it up. The
+    // case that broke was the quiet one: nothing else runnable on the core the
+    // task was leaving, so reschedule "carried on" with it right there, every
+    // time, and the move never happened. On the device that was every SSH
+    // session on core 1 after a reboot, unable to use the network at all.
+    //
+    // Everything else is pinned to core 0 for this, so core 1 has exactly one
+    // task it may run.
+    static int others[64], others_aff[64];
+    int n_others = 0;
+    for (uint32_t i = 0; i < task_count() && n_others < 64; i++) {
+        const TaskInfo *ti = task_at(i);
+        if (!ti || ti->pid <= 0) continue;
+        others[n_others] = ti->pid;
+        others_aff[n_others] = (int)task_affinity(ti->pid);
+        task_set_affinity(ti->pid, AFFINITY_CORE0);
+        n_others++;
+    }
+    static int mover_pid;
+    mover_pid = task_spawn("mover", "(test)", spin, nullptr, TASK_STACK_MIN, AFFINITY_CORE1);
+    ck(mover_pid > 0, "spawned a task on core 1");
+
+    static std::atomic<int> picked1, left1;
+    picked1.store(0); left1.store(0);
+    pthread_t m1;
+    pthread_create(&m1, nullptr, [](void *) -> void * {
+        t_core = 1;
+        for (int i = 0; i < 20000 && task_self() != mover_pid; i++) task_yield();
+        picked1.store(task_self() == mover_pid);
+        if (!picked1.load()) return nullptr;
+        // Now running as the mover, on core 1, with nothing else core 1 may run.
+        task_set_affinity(mover_pid, AFFINITY_CORE0);
+        for (int i = 0; i < 200 && task_self() == mover_pid; i++) task_yield();
+        left1.store(task_self() != mover_pid);
+        return nullptr;
+    }, nullptr);
+    pthread_join(m1, nullptr);
+    ck(picked1.load() == 1, "core 1 picks up the one task it may run");
+    ck(left1.load() == 1, "told to move to core 0, it leaves core 1 although core 1 has nothing else");
+
+    static std::atomic<int> got0;
+    got0.store(0);
+    pthread_t m0;
+    pthread_create(&m0, nullptr, [](void *) -> void * {
+        t_core = 0;
+        for (int i = 0; i < 20000 && task_self() != mover_pid; i++) task_yield();
+        got0.store(task_self() == mover_pid);
+        return nullptr;
+    }, nullptr);
+    pthread_join(m0, nullptr);
+    ck(got0.load() == 1, "and core 0 then takes it, which is the move completed");
+    ck(g_double_sched.load() == 0, "without it ever being on both cores");
+
+    for (int i = 0; i < n_others; i++)
+        task_set_affinity(others[i], (TaskAffinity)others_aff[i]);
 
     printf("\n  %d checks, %d failed\n", g_checks, g_fails);
     return g_fails ? 1 : 0;

@@ -223,6 +223,12 @@ static uint32_t high_water(const Task *t) {
 
 // --- scheduling -------------------------------------------------------------
 
+static bool affinity_allows(const Task *t, uint32_t core) {
+    if (t->info.affinity == AFFINITY_ANY) return true;
+    if (t->info.affinity == AFFINITY_CORE0) return core == 0;
+    return core == 1;
+}
+
 static bool runnable_on(const Task *t, uint32_t core) {
     // Still on a core, whatever its state says. Picking it here would run one
     // stack on two cores at once; see the comment on Task::live.
@@ -234,9 +240,7 @@ static bool runnable_on(const Task *t, uint32_t core) {
     } else {
         return false;
     }
-    if (t->info.affinity == AFFINITY_ANY) return true;
-    if (t->info.affinity == AFFINITY_CORE0) return core == 0;
-    return core == 1;
+    return affinity_allows(t, core);
 }
 
 // Round-robin from the slot after the current one, so a task that yields does
@@ -583,6 +587,42 @@ static void reschedule(TaskState park_as) {
     }
 
     Task *next = pick(core, me ? me->info.pid : 0);
+
+    // RUNNABLE, BUT NOT HERE ANY MORE. task_migrate_to sets a task's affinity
+    // to the other core and yields until that core picks it up. With nothing
+    // else runnable on this core, the branch below used to "carry on" with the
+    // same task, on the core it had just been told to leave, and every one of
+    // migrate_to's yields came straight back. So a task on core 1 could never
+    // reach the radio on core 0 whenever core 1 was otherwise idle: after a
+    // reboot that was every SSH session, and ping, curl and every other
+    // network command in them failed with "Could not reach the wireless chip".
+    //
+    // The task has to come off this core so the other one can take it. Core 1
+    // has a scheduler context to go back to, parked when it switched in, and
+    // the task is left READY there (and, once the switch has stored its stack
+    // pointer, not live) for core 0 to pick. Core 0 has no such context, so it
+    // waits for something it may run instead, as a finished task does.
+    if (!next && me && me->info.state == TASK_READY && !affinity_allows(me, core)) {
+        if (g_sched_sp[core]) {
+            void *back = g_sched_sp[core];
+            g_sched_sp[core] = nullptr;
+            g_current[core]  = -1;
+            lock_hw_exit();
+            unsigned irq = task_irq_save();
+            task_ctx_switch(&me->sp, back, &me->live);
+            arm_protection(me);              // resumed, on whichever core took it
+            task_irq_restore(irq);
+            return;
+        }
+        while (!next) {
+            lock_hw_exit();
+            if (core == 0) task_watchdog_feed();
+            lock_hw_enter();
+            next = pick(core, me->info.pid);
+            // Allowed back here meanwhile: the branch below carries on with it.
+            if (!next && affinity_allows(me, core)) break;
+        }
+    }
 
     // Nothing else to run. If this task is still runnable, just carry on —
     // switching to ourselves would be a pointless save/restore.
