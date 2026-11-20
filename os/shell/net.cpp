@@ -211,6 +211,51 @@ static NetStatus g_status = { false, {0}, {0}, {0}, {0}, 0, 0, false, -1 };
 
 bool net_core_ok(void);
 
+// --- radio power saving -------------------------------------------------------
+//
+// THE PING TIMES WERE THE POWER SAVING. In the CYW43's power-save modes the radio
+// dozes between beacons and the access point holds frames for it until it wakes,
+// so a ping that lands while it dozes waits for the next beacon (about 100 ms,
+// longer when the access point holds frames to a DTIM). Measured from a PC next
+// to the router with the balanced mode below: 27 pings averaging 157 ms, from
+// under 1 ms to 559 ms. With power saving off the radio is always listening.
+//
+// The setting is WiFi.Power:
+//   off       never doze: fastest, and the radio's current draw stays high
+//   balanced  doze, but wake for every beacon (what this OS always used)
+//   save      the driver's default: wake for about one beacon in ten
+//   auto      off while USB power is present, balanced on battery (the default)
+// auto re-checks VBUS whenever the status cache is refreshed, so unplugging
+// changes the mode without anyone asking.
+enum WifiPower { WP_AUTO, WP_OFF, WP_BALANCED, WP_SAVE };
+
+static WifiPower wifi_power_setting(void) {
+    const char *v = reg_get("WiFi.Power", "auto");
+    if (!strcmp(v, "off"))      return WP_OFF;
+    if (!strcmp(v, "balanced")) return WP_BALANCED;
+    if (!strcmp(v, "save"))     return WP_SAVE;
+    return WP_AUTO;
+}
+
+static WifiPower g_pm_applied = WP_AUTO;    // what the chip was last given (never AUTO)
+
+static WifiPower wifi_power_effective(int on_usb) {
+    WifiPower p = wifi_power_setting();
+    if (p != WP_AUTO) return p;
+    return on_usb == 1 ? WP_OFF : WP_BALANCED;
+}
+
+// On the radio's core, holding g_net_op or inside radio_up. Not inside a NetLock:
+// cyw43_wifi_pm takes the driver's own lock.
+static void wifi_power_apply(int on_usb) {
+    WifiPower p = wifi_power_effective(on_usb);
+    uint32_t pm = p == WP_OFF      ? CYW43_NONE_PM
+                : p == WP_SAVE     ? CYW43_DEFAULT_PM
+                : cyw43_pm_value(CYW43_PM2_POWERSAVE_MODE, 200, 1, 1, 1);
+    cyw43_wifi_pm(&cyw43_state, pm);
+    g_pm_applied = p;
+}
+
 // The readings that need a conversation with the chip, refreshed into the cache
 // above. Only ever called by a task that already owns g_net_op AND is on the
 // radio's core, and NOT from inside a NetLock: both of these take the driver's
@@ -223,7 +268,12 @@ static void chip_reads_refresh(void) {
               cyw43_wifi_get_rssi(&cyw43_state, &r) == 0;
     if (ok) g_status.rssi = (int)r;
     g_status.rssi_ok = ok;
+    int was = g_status.power;
     g_status.power = cyw43_arch_gpio_get(CYW43_WL_GPIO_VBUS_PIN) ? 1 : 0;
+    // auto follows the power source: plugged in or unplugged since last time.
+    if (wifi_power_setting() == WP_AUTO && was != g_status.power &&
+        wifi_power_effective(g_status.power) != g_pm_applied)
+        wifi_power_apply(g_status.power);
 }
 
 // Refresh the cache from lwIP. Only ever called by whoever holds g_net_op.
@@ -385,21 +435,11 @@ static bool radio_up(void) {
     join_phase("enable_sta_mode");
     cyw43_arch_enable_sta_mode();
 
-    // POWER SAVE, turned down from the driver's default.
-    //
-    // CYW43_DEFAULT_PM is CYW43_PERFORMANCE_PM, which is PM2 with li_assoc = 10
-    // — the chip wakes for roughly every tenth beacon interval. That is a
-    // sensible default for a battery sensor and a poor one for a device with a
-    // shell on it: received frames are late or dropped, an SSH-shaped session
-    // feels laggy, and a marginal link drops that a listening radio would have
-    // held.
-    //
-    // Same performance mode with li_assoc = 1, so it listens on every beacon.
-    // Set HERE and not in the join path: the driver only applies its default
-    // while the interface is down, so once is enough and it survives every
-    // rejoin. It takes its own lock internally, so none is needed around it.
+    // POWER SAVE: see WiFi.Power above. Set HERE and not in the join path: the
+    // driver only applies its default while the interface is down, so once is
+    // enough and it survives every rejoin.
     join_phase("wifi_pm");
-    cyw43_wifi_pm(&cyw43_state, cyw43_pm_value(CYW43_PM2_POWERSAVE_MODE, 200, 1, 1, 1));
+    wifi_power_apply(cyw43_arch_gpio_get(CYW43_WL_GPIO_VBUS_PIN) ? 1 : 0);
 
     g_radio_core = task_this_core();
     g_radio_up = true;
@@ -1495,6 +1535,34 @@ static void wifi_usage(void) {
     out_multi("  wifi forget <ssid>         Remove a saved network");
     out_multi("  wifi auto on|off           Rejoin a saved network at boot");
     out_multi("  wifi on | off              Power the radio up or down");
+    out_multi("  wifi power [mode]          Radio power saving: auto, off, balanced, save");
+}
+
+static const char *wp_name(WifiPower p) {
+    return p == WP_OFF ? "off" : p == WP_BALANCED ? "balanced" : p == WP_SAVE ? "save" : "auto";
+}
+
+static int wifi_power_cmd(int argc, char **argv, int first) {
+    if (first < argc) {
+        const char *m = argv[first];
+        if (strcmp(m, "auto") && strcmp(m, "off") && strcmp(m, "balanced") && strcmp(m, "save")) {
+            out_warn("Usage: wifi power auto|off|balanced|save");
+            return 1;
+        }
+        reg_set("WiFi.Power", m);
+        if (g_radio_up) {
+            net_op_acquire();
+            if (net_core_ok()) wifi_power_apply(g_status.power);
+            net_op_release();
+        }
+    }
+    WifiPower set = wifi_power_setting();
+    out_multi("  Power saving : %s", wp_name(set));
+    if (g_radio_up)
+        out_multi("  In effect    : %s%s", wp_name(g_pm_applied),
+                  set == WP_AUTO ? (g_status.power == 1 ? "  (on USB power)" : "  (on battery)") : "");
+    out_multi("  off is fastest (the radio always listens) and draws the most; save draws the least.");
+    return 0;
 }
 
 static int cmd_wifi(int argc, char **argv) {
@@ -1563,6 +1631,8 @@ static int cmd_wifi(int argc, char **argv) {
         out_ok("Forgot '%s'.", ssid);
         return 0;
     }
+
+    if (!strcmp(sub, "power")) return wifi_power_cmd(argc, argv, first);
 
     if (!strcmp(sub, "auto")) {
         if (first >= argc) {
