@@ -5,6 +5,7 @@
 #include "protect.h"
 #include "out.h"
 #include "logring.h"
+#include "task.h"
 
 // Restricted means "not an admin", asked of the CALLING task's user (see
 // session_user). The console with nobody signed in is unrestricted, as it
@@ -18,9 +19,28 @@ bool fs_may_read(const char *abs) {
     return !protect_secret(abs) && !protect_home(abs, ident_user(), false);
 }
 
+// An admin without sudo: everything but the system's own files. What runs
+// as the console's user at the next start lives in /os and /etc, and being
+// signed in as an admin is not proof that anybody knows the password (autonomy
+// signs root in with none), so changing those takes `sudo` like any other
+// change to the system. The OS's own writes (the registry, the account file,
+// a package being installed) go to storage directly and never come through
+// here; this is the question a user's command, a package's file call and
+// link's PUT ask.
+static bool admin_needs_sudo(const char *abs) {
+    return protect_system(abs) || protect_reaches(abs);
+}
+
 bool fs_may_change(const char *abs) {
-    if (!fs_session_restricted()) return true;
-    return !protect_reaches(abs) && !protect_system(abs) && !protect_home(abs, ident_user(), true);
+    if (fs_session_restricted())
+        return !protect_reaches(abs) && !protect_system(abs) && !protect_home(abs, ident_user(), true);
+    if (task_shell()->elevated) return true;
+    return !admin_needs_sudo(abs);
+}
+
+bool fs_change_needs_sudo(const char *abs) {
+    if (fs_session_restricted() || task_shell()->elevated) return false;
+    return admin_needs_sudo(abs);
 }
 
 static void refuse(const char *abs, const char *verb) {
@@ -47,6 +67,11 @@ bool fs_allow_read(const char *abs) {
 bool fs_allow_change(const char *abs) {
     if (too_long(abs)) return false;
     if (fs_may_change(abs)) return true;
+    if (fs_change_needs_sudo(abs)) {
+        // Not logged: an admin who forgot the word, not somebody trying a door.
+        out_err("%s is part of the system. Run the command with sudo.", abs);
+        return false;
+    }
     refuse(abs, "change");
     return false;
 }

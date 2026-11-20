@@ -25,6 +25,7 @@
 #include "interrupt.h"
 #include "storage.h"
 #include "ident.h"
+#include "sudo.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -186,10 +187,16 @@ static int cmd_autonomy(int argc, char **argv) {
     return 1;
 }
 
+static void read_secret(const char *prompt, char *buf, unsigned cap);   // below
+
 void session_register(void) {
     static const Command c{"autonomy", "run with no login prompt", cmd_autonomy,
-                           nullptr, LEVEL_ADMIN};
+                           nullptr, LEVEL_ADMIN, FORMS_AUTONOMY};
     cmd_register(&c);
+    // sudo asks on this file's prompt, and pauses through the scheduler (a
+    // raw sleep feeds no watchdog; see the login loop).
+    sudo_set_reader(read_secret);
+    sudo_set_pause(task_sleep_ms);
 }
 
 void session_prompt(const char *msg, char *buf, unsigned max, bool secret) {
@@ -207,72 +214,20 @@ bool session_confirm(const char *msg) {
 // --- re-authentication --------------------------------------------------------
 //
 // See the note in session.h for why "are you sure" is not enough on its own.
+// The rules, the grace and the three tries are core/sudo.cpp's, shared with
+// `sudo` itself: this file lends it the prompt.
 
-static char     g_reauth_user[USR_NAME_MAX + 1];
-static uint32_t g_reauth_at;
-static bool     g_reauth_have;
-// Which session it was given in: the interrupt domain stands for the session
-// (0 the console, one per remote login). The same name proving itself at the
-// serial port says nothing about who is typing in a remote session.
-static uint16_t g_reauth_dom;
+static void read_secret(const char *prompt, char *buf, unsigned cap) {
+    read_field(prompt, buf, cap, true);
+}
 
 void session_reauth_forget(void) {
-    g_reauth_have = false;
-    g_reauth_user[0] = 0;
-    // The password itself is never stored — only the fact that one was checked
-    // and when. There is nothing here to wipe beyond the name and the clock.
+    // The calling task's session: the console at its logout. The password
+    // itself is never stored, only that one was checked and when.
+    sudo_grace_forget(task_shell()->intr_dom);
 }
 
-bool session_reauth(const char *what_for) {
-    const char *who = session_user();
-    if (!who || !who[0]) { out_err("Nobody is signed in."); return false; }
-
-    // A NOPASS account has no secret to prove. Waving it through would make the
-    // check theatre on exactly the accounts where it matters most.
-    if (users_is_nopass(who)) {
-        out_errp("auth", "'%s' signs in without a password, so it cannot "
-                         "authorise this.", who);
-        out_multi("  `passwd %s` gives it one.", who);
-        return false;
-    }
-
-    uint32_t now = task_now_ms();
-    if (g_reauth_have && strcmp(g_reauth_user, who) == 0 &&
-        g_reauth_dom == task_shell()->intr_dom &&
-        (uint32_t)(now - g_reauth_at) < REAUTH_GRACE_MS) {
-        return true;
-    }
-
-    // Three attempts, then a refusal. The same shape as the login loop rather
-    // than a new one — somebody mistyping a password should meet the behaviour
-    // they already know.
-    for (int tries = 0; tries < 3; tries++) {
-        char pw[USR_CRED_MAX];
-        char prompt[96];
-        snprintf(prompt, sizeof(prompt), "Password for %s, to %s", who, what_for);
-        read_field(prompt, pw, sizeof(pw), true);
-        // A remote login cancelled or going away: no answer is not a wrong one.
-        if (!pw[0] && task_shell()->own_user && (task_should_stop() || intr_pending()))
-            return false;
-
-        bool ok = users_verify(who, pw);
-        // Not left on the stack for whatever runs next in this frame.
-        for (unsigned i = 0; i < sizeof(pw); i++) pw[i] = 0;
-
-        if (ok) {
-            snprintf(g_reauth_user, sizeof(g_reauth_user), "%s", who);
-            g_reauth_at   = now;
-            g_reauth_have = true;
-            g_reauth_dom  = task_shell()->intr_dom;
-            return true;
-        }
-        out_err("Wrong password.");
-    }
-    // LOGGED, always. A refused privileged action is the one somebody wants to
-    // find afterwards, and it is the only record that the attempt happened.
-    log_addf(LOG_K_WARN, "auth: refused '%s' three times, to %s", who, what_for);
-    return false;
-}
+bool session_reauth(const char *what_for) { return sudo_authenticate(what_for); }
 
 // A [Y/n] question: blank means yes. v1's default for anything it wanted people
 // to say yes to.

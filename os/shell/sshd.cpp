@@ -46,6 +46,7 @@
 #include "storage.h"
 #include "users.h"
 #include "session.h"
+#include "sudo.h"
 #include "shell.h"
 #include "task.h"
 #include "interrupt.h"
@@ -490,7 +491,12 @@ static void session_free(SshdSession *s) {
         out_capture_reclaim(s->shell_pid);    // a shell ended by the watchdog left its frame
         task_reap(s->shell_pid);
     }
-    if (s->dom) intr_domain_free(s->dom);
+    if (s->dom) {
+        // Its sudo grace goes with it. Domain handles are never reused with
+        // the same value, so this is tidiness rather than safety.
+        sudo_grace_forget(s->dom);
+        intr_domain_free(s->dom);
+    }
     ssh_wipe(s, sizeof(*s));
     free(s);
 }

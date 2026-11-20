@@ -23,6 +23,7 @@
 #include "fsguard.h"
 #include "cmdline.h"
 #include "perms.h"
+#include "sudo.h"
 #include "blackbox.h"
 #include "lineedit.h"
 #include "interrupt.h"
@@ -401,6 +402,14 @@ static int cmd_put(int argc, char **argv) {
         return 1;
     }
 
+    // Asked like every other command that writes. It was the one that did not,
+    // so an admin could put a file into /etc without sudo. Relative to the
+    // root, as it always was.
+    {
+        char abs[128];
+        if (!path_resolve("/", argv[1], abs, sizeof(abs))) { out_err("Path too long."); return 1; }
+        if (!fs_allow_change(abs)) return 1;
+    }
     void *sink = storage_open_sink(argv[1]);
     if (!sink) { out_err("Could not open %s for writing.", argv[1]); return 1; }
 
@@ -550,12 +559,15 @@ static int cmd_run(int argc, char **argv) {
 // The line is copied onto the heap because the caller's buffer is a stack local
 // that will be gone before the task first runs. The task frees it on the way
 // out, which is the only place that can know it is finished with it.
-struct BgJob { char line[128]; };
+struct BgJob { char line[128]; bool trusted; };
 
 static int run_segment(char *seg);      // defined with the pipeline machinery
 
 static int bg_entry(void *arg) {
     BgJob *job = (BgJob *)arg;
+    // A service: the line came from /etc/services.cfg, which only somebody
+    // with sudo could have written, so it runs with sudo (core/sudo.h).
+    if (job->trusted) task_shell()->elevated = true;
     int rc = run_segment(job->line);
     free(job);
     return rc;
@@ -563,12 +575,13 @@ static int bg_entry(void *arg) {
 
 // Start `line` as a background task and hand back its pid, or -1. Quiet: the
 // caller says what it wants to. Shared by `bg` and the service supervisor, which
-// needs the pid to watch what it started.
-int shell_bg_spawn(const char *line) {
+// needs the pid to watch what it started. `trusted` is for the supervisor only.
+int shell_bg_spawn(const char *line, bool trusted) {
     if (!line || !line[0]) return -1;
     BgJob *job = (BgJob *)malloc(sizeof(BgJob));
     if (!job) return -1;
     snprintf(job->line, sizeof(job->line), "%s", line);
+    job->trusted = trusted;
     // The task is named after the command, the way `ps` has always shown them.
     char name[TASK_NAME_MAX];
     size_t w = strcspn(job->line, " ");
@@ -591,7 +604,7 @@ static int cmd_bg(int argc, char **argv) {
         strncat(line, argv[i], sizeof(line) - strlen(line) - 1);
     }
 
-    int pid = shell_bg_spawn(line);
+    int pid = shell_bg_spawn(line, /*trusted*/false);
     if (pid < 0) {
         out_err("Could not start a task — the table is full or memory is short.");
         return 1;
@@ -600,10 +613,35 @@ static int cmd_bg(int argc, char **argv) {
     return 0;
 }
 
-// Never called: run_one handles sudo before dispatch. See the table below.
+// sudo's own options. `sudo <command>` itself never reaches here: run_one
+// takes the word off and runs the command behind it.
+//
+// -l lists what needs sudo from the command table itself, so it cannot fall
+// out of step with what the gate actually asks for.
 static int cmd_sudo(int argc, char **argv) {
-    (void)argc; (void)argv;
-    out_multi("Usage: sudo <command> [args...]");
+    const char *opt = argc >= 2 ? argv[1] : "";
+    if (!strcmp(opt, "-v")) return sudo_validate();
+    if (!strcmp(opt, "-k")) return sudo_forget();
+    if (!strcmp(opt, "-l")) {
+        const char *who = session_user();
+        if (!users_is_admin(who)) {
+            out_err("%s is not an admin, so sudo is not available.", who);
+            return 1;
+        }
+        out_info("These need sudo, and %s's password:", who);
+        for (uint32_t i = 0; i < cmd_count(); i++) {
+            const Command *c = cmd_at(i);
+            if (!c || c->owner) continue;
+            const char *t = c->level == LEVEL_SYSTEM ? "every form" : perms_forms_text(c->forms);
+            if (t) out_multi("  %s%-12s%s %s", C_CYAN, c->name, C_RESET, t);
+        }
+        out_multi("  %s%-12s%s changing anything in /os or /etc", C_CYAN, "(files)", C_RESET);
+        out_multi("  A pass lasts %u minutes in a session. sudo -v asks now, sudo -k forgets.",
+                  (unsigned)(SUDO_GRACE_MS / 60000u));
+        return 0;
+    }
+    out_multi("Usage: sudo <command> [args...]   run one that changes the system");
+    out_multi("       sudo -v | -k | -l          ask now | forget | list what needs it");
     return 1;
 }
 
@@ -655,16 +693,15 @@ void shell_register_builtins(void) {
     intr_set_poll(shell_poll_byte);
 
     static const Command builtins[] = {
-        {"run", "run <app.app | script.rps> [arg]", cmd_run, nullptr},
+        {"run", "run <app.app | script.rps> [arg]", cmd_run, nullptr, LEVEL_USER, FORMS_RUN},
         {"put", "put <name> <len>  upload bytes", cmd_put, nullptr, LEVEL_ADMIN},
-        {"reg", "reg | reg get K | reg set K V",  cmd_reg, nullptr, LEVEL_ADMIN},
+        {"reg", "reg | reg get K | reg set K V",  cmd_reg, nullptr, LEVEL_ADMIN, FORMS_REG},
         {"alias",   "alias name=command",         cmd_alias,   nullptr},
         {"unalias", "unalias <name>",             cmd_unalias, nullptr},
         {"bg",      "bg <command>  run in background", cmd_bg,  nullptr},
-        // sudo is intercepted in run_one before dispatch, so this entry exists
-        // to make it visible in help and Tab completion. Reaching the function
-        // means someone got past the interception, which cannot happen.
-        {"sudo",    "sudo <command>  run as an admin", cmd_sudo, nullptr},
+        // sudo <command> is taken apart in run_one before dispatch; this entry
+        // is for help, Tab completion and sudo's own options (-v, -k, -l).
+        {"sudo",    "sudo <command>  run one that changes the system", cmd_sudo, nullptr},
     };
     for (const auto &c : builtins) cmd_register(&c);
     cmd_alias("exec", "run");     // v1's verb; run explains the difference
@@ -745,12 +782,14 @@ uint32_t    shell_stdin_len(void) { return task_shell()->stdin_len; }
 
 
 // Run one command (no connectors, no pipes, no redirect left in it).
-// Returns its exit status; a missing command is status 1.
-// Set for the duration of one command by `sudo` (task_shell()->elevated, per
-// task). Not a mode: it is cleared the moment that command returns, so a sudo
-// cannot leak into the next thing typed.
-
-static int run_one(char *seg) {
+// Returns its exit status; a missing command is status 1. *sudo_ran says
+// whether it ran after a `sudo` that was let through.
+//
+// sudo sets task_shell()->elevated for the duration of one command. Not a
+// mode: it is put back the moment that command returns, so a sudo cannot leak
+// into the next thing typed.
+static int run_one(char *seg, bool *sudo_ran) {
+    if (sudo_ran) *sudo_ran = false;
     // A user alias maps a name to a whole command line, so it is expanded into
     // the text BEFORE parsing: `alias ll=ls -l` has to contribute two argv
     // entries, which a dispatch-time lookup could not do.
@@ -775,20 +814,16 @@ static int run_one(char *seg) {
     int n = cmdline_split_args(seg, raw, 16);
     if (n == 0) return 0;
 
-    // sudo <command> — raise the level for exactly this one command. The shift
-    // is done with an index rather than by moving the array pointer, so argv
-    // stays a real array and the command sees a normal argv[0].
+    // sudo <command>: prove it is you, then run exactly this one command with
+    // sudo (core/sudo.h). The shift is done with an index rather than by moving
+    // the array pointer, so argv stays a real array and the command sees a
+    // normal argv[0]. `sudo -v`, `-k` and `-l` are sudo's own.
     char **argv = raw;
     int argc = n;
-    bool elevated = task_shell()->elevated;
+    bool prefixed = false;
     if (!strcmp(argv[0], "sudo")) {
-        if (argc < 2) { out_multi("Usage: sudo <command> [args...]"); return 1; }
-        if (!users_is_admin(session_user())) {
-            out_err("%s is not an admin. sudo cannot grant what the account does not have.",
-                    session_user());
-            return 1;
-        }
-        elevated = true;
+        if (argc < 2 || argv[1][0] == '-') return cmd_sudo(argc, argv);
+        prefixed = true;
         argv = raw + 1;
         argc = n - 1;
     }
@@ -802,20 +837,30 @@ static int run_one(char *seg) {
         if (is_rps(argv[0])) {
             const Command *sc = cmd_resolve("script");
             if (sc && sc->fn) {
+                // `sudo /path/x.rps` is a script run with sudo, like `sudo script`.
+                bool el = false;
+                if (!sudo_gate(LEVEL_USER, FORMS_NONE, argc, argv, prefixed, &el)) return 1;
                 char *rerun[3] = { (char *)"script", argv[0], nullptr };
-                return sc->fn(2, rerun);
+                bool was = task_shell()->elevated;
+                task_shell()->elevated = el;
+                int r = sc->fn(2, rerun);
+                task_shell()->elevated = was;
+                return r;
             }
         }
         out_err("'%s' is not a command or executable file.", argv[0]);
         return 1;
     }
 
-    if (!perms_allows(session_user(), users_is_admin(session_user()), c->level, elevated)) {
-        out_err("'%s' needs an admin account.", c->name);
-        out_multi("  Signed in as %s. An admin can run it, or use 'sudo %s'.",
-                  session_user(), c->name);
+    // Who may run it, with these arguments, and whether that takes sudo. A
+    // package's command has no say in its own level: only the built-ins carry
+    // one, so a package cannot mark itself as anything.
+    bool elevated = false;
+    if (!sudo_gate(c->level, c->owner ? FORMS_NONE : c->forms, argc, argv, prefixed, &elevated))
         return 1;
-    }
+    // A redirect after a sudo'd command is that command's output going where it
+    // was asked to: run_segment writes it with the same sudo.
+    if (sudo_ran) *sudo_ran = prefixed;
 
     bool saved = task_shell()->elevated;
     task_shell()->elevated = elevated;
@@ -983,7 +1028,8 @@ static int run_segment(char *seg) {
             }
         }
 
-        status = run_one(cmdline_trim(stage));
+        bool sudo_stage = false;
+        status = run_one(cmdline_trim(stage), &sudo_stage);
 
         if (capturing) {
             uint32_t n = out_capture_end();
@@ -992,10 +1038,15 @@ static int run_segment(char *seg) {
             if (last && outfile) {
                 char path[128];
                 path_resolve(fs_cwd(), outfile, path, sizeof(path));
+                // `sudo echo x > /etc/f` writes /etc/f with that sudo. (A shell
+                // on a computer would not, and everybody trips on it once.)
+                bool was = ts->elevated;
+                if (sudo_stage) ts->elevated = true;
                 bool ok = fs_allow_change(path) &&
                           (append ? storage_append_file(path, (const uint8_t *)buf_a, n)
                                   : storage_write_file(path, (const uint8_t *)buf_a, n));
                 if (!ok) { if (fs_may_change(path)) out_err("Could not write %s.", path); status = 1; }
+                ts->elevated = was;
             } else {
                 // Hand this stage's output to the next as its input. The buffers
                 // swap rather than copy: the next stage captures into the other

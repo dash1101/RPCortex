@@ -16,7 +16,9 @@
 //   whoami, isadmin, readsecret (reads /os/users.cfg through the guard),
 //   echo, big N, sleep N (polls intr_check), false, exit/logout,
 //   locked N (prints N bytes while holding a lock: the spill),
-//   bgjob (starts a task that records whose it is), ssh server off
+//   bgjob (starts a task that records whose it is), ssh server off,
+//   rmuser (a command that needs sudo, behind the real gate), sudo <that>,
+//   sudo -v / -k
 //
 //   sshd_host <port> <root dir> <authorized_keys>
 //
@@ -38,6 +40,7 @@
 #include "shell.h"
 #include "nettcp.h"
 #include "storage.h"
+#include "sudo.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -230,6 +233,20 @@ void session_logout(void) {
 }
 bool session_confirm(const char *) { return false; }
 
+// The password prompt sudo asks on: the session's own keys, as session.cpp's
+// read_field reads them, without the echo.
+static void read_secret(const char *prompt, char *buf, unsigned cap) {
+    out_prompt(prompt);
+    unsigned n = 0;
+    for (;;) {
+        if (task_should_stop() || intr_pending()) { buf[0] = 0; out_write("\n", 1); return; }
+        int c = intr_getkey();
+        if (c < 0) { task_yield(); continue; }
+        if (c == '\r' || c == '\n') { out_write("\n", 1); buf[n] = 0; return; }
+        if (c >= 32 && c < 127 && n + 1 < cap) buf[n++] = (char)c;
+    }
+}
+
 // --- the shell's line runner, faked ---------------------------------------------------------
 
 void shell_prompt_text(char *out, unsigned cap) {
@@ -308,6 +325,18 @@ int shell_run_input(char *line) {
         return task_spawn("bgjob", nullptr, bgjob, nullptr, TASK_STACK_SHELL, AFFINITY_ANY) > 0 ? 0 : 1;
     }
     if (!strcmp(c, "ssh") && argc >= 3) return sshd_command(argc, argv);
+    // sudo, as run_one does it: the word comes off, the gate decides.
+    if (!strcmp(c, "sudo") && argc >= 2 && !strcmp(argv[1], "-v")) return sudo_validate();
+    if (!strcmp(c, "sudo") && argc >= 2 && !strcmp(argv[1], "-k")) return sudo_forget();
+    bool prefixed = !strcmp(c, "sudo") && argc >= 2;
+    char **av = prefixed ? argv + 1 : argv;
+    int ac = prefixed ? argc - 1 : argc;
+    if (!strcmp(av[0], "rmuser")) {
+        bool el = false;
+        if (!sudo_gate(LEVEL_SYSTEM, FORMS_NONE, ac, av, prefixed, &el)) return 1;
+        out_multi("ran rmuser%s", el ? " with sudo" : "");
+        return 0;
+    }
     out_err("'%s' is not a command or executable file.", c);
     return 1;
 }
@@ -336,6 +365,7 @@ int main(int argc, char **argv) {
     put_file("/home/root/.ssh/authorized_keys", keys);
     put_file("/home/guest/.ssh/authorized_keys", keys);     // and still refused
 
+    sudo_set_reader(read_secret);
     users_add("root", "rootpw", true, false);
     users_add("bob", "bobpw", false, false);
     users_add("guest", nullptr, false, true);

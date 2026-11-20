@@ -1,10 +1,12 @@
 // The session's right to touch a path. See core/protect.h for which paths.
 //
-// An admin may touch anything. So may the system itself: boot, persistence and
-// networking write the registry and the user list directly through storage, and
-// never come through here. What this stops is an ordinary account, including the
-// guest, using a shell command or a package to read the device key, edit the
-// user list into making themselves an admin, or delete the settings.
+// An admin may read anything, and change anything outside /os and /etc; those
+// two need sudo as well (core/sudo.h). The system itself is not asked: boot,
+// persistence and networking write the registry and the user list directly
+// through storage, and never come through here. What this stops is an ordinary
+// account, including the guest, using a shell command or a package to read the
+// device key, edit the user list into making themselves an admin, or delete
+// the settings, and an admin without sudo changing what runs at the next start.
 #ifndef RPC_FSGUARD_H
 #define RPC_FSGUARD_H
 
@@ -26,5 +28,10 @@ bool fs_allow_change(const char *abs);
 // report failure through their return value.
 bool fs_may_read(const char *abs);
 bool fs_may_change(const char *abs);
+
+// Would fs_may_change say yes if the calling task ran with sudo? True only
+// for an admin, without sudo, and a path in /os or /etc (or one that reaches
+// them): the cases where the answer is "use sudo" rather than "no".
+bool fs_change_needs_sudo(const char *abs);
 
 #endif

@@ -223,6 +223,15 @@ NEEDS_MBED="ssh_test ssh_fuzz_test ed25519_test"
 # The real ident, users, perms, fsguard, protect and interrupt code, on real
 # task switches (its own ucontext seam, like task_test).
 SRC[identity_test]="$SHELL_DIR/fsguard.cpp $CORE/ident.cpp $CORE/users.cpp $CORE/sha256.cpp $CORE/perms.cpp $CORE/protect.cpp $CORE/path.cpp $CORE/out.cpp $CORE/logring.cpp $CORE/interrupt.cpp $CORE/lock.cpp $CORE/task.cpp $CORE/blackbox.cpp"
+# What each command needs (user, admin, or sudo), the commands whose level
+# depends on their arguments, the settings that decide who gets in, and that
+# each rule is attached to its command in the shell's own sources.
+SRC[perms_test]="$CORE/perms.cpp $CORE/users.cpp $CORE/sha256.cpp"
+# sudo end to end: the gate, the password, the grace, who can be asked (the
+# console, a background job, a service, SSH with and without a pty, link's
+# AUTH), the maintenance boot, and the file guard's line between a user's
+# command and the OS's own writes. Real tasks on ucontext, like identity_test.
+SRC[sudo_test]="$CORE/sudo.cpp $CORE/perms.cpp $SHELL_DIR/fsguard.cpp $CORE/ident.cpp $CORE/users.cpp $CORE/sha256.cpp $CORE/protect.cpp $CORE/path.cpp $CORE/out.cpp $CORE/logring.cpp $CORE/interrupt.cpp $CORE/lock.cpp $CORE/task.cpp $CORE/blackbox.cpp $CORE/registry.cpp $CORE/persist.cpp"
 
 # Tests worth running a SECOND time with no sanitizer.
 #

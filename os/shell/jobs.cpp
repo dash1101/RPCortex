@@ -38,7 +38,7 @@
 #define CFG_BUF      1024
 
 int  shell_run_line_now(char *line);       // shell.cpp — runs one command line
-int  shell_bg_spawn(const char *line);     // shell.cpp — `bg` that returns the pid
+int  shell_bg_spawn(const char *line, bool trusted);   // shell.cpp: `bg` that returns the pid
 
 // --- the config files -------------------------------------------------------
 
@@ -162,7 +162,14 @@ static void run_one_cb(void *v, uint32_t, const char *line) {
     RunCtx *c = (RunCtx *)v;
     char copy[160];
     snprintf(copy, sizeof(copy), "%s", line);
+    // With sudo: the line is from /etc/startup.cfg, which only somebody with
+    // sudo could have written (core/sudo.h). Put back after, because this runs
+    // on the shell's own task at boot.
+    TaskShell *ts = task_shell();
+    bool was = ts->elevated;
+    ts->elevated = true;
     shell_run_line_now(copy);
+    ts->elevated = was;
     c->ran++;
 }
 
@@ -231,6 +238,10 @@ static bool sched_reload(void) {
 }
 
 static int sched_task(void *) {
+    // Every line it runs is from /etc/tasks.cfg, which only somebody with sudo
+    // could have written, so it runs them with sudo (core/sudo.h). This task
+    // runs nothing else.
+    task_shell()->elevated = true;
     sched_reload();
     while (!task_should_stop()) {
         uint32_t now = task_now_ms() / 1000;
@@ -337,7 +348,7 @@ static int svc_watch_task(void *) {
                 // Started before the old one is cleared away, so a restart that
                 // could not get a task leaves the failed one to be judged again
                 // on the next pass, rather than losing track of it.
-                int pid = shell_bg_spawn(e.line);
+                int pid = shell_bg_spawn(e.line, /*trusted*/true);
                 if (pid < 0) break;
                 task_reap(e.pid);
                 e.pid = pid;
@@ -386,7 +397,8 @@ static void svc_track(const char *line, int pid) {
 
 // Start one service line and watch it. Returns the pid, or -1.
 static int svc_start_line(const char *line) {
-    int pid = shell_bg_spawn(line);
+    // Trusted: the line is from /etc/services.cfg (core/sudo.h).
+    int pid = shell_bg_spawn(line, /*trusted*/true);
     if (pid < 0) {
         out_err("Could not start service: %s", line);
         return -1;
@@ -518,9 +530,9 @@ static int cmd_watch(int argc, char **argv) {
 
 void jobs_register(void) {
     static const Command cmds[] = {
-        {"startup", "commands run at boot",            cmd_startup, nullptr, LEVEL_ADMIN},
-        {"task",    "commands run on a timer",         cmd_task,    nullptr, LEVEL_ADMIN},
-        {"service", "long-running background commands", cmd_service, nullptr, LEVEL_ADMIN},
+        {"startup", "commands run at boot",            cmd_startup, nullptr, LEVEL_ADMIN, FORMS_STARTUP},
+        {"task",    "commands run on a timer",         cmd_task,    nullptr, LEVEL_ADMIN, FORMS_TASK},
+        {"service", "long-running background commands", cmd_service, nullptr, LEVEL_ADMIN, FORMS_SERVICE},
         {"watch",   "watch [-n secs] <command>",       cmd_watch,   nullptr},
     };
     for (const auto &c : cmds) cmd_register(&c);

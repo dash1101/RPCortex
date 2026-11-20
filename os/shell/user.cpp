@@ -240,10 +240,11 @@ void user_register(void) {
     static const Command cmds[] = {
         {"whoami",  "the logged-in user",         cmd_whoami,  nullptr},
         {"users",   "list accounts",              cmd_users,   nullptr},
-        {"mkacct",  "mkacct <name> [--admin]",    cmd_mkacct,  nullptr, LEVEL_ADMIN},
-        {"passwd",  "passwd [user]",              cmd_passwd,  nullptr, LEVEL_ADMIN},
-        {"usermod", "usermod <user> <action>",    cmd_usermod, nullptr, LEVEL_ADMIN},
-        {"rmuser",  "rmuser <username>",          cmd_rmuser,  nullptr, LEVEL_ADMIN},
+        {"mkacct",  "mkacct <name> [--admin]",    cmd_mkacct,  nullptr, LEVEL_ADMIN, FORMS_MKACCT},
+        // Your own: anyone with a password. Somebody else's: sudo (perms.cpp).
+        {"passwd",  "passwd [user]",              cmd_passwd,  nullptr, LEVEL_USER, FORMS_PASSWD},
+        {"usermod", "usermod <user> <action>",    cmd_usermod, nullptr, LEVEL_SYSTEM},
+        {"rmuser",  "rmuser <username>",          cmd_rmuser,  nullptr, LEVEL_SYSTEM},
         {"logout",  "return to the login prompt", cmd_logout,  nullptr},
     };
     for (const auto &c : cmds) cmd_register(&c);

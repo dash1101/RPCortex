@@ -71,6 +71,14 @@ Run
     Type                      ${line}
     Done
 
+# Services and scheduled tasks change what runs later, so adding or starting
+# them takes sudo. One `sudo -v` here, with the password at its prompt, counts
+# for five minutes of emulated time, which is longer than the test.
+Prove Sudo
+    Type                      sudo -v
+    Answer                    Password for root    ${PW}
+    Done
+
 Put File
     [Arguments]               ${path}      ${text}
     ${n}=                     Get Length   ${text}
@@ -98,8 +106,9 @@ A Failing Service Is Started Again
     Set Up And Log In
 
     # A command that fails every time: cat of a file that is not there.
-    Run                       service add cat /emu/not-here
-    Type                      service start
+    Prove Sudo
+    Run                       sudo service add cat /emu/not-here
+    Type                      sudo service start
     Wait For Line On Uart     cat /emu/not-here
     Done
 

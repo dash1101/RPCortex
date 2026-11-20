@@ -327,6 +327,7 @@ static int cmd_ssh(int argc, char **argv) {
 }
 
 void ssh_register(void) {
-    static const Command c{"ssh", "log in to another machine; 'ssh server' for this one", cmd_ssh, nullptr};
+    static const Command c{"ssh", "log in to another machine; 'ssh server' for this one", cmd_ssh,
+                           nullptr, LEVEL_USER, FORMS_SSH};
     cmd_register(&c);
 }

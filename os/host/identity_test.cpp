@@ -153,13 +153,13 @@ static int guest_login(void *) {
        "installed packages and the trusted certificates stay shut");
     ck(fs_may_read("/etc/startup.cfg") && fs_may_read("/os/ca.pem"), "and can still be read");
     // A package it runs writes settings as it: only its own.
-    ck(!perms_reg_write_ok("System.Autonomous", ident_restricted(), ident_remote()) &&
-       !perms_reg_write_ok("SSH.Server", ident_restricted(), ident_remote()) &&
-       !perms_reg_write_ok("Alias.exit", ident_restricted(), ident_remote()) &&
-       !perms_reg_write_ok("WiFi.Auto", ident_restricted(), ident_remote()) &&
-       !perms_reg_write_ok("User.Theme", ident_restricted(), ident_remote()),
+    ck(!perms_reg_write_ok("System.Autonomous", ident_restricted(), ident_remote(), task_shell()->elevated) &&
+       !perms_reg_write_ok("SSH.Server", ident_restricted(), ident_remote(), task_shell()->elevated) &&
+       !perms_reg_write_ok("Alias.exit", ident_restricted(), ident_remote(), task_shell()->elevated) &&
+       !perms_reg_write_ok("WiFi.Auto", ident_restricted(), ident_remote(), task_shell()->elevated) &&
+       !perms_reg_write_ok("User.Theme", ident_restricted(), ident_remote(), task_shell()->elevated),
        "a remote guest's packages cannot write device settings, nor the console user's own");
-    ck(perms_reg_write_ok("Apps.Game_Score", ident_restricted(), ident_remote()),
+    ck(perms_reg_write_ok("Apps.Game_Score", ident_restricted(), ident_remote(), task_shell()->elevated),
        "but can write their own");
 
     // Its own directory, separate from the console's.
@@ -188,7 +188,13 @@ static int root_login(void *) {
     ident_attach("root", &g_term, g_root_dom, "/home/root");
     ck(!fs_session_restricted() && may_run_admin(false), "a remote root is root");
     ck(fs_may_read(kSecret) && fs_may_change(kRootKeys), "and may touch what root may");
-    ck(perms_reg_write_ok("SSH.Server", ident_restricted(), ident_remote()), "including any setting");
+    ck(!perms_reg_write_ok("SSH.Server", ident_restricted(), ident_remote(), task_shell()->elevated) &&
+       perms_reg_write_ok("WiFi.Auto", ident_restricted(), ident_remote(), task_shell()->elevated),
+       "including any setting but the ones that need sudo");
+    task_shell()->elevated = true;
+    ck(perms_reg_write_ok("SSH.Server", ident_restricted(), ident_remote(), task_shell()->elevated),
+       "and those with it");
+    task_shell()->elevated = false;
     for (int i = 0; i < 3; i++) task_yield();     // the console checks itself meanwhile
     ck(!strcmp(ident_user(), "root"), "still root while the console is someone else");
     g_root_done = true;
@@ -261,9 +267,9 @@ int main(void) {
     // Now the other way round: a guest at the console, root logged in remotely.
     ident_console_set("guest");
     ck(fs_session_restricted() && !may_run_admin(false), "the console is now a guest");
-    ck(!perms_reg_write_ok("System.Autonomous", ident_restricted(), ident_remote()) &&
-       !perms_reg_write_ok("Alias.ll", ident_restricted(), ident_remote()) &&
-       perms_reg_write_ok("WiFi.Auto", ident_restricted(), ident_remote()),
+    ck(!perms_reg_write_ok("System.Autonomous", ident_restricted(), ident_remote(), task_shell()->elevated) &&
+       !perms_reg_write_ok("Alias.ll", ident_restricted(), ident_remote(), task_shell()->elevated) &&
+       perms_reg_write_ok("WiFi.Auto", ident_restricted(), ident_remote(), task_shell()->elevated),
        "a console guest's packages cannot reach the keys that grant access");
     g_root_dom = intr_domain_new();
     int rootpid = task_spawn("ssh-root", nullptr, root_login, nullptr, TASK_STACK_SHELL, AFFINITY_ANY);

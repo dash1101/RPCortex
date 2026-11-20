@@ -231,7 +231,7 @@ static int cmd_download(int argc, char **argv) {
     for (int i = 1; i < argc; i++) {
         char src[128];
         path_resolve(fs_cwd(), argv[i], src, sizeof(src));
-        if (!fs_allow_change(src)) continue;              // copying it out is as bad as reading it
+        if (!fs_allow_read(src)) continue;                // copying it out is reading it
         bool is_dir = false;
         uint32_t size = 0;
         if (!storage_stat(src, &is_dir, &size) || is_dir) {

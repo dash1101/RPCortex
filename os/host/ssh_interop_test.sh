@@ -315,7 +315,7 @@ kill "$(cat server.pid)" 2>/dev/null; rm -f server.pid
 g++ "${CXXF[@]}" -DRPC_HAS_WIFI=1 -I"$OS/../loader-spike/firmware" "$HERE/sshd_host.cpp" "$OS/shell/sshd.cpp" \
     "$OS/shell/fsguard.cpp" "$CORE/sshserver.cpp" "$CORE/sshsess.cpp" "$CORE/lineedit.cpp" "$CORE/history.cpp" \
     "$CORE/interrupt.cpp" "$CORE/ident.cpp" "$CORE/users.cpp" "$CORE/sha256.cpp" "$CORE/perms.cpp" \
-    "$CORE/protect.cpp" "$CORE/path.cpp" "$CORE/out.cpp" "$CORE/logring.cpp" "$CORE/registry.cpp" \
+    "$CORE/sudo.cpp" "$CORE/protect.cpp" "$CORE/path.cpp" "$CORE/out.cpp" "$CORE/logring.cpp" "$CORE/registry.cpp" \
     "$CORE/sshwire.cpp" "$CORE/sshcrypto.cpp" "$CORE/ed25519.cpp" "$CORE/sshtrans.cpp" "$CORE/sshkeys.cpp" \
     "$CORE/lock.cpp" "$CORE/task.cpp" "$CORE/blackbox.cpp" "$W/libmbed.a" -o "$W/sshd_host" || exit 1
 mkdir -p droot
@@ -403,6 +403,36 @@ print(hashlib.sha256(''.join('\n' if j%64==63 else p[j%64] for j in range(4096))
 out=$(printf 'whoami\ncd /tmp\nexit\n' | run $D -tt -o BatchMode=yes -i id_ecdsa root@127.0.0.1 2>/dev/null); rc=$?
 check "sshd.cpp: an interactive session ($rc)" test $rc -eq 0 -a -n "$(grep 'root@host:/home/root>' <<<"$out")"
 check "sshd.cpp: ...prints the welcome line" grep -q "Signed in as root" <<<"$out"
+
+# sudo over SSH. A command that changes the system needs it there too; without
+# a terminal it is refused rather than asking (the password would echo, or
+# come from a script); with one it asks on that terminal, once.
+out=$(run $DK root@127.0.0.1 'rmuser bob' 2>&1); rc=$?
+check "sshd.cpp: rmuser without sudo is refused ($rc)" test $rc -eq 1 -a -n "$(grep -F 'Run it with sudo: sudo rmuser bob' <<<"$out")"
+out=$(run $DK root@127.0.0.1 'sudo rmuser bob' 2>&1); rc=$?
+check "sshd.cpp: sudo with no pty says to use ssh -t, and asks nothing ($rc)" \
+      test $rc -eq 1 -a -n "$(grep -F 'connect with ssh -t' <<<"$out")" -a -z "$(grep Password <<<"$out")"
+python3 - "$DPORT" <<'PY' > dsudo.out 2>&1
+import subprocess, sys, time
+p = subprocess.Popen(["ssh", "-tt", "-p", sys.argv[1], "-o", "StrictHostKeyChecking=no",
+     "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR", "-o", "BatchMode=yes",
+     "-o", "IdentitiesOnly=yes", "-i", "id_ecdsa", "root@127.0.0.1"],
+     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+def say(b, wait=1.0):
+    p.stdin.write(b); p.stdin.flush(); time.sleep(wait)
+say(b"sudo rmuser bob\n", 1.5)
+say(b"rootpw\n")
+say(b"sudo rmuser bob\n")
+say(b"exit\n", 0.2)
+out, _ = p.communicate(timeout=30)
+print(out.decode(errors="replace").replace("\r", ""))
+PY
+check "sshd.cpp: with a terminal, sudo asks on it" grep -q "Password for root, to run 'rmuser'" dsudo.out
+check "sshd.cpp: ...and runs the command with sudo" grep -q "^ran rmuser with sudo" dsudo.out
+check "sshd.cpp: ...and asks once in the session" test "$(grep -c 'Password for root' dsudo.out)" -eq 1 -a "$(grep -c '^ran rmuser with sudo' dsudo.out)" -eq 2
+check "sshd.cpp: the password is not echoed" test -z "$(grep rootpw dsudo.out)"
+out=$(pw bobpw bob 'sudo rmuser bob'); rc=$?
+check "sshd.cpp: an ordinary account's sudo is refused ($rc)" test $rc -eq 1 -a -n "$(grep 'not an admin' <<<"$out")"
 
 # Ctrl+C reaches the command in its own session, and not one next to it.
 run $DK root@127.0.0.1 'sleep 4' > beside.out 2>&1 &

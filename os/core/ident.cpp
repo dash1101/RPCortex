@@ -25,6 +25,12 @@ void ident_attach(const char *user, const TaskTerm *term, uint16_t intr_dom, con
     snprintf(ts->cwd, sizeof(ts->cwd), "%s", cwd && cwd[0] ? cwd : "/");
     ts->term = term;
     ts->intr_dom = intr_dom;
+    // A login starts without sudo, whatever started the task it runs on: the
+    // SSH server may have been turned on by a sudo'd command, and a session
+    // inheriting that would be every remote login with sudo for free.
+    ts->elevated = false;
+    ts->noprompt = 0;
+    ts->sudo_flags = 0;
     // Last: from here on every check this task makes is answered for `user`.
     ts->own_user = true;
 }

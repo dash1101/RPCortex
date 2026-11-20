@@ -45,21 +45,18 @@ bool session_confirm(const char *msg);
 // wiping it — should cost the password of somebody who already had it, because
 // the realistic threat is an unattended session rather than a mistyped command.
 //
-// A pass is remembered for REAUTH_GRACE_MS, so a run of privileged commands
-// asks once rather than five times. The grace is per user and is dropped the
-// moment anybody logs out.
+// The same check `sudo` makes, and the same grace (core/sudo.h): a pass counts
+// for SUDO_GRACE_MS in this session, so a run of privileged commands asks once
+// rather than five times, and a command already running with sudo is not asked
+// again. Nothing is asked where nobody can answer.
 //
 // A NOPASS account has nothing to check, so it is refused outright rather than
 // waved through: an account that signs in without a password must not be able
 // to authorise something a password was the point of.
 bool session_reauth(const char *what_for);
 
-// How long a successful re-authentication counts for. Two minutes is long
-// enough to finish what was started and short enough that walking away ends it.
-#define REAUTH_GRACE_MS 120000
-
-// Forget any grace period. Called at logout, and by anything that has reason to
-// believe the person at the keyboard changed.
+// Forget this session's grace. Called at logout, and by anything that has reason
+// to believe the person at the keyboard changed.
 void session_reauth_forget(void);
 
 // Register session commands (`autonomy`). Separate from session_boot because

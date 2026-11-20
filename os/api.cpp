@@ -347,6 +347,9 @@ extern "C" int fw_file_exists(const char *path) {
 extern "C" int fw_mkdir(const char *path) {
     task_alive();
     if (!ok_s(path)) return 0;
+    // Asked like every other call that changes the filesystem. It was the one
+    // that did not, so a package could make directories in /os and /etc.
+    if (!fs_may_change(path)) return 0;
     return storage_mkdir(path) ? 1 : 0;
 }
 
@@ -370,7 +373,7 @@ extern "C" int fw_file_append(const char *path, const void *data, uint32_t len) 
 }
 extern "C" int fw_file_copy(const char *from, const char *to) {
     if (!ok_s(from) || !ok_s(to)) return 0;
-    if (!fs_may_change(from) || !fs_may_change(to)) return 0;     // copying out is reading
+    if (!fs_may_read(from) || !fs_may_change(to)) return 0;       // copying out is reading
     task_alive();
     return storage_copy(from, to) ? 1 : 0;
 }
@@ -415,7 +418,8 @@ extern "C" int fw_reg_set(const char *key, const char *value) {
     // Without it a package anybody could `run` was a way to set the device to
     // boot straight into root's shell, turn SSH on, or plant an alias in the
     // admin's prompt (core/perms.h).
-    if (!perms_reg_write_ok(key, ident_restricted(), ident_remote())) return 0;
+    if (!perms_reg_write_ok(key, ident_restricted(), ident_remote(), task_shell()->elevated))
+        return 0;
     return reg_set(key, value) ? 1 : 0;
 }
 
@@ -508,21 +512,35 @@ extern "C" int fw_shell_run(const char *line, char *out, uint32_t cap) {
     if (line[n]) return -1;               // too long to run, rather than truncated
     work[n] = 0;
 
-    if (!out || !cap) return shell_run_line_now(work);
-
-    // Everything a person would have seen, tagged lines included, with the
-    // colour stripped out. A pipe wants the data channel only; a package that
-    // asked for a command's output means the whole answer.
-    //
-    // Begin can refuse: there is one capture, and a pipeline or another task's
-    // fw_shell_run may hold it. The command still runs — the caller wanted it
-    // to — and out stays empty, which is how the caller can tell. Callers that
-    // parse what comes back must check for an empty buffer and not read it as
-    // an empty answer.
-    out[0] = 0;
-    if (!out_capture_begin_all(out, cap)) return shell_run_line_now(work);
-    int rc = shell_run_line_now(work);
-    out_capture_end();
+    // NO PASSWORD PROMPT INSIDE A PACKAGE'S LINE. The package owns the screen
+    // and the keys while it runs (a GUI on its own display, perhaps), so a
+    // prompt on the console would hang it waiting for an answer nobody sees.
+    // A `sudo` in the line uses the session's grace, or is refused saying to
+    // run `sudo -v` first; a package run with sudo runs its lines with sudo.
+    TaskShell *ts = task_shell();
+    ts->noprompt++;
+    int rc;
+    if (!out || !cap) {
+        rc = shell_run_line_now(work);
+    } else {
+        // Everything a person would have seen, tagged lines included, with the
+        // colour stripped out. A pipe wants the data channel only; a package that
+        // asked for a command's output means the whole answer.
+        //
+        // Begin can refuse: there is one capture, and a pipeline or another task's
+        // fw_shell_run may hold it. The command still runs (the caller wanted it
+        // to) and out stays empty, which is how the caller can tell. Callers that
+        // parse what comes back must check for an empty buffer and not read it as
+        // an empty answer.
+        out[0] = 0;
+        if (!out_capture_begin_all(out, cap)) {
+            rc = shell_run_line_now(work);
+        } else {
+            rc = shell_run_line_now(work);
+            out_capture_end();
+        }
+    }
+    ts->noprompt--;
     return rc;
 }
 

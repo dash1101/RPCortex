@@ -97,6 +97,14 @@ Run
     Type                      ${line}
     Done
 
+# Services and scheduled tasks change what runs later, so adding or starting
+# them takes sudo. One `sudo -v` here, with the password at its prompt, counts
+# for five minutes of emulated time, which is longer than the test.
+Prove Sudo
+    Type                      sudo -v
+    Answer                    Password for root    ${PW}
+    Done
+
 Put File
     [Arguments]               ${path}      ${text}
     ${n}=                     Get Length   ${text}
@@ -146,8 +154,9 @@ A Writer And A Reader Leave The Filesystem Consistent
     # The writer: the scheduler task, appending once a second. Quoted, so the
     # redirect is stored as part of the job instead of being applied to `task`.
     Run                       echo w > /emu/w.txt
-    Run                       task add 1 "echo w >> /emu/w.txt"
-    Type                      task start
+    Prove Sudo
+    Run                       sudo task add 1 "echo w >> /emu/w.txt"
+    Type                      sudo task start
     Wait For Line On Uart     Scheduler running
     Done
 
@@ -170,7 +179,7 @@ A Writer And A Reader Leave The Filesystem Consistent
     Should Be True            ${after}[0] > ${before}[0]    msg=the writer never ran while the reader did
 
     # Stop the writer, and give a firing already under way time to finish.
-    Type                      task stop
+    Type                      sudo task stop
     Wait For Line On Uart     Scheduler stopping
     Done
     Run                       sleep 2

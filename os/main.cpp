@@ -28,6 +28,8 @@
 #include "mpu.h"
 #include "loader.h"
 #include "sandbox.h"
+#include "sudo.h"
+#include "perms.h"
 #include "pico/flash.h"
 
 extern "C" void fault_stack_init(void);
@@ -73,6 +75,10 @@ static int shell_task(void *) {
     // to be marked only when the shell loop started, after the first login.
     task_mark_shell();
 
+    // Where packages run with the OS's own privileges (no sandbox: RP2040),
+    // running a package file is handing it the device, and needs sudo.
+    perms_set_packages_privileged(!sandbox_supported());
+
     net_autoconnect();       // rejoin a saved network, if one is set to auto
     session_boot();          // first-run setup, then login
 
@@ -92,6 +98,10 @@ static int shell_task(void *) {
     // or an unrelated safeboot left over from earlier would fire later.
     bool asked = safeboot_consume(staged, sizeof(staged));
     bool safe  = asked || kboot_maintenance();
+    // At the console, sudo does not ask in a maintenance boot: the way back
+    // from a forgotten password (PERMISSIONS.md). The SSH server stays off in
+    // one, so it is the person at the device's own console or nobody.
+    sudo_set_maintenance(safe);
 
     if (safe) {
         if (!asked)
@@ -113,9 +123,13 @@ static int shell_task(void *) {
 
     // A staged command runs with the machine as quiet as it gets, which is the
     // whole point of staging it. Failures are the command's to report.
+    // With sudo: staging one took sudo (`safeboot <command>`, or the
+    // System.SafeBoot keys, which only sudo may write).
     if (safe && staged[0]) {
         out_infop("safeboot", "Running '%s'.", staged);
+        task_shell()->elevated = true;
         shell_run_line_now(staged);
+        task_shell()->elevated = false;
     }
 
     shell_run();             // never returns

@@ -122,7 +122,11 @@ static const char *kUsers[] = {
     "  usermod <user> passwd | admin on|off | nopass on|off",
     "  rmuser <username>       Remove an account",
     "  logout / exit           Return to the login prompt",
-    "  sudo <command>          Run one command as an admin",
+    "",
+    "  sudo <command>          Run one that changes the system: packages,",
+    "                          accounts, firmware, what starts at boot,",
+    "                          anything in /os or /etc. Asks your password.",
+    "  sudo -v | -k | -l       Ask now | forget it | list what needs sudo",
 };
 
 static const char *kMisc[] = {
@@ -184,6 +188,8 @@ static const char *kRecovery[] = {
     "  In that order: safeboot, fscheck and rollback cost nothing, regreset costs",
     "  your settings, factoryreset costs everything. If none of them reach a",
     "  prompt, hold BOOTSEL and reflash -- that depends on nothing being correct.",
+    "  In a safeboot, sudo at the console does not ask for a password: that is",
+    "  the way back from a forgotten one.",
     "",
     "  The device walks the same ladder by itself. Three starts that never reach",
     "  a shell and it loads nothing; still failing and it puts the saved firmware",

@@ -411,18 +411,11 @@ static int cmd_factoryreset(int, char **) {
     }
     // And the password, last. Typing "yes" is a decision an unattended shell
     // can be talked into by anyone who walks past it; this is the one step that
-    // asks for something only the account holder has.
-    //
-    // This IS the recovery path, so refusing it has to come with the way out.
-    // Losing a password must not mean losing the hardware, and the honest
-    // answer is that the boot ROM does not care about any of this.
-    if (!session_reauth("erase this device")) {
-        out_blank();
-        out_multi("  A forgotten password is not the end of the device: hold BOOTSEL");
-        out_multi("  while plugging it in and write the firmware image again. That");
-        out_multi("  clears the accounts along with everything else.");
-        return 1;
-    }
+    // asks for something only the account holder has. Run as `sudo
+    // factoryreset` (it is LEVEL_SYSTEM) this has been asked already, and
+    // passes; the way back from a forgotten password is a maintenance boot,
+    // where sudo at the console does not ask (PERMISSIONS.md).
+    if (!session_reauth("erase this device")) return 1;
 
     log_add(LOG_K_WARN, "factoryreset: erasing");
     out_info("Erasing...");
@@ -732,7 +725,7 @@ void diag_register(void) {
     static const Command c_diag{"diag", "system state, and whether the last run crashed", cmd_diag, nullptr};
     static const Command c_input{"inputstat", "show the bytes this terminal sends", cmd_inputstat, nullptr};
     cmd_alias("keycode", "inputstat");      // what v1 called it
-    static const Command c_regreset{"regreset", "restore every setting to its default", cmd_regreset, nullptr, LEVEL_ADMIN};
+    static const Command c_regreset{"regreset", "restore every setting to its default", cmd_regreset, nullptr, LEVEL_SYSTEM};
     static const Command c_pkgdis{"pkgdisable", "stop a package loading at boot", cmd_pkgdisable, nullptr, LEVEL_ADMIN};
     static const Command c_pkgen{"pkgenable", "let a disabled package load again", cmd_pkgenable, nullptr, LEVEL_ADMIN};
     cmd_register(&c_compat);
@@ -742,11 +735,12 @@ void diag_register(void) {
     cmd_register(&c_pkgdis);
     cmd_register(&c_pkgen);
     static const Command c_fr{"factoryreset", "erase all data and restart", cmd_factoryreset,
-                              nullptr, LEVEL_ADMIN};
+                              nullptr, LEVEL_SYSTEM};
     static const Command c_sb{"safeboot", "restart with no services or packages", cmd_safeboot,
-                              nullptr, LEVEL_ADMIN};
+                              nullptr, LEVEL_ADMIN, FORMS_SAFEBOOT};
+    // It can end in a rebuilt filesystem, when there is no saved firmware.
     static const Command c_fb{"failboot", "test the boot recovery ladder", cmd_failboot,
-                              nullptr, LEVEL_ADMIN};
+                              nullptr, LEVEL_SYSTEM};
     cmd_register(&c_fr);
     cmd_register(&c_sb);
     cmd_register(&c_fb);

@@ -260,6 +260,8 @@ static int cmd_stock(int argc, char **argv) {
 }
 
 void stock_register(void) {
-    static const Command c{"stock", "restore a built-in package", cmd_stock, nullptr};
+    // Installing, even a package the firmware carries, needs sudo. Listing does not.
+    static const Command c{"stock", "restore a built-in package", cmd_stock, nullptr,
+                           LEVEL_USER, FORMS_STOCK};
     cmd_register(&c);
 }

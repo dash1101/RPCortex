@@ -34,6 +34,10 @@ struct Command {
     // privileged if someone said so — the opposite default would silently lock
     // out every package command.
     CmdLevel    level = LEVEL_USER;
+    // For a command whose level depends on its arguments (`pkg list` against
+    // `pkg install`): which rule in core/perms.cpp says so. One byte beside the
+    // level, so the table does not grow. Only built-ins have one.
+    uint8_t     forms = FORMS_NONE;
 };
 
 // A fixed table: no allocation, and a hard ceiling is the right shape for a

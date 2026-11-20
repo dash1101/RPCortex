@@ -130,6 +130,7 @@ add_executable(rpcortex_v2
     ${OS_ROOT}/core/joblist.cpp
     ${OS_ROOT}/core/detach.cpp
     ${OS_ROOT}/core/perms.cpp
+    ${OS_ROOT}/core/sudo.cpp
     ${OS_ROOT}/core/lineedit.cpp
     ${OS_ROOT}/core/fmt.cpp
     ${OS_ROOT}/core/pkgindex.cpp
@@ -276,6 +277,7 @@ if(RPC_COLD_SIZE AND CMAKE_BUILD_TYPE STREQUAL "Release")
         ${OS_ROOT}/core/fat12.cpp ${OS_ROOT}/core/fatview.cpp ${OS_ROOT}/core/fatro.cpp
         ${OS_ROOT}/core/rps.cpp ${OS_ROOT}/core/repoindex.cpp ${OS_ROOT}/core/pkgindex.cpp
         ${OS_ROOT}/core/ducky.cpp ${OS_ROOT}/core/users.cpp
+        ${OS_ROOT}/core/sudo.cpp ${OS_ROOT}/core/perms.cpp
         ${OS_ROOT}/core/httpfetch.cpp ${OS_ROOT}/core/httpparse.cpp
         ${OS_ROOT}/usbmsc.cpp ${OS_ROOT}/usbhid.cpp)
     set_source_files_properties(

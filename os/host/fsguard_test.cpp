@@ -8,6 +8,7 @@
 #include "ident.h"
 #include "out.h"
 #include "logring.h"
+#include "task.h"
 #include <stdio.h>
 #include <string.h>
 #include <initializer_list>
@@ -26,15 +27,37 @@ int main(void) {
     const char *open_file = "/etc/startup.cfg", *os_dir = "/os", *wild = "/os/*.cfg";
 
     // --- nobody logged in: boot, first-run setup, the login prompt --------------
+    // Boot code writes through storage and never asks; what does ask with
+    // nobody signed in is a background job left from a session that ended, and
+    // that is held to what an admin without sudo may do.
     ident_console_set("");
     ck(!fs_session_restricted(), "with nobody logged in the session is not restricted");
-    ck(fs_may_read(reg) && fs_may_change(reg) && fs_may_change(os_dir), "so boot code is never held back");
+    ck(fs_may_read(reg) && !fs_may_change(reg) && !fs_may_change(os_dir),
+       "but /os still needs sudo to change");
 
     // --- an admin ----------------------------------------------------------------
     ident_console_set("root");
     ck(!fs_session_restricted(), "an admin is not restricted");
-    for (const char *p : {reg, users, key, os_dir, wild, "/"}) {
-        ck(fs_may_read(p) && fs_may_change(p), "an admin may read and change every protected path");
+    for (const char *p : {reg, users, key, os_dir, wild, "/", open_file, "/etc", "/os/pkg/x.app"}) {
+        ck(fs_may_read(p) && !fs_may_change(p) && fs_change_needs_sudo(p),
+           "an admin may read every protected path, and change none without sudo");
+    }
+    ck(fs_may_change("/home/sam/notes.txt") && fs_may_change("/tmp/x") && !fs_change_needs_sudo("/tmp/x"),
+       "everything else is an admin's without it");
+    task_shell()->elevated = true;
+    for (const char *p : {reg, users, key, os_dir, wild, "/", open_file}) {
+        ck(fs_may_read(p) && fs_may_change(p) && !fs_change_needs_sudo(p),
+           "with sudo an admin may change every protected path");
+    }
+    task_shell()->elevated = false;
+    {
+        char cap[256];
+        ck(out_capture_begin_all(cap, sizeof(cap)), "capture starts");
+        bool ok = fs_allow_change(open_file);
+        uint32_t n = out_capture_end();
+        cap[n < sizeof(cap) ? n : sizeof(cap) - 1] = 0;
+        ck(!ok && strstr(cap, "part of the system") && strstr(cap, "sudo") && !strstr(cap, "Permission denied"),
+           "an admin is told to use sudo, not that it is forbidden");
     }
 
     // --- the guest, and an ordinary account --------------------------------------

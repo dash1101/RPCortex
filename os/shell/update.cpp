@@ -726,6 +726,6 @@ void update_report_boot(void) {
 
 void update_register(void) {
     static const Command c{"update", "check for and apply a firmware update", cmd_update,
-                           nullptr, LEVEL_ADMIN};
+                           nullptr, LEVEL_ADMIN, FORMS_UPDATE};
     cmd_register(&c);
 }

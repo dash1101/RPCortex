@@ -986,7 +986,11 @@ static int cmd_pkg(int argc, char **argv) {
 }
 
 void pkg_register(void) {
-    static const Command c{"pkg", "install/remove/list packages", cmd_pkg, nullptr, LEVEL_ADMIN};
+    // Which subcommands need sudo is FORMS_PKG in core/perms.cpp: everything
+    // but the ones that only look. A new subcommand that changes anything
+    // needs nothing done there; one that only reads goes on its list.
+    static const Command c{"pkg", "install/remove/list packages", cmd_pkg, nullptr, LEVEL_ADMIN,
+                           FORMS_PKG};
     cmd_register(&c);
     // Underscored, and with no help text, because it is not for a person. It
     // reads nothing and changes nothing, so it needs no privilege.

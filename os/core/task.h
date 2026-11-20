@@ -454,8 +454,19 @@ struct TaskTerm;
 struct TaskShell {
     const char *stdin_buf;
     uint32_t    stdin_len;
+    // Running with sudo: for one command after `sudo`, or for the life of work
+    // the system started from its own configuration (core/sudo.h). Inherited by
+    // value at task_spawn, like the identity below, and cleared when a task
+    // becomes a new login.
     bool        elevated;
     bool        had_error;
+    // Above zero while nothing on this task may stop to ask for a password: a
+    // line a package runs (fw_shell_run), and link's EXEC, where the keys
+    // come from a program and not a person. Not inherited.
+    uint8_t     noprompt;
+    // SUDO_F_* (core/sudo.h): what sudo did during the line being run, for
+    // whoever ran the line to act on. Cleared by them; not inherited.
+    uint8_t     sudo_flags;
 
     bool        own_user;
     char        user[TASK_USER_MAX];
