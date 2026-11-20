@@ -150,9 +150,31 @@ bool kboot(void) {
     // Why the device restarted. The single most useful line after a failure,
     // and it is free: the watchdog hardware remembers whether it was the one
     // that did it.
+    //
+    // A FLASH IS NOT A HANG. On RP2350 the boot ROM restarts the chip through
+    // the watchdog too: entering BOOTSEL is a 10 ms watchdog countdown
+    // (rom_reboot), and so is starting the firmware again after picotool or a
+    // UF2 drop. Those set the same TIMER reason a hang does, so every fresh
+    // flash used to open with "something stopped responding".
+    //
+    // What the ROM's reboot leaves behind is its magic, 0xb007c0d3, in
+    // scratch[7], a register this OS never writes otherwise (the SDK only does
+    // for a reboot to an address, which nothing here asks for). So it is
+    // cleared at every boot, and finding the magic there next time means the
+    // ROM restarted the chip since this OS last ran. Measured on a Pico 2 W:
+    // after a flash scratch[7] holds the magic; after `reboot` and `sreboot`
+    // it holds the 0 the previous boot left. `sreboot` still warns, which is
+    // what it is for. Whether the RP2040 ROM leaves the same mark is
+    // DEVICE-UNCONFIRMED; if it does not, that chip simply warns as before.
+    const bool rom_did_it = watchdog_hw->scratch[7] == 0xb007c0d3u;
+    watchdog_hw->scratch[7] = 0;
     if (watchdog_caused_reboot() && !asked_for_it()) {
-        klog(LOG_WARN, "Last restart was the WATCHDOG - something stopped responding.");
-        klog(LOG_WARN, "'logdump' has what was happening before it.");
+        if (rom_did_it) {
+            klog(LOG_INFO, "Restarted by the boot ROM, as after flashing new firmware.");
+        } else {
+            klog(LOG_WARN, "Last restart was the WATCHDOG - something stopped responding.");
+            klog(LOG_WARN, "'logdump' has what was happening before it.");
+        }
     }
 
     task_watchdog_feed();
