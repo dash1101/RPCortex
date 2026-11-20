@@ -77,23 +77,22 @@ Two checks run on every build and fail it early rather than on a device:
 
 ## Getting it onto a device
 
-From a PC, over the serial console:
+From a PC, over the serial console, with the command-line tool
+([tools/rpc](tools/rpc/README.md)):
 
 ```
-tools/putfile.py os/build_pico2_w/apps/greet.app --port /dev/ttyACM0
+rpc install os/build_pico2_w/apps/greet.app
+rpc exec greet
 ```
 
-then on the device:
+`rpc install` sends the file to `/tmp`, checks the sha256 of what landed, runs
+`pkg install` on the device and removes the copy. `tools/putfile.py` does only
+the sending, for a device to install from by hand (`pkg install greet.app`).
 
-```
-pkg install greet.app
-greet
-```
-
-`putfile.py` waits for the device to acknowledge each chunk and checks the
-sha256 of what landed. A package published to a repository is installed by name
-instead (`pkg install greet`); `pkg update`, `pkg upgrade`, `pkg remove` and
-`pkg list` do what they say.
+A package published to a repository is installed by name instead (`pkg install
+greet` on the device, or `rpc install greet`, which downloads it on the PC so the
+device needs no network); `pkg update`, `pkg upgrade`, `pkg remove` and `pkg list`
+do what they say.
 
 ## The ABI
 

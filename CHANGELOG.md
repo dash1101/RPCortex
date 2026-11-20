@@ -13,6 +13,7 @@ Summary: The first Vela II update: tools to drive a board from a computer, Wi-Fi
 ### New
 
 - `link`: a mode for programs on a computer to drive the board over USB. They can run a command and get its output and exit status back, send and fetch files with a SHA-256 check (about 19 KB/s up and 74 KB/s down on a Pico 2 W) and list folders. The protocol is in LINK.md.
+- `rpc`, a command-line tool for Linux, macOS and Windows (`tools/rpc`), and a browser tool over Web Serial (`tools/web`). Both run commands, copy files both ways, back up and restore a board, install packages from the repository even when the board has no network, and open a terminal; `rpc` can also flash firmware. They use `link`.
 - `wifi power` chooses how hard the radio saves power: `auto` (the default), `off`, `balanced` or `save`. `auto` keeps the radio listening while the board has USB power and saves power on battery, switching by itself.
 - Services are supervised. A service that fails is started again after 2 seconds, then 4, 8, 16 and 32, and is given up on after five failures in a row; a minute of normal running clears the count. A service that was killed or finished cleanly is left alone. `service status` shows each one, and every restart is in the log.
 - Package API 1.25, `fw_time_set`: a package can set the clock. Nova D1's GPS screen uses it to set the time from the satellites.
