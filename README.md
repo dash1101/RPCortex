@@ -149,5 +149,5 @@ Built by [dash1101](https://github.com/dash1101) ·
 [rpc.novalabs.app](https://rpc.novalabs.app) ·
 [Discord](https://discord.gg/hcEWwSNDBa)
 
-<sub>An LLM was used to assist development and cut down on time. The design, the
-decisions and the testing on real hardware are dash1101's.</sub>
+<sub>An LLM was used to assist development and cut down on time. The design and the
+decisions are dash1101's, and changes are tested on real hardware before they ship.</sub>
