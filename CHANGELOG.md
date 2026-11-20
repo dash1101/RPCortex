@@ -42,6 +42,11 @@ Summary: The boot recovery ladder now works on hardware, and releases are number
 - `download` ended on the first key only sometimes: most keys were taken by its own Ctrl+C check and replayed at the next prompt (a `q` came back as `qls`). Commands and full-screen apps that read keys themselves now read them the same way the prompt does, so none go missing.
 - `compat` and `pkg certs` froze a Pico 2 W whose radio had not been switched on, until the watchdog restarted it. Checking the certificates needs the network stack, which starts with the radio; with the radio off they now say so instead.
 - `compat` warned "0 bytes free on the boot stack" on every board. It was measuring the wrong stack; it now reports the boot stack's real deepest point.
+- A file or directory name of 40 characters or more was silently dropped from a path, so the path meant its parent instead: `touch /tmp/<long name>` made a file called `/tmp`, and `rm -r /home/root/<long name>` would have removed the whole home directory. Long names are kept whole now, and a path too long to handle is refused with "Path too long".
+- `rm`, `mv` and `rename` refuse `/` and the system directories (`/os`, `/os/pkg`, `/etc`, `/home`, `/tmp`, `/usb`) themselves, even for root, and say how to empty one instead. `rm /tmp` used to delete it silently and break everything that writes there until a reboot. What is inside them can still be removed.
+- `mkdir` now asks the same permission question as every other command that writes.
+- `kill 1` said "It is the shell"; pid 1 is init, and the shell is told apart by what it is rather than by number.
+- Usage messages, and `logdump`'s own "lines dropped" note, no longer go into the 48-line log, where a few of them pushed out the boot and crash entries it is there to keep.
 - `df` no longer reports a failed measurement as a full disk. When littlefs cannot say how full it is, `df` says so and suggests `fscheck`, rather than printing "100% used" with no warning beside it.
 - Two tasks could be inside I2C transfers on the same block at once (the display flush and a PN532 exchange), which the SDK's transfer calls do not allow. Every transfer, and every change of bus speed, now takes a per-block lock.
 

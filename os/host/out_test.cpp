@@ -8,6 +8,7 @@
 // Run with -v to also print a rendered sample, for eyeballing colour choices.
 
 #include "out.h"
+#include "logring.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -57,6 +58,7 @@ static void emit_warn(void)  { out_warn("Careful"); }
 static void emit_info(void)  { out_info("Working"); }
 static void emit_fatal(void) { out_fatal("Gone"); }
 static void emit_okp(void)   { out_okp("WiFi", "Connected"); }
+static void emit_usage(void) { out_warn("Usage: thing <file>"); }
 static void emit_multi(void) { out_multi("plain %d", 7); }
 static void emit_multi_coloured(void) {
     out_multi("  %s%2u%s  %s", "\033[96m", 3u, "\033[0m", "novad1 gui --bg");
@@ -253,6 +255,18 @@ int main(int argc, char **argv) {
         out_okp("pkg", "Installed greet 1.0");
         out_multi("  Total : 480 KB");
         printf("\n");
+    }
+
+    // A warning goes into the log ring; a usage line does not. The ring holds
+    // 48 lines and a handful of usage messages used to push out boot entries.
+    {
+        uint32_t before = log_count();
+        capture(emit_warn, buf, sizeof(buf));
+        ck(log_count() == before + 1 || log_count() == LOG_LINES, "a warning is logged");
+        before = log_count();
+        capture(emit_usage, buf, sizeof(buf));
+        ck(log_count() == before, "a usage line is not logged");
+        ck(strstr(buf, "Usage: thing <file>") != nullptr, "but it is still printed");
     }
 
     printf("  out: %d checks, %d failed\n", checks, fails);

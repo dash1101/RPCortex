@@ -120,7 +120,9 @@ static int cmd_logdump(int argc, char **argv) {
     if (!log_count()) { out_multi("  (nothing logged yet)"); return 0; }
 
     if (log_dropped())
-        out_warn("%u earlier line%s dropped — the ring holds %u.",
+        // Printed, not logged: as a warning it went into the ring it describes,
+        // so every logdump pushed one more line out and the count kept rising.
+        out_multi("  %u earlier line%s dropped — the ring holds %u.",
                  (unsigned)log_dropped(), log_dropped() == 1 ? "" : "s",
                  (unsigned)LOG_LINES);
 

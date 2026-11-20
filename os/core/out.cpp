@@ -130,6 +130,11 @@ static void emit(const char *colour, const char *symbol, const char *p,
     if      (symbol[0] == '!') kind = LOG_K_ERR;
     else if (symbol[0] == '?') kind = LOG_K_WARN;
     else return;
+    // Nor a usage line. It says someone typed a command without what it needs,
+    // which they saw at the time and nobody reading the log later wants. The
+    // ring holds 48 lines, and a few of these were enough to push out the boot
+    // and crash entries it exists to keep.
+    if (!strncmp(msg, "Usage:", 6)) return;
 
     if (p) log_addf(kind, "[%s] %s", p, msg);
     else   log_add(kind, msg);
