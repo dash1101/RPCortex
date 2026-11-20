@@ -8,7 +8,7 @@ good notes is in `RELEASING.md`.
 
 ## Unreleased
 
-Summary: 
+Summary: SSH on the Pico 2 W, a fix every TCP server on the device needed, and how this build measures against the first release.
 
 ### New
 
@@ -17,6 +17,14 @@ Summary:
 
 ### Improved
 
+- Measured against v2.00-beta, the first release, on the same Pico 2 W with `tools/benchmark.py` (USB power, a clean boot with no packages, SSH off). Ping from a computer on the same network averages 1.1 ms where it was 94 ms (86x faster), and the worst of 40 is 2.4 ms where it was 363 ms. On battery, `wifi power auto` picks balanced, which measured about 150 ms.
+- Boot to a mounted filesystem takes 2.2 s, down from 3.2 s (30% faster).
+- Typing at the console sends back 2.7 bytes per key, down from 75 (96% less). It matters most on a UART console.
+- An HTTPS request (`curl -I https://github.com`) takes 1.26 s, down from 2.21 s (43% faster).
+- Copying a file to the board runs at 18 KB/s, up from 9.5 KB/s (89% faster). That compares link mode with typing through the old firmware's prompt, which is what a host tool gets from each.
+- 304 KB is free after boot, up from 295 KB (3% more), and the largest free block is 302 KB, up from 290 KB (4% more).
+- Installing Nova D1 1.7.1 from the repository, download included, takes 22.6 s, down from 23.7 s (5% faster). The CPU benchmark (`bench`) is 1% higher, within its noise.
+- Seven things that went wrong on v2.00-beta are now checked by the benchmark, and all of them work: `;` inside a script, `wc -l`, a looping script under `bg` (it restarted the board), a package's output through a pipe, a file name of 40 characters or more, `rm` of a system folder (it removed `/usb`), and `compat` with the radio off (it restarted the board).
 - `wifi power` shows the mode the chip reports beside the one that was set, so the two can be compared.
 
 ### Fixed
@@ -40,6 +48,7 @@ Summary:
 
 ### Known issues
 
+- The filesystem part of `bench` scores 108 against 120 on v2.00-beta (10% slower). v2.00-beta rebuilt from source scored 112 to 117 on the same board, and one firmware varies from 100 to 126 between boots, so part of the gap is the state of the filesystem, but it has not been traced.
 - For the first few seconds of traffic after joining a network, pings can average 60 to 80 ms whatever the power setting; the chip reports power saving off throughout, and it settles to about 1 ms.
 
 ## v2.02-beta (build 582), 2026-11-20

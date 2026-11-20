@@ -214,6 +214,13 @@ def cmd_run(a):
     res["ssh_server_was_on"] = ssh_was_on
     if ssh_was_on:
         run_cmd(port, dev, "ssh server off")
+    # Rejoining Wi-Fi at boot starts the radio and a join task before the
+    # memory is read; the first release's run had it off. Off here too.
+    dev, rc, t, _ = run_cmd(port, dev, "wifi auto")
+    auto_was_on = bool(re.search(r"Autoconnect\s*:\s*(true|on)", t))
+    res["wifi_auto_was_on"] = auto_was_on
+    if auto_was_on:
+        run_cmd(port, dev, "wifi auto off")
 
     log("clean state: no packages, then a restart")
     dev, rc, t, _ = run_cmd(port, dev, "pkg list")
@@ -309,6 +316,8 @@ def cmd_run(a):
     dev, rc, t, _ = run_cmd(port, dev, "wifi connect " + a.wifi, timeout=60)
     if ssh_was_on:
         dev, *_ = run_cmd(port, dev, "ssh server on")
+    if auto_was_on:
+        dev, *_ = run_cmd(port, dev, "wifi auto on")
     try:
         dev.close()
     except Exception:
