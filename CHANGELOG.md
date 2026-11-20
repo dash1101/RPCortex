@@ -17,6 +17,7 @@ Summary: SSH on the Pico 2 W, a fix every TCP server on the device needed, and h
 
 ### Improved
 
+- `wifi power` shows the mode the chip reports beside the one that was set, so the two can be compared.
 - Measured against v2.00-beta, the first release, on the same Pico 2 W with `tools/benchmark.py` (USB power, a clean boot with no packages, SSH off). Ping from a computer on the same network averages 1.1 ms where it was 94 ms (86x faster), and the worst of 40 is 2.4 ms where it was 363 ms. On battery, `wifi power auto` picks balanced, which measured about 150 ms.
 - Boot to a mounted filesystem takes 2.2 s, down from 3.2 s (30% faster).
 - Typing at the console sends back 2.7 bytes per key, down from 75 (96% less). It matters most on a UART console.
@@ -25,7 +26,6 @@ Summary: SSH on the Pico 2 W, a fix every TCP server on the device needed, and h
 - 304 KB is free after boot, up from 295 KB (3% more), and the largest free block is 302 KB, up from 290 KB (4% more).
 - Installing Nova D1 1.7.1 from the repository, download included, takes 22.6 s, down from 23.7 s (5% faster). The CPU benchmark (`bench`) is 1% higher, within its noise.
 - Seven things that went wrong on v2.00-beta are now checked by the benchmark, and all of them work: `;` inside a script, `wc -l`, a looping script under `bg` (it restarted the board), a package's output through a pipe, a file name of 40 characters or more, `rm` of a system folder (it removed `/usb`), and `compat` with the radio off (it restarted the board).
-- `wifi power` shows the mode the chip reports beside the one that was set, so the two can be compared.
 
 ### Fixed
 
@@ -44,7 +44,7 @@ Summary: SSH on the Pico 2 W, a fix every TCP server on the device needed, and h
 
 - Who a command runs as belongs to the task now, not to the console. A remote login's shell, and everything it starts, acts for that login's user, in its own working directory, with its own Ctrl+C; every other task follows whoever is signed in at the console, as before. So a guest logged in over SSH stays a guest while root is at the serial port, and a remote root does not make the console's guest an admin. `logout` in a remote session ends that session and leaves the console alone. Each task carries 160 bytes more for this (about 2 KB in all).
 - A full-screen app belongs to the terminal that opened it; one started on a second terminal while another is open is refused instead of drawing into the first.
-- These cost the Pico W 2.8 KB of slot (15.5 KB left), where SSH itself is not built.
+- The identity and security changes above cost the Pico W 2.8 KB of its slot (15.5 KB left); SSH itself is not built there.
 
 ### Known issues
 
