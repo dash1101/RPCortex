@@ -263,7 +263,9 @@ A Pico 2 W is sometimes attached over USB as `/dev/ttyACM*` (Linux),
   change per commit; the message says what was wrong, how it was found, what
   changed and how it was proven (numbers from the board where there are some).
 - **CHANGELOG:** a line under `## Unreleased`, written for a user, for anything
-  they would notice.
+  they would notice, under exactly one of New, Improved, Fixed, Security, Changed
+  or Known issues (RELEASING.md says what goes where). Every push of `main` to
+  GitHub is a release, cut with `tools/release.py cut --publish`.
 - **Public repository:** no machine-specific paths, no notes addressed to the
   maintainer, no scratch directories. Host tools take arguments with relative
   defaults.

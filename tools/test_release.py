@@ -92,19 +92,20 @@ class Notes(unittest.TestCase):
     def test_parse(self):
         n = r.parse_unreleased(LOG)
         self.assertEqual(n["summary"], "Faster boot, and a fix for a hang.")
-        self.assertEqual(n["added"], ["A thing that was added and wrapped onto a second line."])
+        # The fixture uses the names from before v2.01-beta, read as aliases.
+        self.assertEqual(n["new"], ["A thing that was added and wrapped onto a second line."])
         self.assertEqual(n["fixed"], ["A hang", "Another"])
-        self.assertEqual(n["limitations"], ["Something open"])
+        self.assertEqual(n["issues"], ["Something open"])
         self.assertEqual(n["changed"], [])
         self.assertEqual(r.check_notes(n), [])
     def test_an_empty_template_is_not_ready(self):
         empty = LOG.replace("Faster boot, and a fix for a hang.", "").replace("- A thing", "").replace("- A hang", "").replace("- Another", "")
         self.assertTrue(r.check_notes(r.parse_unreleased(empty)))
     def test_a_summary_with_nothing_listed_is_not_ready(self):
-        p = r.check_notes({"summary": "Something happened.", "added": [], "changed": [], "fixed": [], "limitations": ["open"]})
+        p = r.check_notes({"summary": "Something happened.", "new": [], "improved": [], "fixed": [], "security": [], "changed": [], "issues": ["open"]})
         self.assertTrue(any("nothing" in x for x in p))
     def test_a_placeholder_summary_is_not_ready(self):
-        self.assertTrue(r.check_notes({"summary": "[what changed]", "added": ["x"], "changed": [], "fixed": [], "limitations": []}))
+        self.assertTrue(r.check_notes({"summary": "[what changed]", "new": ["x"], "improved": [], "fixed": [], "security": [], "changed": [], "issues": []}))
     def test_roll_keeps_old_sections_and_adds_a_fresh_one(self):
         out = r.roll_changelog(LOG, "v2.00-beta (build 486) — 2026-10-30")
         self.assertEqual(out.count("## Unreleased"), 1)
@@ -117,6 +118,40 @@ class Notes(unittest.TestCase):
         body = r.render_notes(e, {"boards": [{"id": "pico2_w", "name": "Pico 2 W", "verified_build": 486}]})
         self.assertIn("### Fixed", body); self.assertIn("- A hang", body)
         self.assertIn("| Pico 2 W | `f.uf2` | 2 KB | yes, build 486 |", body)
+
+class Categories(unittest.TestCase):
+    STD = LOG.replace("### Added", "### New").replace("### Known limitations", "### Known issues")
+
+    def test_every_category_parses(self):
+        text = "## Unreleased\n\nSummary: Things.\n\n" + "".join(
+            "### %s\n\n- one %s\n\n" % (label, key) for key, label in r.SECTIONS)
+        n = r.parse_unreleased(text)
+        for key, _ in r.SECTIONS:
+            self.assertEqual(n[key], ["one " + key])
+        self.assertEqual(r.check_notes(n), [])
+
+    def test_a_heading_that_is_not_a_category_stops_the_release(self):
+        text = self.STD.replace("### Fixed", "### Fixed (unreleased)")
+        n = r.parse_unreleased(text)
+        self.assertTrue(any("not categories" in p for p in r.check_notes(n)))
+
+    def test_known_issues_alone_is_not_a_release(self):
+        n = r.parse_unreleased("## Unreleased\n\nSummary: Hm.\n\n### Known issues\n\n- open\n")
+        self.assertTrue(r.check_notes(n))
+
+    def test_the_fresh_section_has_every_category_in_order(self):
+        out = r.roll_changelog(self.STD, "v2.01-beta (build 600) - 2026-11-20")
+        fresh = out[out.index("## Unreleased"):out.index("## v2.01-beta")]
+        heads = [l[4:] for l in fresh.splitlines() if l.startswith("### ")]
+        self.assertEqual(heads, [label for _, label in r.SECTIONS])
+
+    def test_notes_render_in_category_order(self):
+        text = "## Unreleased\n\nSummary: S.\n\n### Fixed\n\n- f\n\n### Security\n\n- s\n\n### New\n\n- n\n"
+        n = r.parse_unreleased(text)
+        body = r.render_notes({"summary": "S.", "notes": n, "assets": []}, {"boards": []})
+        self.assertLess(body.index("### New"), body.index("### Fixed"))
+        self.assertLess(body.index("### Fixed"), body.index("### Security"))
+
 
 if __name__ == "__main__":
     unittest.main()

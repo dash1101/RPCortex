@@ -36,38 +36,59 @@ The version in `os/kernel/kernel.h` is the one the **next** release will carry. 
 beta|rc|final` changes the label (counting release candidates automatically), `bump iter` and `bump major
 "Name"` change the number, and cutting a release steps `kernel.h` to the following number by itself.
 
+## When a release is cut
+
+- **Every push of `main` to GitHub is a release.** Commit locally as the work happens, and when it
+  is time to publish, `tools/release.py cut --publish` builds, tags, pushes and creates the GitHub
+  release in one go. Nothing reaches `main` on GitHub without a version number of its own.
+- **An urgent fix goes out on its own**, straight away, as the next number. It is not held back
+  for other work that is not ready.
+- The number always goes up by one, whatever the release holds. The label says how finished the
+  line is: `-beta`, then `-rc` and `-rc2` and so on, then no label (see Versions above).
+- The `Summary:` line names the most important change first. A release with only Fixed and
+  Security entries is a fix release and its summary says so ("Fixes for ..."). One with New
+  entries leads with the biggest new thing.
+
 ## Writing the notes as the work happens
 
-`CHANGELOG.md` starts with an **Unreleased** section. Anything a person using the device or the
-website would notice goes in it when the change lands, not at release time:
+`CHANGELOG.md` starts with an **Unreleased** section. Anything a person using the device, a
+package author, or someone on the website would notice goes in it when the change lands, not at
+release time. Every entry goes under exactly one of six categories, always in this order:
 
 ```
 ## Unreleased
 
 Summary: One plain sentence on what this release is.
 
-### Added
-- A new thing, in words a user would use.
-
-### Changed
-- Something that now behaves differently.
-
+### New
+### Improved
 ### Fixed
-- What was wrong and what happens now.
-
-### Known limitations
-- Anything open that a reader would otherwise trip over.
+### Security
+### Changed
+### Known issues
 ```
+
+| Category | What goes in it | Example |
+|---|---|---|
+| **New** | Something that did not exist before: a command, a feature, a package API call, a supported board, a tool. | `link`: a mode for programs on a computer to run commands and move files. |
+| **Improved** | Something that already existed and now works better: faster, smaller, less memory, clearer messages, easier to use. Say by how much. | Packages are 7 to 19% smaller on disk (Nova D1 440 KB to 365 KB). |
+| **Fixed** | Something that was wrong. Say what was wrong and what is true now. | `wc -l file` said "No such file: -l". It counts lines now. |
+| **Security** | Anything about who can do what, or what is exposed: permission checks, accounts, passwords, network services, certificates. A security fix goes here, not under Fixed. | `mkdir` now asks the same permission question as every other command that writes. |
+| **Changed** | Something that now behaves differently in a way a person may need to act on: a renamed or removed command, a different default, a package API change, a new file layout. Anything that breaks existing use goes here, and says what to do. | `download` only runs at the prompt; in the background it never saw a key. |
+| **Known issues** | Open problems a reader would otherwise trip over, and anything that has not run on real hardware yet. | The Pico and Pico W images have not been booted on a board. |
 
 Guidelines for an entry:
 
 - One line, or two when it needs them. Say what a person sees, not how it was built.
 - Name the command or the screen: "`update check` no longer offers a build the device rolled back
   from", not "fixed the refused marker".
-- A fix says what was wrong and what is true now.
-- Anything that has not run on hardware says so, under Known limitations.
+- Use numbers when there are some (sizes, times, before and after).
+- Write it plainly, the way it would be said out loud. No dashes used as punctuation; use commas,
+  periods or parentheses.
 - The `Summary:` line becomes the headline of the release, so write it for someone who reads only
-  that line. A placeholder or an empty summary stops the release.
+  that line. A placeholder or an empty summary stops the release, and so does a heading that is
+  not one of the six categories (its entries would otherwise be left out).
+- The older names `Added` and `Known limitations` are still read, as New and Known issues.
 
 ## Cutting a release
 

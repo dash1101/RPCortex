@@ -51,8 +51,16 @@ RELEASES = os.path.join(ROOT, "releases")
 BOARDS = ("pico2_w", "pico_w", "pico2", "pico")
 RAW = "https://raw.githubusercontent.com/dash1101/RPCortex/main/releases/"
 REPO_URL = "https://github.com/dash1101/RPCortex"
-SECTIONS = (("added", "Added"), ("changed", "Changed"), ("fixed", "Fixed"),
-            ("limitations", "Known limitations"))
+# The release-note categories, in the order a release shows them. RELEASING.md
+# says what belongs in each. The names before v2.01-beta (Added, Known
+# limitations) are still read, into New and Known issues, so an older section or
+# a habit does not lose an entry.
+SECTIONS = (("new", "New"), ("improved", "Improved"), ("fixed", "Fixed"),
+            ("security", "Security"), ("changed", "Changed"), ("issues", "Known issues"))
+ALIASES = {"added": "new", "known limitations": "issues", "improvements": "improved",
+           "bug fixes": "fixed", "fixes": "fixed"}
+# Everything except Known issues is something that shipped.
+SHIPPED = ("new", "improved", "fixed", "security", "changed")
 
 
 # --- the version -------------------------------------------------------------
@@ -141,21 +149,26 @@ def write_version(v):
 # --- the changelog -----------------------------------------------------------
 
 def parse_unreleased(text):
-    """The Unreleased section as {summary, added, changed, fixed, limitations}."""
+    """The Unreleased section as {summary, and one list per key in SECTIONS}."""
     m = re.search(r"^## Unreleased[ \t]*\n(.*?)(?=^## |\Z)", text, re.S | re.M)
     if not m:
         raise SystemExit("CHANGELOG.md has no '## Unreleased' section")
     body = m.group(1)
-    out = {"summary": "", "added": [], "changed": [], "fixed": [], "limitations": []}
+    out = {"summary": ""}
+    for key, _ in SECTIONS:
+        out[key] = []
     sm = re.search(r"^Summary:[ \t]*(.+)$", body, re.M)
     if sm:
         out["summary"] = sm.group(1).strip()
     heads = {label.lower(): key for key, label in SECTIONS}
+    heads.update(ALIASES)
     cur = None
     for line in body.splitlines():
         h = re.match(r"^###\s+(.+?)\s*$", line)
         if h:
             cur = heads.get(h.group(1).lower())
+            if cur is None:
+                out.setdefault("_unknown_headings", []).append(h.group(1))
             continue
         b = re.match(r"^[-*]\s+(.*)$", line)
         if b and cur:
@@ -169,16 +182,20 @@ def check_notes(notes):
     problems = []
     if not notes["summary"] or "[" in notes["summary"]:
         problems.append("Unreleased has no 'Summary:' line (one plain sentence, no placeholders)")
-    if not any(notes[k] for k in ("added", "changed", "fixed")):
-        problems.append("Unreleased lists nothing under Added, Changed or Fixed")
+    if not any(notes[k] for k in SHIPPED):
+        problems.append("Unreleased lists nothing under New, Improved, Fixed, Security or Changed")
+    # A heading that is not one of the categories is not read at all, and its
+    # entries would silently miss the release.
+    stray = notes.get("_unknown_headings", [])
+    if stray:
+        problems.append("Unreleased has headings that are not categories: " + ", ".join(stray))
     return problems
 
 
 def roll_changelog(text, heading):
     """Turn Unreleased into a dated section and put a fresh, empty one above it."""
     m = re.search(r"^## Unreleased[ \t]*\n", text, re.M)
-    fresh = ("## Unreleased\n\nSummary: \n\n### Added\n\n### Changed\n\n### Fixed\n\n"
-             "### Known limitations\n\n")
+    fresh = "## Unreleased\n\nSummary: \n\n" + "".join("### %s\n\n" % label for _, label in SECTIONS)
     return text[:m.start()] + fresh + "## " + heading + "\n" + text[m.end():]
 
 
