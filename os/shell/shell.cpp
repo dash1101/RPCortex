@@ -788,6 +788,23 @@ uint32_t    shell_stdin_len(void) { return task_shell()->stdin_len; }
 // sudo sets task_shell()->elevated for the duration of one command. Not a
 // mode: it is put back the moment that command returns, so a sudo cannot leak
 // into the next thing typed.
+// The line with a user alias in front expanded, on the heap, or null when the
+// first word is not an alias (the usual case) or there is no memory.
+__attribute__((noinline)) static char *alias_expand(const char *seg) {
+    char first[UALIAS_NAME];
+    const char *sp = strchr(seg, ' ');
+    size_t flen = sp ? (size_t)(sp - seg) : strlen(seg);
+    if (flen >= sizeof(first)) return nullptr;
+    memcpy(first, seg, flen);
+    first[flen] = 0;
+    char repl[UALIAS_VALUE];
+    if (!cmd_ualias_get_copy(first, repl, sizeof(repl))) return nullptr;
+    size_t need = strlen(repl) + (sp ? strlen(sp) : 0) + 1;
+    char *out = (char *)malloc(need);
+    if (out) snprintf(out, need, "%s%s", repl, sp ? sp : "");
+    return out;
+}
+
 static int run_one(char *seg, bool *sudo_ran) {
     if (sudo_ran) *sudo_ran = false;
     // A user alias maps a name to a whole command line, so it is expanded into
@@ -796,19 +813,13 @@ static int run_one(char *seg, bool *sudo_ran) {
     //
     // One hop only. An alias naming itself is a configuration mistake, and
     // following it would need loop detection to be safe.
-    char expanded[192];
-    char first[UALIAS_NAME];
-    const char *sp = strchr(seg, ' ');
-    size_t flen = sp ? (size_t)(sp - seg) : strlen(seg);
-    if (flen < sizeof(first)) {
-        memcpy(first, seg, flen);
-        first[flen] = 0;
-        char repl[UALIAS_VALUE];
-        if (cmd_ualias_get_copy(first, repl, sizeof(repl))) {
-            snprintf(expanded, sizeof(expanded), "%s%s", repl, sp ? sp : "");
-            seg = expanded;
-        }
-    }
+    //
+    // The expanded line is on the heap, made by a helper that is not inlined:
+    // its buffers used to sit in this frame for as long as the command ran,
+    // and through link or a script this frame is on the stack twice.
+    char *aliased = alias_expand(seg);
+    struct FreeAlias { char *p; ~FreeAlias() { free(p); } } free_alias{aliased};
+    if (aliased) seg = aliased;
 
     char *raw[16];
     int n = cmdline_split_args(seg, raw, 16);
@@ -989,6 +1000,28 @@ static void shell_load_aliases(void) {
 }
 
 // Run one segment: its pipeline, then its redirect if it has one.
+// A redirect's file write, out of line so its path buffer is not in
+// run_segment's frame while the command runs.
+__attribute__((noinline)) static bool redirect_write(const char *outfile, bool append,
+                                                     bool sudo_stage, const char *data, uint32_t n) {
+    char path[128];
+    if (!path_resolve(fs_cwd(), outfile, path, sizeof(path))) {
+        out_err("Cannot write to '%s': the path is too long.", outfile);
+        return false;
+    }
+    // `sudo echo x > /etc/f` writes /etc/f with that sudo. (A shell on a
+    // computer would not, and everybody trips on it once.)
+    TaskShell *ts = task_shell();
+    bool was = ts->elevated;
+    if (sudo_stage) ts->elevated = true;
+    bool ok = fs_allow_change(path) &&
+              (append ? storage_append_file(path, (const uint8_t *)data, n)
+                      : storage_write_file(path, (const uint8_t *)data, n));
+    if (!ok && fs_may_change(path)) out_err("Could not write %s.", path);
+    ts->elevated = was;
+    return ok;
+}
+
 static int run_segment(char *seg) {
     bool append = false;
     char *outfile = cmdline_split_redirect(seg, &append);
@@ -1041,17 +1074,7 @@ static int run_segment(char *seg) {
             if (out_capture_overflowed())
                 out_warn("Output truncated at %u bytes.", (unsigned)(PIPE_BUF - 1));
             if (last && outfile) {
-                char path[128];
-                path_resolve(fs_cwd(), outfile, path, sizeof(path));
-                // `sudo echo x > /etc/f` writes /etc/f with that sudo. (A shell
-                // on a computer would not, and everybody trips on it once.)
-                bool was = ts->elevated;
-                if (sudo_stage) ts->elevated = true;
-                bool ok = fs_allow_change(path) &&
-                          (append ? storage_append_file(path, (const uint8_t *)buf_a, n)
-                                  : storage_write_file(path, (const uint8_t *)buf_a, n));
-                if (!ok) { if (fs_may_change(path)) out_err("Could not write %s.", path); status = 1; }
-                ts->elevated = was;
+                if (!redirect_write(outfile, append, sudo_stage, buf_a, n)) status = 1;
             } else {
                 // Hand this stage's output to the next as its input. The buffers
                 // swap rather than copy: the next stage captures into the other
