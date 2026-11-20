@@ -31,6 +31,18 @@
 static const char *kDirs[] = { "/os", "/os/pkg", "/etc", "/home", "/tmp", "/usb" };
 #define N_DIRS (sizeof(kDirs) / sizeof(kDirs[0]))
 
+// The root and the directories above: the ones boot makes, and the ones the
+// shell refuses to remove or move even for root. Their contents are fair game.
+bool fs_is_layout_dir(const char *abs) {
+    if (!abs || !abs[0]) return true;                 // "" is the root to littlefs
+    size_t n = strlen(abs);
+    while (n > 1 && abs[n - 1] == '/') n--;          // "/tmp/" is "/tmp"
+    if (n == 1 && abs[0] == '/') return true;
+    for (unsigned i = 0; i < N_DIRS; i++)
+        if (strlen(kDirs[i]) == n && !strncmp(kDirs[i], abs, n)) return true;
+    return false;
+}
+
 // Make a directory if it is not already there. Returns true if it had to be
 // created, so the caller can report what was missing rather than listing
 // everything it checked.

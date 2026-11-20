@@ -26,18 +26,23 @@ const char *fs_cwd(void) { return g_cwd; }
 
 // Path resolution now lives in core/path.cpp (path_resolve), so it can be
 // host-tested away from littlefs. This wrapper binds it to the shell's cwd.
-static void resolve(const char *in, char *out, size_t cap) {
-    path_resolve(g_cwd, in, out, cap);
+//
+// False, after saying so, when the path is too long to resolve; callers stop
+// there. (It used to drop a long name and return a shorter path that existed.)
+static bool resolve(const char *in, char *out, size_t cap) {
+    if (path_resolve(g_cwd, in, out, cap)) return true;
+    out_err("Path too long: %.48s...", in ? in : "");
+    return false;
 }
 
 // Resolve a path the command is about to READ, or CHANGE, and say no if this
 // session may not. Both return false after printing the reason.
 static bool resolve_read(const char *in, char *out, size_t cap) {
-    resolve(in, out, cap);
+    if (!resolve(in, out, cap)) return false;
     return fs_allow_read(out);
 }
 static bool resolve_change(const char *in, char *out, size_t cap) {
-    resolve(in, out, cap);
+    if (!resolve(in, out, cap)) return false;
     return fs_allow_change(out);
 }
 
@@ -46,7 +51,7 @@ static int cmd_pwd(int, char **) { out_multi("%s", g_cwd); return 0; }
 static int cmd_cd(int argc, char **argv) {
     const char *arg = (argc >= 2) ? argv[1] : "/";
     char path[128];
-    resolve(arg, path, sizeof(path));
+    if (!resolve(arg, path, sizeof(path))) return 1;
     bool is_dir = false;
     if (!storage_stat(path, &is_dir, nullptr)) { out_err("No such path: %s", path); return 1; }
     if (!is_dir) { out_err("Not a directory: %s", path); return 1; }
@@ -96,7 +101,7 @@ static void ls_cb(void *ctx, const char *name, bool is_dir, uint32_t size) {
 
 static int cmd_ls(int argc, char **argv) {
     char path[128];
-    resolve(argc >= 2 ? argv[1] : ".", path, sizeof(path));
+    if (!resolve(argc >= 2 ? argv[1] : ".", path, sizeof(path))) return 1;
 
     bool is_dir = false;
     if (!storage_stat(path, &is_dir, nullptr)) { out_err("Cannot list directory '%s'", path); return 1; }
@@ -167,7 +172,9 @@ static int cmd_cat(int argc, char **argv) {
 
 static int cmd_mkdir(int argc, char **argv) {
     if (argc < 2) { out_multi("Usage: mkdir <dir>"); return 1; }
-    char path[128]; resolve(argv[1], path, sizeof(path));
+    // resolve_change, like every other command that writes: it used plain
+    // resolve, so a guest could make directories inside protected ones.
+    char path[128]; if (!resolve_change(argv[1], path, sizeof(path))) return 1;
     if (!storage_mkdir(path)) { out_err("Could not create %s", path); return 1; }
     return 0;
 }
@@ -241,12 +248,38 @@ static size_t rm_push(const char *name) {
     return was;
 }
 
-struct RmMatch { const char *pat; char name[64]; bool found; };
+// THE LAYOUT DIRECTORIES STAY. `/`, /os, /os/pkg, /etc, /home, /tmp and /usb
+// are what everything else writes into. `rm /tmp` (an empty directory, so no
+// -r needed) went through silently on a Pico 2 W, and every later write to
+// /tmp failed until a reboot recreated it; `rm -r /os` would have taken every
+// account and package, the job factoryreset does behind a password. Like
+// GNU rm's --preserve-root, the directory itself is refused and what is in it
+// is not.
+bool fs_is_layout_dir(const char *abs);
+
+static bool keep_layout(const char *abs, const char *verb) {
+    if (!fs_is_layout_dir(abs)) return false;
+    bool root = !strcmp(abs, "/");
+    out_err("'%s' is a system directory and cannot be %s.", abs, verb);
+    if (!strcmp(verb, "removed"))
+        out_multi("  To empty it instead: rm -r %s/*", root ? "" : abs);
+    return true;
+}
+
+struct RmMatch { const char *pat; const char *dir; char name[64]; bool found; unsigned kept; };
 
 static void rm_match_cb(void *ctx, const char *name, bool is_dir, uint32_t) {
     RmMatch *m = (RmMatch *)ctx;
-    (void)is_dir;
     if (m->found || !glob_match(m->pat, name)) return;
+    // A layout directory caught by a pattern (`rm /*`) is passed over here, in
+    // the match, rather than refused after it: the loop takes one match at a
+    // time, and a match that is never removed would be found again forever.
+    if (is_dir) {
+        char full[96];
+        snprintf(full, sizeof(full), "%s%s%s", m->dir,
+                 m->dir[strlen(m->dir) - 1] == '/' ? "" : "/", name);
+        if (fs_is_layout_dir(full)) { m->kept++; return; }
+    }
     snprintf(m->name, sizeof(m->name), "%s", name);
     m->found = true;
 }
@@ -333,6 +366,7 @@ static int cmd_rm(int argc, char **argv) {
         char full[160];
         if (!resolve_change(joined, full, sizeof(full))) return 1;
         if (storage_stat(full, nullptr, nullptr)) {
+            if (keep_layout(full, "removed")) return 1;
             if (!storage_remove(full)) { rm_explain(full); return 1; }
             return 0;
         }
@@ -375,16 +409,19 @@ static int cmd_rm(int argc, char **argv) {
             // One match at a time, for the same reason rm_tree takes one entry
             // at a time: nothing is removed from inside a walk, and no list is
             // held on the stack.
-            unsigned removed = 0;
+            unsigned removed = 0, kept = 0;
             for (;;) {
                 RmMatch m;
                 m.pat = pat;
+                m.dir = path;
                 m.found = false;
+                m.kept = 0;
                 if (!storage_walk(path, rm_match_cb, &m)) {
                     out_err("Cannot read '%s'.", path);
                     failed++;
                     break;
                 }
+                kept = m.kept;               // the same ones every pass
                 if (!m.found) break;
 
                 char child[RM_PATH_MAX];
@@ -396,11 +433,14 @@ static int cmd_rm(int argc, char **argv) {
                 if (!rm_at(child, &removed)) { rm_explain(child); failed++; break; }
                 if (intr_check()) break;
             }
-            if (!removed && !failed) out_multi("Nothing matched '%s'.", pat);
+            if (kept) out_multi("Kept %u system director%s.", kept, kept == 1 ? "y" : "ies");
+            if (!removed && !failed && !kept) out_multi("Nothing matched '%s'.", pat);
             else if (removed) out_multi("Removed %u item%s.", removed,
                                         removed == 1 ? "" : "s");
             continue;
         }
+
+        if (keep_layout(path, "removed")) { failed++; continue; }
 
         if (recurse) {
             unsigned removed = 0;
@@ -418,6 +458,7 @@ static int cmd_mv(int argc, char **argv) {
     if (argc < 3) { out_multi("Usage: mv <from> <to>"); return 1; }
     char a[128], b[128];
     if (!resolve_change(argv[1], a, sizeof(a)) || !resolve_change(argv[2], b, sizeof(b))) return 1;
+    if (keep_layout(a, "moved")) return 1;
     if (!storage_rename(a, b)) { out_err("Could not move %s", a); return 1; }
     return 0;
 }
@@ -499,7 +540,7 @@ static void tree_walk(const char *base, const char *prefix, int depth) {
 
 static int cmd_tree(int argc, char **argv) {
     char path[128];
-    resolve(argc >= 2 ? argv[1] : ".", path, sizeof(path));
+    if (!resolve(argc >= 2 ? argv[1] : ".", path, sizeof(path))) return 1;
     bool is_dir = false;
     if (!storage_stat(path, &is_dir, nullptr)) { out_err("No such path: %s", path); return 1; }
     out_multi("%s%s%s", C_BLUE, path, C_RESET);
@@ -519,6 +560,7 @@ static int cmd_rename(int argc, char **argv) {
     }
     char from[128];
     if (!resolve_change(argv[1], from, sizeof(from))) return 1;
+    if (keep_layout(from, "renamed")) return 1;
     char to[128];
     const char *slash = strrchr(from, '/');
     int dirlen = slash ? (int)(slash - from) : 0;
@@ -635,7 +677,7 @@ bool fs_rmtree(const char *path, int depth) {
 
 static int cmd_du(int argc, char **argv) {
     char path[128];
-    resolve(argc >= 2 ? argv[1] : ".", path, sizeof(path));
+    if (!resolve(argc >= 2 ? argv[1] : ".", path, sizeof(path))) return 1;
     bool is_dir = false; uint32_t size = 0;
     if (!storage_stat(path, &is_dir, &size)) { out_err("'%s' does not exist.", path); return 1; }
 
