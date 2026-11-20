@@ -727,9 +727,18 @@ function(rpc_add_app name)
         # discovered as a wall of template errors in a harness nobody had run
         # yet. Refused here instead, naming both files.
         COMMAND ${CMAKE_COMMAND} -E env python3 ${OS_ROOT}/tools_checkuniq.py
+        # Then make it smaller (tools_packapp.py has the detail): names the
+        # loader never reads are dropped, 18% of Nova D1. The full object stays
+        # beside it as <name>.dbg, for objdump and addr2line.
+        COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_BINARY_DIR}/apps/${name}.app
+                ${CMAKE_BINARY_DIR}/apps/${name}.dbg
+        COMMAND ${CMAKE_COMMAND} -E env python3 ${OS_ROOT}/tools_packapp.py
+                ${CMAKE_BINARY_DIR}/apps/${name}.dbg
+                ${CMAKE_BINARY_DIR}/apps/${name}.app
+                ${CMAKE_OBJCOPY}
         DEPENDS ${app_srcs} ${OS_ROOT}/include/rpc_app.h
                 ${OS_ROOT}/api.cpp ${OS_ROOT}/tools_checkapp.py
-                ${OS_ROOT}/tools_checkuniq.py
+                ${OS_ROOT}/tools_checkuniq.py ${OS_ROOT}/tools_packapp.py
         VERBATIM)
     add_custom_target(app_${name} ALL DEPENDS ${CMAKE_BINARY_DIR}/apps/${name}.app)
 endfunction()
