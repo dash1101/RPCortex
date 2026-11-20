@@ -57,7 +57,8 @@ static bool host_prompt(void *, const char *msg, char *outp, uint32_t cap) {
 
 static bool host_exists(void *, const char *p) {
     char full[128];
-    path_resolve(fs_cwd(), p, full, sizeof(full));
+    // "" would be the root, which always exists.
+    if (!path_resolve(fs_cwd(), p, full, sizeof(full))) return false;
     bool is_dir = false;
     return storage_stat(full, &is_dir, nullptr);
 }

@@ -26,7 +26,7 @@ static const char kDir[] = "/os";
 static bool canon(const char *path, char *out) {
     char tmp[CANON_MAX];
     if (strlen(path) >= CANON_MAX) return false;
-    path_resolve("/", path, tmp, sizeof(tmp));
+    if (!path_resolve("/", path, tmp, sizeof(tmp))) return false;
     size_t n = strlen(tmp);
     while (n > 1 && tmp[n - 1] == '/') tmp[--n] = 0;
     for (size_t i = 0; i <= n; i++)

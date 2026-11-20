@@ -110,8 +110,9 @@ void out_ok  (const char *, ...) {}
 void out_warn(const char *, ...) {}
 void out_err (const char *, ...) {}
 void out_multi(const char *, ...) {}
-void path_resolve(const char *, const char *in, char *out, size_t cap) {
+bool path_resolve(const char *, const char *in, char *out, size_t cap) {
     snprintf(out, cap, "%s", in);
+    return true;
 }
 bool cmd_register(const Command *) { return true; }
 void task_sleep_ms(uint32_t) {}

@@ -227,7 +227,7 @@ static bool shell_complete(void *, const char *prefix, uint32_t word_start,
             if (n >= sizeof(head)) n = sizeof(head) - 1;
             memcpy(head, prefix, n); head[n] = 0;
         }
-        path_resolve(fs_cwd(), head, dir, sizeof(dir));
+        if (!path_resolve(fs_cwd(), head, dir, sizeof(dir))) return false;
         w.prefix = slash + 1;
     } else {
         snprintf(dir, sizeof(dir), "%s", fs_cwd());

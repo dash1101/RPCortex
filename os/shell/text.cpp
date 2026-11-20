@@ -241,7 +241,10 @@ static void find_walk(const char *base, const char *needle, int depth) {
 static int cmd_find(int argc, char **argv) {
     if (argc < 2) { out_multi("Usage: find <name> [path]"); return 1; }
     char base[128];
-    path_resolve(fs_cwd(), argc >= 3 ? argv[2] : ".", base, sizeof(base));
+    if (!path_resolve(fs_cwd(), argc >= 3 ? argv[2] : ".", base, sizeof(base))) {
+        out_err("Path too long.");     // and not "", which is the whole filesystem
+        return 1;
+    }
     find_walk(base, argv[1], 0);
     return 0;
 }

@@ -660,7 +660,13 @@ bool storage_mkdir(const char *path) {
     return true;
 }
 
+// An empty path is the root to littlefs. Nothing that means to remove or move
+// something names it that way; a caller that got "" from a failed path_resolve
+// does. Refused here as the last line behind the shell's own checks.
+static bool empty_path(const char *p) { return !p || !p[0]; }
+
 bool storage_remove(const char *path) {
+    if (empty_path(path)) return false;
     if (SD_ROUTE(path)) return false;
     LockGuard _fs(&g_fs_lock);
     if (!g_mounted || lfs_remove(&g_lfs, path) < 0) return false;
@@ -669,6 +675,7 @@ bool storage_remove(const char *path) {
 }
 
 bool storage_rename(const char *from, const char *to) {
+    if (empty_path(from) || empty_path(to)) return false;
     if (SD_ROUTE(from) || SD_ROUTE(to)) return false;
     LockGuard _fs(&g_fs_lock);
     // No touch(): littlefs carries the attributes across, and mv changes a name
