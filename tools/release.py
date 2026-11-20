@@ -395,8 +395,8 @@ def cmd_cut(a):
     hist = load_json(hist_path, {"schema": 1, "releases": []})
     hist["releases"] = [r for r in hist["releases"] if r["tag"] != tag]
     hist["releases"].insert(0, entry)
-    heading = ("%s (build %s) — %s" % (display(v), build, date)) if v["suffix"] \
-        else ("%s — %s" % (display(v), date))
+    heading = ("%s (build %s), %s" % (display(v), build, date)) if v["suffix"] \
+        else ("%s, %s" % (display(v), date))
     plan("CHANGELOG.md: Unreleased becomes '## %s'" % heading, dry)
     plan("releases/releases.json: add %s (the sites read this)" % tag, dry)
 
