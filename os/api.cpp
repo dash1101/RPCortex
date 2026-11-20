@@ -114,7 +114,35 @@ extern "C" int fw_printf(const char *fmt, ...) {
     // one pointer the ABI still follows unchecked.
     if (!ok_s(fmt)) return -1;
     va_list ap; va_start(ap, fmt);
-    int n = vprintf(fmt, ap); va_end(ap);
+    // INTO THE CAPTURE when there is one. This went straight to vprintf, past
+    // the output layer, so a package command's output could not be piped or
+    // redirected (`greet | wc` counted nothing), and fw_shell_run and link's
+    // EXEC got none of it: `novad1 shot` run through link came back empty while
+    // the picture went to the console. On the console it is unchanged, so a
+    // full-screen package draws exactly as fast as before.
+    if (!out_capturing()) {
+        int n = vprintf(fmt, ap);
+        va_end(ap);
+        return n;
+    }
+    va_list ap2;
+    va_copy(ap2, ap);
+    char small[256];
+    int n = vsnprintf(small, sizeof(small), fmt, ap);
+    va_end(ap);
+    if (n >= 0 && (size_t)n < sizeof(small)) {
+        out_write(small, (uint32_t)n);
+    } else if (n >= 0) {
+        char *big = (char *)malloc((size_t)n + 1);
+        if (big) {
+            vsnprintf(big, (size_t)n + 1, fmt, ap2);
+            out_write(big, (uint32_t)n);
+            free(big);
+        } else {
+            out_write(small, sizeof(small) - 1);   // the first part, rather than nothing
+        }
+    }
+    va_end(ap2);
     return n;
 }
 extern "C" uint32_t fw_millis(void) { bb_note_phase("entered fw_millis"); task_alive(); return (uint32_t)(time_us_64() / 1000u); }
