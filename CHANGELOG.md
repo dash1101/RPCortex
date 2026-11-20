@@ -8,6 +8,22 @@ good notes is in `RELEASING.md`.
 
 ## Unreleased
 
+Summary: 
+
+### New
+
+### Improved
+
+### Fixed
+
+### Security
+
+### Changed
+
+### Known issues
+
+## v2.01-beta (build 578), 2026-11-20
+
 Summary: The first Vela II update: tools to drive a board from a computer, Wi-Fi that answers in about a millisecond, smaller packages, and a long list of fixes found by testing on a real Pico 2 W.
 
 ### New
