@@ -14,7 +14,10 @@
 //               channel open, requests, data, window — called on a session
 //               forced past the key exchange, authenticated or not
 //   client      the same for the client's parsers
-//   keys        authorized_keys and known_hosts text
+//   keys        authorized_keys and known_hosts text, ECDSA and Ed25519 lines
+//   ed25519     an Ed25519 key and signature blob made by OpenSSH, and an
+//               ssh-ed25519 login request signed by RFC 8032's own code:
+//               damage to either must never be accepted
 //
 // Deterministic; RPC_FUZZ_SEED and RPC_FUZZ_ITERS as for fuzz_test.
 #include "sshserver.h"
@@ -28,7 +31,17 @@
 #include <unistd.h>
 #include <vector>
 
+#include "ssh_vectors.inc"
+
 typedef std::vector<uint8_t> Bytes;
+
+static uint32_t unhex(const char *h, uint8_t *out, uint32_t cap) {
+    uint32_t n = 0;
+    for (; h[0] && h[1] && n < cap; h += 2) {
+        unsigned v; sscanf(h, "%2x", &v); out[n++] = (uint8_t)v;
+    }
+    return n;
+}
 
 extern "C" int mbedtls_hardware_poll(void *, unsigned char *out, size_t len, size_t *olen) {
     static int fd = -1;
@@ -94,8 +107,12 @@ static SshHostKey g_hk, g_uk;
 
 static bool user_ok(void *, const char *u) { return !strcmp(u, "alice"); }
 static bool password(void *, const char *, const char *pw) { return !strcmp(pw, "pw"); }
+// alice's keys: the device-made ECDSA one, and the Ed25519 one the signed
+// login seed uses, so a request with either reaches the signature check.
 static bool pubkey(void *, const char *, const uint8_t *b, uint32_t n) {
     uint8_t blob[160]; uint32_t bn = ssh_hostkey_blob(&g_uk, blob, sizeof(blob));
+    if (n == bn && !memcmp(b, blob, n)) return true;
+    bn = unhex(kED_UA_BLOB, blob, sizeof(blob));
     return n == bn && !memcmp(b, blob, n);
 }
 static uint32_t g_delivered;
@@ -216,6 +233,11 @@ static std::vector<Bytes> server_seeds() {
     b.push_back(1); putc_(b, "ecdsa-sha2-nistp256"); putstr(b, blob, bn); putstr(b, sig, sn); v.push_back(b);
     b = { SSH_MSG_USERAUTH_REQUEST }; putc_(b, "alice"); putc_(b, "ssh-connection"); putc_(b, "publickey");
     b.push_back(0); putc_(b, "rsa-sha2-256"); putstr(b, blob, bn); v.push_back(b);
+    // The Ed25519 query form, which ends in PK_OK. (The signed form runs a
+    // verify per input and has its own, shorter, target below.)
+    uint8_t eb[64]; uint32_t ebn = unhex(kED_UA_BLOB, eb, sizeof(eb));
+    b = { SSH_MSG_USERAUTH_REQUEST }; putc_(b, "alice"); putc_(b, "ssh-connection"); putc_(b, "publickey");
+    b.push_back(0); putc_(b, "ssh-ed25519"); putstr(b, eb, ebn); v.push_back(b);
     b = { SSH_MSG_CHANNEL_OPEN }; putc_(b, "session"); put32(b, 0); put32(b, 1 << 20); put32(b, 32768); v.push_back(b);
     b = { SSH_MSG_CHANNEL_OPEN }; putc_(b, "direct-tcpip"); put32(b, 1); put32(b, 100); put32(b, 100); v.push_back(b);
     b = { SSH_MSG_CHANNEL_REQUEST }; put32(b, 0); putc_(b, "pty-req"); b.push_back(1); putc_(b, "xterm");
@@ -340,6 +362,78 @@ static void fuzz_keys(uint32_t iters) {
         SshKnown v = ssh_known_hosts_check((const char *)k.data(), (uint32_t)k.size(), "host", 2222, blob, bn);
         ck(v == SSH_KH_UNKNOWN || v == SSH_KH_MATCH || v == SSH_KH_CHANGED, "known_hosts verdict", it);
     }
+
+    // The same for an ssh-ed25519 line as ssh-keygen writes it, behind an
+    // ECDSA line so the parser has to get past one to reach the other.
+    uint8_t ed[64]; uint32_t edn = unhex(kED_KEY, ed, sizeof(ed));
+    char edtext[600];
+    int el = snprintf(edtext, sizeof(edtext), "%s\nssh-ed25519 %s fixture\n", line, kED_LINE);
+    Bytes ek((const uint8_t *)edtext, (const uint8_t *)edtext + el);
+    char edb64[100];
+    snprintf(edb64, sizeof(edb64), "%.*s", (int)strlen(kED_LINE) - 3, kED_LINE);
+    for (uint32_t it = 0; it < iters; it++) {
+        Bytes a = ek; mutate(a, 1024);
+        if (!ssh_authkeys_match((const char *)a.data(), (uint32_t)a.size(), ed, edn)) continue;
+        // Searched for as bytes: damage to the ECDSA line in front may have
+        // put a NUL there, which the parser reads past and strstr would not.
+        const char *base = (const char *)a.data();
+        const char *at = (const char *)memmem(base, a.size(), edb64, strlen(edb64));
+        const char *w = at;
+        while (w && w > base && (w[-1] == ' ' || w[-1] == '\t')) w--;
+        bool good = at != nullptr && w < at && w - base >= 11 && !memcmp(w - 11, "ssh-ed25519", 11);
+        ck(good, "an Ed25519 match only with its base64 behind ssh-ed25519", it);
+    }
+}
+
+// --- Ed25519 signatures and logins -----------------------------------------------------
+//
+// A verify is tens of milliseconds under the sanitizers, so these run a
+// fiftieth of the iterations, like the targets that run a key exchange; about
+// a quarter of the damaged inputs still parse far enough to reach the verify.
+// Both promises are the same: whatever is accepted is exactly what was signed.
+
+static void fuzz_ed25519(uint32_t iters) {
+    uint8_t k[64], s[128], d[128];
+    uint32_t kn = unhex(kED_KEY, k, sizeof(k)), sn = unhex(kED_SIG, s, sizeof(s));
+    uint32_t dn = unhex(kED_DATA, d, sizeof(d));
+    // A target that never accepts anything proves nothing about what it accepts.
+    ck(ssh_sig_verify(k, kn, s, sn, d, dn, "ssh-ed25519"), "the Ed25519 seed verifies", 0);
+    const Bytes K(k, k + kn), S(s, s + sn), D(d, d + dn);
+    for (uint32_t it = 0; it < iters; it++) {
+        Bytes k2 = K, s2 = S, d2 = D;
+        switch (below(3)) {
+        case 0:  mutate(k2, 256); break;
+        case 1:  mutate(s2, 256); break;
+        default: mutate(d2, 256); break;
+        }
+        bool ok = ssh_sig_verify(k2.data(), (uint32_t)k2.size(), s2.data(), (uint32_t)s2.size(),
+                                 d2.data(), (uint32_t)d2.size(), "ssh-ed25519");
+        ck(!ok || (k2 == K && s2 == S && d2 == D), "an Ed25519 signature verifies only as it was made", it);
+    }
+
+    // A signed ssh-ed25519 userauth request (ssh_vectors.inc), delivered to a
+    // server whose session id is the one it was signed for.
+    uint8_t blob[64], sig[128];
+    uint32_t bn = unhex(kED_UA_BLOB, blob, sizeof(blob)), usn = unhex(kED_UA_SIG, sig, sizeof(sig));
+    Bytes req;
+    putc_(req, "alice"); putc_(req, "ssh-connection"); putc_(req, "publickey");
+    req.push_back(1); putc_(req, "ssh-ed25519"); putstr(req, blob, bn); putstr(req, sig, usn);
+    for (uint32_t it = 0; it <= iters; it++) {
+        Bytes m = req;
+        if (it) mutate(m, 1024);            // the first one as it was signed
+        SshServer t;
+        ssh_srv_init(&t, &g_hk, &kOps, nullptr);
+        t.c.state = SSH_ST_OPEN;
+        t.c.first_kex_done = true;
+        t.c.have_session_id = true;
+        for (int i = 0; i < 32; i++) t.c.session_id[i] = (uint8_t)i;
+        t.service_ok = true;
+        SshR r; sshr_init(&r, m.data(), (uint32_t)m.size());
+        t.c.dispatch(&t.c, SSH_MSG_USERAUTH_REQUEST, &r);
+        if (!it) ck(t.authed, "the signed Ed25519 request logs in", it);
+        else     ck(!t.authed || m == req, "an Ed25519 login only from the request as signed", it);
+        ssh_srv_free(&t);
+    }
 }
 
 int main(void) {
@@ -355,6 +449,7 @@ int main(void) {
     fuzz_server(iters);
     fuzz_client(iters);
     fuzz_keys(iters);
+    fuzz_ed25519(iters / 50 ? iters / 50 : 1);
     printf("  ssh fuzz: %d checks, %d failed\n", checks, fails);
     return fails ? 1 : 0;
 }

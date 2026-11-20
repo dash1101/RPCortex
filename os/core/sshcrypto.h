@@ -1,7 +1,8 @@
 // The cryptography SSH needs, as a thin layer over mbedTLS.
 //
-// Nothing here is new cryptography: every primitive is mbedTLS's own. What this
-// layer adds is the SSH-specific glue around them, which is where the
+// Nothing here is new cryptography: every primitive is mbedTLS's own, apart
+// from Ed25519 verification, which mbedTLS does not have and which comes from
+// TweetNaCl (ed25519.cpp). What this layer adds is the SSH-specific glue around them, which is where the
 // interoperability bugs live — byte order of a Curve25519 secret, which bytes a
 // GCM tag authenticates, how a key longer than one hash output is extended — so
 // each of those is one function with one comment saying which document it
@@ -116,16 +117,16 @@ uint32_t ssh_hostkey_sign(const SshHostKey *k, const uint8_t *data, uint32_t n,
 // --- verifying somebody else's signature -------------------------------------------
 
 // Is `sig` a valid signature over `data` by the key in `keyblob`? `alg` is the
-// signature algorithm the protocol said would be used — "ecdsa-sha2-nistp256",
-// "rsa-sha2-256" or "rsa-sha2-512" — and the blob must name the same one, so a
-// peer cannot ask for one algorithm and sign with another. RSA keys below 2048
-// bits are refused, and so is plain "ssh-rsa" (SHA-1).
+// signature algorithm the protocol said would be used ("ecdsa-sha2-nistp256",
+// "rsa-sha2-256", "rsa-sha2-512" or "ssh-ed25519"), and the blob must name the
+// same one, so a peer cannot ask for one algorithm and sign with another. RSA
+// keys below 2048 bits are refused, and so is plain "ssh-rsa" (SHA-1).
 bool ssh_sig_verify(const uint8_t *keyblob, uint32_t kn, const uint8_t *sig, uint32_t sn,
                     const uint8_t *data, uint32_t dn, const char *alg);
 
 // Which public key algorithms a key blob may be used with. Writes the key type
-// ("ssh-rsa", "ecdsa-sha2-nistp256") and returns false for anything this does
-// not support.
+// ("ssh-rsa", "ecdsa-sha2-nistp256", "ssh-ed25519") and returns false for
+// anything this does not support.
 bool ssh_key_type(const uint8_t *keyblob, uint32_t kn, char *out, uint32_t cap);
 
 // "SHA256:" and the unpadded base64 of the SHA-256 of the blob — byte for byte

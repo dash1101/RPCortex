@@ -102,7 +102,8 @@ static void on_userauth(SshServer *s, SshR *r) {
         char type[24];
         bool alg_ok = ssh_key_type(blob, bn, type, sizeof(type)) &&
             ((!strcmp(type, "ecdsa-sha2-nistp256") && !strcmp(alg, "ecdsa-sha2-nistp256")) ||
-             (!strcmp(type, "ssh-rsa") && (!strcmp(alg, "rsa-sha2-256") || !strcmp(alg, "rsa-sha2-512"))));
+             (!strcmp(type, "ssh-rsa") && (!strcmp(alg, "rsa-sha2-256") || !strcmp(alg, "rsa-sha2-512"))) ||
+             (!strcmp(type, "ssh-ed25519") && !strcmp(alg, "ssh-ed25519")));
         bool listed = alg_ok && user_valid && s->ops->pubkey && s->ops->pubkey(s->ctx, user, blob, bn);
         if (!listed) { refused(s, user, "publickey", false); return; }
         if (!has_sig) {
@@ -127,6 +128,11 @@ static void on_userauth(SshServer *s, SshR *r) {
         sshw_bool(&w, true);
         sshw_cstr(&w, alg);
         sshw_string(&w, blob, bn);
+        // An ssh-ed25519 check is the slow one, about half a second on a Pico
+        // 2 W (ed25519.cpp), and it runs on the server's task without yielding;
+        // the stall guard's first warning is at 3 s. Only a key the account
+        // lists gets this far. DEVICE-UNCONFIRMED: the half second is counted
+        // on a model of the core, not timed on a board.
         bool ok = !w.err && ssh_sig_verify(blob, bn, sig, sn, data, w.len, alg);
         free(data);
         if (ok) succeeded(s, user, "publickey");

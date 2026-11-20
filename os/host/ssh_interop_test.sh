@@ -56,7 +56,7 @@ ar rcs "$W/libmbed.a" "$W"/mbed/*.o
 
 CXXF=(-std=c++17 -Wall -Wextra -Wno-unused-parameter -g $SAN -pthread -DRPC_HAS_SSH=1 "$CFG"
       -I"$OS" -I"$CORE" -I"$OS/shell" -I"$OS/include" -I"$OS/kernel" -I"$SDK/lib/mbedtls/include")
-COMMON=("$CORE/sshwire.cpp" "$CORE/sshcrypto.cpp" "$CORE/sshtrans.cpp" "$CORE/sshkeys.cpp"
+COMMON=("$CORE/sshwire.cpp" "$CORE/sshcrypto.cpp" "$CORE/ed25519.cpp" "$CORE/sshtrans.cpp" "$CORE/sshkeys.cpp"
         "$CORE/lock.cpp" "$CORE/task.cpp" "$CORE/blackbox.cpp" "$HERE/host_task_stub.cpp" "$W/libmbed.a")
 g++ "${CXXF[@]}" "$HERE/ssh_host_server.cpp" "$CORE/sshserver.cpp" "$CORE/sshsess.cpp" \
     "$CORE/lineedit.cpp" "$CORE/interrupt.cpp" "${COMMON[@]}" -o "$W/server" || exit 1
@@ -75,7 +75,9 @@ cd "$W"
 ssh-keygen -q -t ecdsa -b 256 -N '' -f id_ecdsa -C test
 ssh-keygen -q -t rsa -b 3072 -N '' -f id_rsa -C test
 ssh-keygen -q -t ecdsa -b 256 -N '' -f id_other -C stranger
-cat id_ecdsa.pub id_rsa.pub > authorized_keys
+ssh-keygen -q -t ed25519 -N '' -f id_ed25519 -C test
+ssh-keygen -q -t ed25519 -N '' -f id_ed_other -C stranger
+cat id_ecdsa.pub id_rsa.pub id_ed25519.pub > authorized_keys
 # A line with options must NOT be honoured: the stranger's key is listed, but
 # behind a command= restriction this server cannot enforce.
 echo "command=\"/bin/false\" $(cat id_other.pub)" >> authorized_keys
@@ -123,6 +125,19 @@ for alg in rsa-sha2-512 rsa-sha2-256; do
     out=$(run $S -o BatchMode=yes -i id_rsa -o PubkeyAcceptedAlgorithms=$alg tester@127.0.0.1 "echo $alg" 2>&1)
     check "rsa key with $alg: '$out'" test "$out" = "$alg"
 done
+
+# Ed25519 user keys, the kind ssh-keygen makes by default. OpenSSH asks first
+# without a signature and signs only after the server says the key would do,
+# so "Server accepts key" in its log is the query form working, and the login
+# that follows is the verify.
+EDK="$S -o BatchMode=yes -o PubkeyAcceptedAlgorithms=ssh-ed25519"
+out=$(run $EDK -v -i id_ed25519 tester@127.0.0.1 "echo ed25519-ok" 2>ed.log)
+check "ed25519 key: '$out'" test "$out" = "ed25519-ok"
+check "ed25519: the query form was answered" grep -q "Server accepts key: .*ED25519" ed.log
+check "ed25519: logged in by publickey" grep -q 'Authenticated to .* using "publickey"' ed.log
+check "server-sig-algs names ssh-ed25519" grep -q "server-sig-algs=<.*ssh-ed25519" <<<"$v"
+out=$(run $EDK -i id_ed_other tester@127.0.0.1 'echo no' 2>&1); rc=$?
+check "a different ed25519 key is refused ($rc)" test $rc -eq 255 -a -n "$(grep -i 'permission denied' <<<"$out")"
 
 # exec: output and exit status.
 run $B tester@127.0.0.1 'exit 7' >/dev/null 2>&1; rc=$?
@@ -238,6 +253,7 @@ if [ -z "$SSHD" ]; then
     echo "  (sshd not installed: the client core was tested against the server core only)"
 else
     ssh-keygen -q -t ecdsa -N '' -f sd_ecdsa; ssh-keygen -q -t rsa -b 3072 -N '' -f sd_rsa
+    ssh-keygen -q -t ed25519 -N '' -f sd_ed25519
     ./client -p 1 -i devkey x@127.0.0.1 true >/dev/null 2>&1     # makes devkey and devkey.pub
     cp devkey.pub sd_authorized_keys
     SPORT=""
@@ -248,6 +264,7 @@ Port $p
 ListenAddress 127.0.0.1
 HostKey $W/sd_ecdsa
 HostKey $W/sd_rsa
+HostKey $W/sd_ed25519
 AuthorizedKeysFile $W/sd_authorized_keys
 UsePAM no
 StrictModes no
@@ -272,6 +289,14 @@ EOF
             check "client core verifies an RSA host key with $alg ($rc)" test "$out" = "$alg"
         done
         check "sshd's RSA host key fingerprint" grep -q "$(ssh-keygen -lf sd_rsa.pub | awk '{print $2}')" sdc.err
+        # Offered last by default, so asked for here; recorded in known_hosts
+        # like any other, and recognised the second time rather than asked again.
+        out=$(./client -p "$SPORT" -i devkey -H ssh-ed25519 -k sd_kh_ed "$me@127.0.0.1" "echo ed25519" 2>sdc.err); rc=$?
+        check "client core verifies an Ed25519 host key ($rc)" test "$out" = "ed25519" -a $rc -eq 0
+        check "sshd's Ed25519 host key fingerprint" grep -q "$(ssh-keygen -lf sd_ed25519.pub | awk '{print $2}')" sdc.err
+        check "the Ed25519 host key was recorded" grep -q "new host recorded" sdc.err
+        out=$(./client -p "$SPORT" -i devkey -H ssh-ed25519 -k sd_kh_ed "$me@127.0.0.1" "echo again" 2>sdc.err); rc=$?
+        check "...and known the second time ($rc)" test "$out" = "again" -a -n "$(grep 'known host' sdc.err)"
         out=$(printf 'echo tty-ok\nexit 6\n' | ./client -p "$SPORT" -i devkey -t "$me@127.0.0.1" 2>/dev/null); rc=$?
         check "client core: interactive session on sshd ($rc)" test $rc -eq 6 -a -n "$(grep 'tty-ok' <<<"$out")"
         got=$(./client -p "$SPORT" -i devkey "$me@127.0.0.1" "head -c 102400 /dev/zero" 2>/dev/null | wc -c)
@@ -291,7 +316,7 @@ g++ "${CXXF[@]}" -DRPC_HAS_WIFI=1 -I"$OS/../loader-spike/firmware" "$HERE/sshd_h
     "$OS/shell/fsguard.cpp" "$CORE/sshserver.cpp" "$CORE/sshsess.cpp" "$CORE/lineedit.cpp" "$CORE/history.cpp" \
     "$CORE/interrupt.cpp" "$CORE/ident.cpp" "$CORE/users.cpp" "$CORE/sha256.cpp" "$CORE/perms.cpp" \
     "$CORE/protect.cpp" "$CORE/path.cpp" "$CORE/out.cpp" "$CORE/logring.cpp" "$CORE/registry.cpp" \
-    "$CORE/sshwire.cpp" "$CORE/sshcrypto.cpp" "$CORE/sshtrans.cpp" "$CORE/sshkeys.cpp" \
+    "$CORE/sshwire.cpp" "$CORE/sshcrypto.cpp" "$CORE/ed25519.cpp" "$CORE/sshtrans.cpp" "$CORE/sshkeys.cpp" \
     "$CORE/lock.cpp" "$CORE/task.cpp" "$CORE/blackbox.cpp" "$W/libmbed.a" -o "$W/sshd_host" || exit 1
 mkdir -p droot
 DPORT=""
@@ -316,6 +341,8 @@ pw() {   # pw <password> <user> <command>: a password login through ssh's askpas
 
 out=$(run $DK root@127.0.0.1 whoami 2>&1)
 check "sshd.cpp: root by key: '$out'" test "$out" = "root"
+out=$(run $D -o BatchMode=yes -i id_ed25519 -o PubkeyAcceptedAlgorithms=ssh-ed25519 root@127.0.0.1 whoami 2>&1)
+check "sshd.cpp: root by an ed25519 key: '$out'" test "$out" = "root"
 out=$(run $DK root@127.0.0.1 readsecret 2>&1)
 check "sshd.cpp: root may read the account file: '$out'" test "$out" = "allowed"
 out=$(run $DK root@127.0.0.1 isadmin 2>&1)

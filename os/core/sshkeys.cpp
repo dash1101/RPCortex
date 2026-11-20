@@ -35,7 +35,8 @@ static bool field(const char *l, uint32_t ln, uint32_t *at, const char **f, uint
 }
 
 static bool known_type(const char *t, uint32_t n) {
-    return (n == 19 && !memcmp(t, "ecdsa-sha2-nistp256", 19)) || (n == 7 && !memcmp(t, "ssh-rsa", 7));
+    return (n == 19 && !memcmp(t, "ecdsa-sha2-nistp256", 19)) || (n == 7 && !memcmp(t, "ssh-rsa", 7)) ||
+           (n == 11 && !memcmp(t, "ssh-ed25519", 11));
 }
 
 // The key on a "<type> <base64>" pair: decoded, and checked to name the same

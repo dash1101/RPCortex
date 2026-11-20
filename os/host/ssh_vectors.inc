@@ -1,7 +1,8 @@
 // Signatures made by OpenSSH 10.0 (ssh-keygen -Y sign -n file over the
 // 8 bytes "rpcortex"), split into the key blob, the exact bytes that were
-// signed (the SSHSIG preamble) and the signature blob. They let ssh_test
-// check signature verification against a signer that is not this code.
+// signed (the SSHSIG preamble) and the signature blob; the Ed25519 one from a
+// key made by ssh-keygen -t ed25519. They let ssh_test check signature
+// verification against a signer that is not this code.
 // Generated once; the private keys were thrown away.
 static const char kRSA_KEY[] =
     "000000077373682d7273610000000301000100000101009d67169b7c5a8f5098"
@@ -43,3 +44,29 @@ static const char kEC_SIG[] =
     "0000206acfc602fe869b1dde3657c262c7e8fba901dd805ab090d4f4136ef64a"
     "601686";
 static const char kEC_ALG[] = "ecdsa-sha2-nistp256";
+static const char kED_KEY[] =
+    "0000000b7373682d6564323535313900000020041c125fda98dcd9631ff76eb2"
+    "5c6eb352f9fc08606325bf59e0ee7a76df7e66";
+static const char kED_DATA[] =
+    "5353485349470000000466696c65000000000000000673686135313200000040"
+    "376157c5e2440b2100e8a108d819061afc7ed81024d93a6d0d3c25e2ab428c88"
+    "0e9d0b9e971cb2c95871d68f3ca6c9d802347d1ace427e056d7f5b93340ad5f2";
+static const char kED_SIG[] =
+    "0000000b7373682d6564323535313900000040fff32a14260a40e05b46f4e417"
+    "11a5a799f6226c1d2a3f3b40b02e1573c6f9276e6ebc2b170f1eec01eba8ff7e"
+    "a514b085ed883a3b2dd756817acb1a8c95080f";
+// Its line in id_ed25519.pub, and what ssh-keygen -l printed for it.
+static const char kED_LINE[] = "AAAAC3NzaC1lZDI1NTE5AAAAIAQcEl/amNzZYx/3brJcbrNS+fwIYGMlv1ng7np2335m";
+static const char kED_FP[] = "SHA256:29l/PBJRqAk10ps4BK7g5wCAPNBzwk/jLrONFy8+cP8";
+// A whole ssh-ed25519 userauth request, signed with RFC 8032 TEST 1's secret
+// key by the RFC's section 6 code: session id 00 01 .. 1f, user "alice",
+// service "ssh-connection", and the key blob below. What the server checks
+// it against is built by the server, so this holds the order and encoding of
+// those fields (RFC 4252 section 7) to an independent signer.
+static const char kED_UA_BLOB[] =
+    "0000000b7373682d6564323535313900000020d75a980182b10ab7d54bfed3c9"
+    "64073a0ee172f3daa62325af021a68f707511a";
+static const char kED_UA_SIG[] =
+    "0000000b7373682d65643235353139000000404820463ae49178164d62eda960"
+    "88d267bc617fe4623514f3f569af760842fe22c3dfabc475af937d0d37f766f4"
+    "2411a55912402b223074cc3c9abff1d116ce06";

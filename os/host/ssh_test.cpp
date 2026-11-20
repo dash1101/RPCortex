@@ -5,7 +5,8 @@
 //   - X25519: the vectors in RFC 7748 sections 5.2 and 6.1
 //   - the key derivation: rebuilt here from RFC 4253 7.2 with the OS's own
 //     SHA-256 (core/sha256.cpp), not mbedTLS
-//   - signatures: RSA and ECDSA signatures made by OpenSSH's ssh-keygen
+//   - signatures: RSA, ECDSA and Ed25519 signatures made by OpenSSH's
+//     ssh-keygen, and an Ed25519 login signed by RFC 8032's own code
 //   - fingerprints: the strings ssh-keygen -l printed for fixed keys
 //   - the CTR ciphers' MAC: recomputed with core/sha256.cpp's HMAC over the
 //     bytes the RFC says it covers
@@ -233,6 +234,43 @@ static void sig_tests() {
     data[0] ^= 1;
     ck(!ssh_sig_verify(key, kn, sig, sn, data, dn, "rsa-sha2-256"), "ECDSA key, RSA algorithm: refused");
 
+    // Ed25519 (RFC 8709), made by ssh-keygen -Y sign.
+    kn = unhex(kED_KEY, key, sizeof(key));
+    dn = unhex(kED_DATA, data, sizeof(data));
+    sn = unhex(kED_SIG, sig, sizeof(sig));
+    char kt[24];
+    ck(ssh_key_type(key, kn, kt, sizeof(kt)) && !strcmp(kt, "ssh-ed25519"), "Ed25519 key type");
+    ck(ssh_sig_verify(key, kn, sig, sn, data, dn, "ssh-ed25519"), "OpenSSH's Ed25519 signature verifies");
+    ck(!ssh_sig_verify(key, kn, sig, sn, data, dn, "ecdsa-sha2-nistp256"), "...not under another algorithm name");
+    data[dn - 1] ^= 1;
+    ck(!ssh_sig_verify(key, kn, sig, sn, data, dn, "ssh-ed25519"), "Ed25519: altered data fails");
+    data[dn - 1] ^= 1;
+    sig[sn - 64] ^= 0x10;                                   // inside R
+    ck(!ssh_sig_verify(key, kn, sig, sn, data, dn, "ssh-ed25519"), "Ed25519: altered R fails");
+    sig[sn - 64] ^= 0x10;
+    sig[sn - 32] ^= 0x01;                                   // the low byte of S
+    ck(!ssh_sig_verify(key, kn, sig, sn, data, dn, "ssh-ed25519"), "Ed25519: altered S fails");
+    sig[sn - 32] ^= 0x01;
+    ck(ssh_sig_verify(key, kn, sig, sn, data, dn, "ssh-ed25519"), "...and the original still verifies");
+    {
+        // The blobs are exactly RFC 8709's shape: one string each after the
+        // name, of exactly 32 and 64 bytes, and nothing after.
+        uint8_t k2[64], s2[128];
+        memcpy(k2, key, kn); k2[kn] = 0;
+        ck(!ssh_sig_verify(k2, kn + 1, sig, sn, data, dn, "ssh-ed25519"), "Ed25519: a byte after the key");
+        memcpy(s2, sig, sn); s2[sn] = 0;
+        ck(!ssh_sig_verify(key, kn, s2, sn + 1, data, dn, "ssh-ed25519"), "Ed25519: a byte after the signature");
+        memcpy(k2, key, kn); k2[kn - 33] = 31;              // the key's length says 31
+        ck(!ssh_sig_verify(k2, kn - 1, sig, sn, data, dn, "ssh-ed25519"), "Ed25519: a 31-byte key");
+        memcpy(s2, sig, sn); s2[sn - 65] = 63;              // the signature's length says 63
+        ck(!ssh_sig_verify(key, kn, s2, sn - 1, data, dn, "ssh-ed25519"), "Ed25519: a 63-byte signature");
+        // An ECDSA key named in an Ed25519 request, and the other way round.
+        uint8_t ek[200]; uint32_t ekn = unhex(kEC_KEY, ek, sizeof(ek));
+        ck(!ssh_sig_verify(ek, ekn, sig, sn, data, dn, "ssh-ed25519"), "ECDSA key, Ed25519 algorithm: refused");
+        uint8_t es[200]; uint32_t esn = unhex(kEC_SIG, es, sizeof(es));
+        ck(!ssh_sig_verify(key, kn, es, esn, data, dn, "ecdsa-sha2-nistp256"), "Ed25519 key, ECDSA signature: refused");
+    }
+
     // Our own host key: sign, verify, and reload from the secret alone.
     SshHostKey hk, again;
     ck(ssh_hostkey_generate(&hk), "host key generated");
@@ -261,6 +299,9 @@ static void sig_tests() {
     kn = unhex(kRSA_KEY, key, sizeof(key));
     ssh_fingerprint(key, kn, fp, sizeof(fp));
     ck(!strcmp(fp, "SHA256:NBxU8jCzwe5muefMkBnYfVp0EAJ1k1pJXuvz/N/2hsc"), "RSA fingerprint matches ssh-keygen");
+    kn = unhex(kED_KEY, key, sizeof(key));
+    ssh_fingerprint(key, kn, fp, sizeof(fp));
+    ck(!strcmp(fp, kED_FP), "Ed25519 fingerprint matches ssh-keygen");
 }
 
 static void keyfile_tests() {
@@ -283,8 +324,36 @@ static void keyfile_tests() {
     snprintf(text, sizeof(text), "%.*s\n", (int)ln - 12, line);    // truncated base64
     ck(!ssh_authkeys_match(text, (uint32_t)strlen(text), blob, bn), "truncated key does not match");
 
+    // Ed25519: the line ssh-keygen wrote, found by the blob inside it; and
+    // the type word in front must agree with the blob in both directions.
+    uint8_t ed[64];
+    uint32_t edn = unhex(kED_KEY, ed, sizeof(ed));
+    snprintf(text, sizeof(text), "%s\nssh-ed25519 %s fixture\n", line, kED_LINE);
+    ck(ssh_authkeys_match(text, (uint32_t)strlen(text), ed, edn), "an ssh-ed25519 line is found");
+    ck(ssh_authkeys_match(text, (uint32_t)strlen(text), blob, bn), "...beside an ECDSA one");
+    snprintf(text, sizeof(text), "ecdsa-sha2-nistp256 %s fixture\n", kED_LINE);
+    ck(!ssh_authkeys_match(text, (uint32_t)strlen(text), ed, edn), "an Ed25519 blob under an ECDSA type word");
+    snprintf(text, sizeof(text), "ssh-ed25519 %s\n", line + 20);
+    ck(!ssh_authkeys_match(text, (uint32_t)strlen(text), blob, bn), "an ECDSA blob under the ssh-ed25519 word");
+    snprintf(text, sizeof(text), "no-pty ssh-ed25519 %s\n", kED_LINE);
+    ck(!ssh_authkeys_match(text, (uint32_t)strlen(text), ed, edn), "an Ed25519 line with options is not honoured");
+    char edline[200], want[200];
+    uint32_t eln = ssh_pubkey_line(ed, edn, "c", edline, sizeof(edline));
+    snprintf(want, sizeof(want), "ssh-ed25519 %s c", kED_LINE);
+    ck(eln > 0 && !strcmp(edline, want), "Ed25519 public key line is ssh-keygen's");
+
     char kh[2048];
-    uint32_t kl = ssh_known_hosts_line("Device.local", 2222, blob, bn, kh, sizeof(kh));
+    // known_hosts: an Ed25519 host key recorded, then a different one.
+    uint32_t kl = ssh_known_hosts_line("ed.host", 22, ed, edn, kh, sizeof(kh));
+    ck(kl > 0 && ssh_known_hosts_check(kh, kl, "ed.host", 22, ed, edn) == SSH_KH_MATCH, "known Ed25519 host");
+    uint8_t ed2[64];
+    memcpy(ed2, ed, edn);
+    ed2[edn - 1] ^= 1;
+    ck(ssh_known_hosts_check(kh, kl, "ed.host", 22, ed2, edn) == SSH_KH_CHANGED, "changed Ed25519 key detected");
+    ck(ssh_known_hosts_check(kh, kl, "ed.host", 22, blob, bn) == SSH_KH_UNKNOWN,
+       "an ECDSA key for a host known by its Ed25519 key is new, not changed");
+
+    kl = ssh_known_hosts_line("Device.local", 2222, blob, bn, kh, sizeof(kh));
     ck(kl > 0 && !strncmp(kh, "[Device.local]:2222 ecdsa", 25) && kh[kl - 1] == '\n', "known_hosts line");
     ck(ssh_known_hosts_check(kh, kl, "device.local", 2222, blob, bn) == SSH_KH_MATCH, "known host (case-insensitive)");
     ck(ssh_known_hosts_check(kh, kl, "device.local", 22, blob, bn) == SSH_KH_UNKNOWN, "other port is another host");
@@ -495,6 +564,146 @@ static void session_tests() {
     ssh_srv_free(&sv.s); ssh_cli_free(&cl.k);
 }
 
+// The server's half of an ssh-ed25519 login, message by message, on a
+// connection forced past the key exchange as the fuzzer does it: nothing is
+// encrypted, so what the server queued can be read back as it is.
+static bool ed_pubkey(void *, const char *, const uint8_t *blob, uint32_t n) {
+    uint8_t b[64]; uint32_t bn = unhex(kED_UA_BLOB, b, sizeof(b));
+    return n == bn && !memcmp(blob, b, n);
+}
+static const SshServerOps kEdOps = { sv_user_ok, sv_password, ed_pubkey, nullptr, nullptr, nullptr,
+                                     nullptr, nullptr, nullptr, nullptr };
+
+static void ed_server(SshServer *s) {
+    static SshHostKey hk;
+    if (!hk.ok) ssh_hostkey_generate(&hk);
+    ssh_srv_init(s, &hk, &kEdOps, nullptr);
+    s->c.state = SSH_ST_OPEN;
+    s->c.first_kex_done = true;
+    s->c.have_session_id = true;
+    for (int i = 0; i < 32; i++) s->c.session_id[i] = (uint8_t)i;
+    s->service_ok = true;
+}
+
+// The type of every packet queued since the last request, and the payload
+// (after the type) of the last one.
+static int queued(SshConn *c, uint8_t *types, int cap, const uint8_t **last, uint32_t *last_n) {
+    uint32_t n; const uint8_t *p = ssh_out(c, &n);
+    int k = 0;
+    uint32_t at = 0;
+    while (at + 6 <= n && k < cap) {
+        uint32_t len = ((uint32_t)p[at] << 24) | ((uint32_t)p[at + 1] << 16) |
+                       ((uint32_t)p[at + 2] << 8) | p[at + 3];
+        types[k++] = p[at + 5];
+        if (last) { *last = p + at + 6; *last_n = len - 2 - p[at + 4]; }
+        at += 4 + len;
+    }
+    return k;
+}
+
+static void ed_request(SshServer *s, const char *alg, const uint8_t *blob, uint32_t bn,
+                       const uint8_t *sig, uint32_t sn) {
+    uint8_t buf[512];
+    SshW w; sshw_init(&w, buf, sizeof(buf));
+    sshw_cstr(&w, "alice");
+    sshw_cstr(&w, "ssh-connection");
+    sshw_cstr(&w, "publickey");
+    sshw_bool(&w, sig != nullptr);
+    sshw_cstr(&w, alg);
+    sshw_string(&w, blob, bn);
+    if (sig) sshw_string(&w, sig, sn);
+    uint32_t n; ssh_out(&s->c, &n); ssh_out_consume(&s->c, n);
+    SshR r; sshr_init(&r, buf, w.len);
+    s->c.dispatch(&s->c, SSH_MSG_USERAUTH_REQUEST, &r);
+}
+
+static void ed25519_login_tests() {
+    uint8_t blob[64], sig[128];
+    uint32_t bn = unhex(kED_UA_BLOB, blob, sizeof(blob));
+    uint32_t sn = unhex(kED_UA_SIG, sig, sizeof(sig));
+    uint8_t types[8];
+    const uint8_t *last = nullptr; uint32_t ln = 0;
+    SshServer s;
+
+    // The query form: no signature, and the answer is PK_OK naming the
+    // algorithm and the key back (RFC 4252 section 7).
+    ed_server(&s);
+    ed_request(&s, "ssh-ed25519", blob, bn, nullptr, 0);
+    int k = queued(&s.c, types, 8, &last, &ln);
+    bool echoed = false;
+    if (k == 1 && last) {
+        SshR r; sshr_init(&r, last, ln);
+        char alg[32]; const uint8_t *eb; uint32_t ebn;
+        echoed = sshr_cstr(&r, alg, sizeof(alg)) && sshr_string(&r, &eb, &ebn) && sshr_left(&r) == 0 &&
+                 !strcmp(alg, "ssh-ed25519") && ebn == bn && !memcmp(eb, blob, bn);
+    }
+    ck(k == 1 && types[0] == SSH_MSG_USERAUTH_PK_OK && echoed, "Ed25519 query answered with PK_OK");
+    ck(!s.authed && s.fails == 0, "...and a query is neither a login nor a failure");
+
+    // Signed: logged in.
+    ed_request(&s, "ssh-ed25519", blob, bn, sig, sn);
+    k = queued(&s.c, types, 8, nullptr, nullptr);
+    ck(k == 1 && types[0] == SSH_MSG_USERAUTH_SUCCESS && s.authed && !strcmp(s.user, "alice"),
+       "an Ed25519 signature logs in");
+    ssh_srv_free(&s);
+
+    // The same request on another session: the signature covers the session
+    // id, so it does not carry over.
+    ed_server(&s);
+    s.c.session_id[31] ^= 1;
+    ed_request(&s, "ssh-ed25519", blob, bn, sig, sn);
+    k = queued(&s.c, types, 8, nullptr, nullptr);
+    ck(k == 1 && types[0] == SSH_MSG_USERAUTH_FAILURE && !s.authed && s.fails == 1 && s.penalty_ms > 0,
+       "an Ed25519 signature from another session is refused, and counts");
+    ssh_srv_free(&s);
+
+    // One bit of S changed.
+    ed_server(&s);
+    sig[sn - 32] ^= 0x01;
+    ed_request(&s, "ssh-ed25519", blob, bn, sig, sn);
+    sig[sn - 32] ^= 0x01;
+    ck(!s.authed && s.fails == 1, "a damaged Ed25519 signature is refused");
+    ssh_srv_free(&s);
+
+    // The key under another algorithm's name, as a query: refused, no PK_OK.
+    ed_server(&s);
+    ed_request(&s, "ecdsa-sha2-nistp256", blob, bn, nullptr, 0);
+    k = queued(&s.c, types, 8, nullptr, nullptr);
+    ck(k == 1 && types[0] == SSH_MSG_USERAUTH_FAILURE && s.fails == 1,
+       "an Ed25519 key under the ECDSA name is refused");
+    ssh_srv_free(&s);
+}
+
+// The host key algorithms the device's own ssh offers. sshc.cpp never sets
+// hostkey_algs, so this default is what every connection from the device
+// asks for: ssh-ed25519 has to be in it, and last, so a host recorded under
+// its ECDSA or RSA key goes on presenting that one. (The interop suite asks
+// for ssh-ed25519 explicitly, which does not test this list.)
+static void client_offer_test() {
+    SshClient k;
+    ssh_cli_init(&k, "alice", &kClOps, nullptr);
+    ssh_process(&k.c);
+    uint32_t n; const uint8_t *p = ssh_out(&k.c, &n);
+    const uint8_t *nl = (const uint8_t *)memchr(p, '\n', n);
+    bool ok = false;
+    if (nl) {
+        // After the version line: length, padding length, type, 16-byte
+        // cookie, then the kex and host key name-lists (RFC 4253 7.1).
+        uint32_t at = (uint32_t)(nl - p) + 1;
+        if (at + 22 <= n && p[at + 5] == SSH_MSG_KEXINIT) {
+            SshR r; sshr_init(&r, p + at + 22, n - at - 22);
+            const uint8_t *kx, *hk; uint32_t kxn, hkn;
+            static const char last[] = ",ssh-ed25519";
+            const uint32_t ln = sizeof(last) - 1;
+            ok = sshr_string(&r, &kx, &kxn) && sshr_string(&r, &hk, &hkn) &&
+                 hkn > ln && !memcmp(hk + hkn - ln, last, ln) &&
+                 ssh_namelist_has(hk, hkn, "ecdsa-sha2-nistp256");
+        }
+    }
+    ck(ok, "the device's ssh offers ssh-ed25519 host keys, after ECDSA and RSA");
+    ssh_cli_free(&k);
+}
+
 // Terrapin: an IGNORE slipped in ahead of the client's KEXINIT. With strict
 // KEX the server must refuse the connection.
 struct Inject { bool done; };
@@ -628,6 +837,8 @@ int main(void) {
     keyfile_tests();
     cipher_tests();
     session_tests();
+    ed25519_login_tests();
+    client_offer_test();
     hostile_tests();
     window_test();
     sess_tests();

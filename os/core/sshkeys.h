@@ -12,9 +12,9 @@
 // (from="...", command="...", no-pty and the rest) is skipped rather than
 // honoured without its options: each of those narrows what a key may do, and
 // a key that was meant to run one command must not get a shell because the
-// option was not understood. Types other than ecdsa-sha2-nistp256 and ssh-rsa
-// are skipped too, and so is a line whose base64 names a different type than
-// its first word.
+// option was not understood. Types other than ecdsa-sha2-nistp256, ssh-rsa and
+// ssh-ed25519 are skipped too, and so is a line whose base64 names a different
+// type than its first word.
 bool ssh_authkeys_match(const char *text, uint32_t len, const uint8_t *blob, uint32_t n);
 
 // "<type> <base64> <comment>". Returns the length, or 0 if it does not fit.

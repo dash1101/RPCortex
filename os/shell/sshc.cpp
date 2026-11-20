@@ -57,7 +57,7 @@ static bool op_hostkey(void *ctx, const uint8_t *blob, uint32_t n) {
     ssh_fingerprint(blob, n, fp, sizeof(fp));
     char type[24];
     ssh_key_type(blob, n, type, sizeof(type));
-    const char *kind = !strcmp(type, "ssh-rsa") ? "RSA" : "ECDSA";
+    const char *kind = !strcmp(type, "ssh-rsa") ? "RSA" : !strcmp(type, "ssh-ed25519") ? "ED25519" : "ECDSA";
 
     char *text = (char *)malloc(8192);
     uint32_t len = text ? storage_read_file(c->kh_path, (uint8_t *)text, 8192) : 0;

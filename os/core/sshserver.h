@@ -9,8 +9,8 @@
 // way to reach further into the device than a shell already does, and none of
 // them is needed to administer it.
 //
-// Authentication is "publickey" (ecdsa-sha2-nistp256, rsa-sha2-256/512) and
-// "password". Who may log in, and with what, is decided by the caller through
+// Authentication is "publickey" (ecdsa-sha2-nistp256, rsa-sha2-256/512,
+// ssh-ed25519) and "password". Who may log in, and with what, is decided by the caller through
 // SshServerOps; this file only applies the protocol and the attempt limit.
 #ifndef RPC_SSHSERVER_H
 #define RPC_SSHSERVER_H

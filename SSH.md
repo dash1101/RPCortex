@@ -43,18 +43,21 @@ it, ending any sessions. `ssh server port 2222` moves it (from the next start).
 
 ### Keys instead of passwords
 
-Put the public key from the computer (`~/.ssh/id_ecdsa.pub` or `~/.ssh/id_rsa.pub`)
-on its own line in `/home/<user>/.ssh/authorized_keys` on the device. A key line is
-longer than the console's 128-character line, so it is easier to copy the file
-than to type it: put it on the `download` drive, then
+Put the public key from the computer (`~/.ssh/id_ed25519.pub`, `~/.ssh/id_ecdsa.pub`
+or `~/.ssh/id_rsa.pub`) on its own line in `/home/<user>/.ssh/authorized_keys` on
+the device. A key line is longer than the console's 128-character line, so it is
+easier to copy the file than to type it: put it on the `download` drive, then
 
 ```
 mkdir /home/root/.ssh
-cat /usb/id_ecdsa.pub >> /home/root/.ssh/authorized_keys
+cat /usb/id_ed25519.pub >> /home/root/.ssh/authorized_keys
 ```
 
-ECDSA (P-256) and RSA keys of 2048 bits or more work. Ed25519 keys do not: the
-crypto library has no Ed25519.
+Ed25519 keys (what `ssh-keygen` makes unless told otherwise), ECDSA (P-256) keys
+and RSA keys of 2048 bits or more all work. An Ed25519 login is the slowest of the
+three: checking its signature takes about half a second, against about a third
+of that for ECDSA. That figure is worked out on a model of the Pico 2 W's processor; it
+has not been timed on a board yet.
 
 A line with options in front of the key (`from=`, `command=`, `no-pty`...) is
 ignored, not honoured without its options: a key that was meant to run one
@@ -73,6 +76,10 @@ later stops the connection before a password is sent. Passwords are asked for wi
 the same prompt the device uses everywhere. `Ctrl+]` ends a connection from this
 side; every other key, Ctrl+C included, goes to the far end.
 
+A server's key may be ECDSA, RSA or Ed25519. Ed25519 is asked for last, so a host
+already in `known_hosts` under its ECDSA or RSA key goes on presenting that one,
+and a host that has only an Ed25519 key is still reachable.
+
 `ssh keygen` makes a key for the signed-in user and prints the line to add to
 `authorized_keys` on other machines; after that `ssh` uses it before asking for a
 password. `ssh pubkey` prints the line again.
@@ -82,15 +89,16 @@ password. `ssh pubkey` prints the line again.
 | | |
 |---|---|
 | Key exchange | curve25519-sha256 (and @libssh.org), ecdh-sha2-nistp256 |
-| Host key | ecdsa-sha2-nistp256 (the client also accepts RSA host keys, rsa-sha2-256/512) |
+| Host key | ecdsa-sha2-nistp256 (the client also accepts RSA host keys, rsa-sha2-256/512, and ssh-ed25519) |
 | Ciphers | aes128-gcm@openssh.com, aes256-gcm@openssh.com, aes128-ctr, aes256-ctr |
 | MACs (with CTR) | hmac-sha2-256-etm@openssh.com, hmac-sha2-256 |
-| Login | publickey (ECDSA P-256, RSA 2048-8192 with SHA-2), password; the client also does keyboard-interactive |
+| Login | publickey (Ed25519, ECDSA P-256, RSA 2048-8192 with SHA-2), password; the client also does keyboard-interactive |
 | Session | a shell with a terminal, or one command; window size changes; Ctrl+C |
 | Other | strict key exchange (the Terrapin fix), re-keying, no compression |
 
 Not supported: port forwarding of any kind, agent and X11 forwarding, `scp` and
-`sftp`, environment variables, Ed25519, ChaCha20-Poly1305.
+`sftp`, environment variables, ChaCha20-Poly1305, and Ed25519 for the device's own
+keys (its host key and the key `ssh keygen` makes are ECDSA).
 
 ## Security
 
@@ -112,8 +120,10 @@ Not supported: port forwarding of any kind, agent and X11 forwarding, `scp` and
   `~/.ssh`, so it cannot add itself to root's `authorized_keys`. A package it runs
   over SSH may only write its own settings (`Apps.*`), and `kill` stops only its
   own tasks.
-- **It is not audited.** It is built on mbedTLS's primitives and tested against
-  OpenSSH, but nobody independent has reviewed it. Keep it to networks you trust.
+- **It is not audited.** It is built on mbedTLS's primitives, with TweetNaCl's
+  public-domain arithmetic for checking Ed25519 signatures (mbedTLS has none), and
+  tested against OpenSSH, but nobody independent has reviewed it. Keep it to
+  networks you trust.
 
 ## Limits worth knowing
 
@@ -124,7 +134,9 @@ Not supported: port forwarding of any kind, agent and X11 forwarding, `scp` and
 - A session uses about 25 KB of memory, its 8 KB stack included, and the
   server's own task another 8 KB. A login's key exchange runs on the console's
   core and can pause the console for a moment, and anyone who can reach the port
-  can keep that core busy by connecting over and over, before logging in.
+  can keep that core busy by connecting over and over, before logging in. An
+  Ed25519 key adds about half a second to that pause, and only for a key that is
+  in `authorized_keys`: an unknown key is refused before its signature is checked.
 - Remote sessions share the device's aliases and settings with the console;
   per-user `User.` settings are the console user's, so a remote session reads
   those and (as an admin) writes them. `Apps.*`, which an ordinary account's
@@ -143,6 +155,10 @@ On a computer, from `os/host`:
 - `ssh_test` checks the encodings, the key exchange maths, signatures and
   fingerprints against published values and against OpenSSH's own output, and
   plays a client against the server with a deliberately misbehaving peer.
+- `ed25519_test` holds the Ed25519 check to RFC 8032: the RFC's own test vectors,
+  taken from its text, and the cases its strict rules are there for (S out of
+  range, keys and R values that do not decode, a signature that only a cofactored
+  check would accept).
 - `ssh_fuzz_test` feeds damaged input to everything a peer can send.
 - `ssh_interop_test.sh` runs the server code behind a local socket and connects the
   system's `ssh` to it with every algorithm in turn, then runs the client code
@@ -156,4 +172,5 @@ logging in with an ECDSA key and with a password, a wrong password refused, a
 command's exit status, an interactive session with Tab and Ctrl+C, two sessions
 at once, 20 logins in a row with no memory lost (about 1.3 s each, key exchange
 included), and 64 KB of binary output byte for byte. Not yet on hardware: the
-device's own `ssh` client, full-screen apps over SSH, and the failure cooldowns.
+device's own `ssh` client, full-screen apps over SSH, the failure cooldowns, and
+Ed25519 keys.

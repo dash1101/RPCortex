@@ -207,14 +207,17 @@ if [ -d "$SDK_DIR/lib/mbedtls/library" ]; then
     fi
 fi
 SSH_FLAGS="-DRPC_HAS_SSH=1 $MBED_CFG -I$SDK_DIR/lib/mbedtls/include"
-SSH_CORE="$CORE/sshwire.cpp $CORE/sshcrypto.cpp $CORE/sshtrans.cpp $CORE/sshserver.cpp $CORE/sshclient.cpp $CORE/sshkeys.cpp $CORE/lock.cpp $CORE/task.cpp $CORE/blackbox.cpp host_task_stub.cpp"
+SSH_CORE="$CORE/sshwire.cpp $CORE/sshcrypto.cpp $CORE/ed25519.cpp $CORE/sshtrans.cpp $CORE/sshserver.cpp $CORE/sshclient.cpp $CORE/sshkeys.cpp $CORE/lock.cpp $CORE/task.cpp $CORE/blackbox.cpp host_task_stub.cpp"
 # The protocol core against published vectors and a misbehaving peer.
 SRC[ssh_test]="$SSH_CORE $CORE/sshsess.cpp $CORE/sha256.cpp $OUT/libmbed.a"
 FLAGS[ssh_test]="$SSH_FLAGS"
 # Mutation fuzzing of everything a peer can send, before and after login.
 SRC[ssh_fuzz_test]="$SSH_CORE $OUT/libmbed.a"
 FLAGS[ssh_fuzz_test]="$SSH_FLAGS"
-NEEDS_MBED="ssh_test ssh_fuzz_test"
+# Ed25519 verification on its own: RFC 8032's vectors and its strict rules.
+SRC[ed25519_test]="$CORE/ed25519.cpp $OUT/libmbed.a"
+FLAGS[ed25519_test]="$SSH_FLAGS"
+NEEDS_MBED="ssh_test ssh_fuzz_test ed25519_test"
 # Who a command runs as: a remote login carries its own user, so a guest logged
 # in over SSH is a guest whoever is at the console, and the other way round.
 # The real ident, users, perms, fsguard, protect and interrupt code, on real

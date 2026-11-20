@@ -435,6 +435,7 @@ if(RPC_SSH)
         ${OS_ROOT}/core/sshclient.cpp
         ${OS_ROOT}/core/sshsess.cpp
         ${OS_ROOT}/core/sshkeys.cpp
+        ${OS_ROOT}/core/ed25519.cpp
         ${OS_ROOT}/shell/sshd.cpp
         ${OS_ROOT}/shell/sshc.cpp)
     target_sources(rpcortex_v2 PRIVATE ${RPC_SSH_SOURCES})

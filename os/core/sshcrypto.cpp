@@ -1,5 +1,6 @@
 #include "sshcrypto.h"
 #include "sshwire.h"
+#include "ed25519.h"
 #include "lock.h"
 
 #include <string.h>
@@ -300,6 +301,8 @@ static bool streq(const uint8_t *d, uint32_t n, const char *s) {
     return n == strlen(s) && memcmp(d, s, n) == 0;
 }
 
+static const char kEd25519Name[] = "ssh-ed25519";
+
 bool ssh_key_type(const uint8_t *keyblob, uint32_t kn, char *out, uint32_t cap) {
     SshR r; sshr_init(&r, keyblob, kn);
     const uint8_t *t; uint32_t tn;
@@ -307,6 +310,7 @@ bool ssh_key_type(const uint8_t *keyblob, uint32_t kn, char *out, uint32_t cap) 
     const char *name = nullptr;
     if (streq(t, tn, "ssh-rsa")) name = "ssh-rsa";
     else if (streq(t, tn, kEcdsaName)) name = kEcdsaName;
+    else if (streq(t, tn, kEd25519Name)) name = kEd25519Name;
     if (!name || strlen(name) >= cap) return false;
     strcpy(out, name);
     return true;
@@ -387,6 +391,17 @@ static bool verify_rsa(SshR *key, SshR *sig, const uint8_t *data, uint32_t dn, c
     return ok;
 }
 
+// RFC 8709 sections 4 and 6: the key is string "ssh-ed25519", string A (32
+// bytes); the signature is string "ssh-ed25519", string R || S (64 bytes).
+// Anything else in either blob, or another length, is refused before any
+// arithmetic is done.
+static bool verify_ed25519(SshR *key, SshR *sig, const uint8_t *data, uint32_t dn) {
+    const uint8_t *a, *s; uint32_t an, sn;
+    if (!sshr_string(key, &a, &an) || an != 32 || sshr_left(key) != 0) return false;
+    if (!sshr_string(sig, &s, &sn) || sn != 64 || sshr_left(sig) != 0) return false;
+    return ed25519_verify(s, data, dn, a);
+}
+
 bool ssh_sig_verify(const uint8_t *keyblob, uint32_t kn, const uint8_t *sigblob, uint32_t sbn,
                     const uint8_t *data, uint32_t dn, const char *alg) {
     SshR key; sshr_init(&key, keyblob, kn);
@@ -400,6 +415,8 @@ bool ssh_sig_verify(const uint8_t *keyblob, uint32_t kn, const uint8_t *sigblob,
     if (streq(kt, ktn, "ssh-rsa") &&
         (strcmp(alg, "rsa-sha2-256") == 0 || strcmp(alg, "rsa-sha2-512") == 0))
         return verify_rsa(&key, &sig, data, dn, alg);
+    if (streq(kt, ktn, kEd25519Name) && strcmp(alg, kEd25519Name) == 0)
+        return verify_ed25519(&key, &sig, data, dn);
     return false;
 }
 

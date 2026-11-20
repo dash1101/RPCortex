@@ -19,7 +19,11 @@ static const char kKexClientFirst[] =
 static const char kKexLater[] =
     "curve25519-sha256,curve25519-sha256@libssh.org,ecdh-sha2-nistp256";
 static const char kHostKeyServer[] = "ecdsa-sha2-nistp256";
-static const char kHostKeyClient[] = "ecdsa-sha2-nistp256,rsa-sha2-512,rsa-sha2-256";
+// ssh-ed25519 last, although most servers have one: a host already in
+// known_hosts under its ECDSA or RSA key goes on presenting that key, rather
+// than a new one the user would be asked to trust all over again. The device
+// does not order this list by what known_hosts holds, as OpenSSH does.
+static const char kHostKeyClient[] = "ecdsa-sha2-nistp256,rsa-sha2-512,rsa-sha2-256,ssh-ed25519";
 static const char kCiphers[] =
     "aes128-gcm@openssh.com,aes256-gcm@openssh.com,aes128-ctr,aes256-ctr";
 static const char kMacs[] = "hmac-sha2-256-etm@openssh.com,hmac-sha2-256";
@@ -425,7 +429,7 @@ static void send_ext_info(SshConn *c) {
     SshW *w = ssh_begin(c, SSH_MSG_EXT_INFO);
     sshw_u32(w, 1);
     sshw_cstr(w, "server-sig-algs");
-    sshw_cstr(w, "ecdsa-sha2-nistp256,rsa-sha2-512,rsa-sha2-256");
+    sshw_cstr(w, "ecdsa-sha2-nistp256,rsa-sha2-512,rsa-sha2-256,ssh-ed25519");
     ssh_end(c);
 }
 

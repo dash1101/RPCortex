@@ -11,16 +11,17 @@
 //
 //   kex        curve25519-sha256, curve25519-sha256@libssh.org, ecdh-sha2-nistp256
 //   host key   ecdsa-sha2-nistp256 (server); the client also accepts
-//              rsa-sha2-512 and rsa-sha2-256 host keys
+//              rsa-sha2-512, rsa-sha2-256 and ssh-ed25519 host keys
 //   ciphers    aes128-gcm@openssh.com, aes256-gcm@openssh.com, aes128-ctr, aes256-ctr
 //   MACs       hmac-sha2-256-etm@openssh.com, hmac-sha2-256 (CTR only)
 //   other      no compression; strict KEX (the Terrapin countermeasure);
 //              ext-info (server-sig-algs)
 //
-// Every one of those is something mbedTLS already carries for HTTPS, apart
-// from the deterministic-ECDSA switch, so SSH costs code and not a second
-// crypto library. Ed25519 and ChaCha20-Poly1305 are what is missing; mbedTLS
-// 3.6 has neither.
+// Every one of those but ssh-ed25519 is something mbedTLS already carries for
+// HTTPS (apart from the deterministic-ECDSA switch), so SSH costs code and not
+// a second crypto library. mbedTLS 3.6 has no Ed25519; checking an Ed25519
+// signature is TweetNaCl's arithmetic, about 4 KB of it (ed25519.cpp), and
+// the device never signs with one. ChaCha20-Poly1305 is what is missing.
 #ifndef RPC_SSHTRANS_H
 #define RPC_SSHTRANS_H
 
