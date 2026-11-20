@@ -26,6 +26,7 @@
 #include "logring.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static const char *kDirs[] = { "/os", "/os/pkg", "/etc", "/home", "/tmp", "/usb" };
@@ -156,8 +157,20 @@ static void collect(void *ctx, const char *name, bool is_dir, uint32_t size) {
 // deleted — which is the fix, not a giveup: every file this runs over is one
 // the OS knows how to produce again, and a corrupt one that stays on disk is
 // read again at every boot forever.
+//
+// The name list is on the heap for the length of the call. It was 1.7 KB of
+// static RAM held for the life of the device by a pass that runs at boot and on
+// `fscheck --scan`, and being static it was shared: two scans at once (a `bg
+// fscheck --scan` beside a foreground one) overwrote each other's list.
 uint32_t fs_scan_dir(const char *dir, bool repair, bool verbose, uint32_t max_bytes) {
-    static ScanList list;
+    ScanList *lp = (ScanList *)malloc(sizeof(ScanList));
+    if (!lp) {
+        // Said, not skipped quietly: nothing found would read as a clean directory.
+        out_errp("fs", "Not enough memory to check %s; it was not scanned.", dir);
+        return 0;
+    }
+    struct Owned { ScanList *p; ~Owned() { free(p); } } owned{lp};
+    ScanList &list = *lp;
     list.n = 0; list.overflow = false;
     if (!storage_walk(dir, collect, &list)) return 0;
 
