@@ -19,6 +19,18 @@
 #include "task.h"
 
 #include <stdio.h>
+#include <stdarg.h>
+
+// Through the output layer, not printf, so a redirect, a pipe or a remote
+// login gets the picture rather than the serial port.
+static void put(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+static void put(const char *fmt, ...) {
+    char line[200];
+    va_list ap; va_start(ap, fmt);
+    int n = vsnprintf(line, sizeof(line), fmt, ap);
+    va_end(ap);
+    if (n > 0) out_write(line, (uint32_t)(n < (int)sizeof(line) ? n : (int)sizeof(line) - 1));
+}
 #include <string.h>
 #include "pico/stdlib.h"
 #include "hardware/clocks.h"
@@ -123,17 +135,17 @@ static int cmd_fetch(int, char **) {
 
     uint32_t lines = ART_ROWS > n + 1 ? ART_ROWS : n + 1;
     for (uint32_t i = 0; i < lines; i++) {
-        if (i < ART_ROWS) printf("  %s%-*s%s ", kGradient[i % 7], ART_WIDTH, kArt[i], C_RESET);
-        else              printf("  %-*s ", ART_WIDTH, "");
+        if (i < ART_ROWS) put("  %s%-*s%s ", kGradient[i % 7], ART_WIDTH, kArt[i], C_RESET);
+        else              put("  %-*s ", ART_WIDTH, "");
 
         if (i == 0) {
             // The header line: user@host, then a rule as wide as it is.
-            printf("%s%s%s@%s%s%s\n", C_CYAN, user, C_RESET, C_CYAN, host, C_RESET);
+            put("%s%s%s@%s%s%s\n", C_CYAN, user, C_RESET, C_CYAN, host, C_RESET);
         } else if (i - 1 < n) {
             const Row &r = rows[i - 1];
-            printf("%s%-8s%s %s\n", C_HEADER, r.key, C_RESET, r.val);
+            put("%s%-8s%s %s\n", C_HEADER, r.key, C_RESET, r.val);
         } else {
-            printf("\n");
+            put("\n");
         }
     }
     out_blank();

@@ -23,4 +23,17 @@ bool protect_secret(const char *path);
 // copying and overwriting.
 bool protect_reaches(const char *path);
 
+// Does this path touch ANOTHER user's ~/.ssh? Those files decide who may log
+// in as that user (authorized_keys) and whom they trust (known_hosts), and
+// hold their private key — so an ordinary account that could write one could
+// log in as root over SSH, and one that could read one could impersonate them.
+//
+// `self` may touch their own. With `change`, the test is "reaches", as above:
+// the home directory itself (removing or moving it takes .ssh with it), /home,
+// and a wildcard where a home or a .ssh could match. Without it, only .ssh and
+// what is inside it, and a wildcard that could match .ssh. Case is ignored in
+// ".ssh"; the user name has to match exactly, as the filesystem does. A path
+// too long to judge reaches.
+bool protect_home_ssh(const char *path, const char *self, bool change);
+
 #endif

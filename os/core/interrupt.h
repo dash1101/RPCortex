@@ -16,6 +16,28 @@
 
 #include <stdint.h>
 
+// --- whose Ctrl+C ---------------------------------------------------------------
+//
+// The flag used to be one global, because there was one keyboard. A remote
+// login is a second keyboard: its Ctrl+C must stop the command running in
+// THAT session, and the console's must not reach it — nor may a command run
+// remotely clear the console's flag, which the shell does before every line.
+//
+// So the flag belongs to a DOMAIN. Domain 0 is the console's, and every task
+// is in it unless it was started from a remote login, which allocates a domain
+// of its own and passes it on (by value, through TaskShell) to whatever it
+// starts. A domain carries a generation: once the login ends and its number is
+// reused, a job it left running holds a stale handle, and a stale handle is
+// never pending rather than somebody else's flag.
+//
+// Everything below acts on the CALLING task's domain; intr_raise_in is the one
+// that names a domain, for the code that reads a remote session's input on a
+// different task from the one running its commands.
+uint16_t intr_domain_new(void);          // 0 when none is free
+void     intr_domain_free(uint16_t dom);
+void     intr_raise_in(uint16_t dom);
+bool     intr_pending_in(uint16_t dom);
+
 // Raise the flag. Called from the input path when 0x03 arrives.
 void intr_raise(void);
 

@@ -7,10 +7,26 @@
 // user authenticates. Sets the active user (System.Active_User in the registry).
 void session_boot(void);
 
-// The logged-in user, for the prompt and whoami. "root" until login completes.
+#include <stdint.h>
+#include "task.h"
+
+// The user the CALLING TASK acts for: its own when it belongs to a remote
+// login (or was started from one), otherwise whoever is logged in at the
+// console. "root" until the console's login completes. Every permission check
+// asks this; see TaskShell in task.h.
 const char *session_user(void);
 
-// Log out: clear the active user so session_boot's login loop runs again.
+// Does the calling task belong to a remote login?
+bool session_is_remote(void);
+
+// Make the calling task a remote login's: its user, its terminal, its Ctrl+C
+// domain, and a working directory of /home/<user> when that exists. Called by
+// the SSH server as the first thing a session's shell task does, before any
+// command can run.
+void session_attach(const char *user, const TaskTerm *term, uint16_t intr_dom);
+
+// Log out. At the console: clear the active user so session_boot's login loop
+// runs again. In a remote login: end that login, and leave the console alone.
 void session_logout(void);
 
 // One line of input at the standard prompt, optionally masked. Shared with the

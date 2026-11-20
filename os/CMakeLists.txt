@@ -140,6 +140,7 @@ add_executable(rpcortex_v2
     ${OS_ROOT}/core/linkreq.cpp
     ${OS_ROOT}/core/registry.cpp
     ${OS_ROOT}/core/users.cpp
+    ${OS_ROOT}/core/ident.cpp
     ${OS_ROOT}/core/persist.cpp
     ${OS_ROOT}/core/out.cpp
     ${OS_ROOT}/core/banner.cpp

@@ -267,6 +267,26 @@ extern "C" int fw_line_read(char *buf, int cap) {
     task_alive();
     if (!ok_w(buf, (uint32_t)cap) || cap < 1) return -1;
 
+    // A package run from a remote login reads that login's terminal, which
+    // has one reader already (this task), so there is nothing to claim. It
+    // used to read the CONSOLE: the question appeared remotely and the answer
+    // was taken from whoever was typing at the serial port.
+    if (const TaskTerm *t = task_shell()->term) {
+        int n = 0;
+        for (;;) {
+            if (task_should_stop()) return -1;
+            if (intr_pending()) { intr_clear(); return -1; }
+            int c = t->getkey ? t->getkey(t->ctx) : -1;
+            if (c < 0) { task_sleep_ms(5); continue; }
+            if (c == 0x03) return -1;
+            if (c == '\r' || c == '\n') break;
+            if (c == 8 || c == 0x7f) { if (n) n--; continue; }
+            if (n < cap - 1) buf[n++] = (char)c;
+        }
+        buf[n] = 0;
+        return n;
+    }
+
     // The stash is deliberately NOT drained. Those bytes were pulled off the
     // wire before this call and belong to the shell's own line editor at its
     // next prompt; taking them here is the put corruption in reverse.

@@ -228,7 +228,11 @@ static int cmd_rmuser(int argc, char **argv) {
 static int cmd_logout(int, char **) {
     out_info("Logging out...");
     session_logout();
-    session_boot();          // straight back to the login prompt
+    // Straight back to the login prompt — at the console. A remote login has
+    // just been told to end; running the console's login prompt here would put
+    // the device's own sign-in on somebody else's terminal, and whoever
+    // answered it would become the console's user.
+    if (!session_is_remote()) session_boot();
     return 0;
 }
 

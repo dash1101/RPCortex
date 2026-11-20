@@ -12,6 +12,7 @@
 #include "fsguard.h"
 #include "fmt.h"
 #include "interrupt.h"
+#include "task.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -20,9 +21,18 @@
 const char *shell_stdin(void);      // this stage's piped input, or nullptr
 uint32_t    shell_stdin_len(void);
 
-static char g_cwd[128] = "/";
+// The console's working directory. A remote login keeps its own in the task
+// (TaskShell::cwd), so `cd` over SSH does not move the person at the serial
+// port, and a relative path typed at the console does not resolve against
+// wherever a remote session last went.
+static char g_cwd[TASK_CWD_MAX] = "/";
 
-const char *fs_cwd(void) { return g_cwd; }
+static char *cwd_buf(void) {
+    TaskShell *ts = task_shell();
+    return ts->own_user ? ts->cwd : g_cwd;
+}
+
+const char *fs_cwd(void) { return cwd_buf(); }
 
 // Path resolution now lives in core/path.cpp (path_resolve), so it can be
 // host-tested away from littlefs. This wrapper binds it to the shell's cwd.
@@ -30,7 +40,7 @@ const char *fs_cwd(void) { return g_cwd; }
 // False, after saying so, when the path is too long to resolve; callers stop
 // there. (It used to drop a long name and return a shorter path that existed.)
 static bool resolve(const char *in, char *out, size_t cap) {
-    if (path_resolve(g_cwd, in, out, cap)) return true;
+    if (path_resolve(cwd_buf(), in, out, cap)) return true;
     out_err("Path too long: %.48s...", in ? in : "");
     return false;
 }
@@ -46,7 +56,7 @@ static bool resolve_change(const char *in, char *out, size_t cap) {
     return fs_allow_change(out);
 }
 
-static int cmd_pwd(int, char **) { out_multi("%s", g_cwd); return 0; }
+static int cmd_pwd(int, char **) { out_multi("%s", cwd_buf()); return 0; }
 
 static int cmd_cd(int argc, char **argv) {
     const char *arg = (argc >= 2) ? argv[1] : "/";
@@ -55,8 +65,9 @@ static int cmd_cd(int argc, char **argv) {
     bool is_dir = false;
     if (!storage_stat(path, &is_dir, nullptr)) { out_err("No such path: %s", path); return 1; }
     if (!is_dir) { out_err("Not a directory: %s", path); return 1; }
-    strncpy(g_cwd, path, sizeof(g_cwd) - 1);
-    g_cwd[sizeof(g_cwd) - 1] = 0;
+    char *cwd = cwd_buf();
+    strncpy(cwd, path, TASK_CWD_MAX - 1);
+    cwd[TASK_CWD_MAX - 1] = 0;
     return 0;
 }
 

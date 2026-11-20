@@ -1056,6 +1056,26 @@ static int run_line(char *line, bool top) {
     return last_status;
 }
 
+// A typed line from a terminal other than the console — a remote login — run
+// exactly as the console runs one: connectors, pipes, redirects, the
+// Interrupted message and status 130 on Ctrl+C. shell_run_line_now is the
+// nested runner (scripts, bg, fw_shell_run, link): it leaves a Ctrl+C for
+// its caller to see instead of reporting it.
+int shell_run_input(char *line) {
+    bb_note_command(line);
+    int rc = run_line(line, /*top*/true);
+    bb_note_command("");
+    return rc;
+}
+
+// v1's prompt, colour for colour: cyan user, grey @host, blue path.
+void shell_prompt_text(char *out, unsigned cap) {
+    snprintf(out, cap, "%s%s%s@%s%s:%s%s%s%s>%s ",
+             C_CYAN, session_user(), C_GRAY,
+             reg_get("System.Device_ID", "vela"), C_RESET,
+             C_BLUE, fs_cwd(), C_RESET, C_CYAN, C_RESET);
+}
+
 void shell_run(void) {
     char line[128];
 
@@ -1079,11 +1099,7 @@ void shell_run(void) {
         net_autoconnect_report();
 
         char prompt[80];
-        // v1's prompt, colour for colour: cyan user, grey @host, blue path.
-        snprintf(prompt, sizeof(prompt), "%s%s%s@%s%s:%s%s%s%s>%s ",
-                 C_CYAN, session_user(), C_GRAY,
-                 reg_get("System.Device_ID", "vela"), C_RESET,
-                 C_BLUE, fs_cwd(), C_RESET, C_CYAN, C_RESET);
+        shell_prompt_text(prompt, sizeof(prompt));
         if (!read_line(prompt, line, sizeof(line))) continue;
         if (g_idle_fired) {
             // Whatever was half-typed is discarded, not run and not remembered.

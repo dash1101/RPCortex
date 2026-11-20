@@ -80,6 +80,7 @@ struct OutGuard {
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
+#include <stdlib.h>
 
 
 void out_clear_error(void) { task_shell()->had_error = false; }
@@ -91,6 +92,9 @@ void out_restore_error(bool had) { if (had) task_shell()->had_error = true; }
 static bool capturing_here(void);
 static bool capture_takes_tags(void);
 static void cap_append(const char *src, uint32_t len, uint8_t *st);
+struct CapFrame;
+static CapFrame *term_frame(void);
+static void term_put(CapFrame *f, const char *d, uint32_t n);
 
 // The shape v1's _fmt built:
 //   <colour>[<white><symbol><colour>] [<white><prefix><colour>] <reset><msg>
@@ -104,7 +108,22 @@ static void emit(const char *colour, const char *symbol, const char *p,
     // A package that asked for the output wants ALL of it. A pipe does not —
     // during `ls > f` an error about the listing belongs on the screen, not in
     // the file — so this is the capture's choice and not emit's.
-    if (capture_takes_tags()) {
+    //
+    // "The screen" is the task's own terminal when it has one: a remote login's
+    // status lines go to that login, coloured as the console would show them,
+    // whether or not a pipe is capturing the data channel over the top. Before
+    // this they went to the console, which put a remote user's errors on the
+    // serial port.
+    CapFrame *tf = nullptr;
+    if (!capture_takes_tags() && (tf = term_frame()) != nullptr) {
+        char line[LOG_LINE_MAX + 64];
+        int n;
+        if (p) n = snprintf(line, sizeof(line), "%s[%s%s%s] %s[%s%s%s] %s%s\n", colour, C_WHITE,
+                            symbol, colour, colour, C_WHITE, p, colour, C_RESET, msg);
+        else   n = snprintf(line, sizeof(line), "%s[%s%s%s] %s%s\n", colour, C_WHITE, symbol,
+                            colour, C_RESET, msg);
+        if (n > 0) term_put(tf, line, (uint32_t)(n < (int)sizeof(line) ? n : (int)sizeof(line) - 1));
+    } else if (capture_takes_tags()) {
         uint8_t st = 0;
         cap_append("[", 1, &st);
         cap_append(symbol, (uint32_t)strlen(symbol), &st);
@@ -213,6 +232,11 @@ struct CapFrame {
     int      owner;
     uint32_t seq;        // larger is newer; the owner's newest frame is its top
     bool     used;
+    // A terminal frame (out_capture_begin_term): output goes straight to the
+    // sink, unfiltered, and `buf` is only a place to format into.
+    bool      term;
+    OutSinkFn sink;
+    void     *sink_ctx;
 };
 static CapFrame g_caps[CAP_FRAMES];
 // The owner of a frame nobody holds. Not -1: that is what task_self() says when
@@ -262,6 +286,7 @@ static bool begin(char *buf, uint32_t cap, bool tags) {
     f->buf = buf; f->size = cap; f->len = 0; f->over = false;
     f->tags = tags; f->esc = 0;
     f->seq = seq;
+    f->term = false; f->sink = nullptr; f->sink_ctx = nullptr;
     buf[0] = 0;
     f->owner = task_self();          // last: the frame is this task's from here
     return true;
@@ -270,9 +295,42 @@ static bool begin(char *buf, uint32_t cap, bool tags) {
 bool out_capture_begin(char *buf, uint32_t cap)     { return begin(buf, cap, false); }
 bool out_capture_begin_all(char *buf, uint32_t cap) { return begin(buf, cap, true); }
 
+void out_capture_reclaim(int pid) {
+    lock_hw_enter();
+    for (int i = 0; i < CAP_FRAMES; i++)
+        if (g_caps[i].used && g_caps[i].owner == pid) { g_caps[i].used = false; g_caps[i].owner = CAP_NOBODY; }
+    lock_hw_exit();
+}
+
+bool out_capture_begin_term(char *buf, uint32_t cap, OutSinkFn sink, void *ctx) {
+    if (!sink || !begin(buf, cap, false)) return false;
+    CapFrame *f = cur();
+    f->sink = sink;
+    f->sink_ctx = ctx;
+    f->term = true;                  // last of all: from here output flows to it
+    return true;
+}
+
 // True only for the task that started the capture.
 static bool capturing_here(void) { return cur() != nullptr; }
 static bool capture_takes_tags(void) { CapFrame *f = cur(); return f && f->tags; }
+// Capturing into a BUFFER: a pipe, a redirect, a package's fw_shell_run. A
+// terminal frame is not one — progress bars and prompts belong on it.
+static bool capturing_buffer(void) { CapFrame *f = cur(); return f && !f->term; }
+
+// The task's terminal frame, under whatever pipes are capturing over it.
+__attribute__((noinline)) static CapFrame *term_frame(void) {
+    int me = task_self();
+    for (int i = 0; i < CAP_FRAMES; i++) {
+        CapFrame *f = &g_caps[i];
+        if (f->used && f->owner == me && f->term) return f;
+    }
+    return nullptr;
+}
+
+static void term_put(CapFrame *f, const char *d, uint32_t n) {
+    if (n) f->sink(f->sink_ctx, d, n);
+}
 
 // Ends THIS task's newest capture, and only that. A task that is not capturing
 // gets 0 and changes nothing - it used to end whichever capture was running,
@@ -307,6 +365,7 @@ uint32_t out_capture_end(void) {
 __attribute__((noinline)) static void cap_append(const char *src, uint32_t len, uint8_t *st) {
     CapFrame *f = cur();
     if (!f) return;
+    if (f->term) { term_put(f, src, len); return; }   // a terminal keeps its escapes
     for (uint32_t i = 0; i < len; i++) {
         char c = src[i];
         if (*st == 1)      { *st = (c == '[') ? 2 : 0; continue; }
@@ -354,10 +413,28 @@ void out_multi(const char *fmt, ...) {
         va_end(ap);
         return;
     }
+    CapFrame *f = cur();
+    if (f->term) {
+        // Into the scratch buffer, or — for a line longer than it — a block
+        // of exactly the right size, since a terminal is never truncated.
+        va_list again;
+        va_copy(again, ap);
+        int want = vsnprintf(f->buf, f->size, fmt, ap);
+        va_end(ap);
+        if (want >= 0 && (uint32_t)want < f->size) {
+            term_put(f, f->buf, (uint32_t)want);
+        } else if (want > 0) {
+            char *big = (char *)malloc((size_t)want + 1);
+            if (big) { vsnprintf(big, (size_t)want + 1, fmt, again); term_put(f, big, (uint32_t)want); free(big); }
+            else     term_put(f, f->buf, f->size - 1);       // what fitted
+        }
+        va_end(again);
+        term_put(f, "\n", 1);
+        return;
+    }
     // Format straight into the remaining space, then take the escapes back out
     // in place. vsnprintf returns the length it WANTED, so a return past the
     // room available is how truncation is detected.
-    CapFrame *f = cur();
     uint32_t start = f->len;
     uint32_t room  = f->size - 1 - start;
     int want = vsnprintf(f->buf + start, room + 1, fmt, ap);
@@ -389,6 +466,15 @@ void out_blank(void) {
 }
 
 void out_prompt(const char *msg) {
+    // A question asked in a remote login is asked on that login's terminal.
+    // It went to the console regardless, and the answer was then read from
+    // the remote side — a question on one screen and its answer on another.
+    if (CapFrame *tf = term_frame()) {
+        char line[160];
+        int n = snprintf(line, sizeof(line), "%s%s %s••>  %s", C_RESET, msg, C_CYAN, C_RESET);
+        if (n > 0) term_put(tf, line, (uint32_t)(n < (int)sizeof(line) ? n : (int)sizeof(line) - 1));
+        return;
+    }
     OutGuard _o;
     printf("%s%s %s••>  %s", C_RESET, msg, C_CYAN, C_RESET);
     fflush(stdout);      // a prompt ends without a newline; see out_write
@@ -418,7 +504,7 @@ void out_pad(const char *s, int width, char *dst, int cap) {
 // --- progress ---------------------------------------------------------------
 
 void out_flush(void) {
-    if (capturing_here()) return;      // a capture is a buffer, not a terminal
+    if (capturing_buffer()) return;    // a buffer is not a terminal; a remote one is
     OutGuard _o;
     fflush(stdout);
 }
@@ -426,7 +512,7 @@ void out_flush(void) {
 #define BAR_CELLS 20
 
 void out_progress(const char *label, uint64_t done, uint64_t total) {
-    if (capturing_here()) return;      // a bar down a pipe is noise, not data
+    if (capturing_buffer()) return;    // a bar down a pipe is noise, not data
 
     char line[120];
     int n = 0;
@@ -458,7 +544,7 @@ void out_progress(const char *label, uint64_t done, uint64_t total) {
 }
 
 void out_spinner(const char *label, uint32_t elapsed_ms) {
-    if (capturing_here()) return;
+    if (capturing_buffer()) return;
     // ASCII, because a terminal that disagrees about a character set turns a
     // spinner into line noise — and this is the first thing anyone sees.
     static const char frames[] = "|/-\\";
@@ -472,7 +558,7 @@ void out_spinner(const char *label, uint32_t elapsed_ms) {
 }
 
 void out_progress_done(void) {
-    if (capturing_here()) return;
+    if (capturing_buffer()) return;
     // Overwrite the bar rather than leaving it above: a finished operation
     // reports its result, and a stale bar next to it just invites doubt.
     char clear[100];

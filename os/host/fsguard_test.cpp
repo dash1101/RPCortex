@@ -5,15 +5,15 @@
 // guest do not, and the message says which file and what was refused.
 
 #include "fsguard.h"
+#include "ident.h"
 #include "out.h"
 #include "logring.h"
 #include <stdio.h>
 #include <string.h>
 #include <initializer_list>
 
-// The session and the account list, faked. Whoever is "logged in" is a variable.
-static const char *g_user = "";
-const char *session_user(void) { return g_user; }
+// The account list, faked. Whoever is "logged in" at the console is set with
+// ident_console_set, the call the login prompt makes.
 bool users_is_admin(const char *n) { return n && !strcmp(n, "root"); }
 
 static int checks = 0, fails = 0;
@@ -26,12 +26,12 @@ int main(void) {
     const char *open_file = "/etc/startup.cfg", *os_dir = "/os", *wild = "/os/*.cfg";
 
     // --- nobody logged in: boot, first-run setup, the login prompt --------------
-    g_user = "";
+    ident_console_set("");
     ck(!fs_session_restricted(), "with nobody logged in the session is not restricted");
     ck(fs_may_read(reg) && fs_may_change(reg) && fs_may_change(os_dir), "so boot code is never held back");
 
     // --- an admin ----------------------------------------------------------------
-    g_user = "root";
+    ident_console_set("root");
     ck(!fs_session_restricted(), "an admin is not restricted");
     for (const char *p : {reg, users, key, os_dir, wild, "/"}) {
         ck(fs_may_read(p) && fs_may_change(p), "an admin may read and change every protected path");
@@ -39,7 +39,7 @@ int main(void) {
 
     // --- the guest, and an ordinary account --------------------------------------
     for (const char *who : {"guest", "sam"}) {
-        g_user = who;
+        ident_console_set(who);
         ck(fs_session_restricted(), "an account that is not an admin is restricted");
         ck(!fs_may_read(reg) && !fs_may_read(users) && !fs_may_read(key), "it cannot read the registry, the user list or the key");
         ck(!fs_may_change(reg) && !fs_may_change(users) && !fs_may_change(key), "it cannot change them");
@@ -58,7 +58,7 @@ int main(void) {
 
     // --- the message ----------------------------------------------------------------
     {
-        g_user = "guest";
+        ident_console_set("guest");
         char cap[512];
         ck(out_capture_begin_all(cap, sizeof(cap)), "capture starts");
         bool ok = fs_allow_read("/os/device.key");

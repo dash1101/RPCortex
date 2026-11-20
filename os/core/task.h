@@ -429,13 +429,51 @@ void   task_arena_set(Arena *a);
 // or clear its error so that `cp x y && rm x` removed x after the copy failed.
 //
 // Before the scheduler is up there is no task, and one shared block stands in.
+//
+// WHO THE TASK ACTS FOR lives here too. Until there was a second way in, "the
+// session" meant the console: session_user() was one global, and every
+// permission check in the OS asked it. A login over SSH is a second session at
+// the same moment, and asking the console then is wrong in the dangerous
+// direction — a guest logged in remotely would run with root's rights because
+// root happened to be signed in at the serial port.
+//
+// So a task either follows the console (own_user false: the console's user,
+// whoever that is right now, which is what every task has always done) or has
+// an identity of its own (own_user true: `user`, fixed for its life). A remote
+// login's shell task gets its own, and everything it starts inherits it BY
+// VALUE at task_spawn — a `bg` job outlives the login that started it, and a
+// pointer back into that login would outlive what it pointed at. The same
+// goes for the working directory and the interrupt domain (core/interrupt.h).
+//
+// `term` is the one part that is NOT inherited: it is the remote terminal the
+// task's shell is reading from, and it exists only as long as that login. A
+// job started from it reads no keys, as a console `bg` job reads none.
+#define TASK_USER_MAX 25
+#define TASK_CWD_MAX  128
+struct TaskTerm;
 struct TaskShell {
     const char *stdin_buf;
     uint32_t    stdin_len;
     bool        elevated;
     bool        had_error;
+
+    bool        own_user;
+    char        user[TASK_USER_MAX];
+    char        cwd[TASK_CWD_MAX];
+    uint16_t    intr_dom;          // 0: the console's Ctrl+C
+    const TaskTerm *term;
 };
 TaskShell *task_shell(void);
+
+// A remote terminal: where a task's keys come from and what ends its login.
+// Defined here because interrupt.cpp, session.cpp and the TUI all have to ask
+// it, and none of them may depend on the SSH code that implements it.
+struct TaskTerm {
+    int  (*getkey)(void *ctx);                        // a key, or -1 if none waiting
+    void (*hangup)(void *ctx);                        // `logout`: end this login
+    bool (*size)(void *ctx, uint16_t *cols, uint16_t *rows);
+    void *ctx;
+};
 
 // Read back what this task holds, so an entry into package code can put the
 // previous description back rather than clearing it. Nothing today can nest —

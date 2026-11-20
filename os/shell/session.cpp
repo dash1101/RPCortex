@@ -24,6 +24,7 @@
 #include "task.h"
 #include "interrupt.h"
 #include "storage.h"
+#include "ident.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -34,20 +35,45 @@
 int  net_setup_scan_and_join(void);
 bool net_available(void);
 
-static char g_user[24] = "root";
-
 // Consecutive failed passwords across the whole session, not just this attempt
 // run — the backoff should keep growing for a scripted attacker who restarts at
 // the username prompt.
 static uint32_t g_login_fails;
 
-const char *session_user(void) { return g_user; }
+// THE CALLING TASK'S user. A task with an identity of its own (a remote login,
+// and everything started from one) answers with that; every other task follows
+// the console, as all of them always did. Every permission check in the OS
+// goes through here or through fs_session_restricted, which asks the same
+// question — see core/ident.h, and TaskShell in task.h, for why it cannot be
+// one global any more. The console's own login lives in ident.cpp too.
+const char *session_user(void) { return ident_user(); }
+
+bool session_is_remote(void) { return ident_remote(); }
+
+void session_attach(const char *user, const TaskTerm *term, uint16_t intr_dom) {
+    // Start at home when there is one, as a login does.
+    char home[TASK_CWD_MAX];
+    snprintf(home, sizeof(home), "/home/%s", user ? user : "");
+    bool is_dir = false;
+    bool have = user && user[0] && storage_stat(home, &is_dir, nullptr) && is_dir;
+    ident_attach(user, term, intr_dom, have ? home : "/");
+}
+
 void session_logout(void) {
+    // A remote login ends ITSELF. Clearing the console's user from a session
+    // somewhere else on the network would log out whoever is at the serial
+    // port, and running the login prompt on this task would put the console's
+    // login on a remote terminal.
+    TaskShell *ts = task_shell();
+    if (ts->own_user) {
+        if (ts->term && ts->term->hangup) ts->term->hangup(ts->term->ctx);
+        return;
+    }
     // Their settings are written back and put away before the name goes. In the
     // other order there is no scope left to save and the session's changes are
     // simply lost.
     persist_scope_leave();
-    g_user[0] = 0;
+    ident_console_set("");
     session_reauth_forget();
 }
 
@@ -57,11 +83,24 @@ void session_logout(void) {
 static void read_field(const char *prompt, char *buf, size_t max, bool secret) {
     out_prompt(prompt);
     size_t n = 0;
+    bool remote = task_shell()->own_user;
     while (true) {
+        // A remote login that has gone, or been told to stop, answers every
+        // question with nothing — which every caller already treats as "no" —
+        // rather than waiting for ever on a terminal nobody is at. Ctrl+C there
+        // cancels the question the same way. The console keeps its old
+        // behaviour: nothing kills the shell task, and a stray flag must not
+        // cancel the login prompt.
+        if (task_should_stop() || (remote && intr_pending())) {
+            buf[0] = 0;
+            out_write("\n", 1);
+            return;
+        }
         // Anything intr_check set aside while a command ran is type-ahead for the
         // next prompt, which is this one — the same rule the shell's line editor
-        // follows, and the same order.
+        // follows, and the same order. Over SSH this is the session's own input.
         int c = intr_getkey();
+        if (remote && c == 0x03) { buf[0] = 0; out_write("^C\n", 3); return; }
         if (c < 0) {
             // YIELD, not sleep. This loop waits on a human typing a password,
             // which can take a minute, and the watchdog is only fed by the
@@ -172,6 +211,10 @@ bool session_confirm(const char *msg) {
 static char     g_reauth_user[USR_NAME_MAX + 1];
 static uint32_t g_reauth_at;
 static bool     g_reauth_have;
+// Which session it was given in: the interrupt domain stands for the session
+// (0 the console, one per remote login). The same name proving itself at the
+// serial port says nothing about who is typing in a remote session.
+static uint16_t g_reauth_dom;
 
 void session_reauth_forget(void) {
     g_reauth_have = false;
@@ -195,6 +238,7 @@ bool session_reauth(const char *what_for) {
 
     uint32_t now = task_now_ms();
     if (g_reauth_have && strcmp(g_reauth_user, who) == 0 &&
+        g_reauth_dom == task_shell()->intr_dom &&
         (uint32_t)(now - g_reauth_at) < REAUTH_GRACE_MS) {
         return true;
     }
@@ -207,6 +251,9 @@ bool session_reauth(const char *what_for) {
         char prompt[96];
         snprintf(prompt, sizeof(prompt), "Password for %s, to %s", who, what_for);
         read_field(prompt, pw, sizeof(pw), true);
+        // A remote login cancelled or going away: no answer is not a wrong one.
+        if (!pw[0] && task_shell()->own_user && (task_should_stop() || intr_pending()))
+            return false;
 
         bool ok = users_verify(who, pw);
         // Not left on the stack for whatever runs next in this frame.
@@ -216,6 +263,7 @@ bool session_reauth(const char *what_for) {
             snprintf(g_reauth_user, sizeof(g_reauth_user), "%s", who);
             g_reauth_at   = now;
             g_reauth_have = true;
+            g_reauth_dom  = task_shell()->intr_dom;
             return true;
         }
         out_err("Wrong password.");
@@ -372,14 +420,14 @@ static void first_run(void) {
 
 static void accept(const char *name) {
     g_login_fails = 0;
-    snprintf(g_user, sizeof(g_user), "%s", name);
-    reg_set("System.Active_User", g_user);
+    ident_console_set(name);
+    reg_set("System.Active_User", ident_console());
     // Their own settings, before anything reads one. Any "User." key looked up
     // between here and the prompt would otherwise get the device default and
     // then be written back as theirs.
-    persist_scope_enter(g_user);
+    persist_scope_enter(ident_console());
     persist_save_dirty();
-    out_ok("Welcome, %s!", g_user);
+    out_ok("Welcome, %s!", ident_console());
 }
 
 void session_boot(void) {

@@ -107,7 +107,18 @@ bool     out_capture_begin(char *buf, uint32_t cap);
 // an out_info and whose rows are out_multi arrives half-captured otherwise, and
 // half a listing reads exactly like a complete one.
 bool     out_capture_begin_all(char *buf, uint32_t cap);
+// A capture that is a TERMINAL rather than a buffer, for a remote login: what
+// the task prints goes to `sink` as it is printed, exactly as the console
+// would have shown it — colours, status tags and escape sequences kept, so a
+// full-screen app draws properly — and nothing is ever truncated. `buf` is
+// only where a line is formatted on its way through. Pipes and redirects
+// inside the session still capture over the top of it as usual.
+typedef void (*OutSinkFn)(void *ctx, const char *data, uint32_t len);
+bool     out_capture_begin_term(char *buf, uint32_t cap, OutSinkFn sink, void *ctx);
 uint32_t out_capture_end(void);       // bytes captured; ends the capture
+// Give back every frame a finished task left open. A task ended by the
+// watchdog never reaches its out_capture_end, and the frame table is small.
+void     out_capture_reclaim(int pid);
 bool     out_capturing(void);
 // True if the capture ran out of room. A truncated pipe should say so rather
 // than quietly hand the next stage half its input.

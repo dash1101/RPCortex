@@ -465,6 +465,19 @@ int task_spawn(const char *name, const char *path, TaskFn fn, void *arg,
     t->app_mem_set = false;
     t->arena = nullptr;
     memset(&t->shell, 0, sizeof(t->shell));   // a reused slot must not inherit sudo or stdin
+    // ...but it DOES inherit who it acts for, from the task starting it. A job
+    // started from a remote login runs as that login's user, in its directory,
+    // in its interrupt domain; one started from a task that follows the console
+    // goes on following the console. Copied, never pointed at: the login can
+    // end while the job runs on. The terminal is deliberately left behind.
+    if (Task *parent = cur()) {
+        if (parent->shell.own_user) {
+            t->shell.own_user = true;
+            memcpy(t->shell.user, parent->shell.user, sizeof(t->shell.user));
+            memcpy(t->shell.cwd, parent->shell.cwd, sizeof(t->shell.cwd));
+        }
+        t->shell.intr_dom = parent->shell.intr_dom;
+    }
     t->live  = false;        // slots are reused; the memset above only clears info
     t->crit  = 0;
 

@@ -34,6 +34,15 @@ static bool      g_active;
 static uint16_t  g_term_w = 80, g_term_h = 24;
 static TuiKeyParser g_keys;
 
+// WHOSE screen this is. There is one set of state here — the frame last sent
+// and the key parser — and two terminals that could want it: the console and a
+// remote login. A second app starting on the other terminal while one is open
+// would draw its frames against the first one's diff and read half of its
+// escape sequences, so it is refused, and every call from anybody but the
+// owner does nothing.
+static int g_owner;
+static bool mine(void) { return g_active && g_owner == task_self(); }
+
 // --- batched output ---------------------------------------------------------
 //
 // Everything a frame sends is gathered here and written once.
@@ -122,6 +131,18 @@ static void apply_attr(uint8_t attr, uint8_t fg, uint8_t *cur_attr, uint8_t *cur
 static void query_size(uint16_t *w, uint16_t *h) {
     *w = 80; *h = 24;
 
+    // A remote terminal says how big it is (the pty request and every window
+    // change carry it), so it is asked rather than probed: the probe's reply
+    // would arrive on the console, which is not where this app is drawing.
+    if (const TaskTerm *t = task_shell()->term) {
+        uint16_t cw = 0, ch = 0;
+        if (t->size && t->size(t->ctx, &cw, &ch) && ch >= 5 && cw >= 20) {
+            *w = cw > TUI_MAX_W ? TUI_MAX_W : cw;
+            *h = ch > TUI_MAX_H ? TUI_MAX_H : ch;
+        }
+        return;
+    }
+
     esc("\033[s\033[999;999H\033[6n");     // save, go far, report position
 
     // "\033[<rows>;<cols>R". Bounded by a deadline rather than a byte count,
@@ -160,7 +181,7 @@ static void query_size(uint16_t *w, uint16_t *h) {
 // input stream. So it happens on request: Ctrl+L, the same key every terminal
 // program uses for "redraw, I do not trust what is on screen".
 bool tuiterm_refresh(void) {
-    if (!g_active) return false;
+    if (!mine()) return false;
     uint16_t w = g_term_w, h = g_term_h;
     query_size(&w, &h);
     bool changed = (w != g_term_w || h != g_term_h);
@@ -178,7 +199,11 @@ void tuiterm_size(uint16_t *w, uint16_t *h) {
 }
 
 void tuiterm_begin(void) {
-    if (g_active) return;
+    if (g_active) {
+        if (g_owner != task_self())
+            out_err("A full-screen app is already open on another terminal.");
+        return;
+    }
     g_shown = (TuiScreen *)malloc(sizeof(TuiScreen));
     if (!g_shown) {
         // Refuse rather than half-start. A TUI with no previous frame to diff
@@ -189,6 +214,7 @@ void tuiterm_begin(void) {
         return;
     }
     g_active = true;
+    g_owner = task_self();
     tuikey_init(&g_keys);
 
     esc("\033[?1049h");     // the alternate screen, so the shell scrollback survives
@@ -207,7 +233,7 @@ void tuiterm_begin(void) {
 }
 
 void tuiterm_end(void) {
-    if (!g_active) return;
+    if (!mine()) return;
     g_active = false;
     free(g_shown);
     g_shown = nullptr;
@@ -221,7 +247,7 @@ void tuiterm_end(void) {
 }
 
 void tuiterm_present(const TuiScreen *s) {
-    if (!g_active) return;
+    if (!mine()) return;
 
     bool full = (g_shown->w != s->w || g_shown->h != s->h);
     if (full) {
@@ -258,13 +284,13 @@ void tuiterm_present(const TuiScreen *s) {
 }
 
 void tuiterm_cursor(int x, int y, bool visible) {
-    if (!g_active) return;
+    if (!mine()) return;
     if (visible) { move_to(x, y); esc("\033[?25h"); }
     else         esc("\033[?25l");
 }
 
 bool tuiterm_poll(TuiEvent *out) {
-    if (!g_active || !out) return false;
+    if (!mine() || !out) return false;
 
     // Consume bytes until an event is COMPLETE, or the input runs dry.
     //
@@ -298,4 +324,4 @@ bool tuiterm_poll(TuiEvent *out) {
     return false;
 }
 
-bool tuiterm_active(void) { return g_active; }
+bool tuiterm_active(void) { return mine(); }

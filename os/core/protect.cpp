@@ -34,12 +34,71 @@ static bool canon(const char *path, char *out) {
     return true;
 }
 
+// The SSH host key, and anything else the server keeps, lives here: a reader
+// of the host key can impersonate the device to everybody who trusts it.
+static const char kSshDir[] = "/os/ssh";
+
 bool protect_secret(const char *path) {
     if (!path) return false;
     char c[CANON_MAX];
     if (!canon(path, c)) return true;
     for (int i = 0; i < N_SECRET; i++)
         if (strcmp(c, kSecret[i]) == 0) return true;
+    // Everything in /os/ssh, and the directory itself (a listing names the files).
+    size_t sl = sizeof(kSshDir) - 1;
+    if (strncmp(c, kSshDir, sl) == 0 && (c[sl] == 0 || c[sl] == '/')) return true;
+    return false;
+}
+
+static bool has_wild(const char *s, size_t n) {
+    for (size_t i = 0; i < n; i++) if (s[i] == '*' || s[i] == '?') return true;
+    return false;
+}
+
+// Case-insensitive for the fixed parts, as the list above is: "/HOME" and
+// ".SSH" are other directories on this filesystem, but a guard that only
+// stops the exact spelling is one typo from not being a guard.
+static bool prefix_ci(const char *s, const char *p) {
+    for (; *p; s++, p++) {
+        char a = *s, b = *p;
+        if (a >= 'A' && a <= 'Z') a = (char)(a + 32);
+        if (a != b) return false;
+    }
+    return true;
+}
+
+static bool is_dot_ssh(const char *s, size_t n) {
+    if (n != 4) return false;
+    return s[0] == '.' && (s[1] | 32) == 's' && (s[2] | 32) == 's' && (s[3] | 32) == 'h';
+}
+
+bool protect_home_ssh(const char *path, const char *self, bool change) {
+    if (!path) return false;
+    // Normalised but NOT lower-cased: the user name is matched exactly.
+    char c[CANON_MAX];
+    if (strlen(path) >= CANON_MAX) return true;
+    if (!path_resolve("/", path, c, sizeof(c))) return true;
+    size_t n = strlen(c);
+    while (n > 1 && c[n - 1] == '/') c[--n] = 0;
+
+    // "/home" itself: removing or moving it takes every .ssh with it.
+    if (n == 5 && prefix_ci(c, "/home")) return change;
+    if (n < 6 || !prefix_ci(c, "/home/")) return false;
+
+    const char *x = c + 6;
+    const char *slash = strchr(x, '/');
+    size_t xn = slash ? (size_t)(slash - x) : strlen(x);
+    if (has_wild(x, xn)) return true;                  // could be anybody's
+    bool mine = self && self[0] && strlen(self) == xn && strncmp(x, self, xn) == 0;
+    if (mine) return false;
+    if (!slash) return change;                         // the whole home of someone else
+
+    // Inside someone else's home: the next component decides.
+    const char *y = slash + 1;
+    const char *slash2 = strchr(y, '/');
+    size_t yn = slash2 ? (size_t)(slash2 - y) : strlen(y);
+    if (is_dot_ssh(y, yn)) return true;                // .ssh or anything in it
+    if (!slash2 && has_wild(y, yn)) return true;       // /home/bob/* could be .ssh
     return false;
 }
 

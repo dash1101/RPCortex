@@ -82,7 +82,7 @@ declare -A SRC=(
     [fuzz_test]="$CORE/httpparse.cpp $CORE/repoindex.cpp $CORE/pkgindex.cpp $CORE/fatro.cpp $CORE/cmdline.cpp $CORE/lineedit.cpp $CORE/clockcfg.cpp $CORE/interrupt.cpp $CORE/task.cpp $CORE/blackbox.cpp host_task_stub.cpp"
     [secret_test]="$CORE/secret.cpp $CORE/sha256.cpp"
     [protect_test]="$CORE/protect.cpp $CORE/path.cpp"
-    [fsguard_test]="$SHELL_DIR/fsguard.cpp $CORE/protect.cpp $CORE/path.cpp $CORE/out.cpp $CORE/lock.cpp $CORE/task.cpp $CORE/blackbox.cpp $CORE/logring.cpp host_task_stub.cpp"
+    [fsguard_test]="$SHELL_DIR/fsguard.cpp $CORE/ident.cpp $CORE/protect.cpp $CORE/path.cpp $CORE/out.cpp $CORE/lock.cpp $CORE/task.cpp $CORE/blackbox.cpp $CORE/logring.cpp host_task_stub.cpp"
     [task_test]="$CORE/task.cpp $CORE/blackbox.cpp"
     [smp_test]="$CORE/task.cpp $CORE/blackbox.cpp"
     [calc_test]=""
@@ -215,6 +215,11 @@ FLAGS[ssh_test]="$SSH_FLAGS"
 SRC[ssh_fuzz_test]="$SSH_CORE $OUT/libmbed.a"
 FLAGS[ssh_fuzz_test]="$SSH_FLAGS"
 NEEDS_MBED="ssh_test ssh_fuzz_test"
+# Who a command runs as: a remote login carries its own user, so a guest logged
+# in over SSH is a guest whoever is at the console, and the other way round.
+# The real ident, users, perms, fsguard, protect and interrupt code, on real
+# task switches (its own ucontext seam, like task_test).
+SRC[identity_test]="$SHELL_DIR/fsguard.cpp $CORE/ident.cpp $CORE/users.cpp $CORE/sha256.cpp $CORE/perms.cpp $CORE/protect.cpp $CORE/path.cpp $CORE/out.cpp $CORE/logring.cpp $CORE/interrupt.cpp $CORE/lock.cpp $CORE/task.cpp $CORE/blackbox.cpp"
 
 # Tests worth running a SECOND time with no sanitizer.
 #

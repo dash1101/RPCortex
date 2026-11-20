@@ -7,4 +7,12 @@
 void shell_register_builtins(void);
 void shell_run(void);
 
+// Run one typed line from another terminal (a remote login) as the console's
+// prompt would: ; && || | > all work. Returns the last status.
+int shell_run_input(char *line);
+
+// The prompt text the console shows, for the calling task's user and
+// directory: user@device:cwd>
+void shell_prompt_text(char *out, unsigned cap);
+
 #endif  // RPC_SHELL_H

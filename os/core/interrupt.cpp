@@ -1,8 +1,58 @@
 #include "interrupt.h"
 #include "task.h"
+#include "lock.h"
 
-static volatile bool g_pending;
+static volatile bool g_pending;          // domain 0: the console
 static IntrPollFn    g_poll;
+
+// The other domains. Four: two remote logins at most, plus room for a login
+// that has ended while a job it started is still running.
+#define INTR_DOMAINS 4
+static struct {
+    volatile bool pending;
+    bool          used;
+    uint8_t       gen;
+} g_dom[INTR_DOMAINS];
+
+// A handle is (generation << 8) | (index + 1), so 0 is never a remote domain.
+static volatile bool *flag_of(uint16_t d) {
+    if (d == 0) return &g_pending;
+    uint32_t i = (uint32_t)(d & 0xFF) - 1;
+    if (i >= INTR_DOMAINS || !g_dom[i].used || g_dom[i].gen != (uint8_t)(d >> 8)) return nullptr;
+    return &g_dom[i].pending;
+}
+
+uint16_t intr_domain_new(void) {
+    uint16_t h = 0;
+    lock_hw_enter();
+    for (uint32_t i = 0; i < INTR_DOMAINS; i++) {
+        if (g_dom[i].used) continue;
+        g_dom[i].used = true;
+        g_dom[i].gen++;
+        g_dom[i].pending = false;
+        h = (uint16_t)(((uint16_t)g_dom[i].gen << 8) | (i + 1));
+        break;
+    }
+    lock_hw_exit();
+    return h;
+}
+
+void intr_domain_free(uint16_t d) {
+    if (!d) return;
+    uint32_t i = (uint32_t)(d & 0xFF) - 1;
+    lock_hw_enter();
+    if (i < INTR_DOMAINS && g_dom[i].used && g_dom[i].gen == (uint8_t)(d >> 8)) {
+        g_dom[i].used = false;
+        g_dom[i].pending = false;
+    }
+    lock_hw_exit();
+}
+
+void intr_raise_in(uint16_t d)   { if (volatile bool *f = flag_of(d)) *f = true; }
+bool intr_pending_in(uint16_t d) { volatile bool *f = flag_of(d); return f && *f; }
+
+static uint16_t my_dom(void) { return task_shell()->intr_dom; }
+static const TaskTerm *my_term(void) { return task_shell()->term; }
 
 // Bytes intr_check pulled off the input while looking for Ctrl+C.
 //
@@ -35,14 +85,18 @@ static void stash_put(char c) {
     g_head = (g_head + 1) % STASH_N;
 }
 
+// The stash is the CONSOLE's type-ahead. A remote session has its own input
+// ring and never drains this — a Ctrl+C at a remote prompt used to be able to
+// throw away what somebody had typed ahead at the serial port.
 int intr_stashed(void) {
+    if (my_term()) return -1;
     if (g_tail == g_head) return -1;
     char c = g_stash[g_tail];
     g_tail = (g_tail + 1) % STASH_N;
     return (unsigned char)c;
 }
 
-void intr_stash_clear(void) { g_head = g_tail = 0; }
+void intr_stash_clear(void) { if (!my_term()) g_head = g_tail = 0; }
 
 // Only the shell's task reads keys, for the reason intr_check gives: anything
 // else reading the wire takes keystrokes meant for whoever is at the prompt.
@@ -50,6 +104,10 @@ void intr_stash_clear(void) { g_head = g_tail = 0; }
 static bool may_read_keys(void);
 
 int intr_getkey(void) {
+    // A task attached to a remote terminal reads that terminal and nothing
+    // else. This is the one door every key-reading command goes through, so a
+    // prompt, a pager or a full-screen app run over SSH reads the right keys.
+    if (const TaskTerm *t = my_term()) return t->getkey ? t->getkey(t->ctx) : -1;
     if (!may_read_keys()) return -1;
     int c = intr_stashed();
     if (c >= 0) return c;
@@ -150,9 +208,9 @@ bool intr_input_may_read(int pid) {
     return !claim_live() || g_input_owner == pid;
 }
 
-void intr_raise(void)  { g_pending = true; }
-bool intr_pending(void){ return g_pending; }
-void intr_clear(void)  { g_pending = false; }
+void intr_raise(void)  { if (volatile bool *f = flag_of(my_dom())) *f = true; }
+bool intr_pending(void){ volatile bool *f = flag_of(my_dom()); return f && *f; }
+void intr_clear(void)  { if (volatile bool *f = flag_of(my_dom())) *f = false; }
 
 static bool may_read_keys(void) {
     int shell = task_shell_pid();
@@ -171,8 +229,13 @@ bool intr_check(void) {
     // written to handle one handles the other with no extra code.
     if (task_should_stop()) return true;
 
-    if (g_pending) return true;
+    // This task's own domain: a remote session's Ctrl+C, or the console's.
+    if (intr_pending()) return true;
     if (!g_poll) return false;
+    // A task attached to a remote terminal never reads the console. Its
+    // Ctrl+C arrives through the domain above, raised by the task that reads
+    // its connection.
+    if (my_term() || my_dom() != 0) return false;
     // Only the shell's own task reads the wire. It is the task that runs every
     // command, a foreground package included, so a command polling for Ctrl+C
     // still sees it. Any other task — a service, a background job, Nova D1's input

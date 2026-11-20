@@ -1,26 +1,31 @@
 #include "fsguard.h"
+#include "ident.h"
 #include "session.h"
 #include "users.h"
 #include "protect.h"
 #include "out.h"
 #include "logring.h"
 
-bool fs_session_restricted(void) {
-    const char *u = session_user();
-    return u && u[0] && !users_is_admin(u);
-}
+// Restricted means "not an admin", asked of the CALLING task's user (see
+// session_user). The console with nobody signed in is unrestricted, as it
+// always was: that is boot, and the login prompt. A remote login is never in
+// that state — it has a user from the moment its task starts — and an empty
+// name there fails CLOSED, as an account that cannot be an admin.
+bool fs_session_restricted(void) { return ident_restricted(); }
 
 bool fs_may_read(const char *abs) {
-    return !fs_session_restricted() || !protect_secret(abs);
+    if (!fs_session_restricted()) return true;
+    return !protect_secret(abs) && !protect_home_ssh(abs, ident_user(), false);
 }
 
 bool fs_may_change(const char *abs) {
-    return !fs_session_restricted() || !protect_reaches(abs);
+    if (!fs_session_restricted()) return true;
+    return !protect_reaches(abs) && !protect_home_ssh(abs, ident_user(), true);
 }
 
 static void refuse(const char *abs, const char *verb) {
     out_err("Permission denied: %s is protected. Only an admin can %s it.", abs, verb);
-    log_addf(LOG_K_WARN, "[Perm] %s refused %s on %.60s", session_user(), verb, abs);
+    log_addf(LOG_K_WARN, "[Perm] %s%s refused %s on %.60s", ident_user(), ident_remote() ? " (ssh)" : "", verb, abs);
 }
 
 // An empty path is what path_resolve leaves when a path was too long to

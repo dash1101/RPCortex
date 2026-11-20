@@ -249,7 +249,7 @@ static int cmd_ver(int, char **) {
     return 0;
 }
 
-static int cmd_clear(int, char **) { printf("\x1b[2J\x1b[H"); return 0; }
+static int cmd_clear(int, char **) { out_write("\x1b[2J\x1b[H", 7); return 0; }
 
 static int cmd_freeup(int, char **) {
     // There is no GC to run. What CAN be reclaimed is the fragmentation malloc
