@@ -45,9 +45,18 @@ static char *dup_stdin(uint32_t *out_len) {
 // arguments are options, not filenames — `cat log | head 5` means five lines,
 // and reading a file called "5" instead is the bug this rule exists to prevent.
 // The cost is that `cat a | grep x b` ignores b, which no one types.
+static char *read_file(const char *arg, uint32_t *out_len, bool *truncated);
+
 static char *read_text(const char *arg, uint32_t *out_len, bool *truncated) {
     if (truncated) *truncated = false;
     if (shell_stdin() || !arg) return dup_stdin(out_len);
+    return read_file(arg, out_len, truncated);
+}
+
+// The file and only the file, whether or not a pipe is also feeding this
+// command: `wc -l a b` names what it wants counted.
+static char *read_file(const char *arg, uint32_t *out_len, bool *truncated) {
+    if (truncated) *truncated = false;
     char path[128];
     path_resolve(fs_cwd(), arg, path, sizeof(path));
     if (!fs_allow_read(path)) return nullptr;
@@ -90,17 +99,81 @@ static int cmd_grep(int argc, char **argv) {
     return g.hits ? 0 : 1;       // grep's convention: no match is non-zero
 }
 
+// wc [-l] [-w] [-c] [file ...]
+//
+// With no flags, the friendly line: "N lines  N words  N bytes". With flags,
+// only the numbers asked for, bare, in the order lines, words, bytes, so a
+// script gets something it can compare: `capture n wc -l log.txt` sets n to
+// "20". The flags were once taken for file names ("No such file: -l"), and read
+// from a pipe every argument was ignored.
+//
+// Files named on the line are counted even when a pipe is also feeding the
+// command; a pipe is read only when no file is named. Several files get a line
+// each, with the name, and a total.
+struct WcCount { uint32_t l, w, b; bool trunc; };
+
+static void wc_print(const WcCount &c, bool fl, bool fw, bool fc, const char *name) {
+    char line[96];
+    int n = 0;
+    if (!fl && !fw && !fc) {
+        n = snprintf(line, sizeof(line), "  %u lines  %u words  %u bytes",
+                     (unsigned)c.l, (unsigned)c.w, (unsigned)c.b);
+    } else {
+        if (fl) n += snprintf(line + n, sizeof(line) - n, "%s%u", n ? " " : "", (unsigned)c.l);
+        if (fw) n += snprintf(line + n, sizeof(line) - n, "%s%u", n ? " " : "", (unsigned)c.w);
+        if (fc) n += snprintf(line + n, sizeof(line) - n, "%s%u", n ? " " : "", (unsigned)c.b);
+    }
+    out_multi("%s%s%s%s", line, name ? "  " : "", name ? name : "",
+              c.trunc ? "  (truncated)" : "");
+}
+
 static int cmd_wc(int argc, char **argv) {
-    if (argc < 2 && !shell_stdin()) { out_multi("Usage: wc <file>"); return 1; }
-    uint32_t len = 0; bool trunc = false;
-    char *buf = read_text(argc > 1 ? argv[1] : nullptr, &len, &trunc);
-    if (!buf) { out_err("No such file: %s", argc > 1 ? argv[1] : "(stdin)"); return 1; }
-    uint32_t l, w, b;
-    text_count(buf, len, &l, &w, &b);
-    out_multi("  %u lines  %u words  %u bytes%s",
-              (unsigned)l, (unsigned)w, (unsigned)b, trunc ? "  (truncated)" : "");
-    free(buf);
-    return 0;
+    bool fl = false, fw = false, fc = false;
+    int first_file = 0, files = 0;
+    for (int i = 1; i < argc; i++) {
+        const char *a = argv[i];
+        if (a[0] == '-' && a[1]) {
+            for (const char *f = a + 1; *f; f++) {
+                if      (*f == 'l') fl = true;
+                else if (*f == 'w') fw = true;
+                else if (*f == 'c') fc = true;
+                else { out_err("wc: unknown option '-%c'. It takes -l, -w and -c.", *f); return 1; }
+            }
+        } else {
+            if (!files) first_file = i;
+            files++;
+        }
+    }
+    if (!files && !shell_stdin()) { out_multi("Usage: wc [-l] [-w] [-c] <file> [file ...]"); return 1; }
+
+    if (!files) {
+        uint32_t len = 0;
+        char *buf = read_text(nullptr, &len, nullptr);
+        if (!buf) { out_err("No such file: (stdin)"); return 1; }
+        WcCount c{0, 0, 0, false};
+        text_count(buf, len, &c.l, &c.w, &c.b);
+        free(buf);
+        wc_print(c, fl, fw, fc, nullptr);
+        return 0;
+    }
+
+    WcCount total{0, 0, 0, false};
+    int rc = 0;
+    for (int i = first_file; i < argc; i++) {
+        const char *a = argv[i];
+        if (a[0] == '-' && a[1]) continue;
+        uint32_t len = 0;
+        WcCount c{0, 0, 0, false};
+        char *buf = read_file(a, &len, &c.trunc);
+        if (!buf) { out_err("No such file: %s", a); rc = 1; continue; }
+        text_count(buf, len, &c.l, &c.w, &c.b);
+        free(buf);
+        wc_print(c, fl, fw, fc, files > 1 ? a : nullptr);
+        total.l += c.l; total.w += c.w; total.b += c.b;
+        total.trunc = total.trunc || c.trunc;
+    }
+    if (files > 1) wc_print(total, fl, fw, fc, "total");
+    return rc;
 }
 
 // The line count for head/tail. Reading from a file it is argv[2]; reading a
@@ -295,7 +368,7 @@ void text_register(void) {
     static const Command cmds[] = {
         {"echo",     "print arguments",           cmd_echo,     nullptr},
         {"grep",     "grep <pattern> <file>",     cmd_grep,     nullptr},
-        {"wc",       "count lines/words/bytes",   cmd_wc,       nullptr},
+        {"wc",       "wc [-l|-w|-c] <file>...",   cmd_wc,       nullptr},
         {"head",     "first lines of a file",     cmd_head,     nullptr},
         {"tail",     "last lines of a file",      cmd_tail,     nullptr},
         {"find",     "find <name> [path]",        cmd_find,     nullptr},

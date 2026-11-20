@@ -46,7 +46,7 @@ static const char *kFilesystem[] = {
 
 static const char *kText[] = {
     "  grep <pattern> <file>   Search a file for a pattern (substring)",
-    "  wc <file>               Line / word / byte count",
+    "  wc [-l -w -c] <file>    Line / word / byte count",
     "  find <name> [path]      Recursive file search by name",
     "  sort <file>             Print lines sorted alphabetically",
     "  uniq <file>             Remove consecutive duplicate lines",
