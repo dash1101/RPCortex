@@ -89,9 +89,11 @@ passwords, and the SSH host key need sudo to read, for an admin too. Otherwise
 being signed in, by autonomy or over SSH with a key, would be a way to the very
 password sudo asks for.
 
-That rule is for a person's commands, a package's file calls and the host tools'
-`PUT`. The OS's own writes are not commands and are not asked: saving the settings,
-the account file, `sudo pkg install` writing `/os/pkg`, an update staging its image.
+Those rules are for a person's commands, a package's file calls and the host tools'
+`PUT` and `GET`. The OS's own reads and writes are not commands and are not asked:
+saving the settings and the account file, checking a password at login, the SSH
+server loading its key, `sudo pkg install` writing `/os/pkg`, an update staging its
+image.
 
 ## Work nobody is watching
 
@@ -154,9 +156,8 @@ Physical presence is enough, and it is the only way.
   the filesystem to the end of the flash with `picotool erase -r <from> <to>`. The
   filesystem starts after the firmware reserve and the package slots, counted from
   0x10000000; a build writes both sizes (`fw_reserve.txt`, `pkg_region.txt` in its
-  build directory). The next
-  start runs first-run setup. Reflashing the firmware on its own keeps the files, and
-  the accounts with them.
+  build directory). The next start runs first-run setup. Reflashing the firmware on
+  its own keeps the files, and the accounts with them.
 
 This is deliberate. Anybody who can hold the board can reflash it with firmware of
 their own, so a password the console could not get round would protect nothing and
