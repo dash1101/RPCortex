@@ -129,6 +129,26 @@
 
 #define MBEDTLS_PLATFORM_MS_TIME_ALT
 
+// --- SSH ---------------------------------------------------------------------
+//
+// Everything SSH needs is already above for HTTPS: Curve25519 and P-256, ECDH,
+// ECDSA, RSA with PKCS#1 v1.5, SHA-256/512, HMAC through MD, AES-GCM, CTR_DRBG
+// and base64. AES-CTR is done over the ECB block function in sshcrypto.cpp,
+// so CIPHER_MODE_CTR is not needed either.
+//
+// The one addition is deterministic ECDSA (RFC 6979) for the host key's
+// signatures. An ECDSA signature made with a nonce that repeats, or that is
+// even slightly predictable, gives the private key away, and the nonce would
+// otherwise come straight from the random number generator — on a device whose
+// only source of entropy is the hardware generator at whatever moment a login
+// happens. Deriving the nonce from the key and the message removes that
+// dependency entirely. It needs HMAC_DRBG underneath. Measured cost on a
+// pico2_w release image: see CHANGELOG (SSH).
+#if defined(RPC_HAS_SSH) && RPC_HAS_SSH
+#define MBEDTLS_HMAC_DRBG_C
+#define MBEDTLS_ECDSA_DETERMINISTIC
+#endif
+
 // --- what this build actually needs ----------------------------------------
 
 // SNI is mandatory in practice: a shared host answers with the wrong
