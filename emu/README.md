@@ -53,8 +53,12 @@ the shell started (the RTC stall below), so there was nothing reading. Once a
 boot reaches a prompt, `Write Line To Uart` and a Monitor `WriteChar` both land:
 `fs_concurrency.robot` answers the first-run wizard, logs in and types commands.
 The suites are `boot`, `fs_concurrency` (two tasks on littlefs), `bg_script` (a
-looping script in a background task, which used to silence the machine) and
-`service_restart` (the supervisor restarting a failing service). Each is one test
+looping script in a background task, which used to silence the machine),
+`service_restart` (the supervisor restarting a failing service) and `features`
+(`ver` lists what the image was built with, and a command whose feature was left
+out says so). A custom image runs under the same suites by naming its ELF:
+`emu/run-tests.sh emu/tests/boot.robot --variable
+ELF:$PWD/os/build_pico-noperiph-emu/rpcortex_v2.elf`. Each is one test
 in its own file: a second boot in the same Renode, after `Reset Emulation`,
 stalled at the login prompt, and nothing here has needed to explain that yet.
 The same stall turns up now and then when suites run back to back (a suite
