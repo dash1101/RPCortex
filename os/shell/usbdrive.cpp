@@ -80,51 +80,63 @@ static const char *basename_of(const char *p) {
 #define SYNC_MAX 64
 #define USB_DIR  "/usb"
 
-static char     g_sent[SYNC_MAX][F12_MAXNAME];
-static uint32_t g_sent_n;
-// Only true when EVERY file in /usb reached the drive. A deletion on the host
-// is only meaningful against a complete picture: if the drive filled up half
-// way, a file missing from it means "never arrived", not "the host removed it",
-// and treating the two the same would delete things nobody touched.
-static bool     g_sent_all;
-
+// What went out to the drive, kept until the mode closes so a deletion on the
+// host can be told apart from a file that never arrived.
+//
 // Names are collected before anything is copied. storage_walk holds the
 // filesystem lock across its callback (#82) and usbdrv_export reads through the
 // filesystem, so exporting from inside the walk is the deadlock that note is
 // about.
-struct NameList { char names[SYNC_MAX][F12_MAXNAME]; uint32_t n; bool overflow; };
+//
+// One heap block for the length of `download`, and the names that went out are
+// marked in the list they were collected in rather than copied. A second 4 KB
+// table of the same names used to sit in static RAM for the life of the device,
+// for a command that is rare.
+struct SyncList {
+    char     names[SYNC_MAX][F12_MAXNAME];
+    uint32_t n;
+    bool     overflow;
+    bool     sent[SYNC_MAX];   // names[i] reached the drive
+    uint32_t sent_n;
+    // Only true when EVERY file in /usb reached the drive. A deletion on the
+    // host is only meaningful against a complete picture: if the drive filled up
+    // half way, a file missing from it means "never arrived", not "the host
+    // removed it", and treating the two the same would delete things nobody
+    // touched.
+    bool     all;
+};
 
 static void name_cb(void *ctx, const char *name, bool is_dir, uint32_t) {
-    NameList *l = (NameList *)ctx;
+    SyncList *l = (SyncList *)ctx;
     if (is_dir) return;                    // FAT12 root here is flat; see fat12.h
     if (l->n >= SYNC_MAX) { l->overflow = true; return; }
     snprintf(l->names[l->n], F12_MAXNAME, "%s", name);
     l->n++;
 }
 
-// Put everything in /usb onto the drive. Returns how many went.
-static uint32_t offer_usb_folder(void) {
-    g_sent_n = 0;
-    g_sent_all = false;
+// Put everything in /usb onto the drive. Returns how many went. Without a list
+// (the allocation failed) nothing is offered and nothing will be reaped, which
+// is what this did before when its own allocation failed.
+static uint32_t offer_usb_folder(SyncList *lp) {
+    if (!lp) return 0;
+    SyncList &list = *lp;
+    list.n = 0;
+    list.overflow = false;
+    list.sent_n = 0;
+    list.all = false;
+    memset(list.sent, 0, sizeof(list.sent));
 
     bool is_dir = false;
     if (!storage_stat(USB_DIR, &is_dir, nullptr)) {
         // Nothing has ever been transferred. Make it, so the instruction on
         // screen refers to somewhere that exists.
         storage_mkdir(USB_DIR);
-        g_sent_all = true;
+        list.all = true;
         return 0;
     }
     if (!is_dir) return 0;
 
-    // From the heap for the length of the call: `download` is rare, and this was
-    // 4 KB of static RAM held for the life of the device.
-    NameList *lp = (NameList *)malloc(sizeof(NameList));
-    if (!lp) return 0;
-    NameList &list = *lp;
-    list.n = 0;
-    list.overflow = false;
-    if (!storage_walk(USB_DIR, name_cb, &list)) { free(lp); return 0; }
+    if (!storage_walk(USB_DIR, name_cb, &list)) { list.n = 0; return 0; }
 
     uint32_t sent = 0;
     bool all = !list.overflow;
@@ -148,29 +160,29 @@ static uint32_t offer_usb_folder(void) {
         }
         if (!usbdrv_export(src, list.names[i])) { all = false; continue; }
 
-        if (g_sent_n < SYNC_MAX)
-            snprintf(g_sent[g_sent_n++], F12_MAXNAME, "%s", list.names[i]);
+        list.sent[i] = true;
+        list.sent_n++;
         sent++;
         if (intr_check()) { all = false; break; }
     }
     if (list.overflow)
         out_warn("/usb holds more than %d files; only the first %d are on the "
                  "drive.", SYNC_MAX, SYNC_MAX);
-    g_sent_all = all;
-    free(lp);
+    list.all = all;
     return sent;
 }
 
 // A file that went out and did not come back was deleted on the host. Only
-// meaningful when the whole folder made it out — see g_sent_all.
-static uint32_t reap_deleted(void) {
-    if (!g_sent_all) return 0;
+// meaningful when the whole folder made it out — see SyncList::all.
+static uint32_t reap_deleted(const SyncList *l) {
+    if (!l || !l->all) return 0;
     uint32_t gone = 0;
-    for (uint32_t i = 0; i < g_sent_n; i++) {
+    for (uint32_t i = 0; i < l->n; i++) {
+        if (!l->sent[i]) continue;
         F12Entry e;
-        if (usbdrv_find(g_sent[i], &e)) continue;      // still there
+        if (usbdrv_find(l->names[i], &e)) continue;    // still there
         char path[192];
-        snprintf(path, sizeof(path), "%s/%s", USB_DIR, g_sent[i]);
+        snprintf(path, sizeof(path), "%s/%s", USB_DIR, l->names[i]);
         if (storage_remove(path)) gone++;
     }
     return gone;
@@ -192,7 +204,9 @@ static int cmd_download(int argc, char **argv) {
     }
 
     // /usb goes out first, so the drive opens showing what is already there.
-    uint32_t offered = offer_usb_folder();
+    // The list stays until the drive closes; reap_deleted reads it at the end.
+    SyncList *sync = (SyncList *)malloc(sizeof(SyncList));
+    uint32_t offered = offer_usb_folder(sync);
 
     // Files named on the command line go out too, from anywhere on the device.
     // The same mode serves both directions, which is why there is no second
@@ -302,7 +316,9 @@ static int cmd_download(int argc, char **argv) {
     uint32_t taken = usbmsc_import_all(&refused);
     // Deletions AFTER the import, so a file the host both removed and replaced
     // ends up present rather than gone.
-    uint32_t removed = reap_deleted();
+    uint32_t removed = reap_deleted(sync);
+    bool partial = sync && !sync->all && sync->sent_n;
+    free(sync);
 
     out_progress_done();
     printf("\r                                          \r");
@@ -317,7 +333,7 @@ static int cmd_download(int argc, char **argv) {
     if (removed)
         out_ok("%u file%s removed from /usb, deleted on the drive",
                (unsigned)removed, removed == 1 ? "" : "s");
-    else if (!g_sent_all && g_sent_n)
+    else if (partial)
         out_multi("  %sNot everything fitted on the drive, so nothing was removed "
                   "from /usb.%s", C_GRAY, C_RESET);
     if (refused)
