@@ -17,8 +17,12 @@
 #include <stdbool.h>
 
 #define HTTP_HOST_MAX  64
-#define HTTP_PATH_MAX  192
-#define HTTP_LOC_MAX   200
+// 1 KB, not 192: a redirect commonly goes to a signed URL several hundred
+// characters long (GitHub's release downloads: 942), and one that does not fit
+// cannot be followed at all. These live on the heap for the length of a fetch
+// (httpfetch.cpp), never on a task's stack.
+#define HTTP_PATH_MAX  1024
+#define HTTP_LOC_MAX   1024
 #define HTTP_LINE_MAX  256
 
 struct HttpUrl {
@@ -61,6 +65,11 @@ struct HttpParser {
     char     line[HTTP_LINE_MAX];    // the header line being assembled
     uint32_t line_len;
     bool     line_over;              // this line outran the buffer; skip its tail
+    // A Location: header longer than a line goes on into `location` instead of
+    // being cut: the target of a redirect is the one long header that matters.
+    bool     loc_spill;              // the rest of this line is the Location value
+    bool     loc_spilled;            // `location` was filled that way: keep it
+    bool     loc_over;               // and it outran `location` too: unusable
     int64_t  chunk_left;             // bytes remaining in the current chunk
     HttpSink sink;
     void    *ctx;

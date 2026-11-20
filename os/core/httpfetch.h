@@ -56,6 +56,7 @@ enum FetchError {
     FETCH_ERR_ENCODING,     // content-encoding this cannot undo
     FETCH_ERR_SINK,         // the sink refused: out of space, most likely
     FETCH_ERR_ABORTED,      // Ctrl+C, or a caller that changed its mind
+    FETCH_ERR_MEMORY,       // no room for the fetch's own working state
 };
 
 struct FetchOpts {

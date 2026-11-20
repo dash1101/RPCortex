@@ -10,6 +10,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <initializer_list>
 #include <stdlib.h>
 
 static int checks = 0, fails = 0;
@@ -183,6 +184,39 @@ int main(void) {
 
         run("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n", 0, &p, &b, false);
         ok(!http_is_redirect(&p), "200: not a redirect");
+    }
+
+    // A Location longer than a header line: GitHub's release downloads redirect
+    // to a signed URL of 942 characters, which a 256-byte line used to drop, so
+    // the 302 read as a refusal. It is kept whole, fed all at once or a byte at
+    // a time; one longer than `location` itself is refused, never cut short.
+    {
+        static char url[1100], raw[1400];
+        for (unsigned len : {300u, 942u, 1000u, 1100u}) {
+            unsigned base = (unsigned)strlen("https://objects.example/a?sig=");
+            snprintf(url, sizeof(url), "https://objects.example/a?sig=");
+            for (unsigned i = base; i < len && i + 1 < sizeof(url); i++) url[i] = (char)('a' + i % 26);
+            url[len < sizeof(url) ? len : sizeof(url) - 1] = 0;
+            snprintf(raw, sizeof(raw), "HTTP/1.1 302 Found\r\nServer: x\r\nLocation: %s\r\n"
+                                       "Content-Length: 0\r\n\r\n", url);
+            for (uint32_t step : {0u, 1u, 7u}) {
+                static HttpParser p; static Buf b;
+                run(raw, step, &p, &b, false);
+                char what[96];
+                bool fits = strlen(url) < HTTP_LOC_MAX;
+                snprintf(what, sizeof(what), "a %u-character Location, fed %u at a time: %s",
+                         len, step, fits ? "kept whole" : "refused");
+                ok(fits ? !strcmp(p.location, url) : p.location[0] == 0, what);
+                ok(p.status == 302 && !http_parser_failed(&p), "and the response itself still parses");
+            }
+        }
+        // And a short Location after a long, ignored header is still the short one.
+        static HttpParser p; static Buf b;
+        static char longhdr[700];
+        memset(longhdr, 'x', sizeof(longhdr) - 1); longhdr[sizeof(longhdr) - 1] = 0;
+        snprintf(raw, sizeof(raw), "HTTP/1.1 301 Moved\r\nX-Long: %s\r\nLocation: /next\r\n\r\n", longhdr);
+        run(raw, 0, &p, &b, false);
+        ok(!strcmp(p.location, "/next"), "a long header that is not Location is still skipped");
     }
 
     // --- failure modes ------------------------------------------------------

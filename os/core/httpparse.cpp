@@ -131,10 +131,36 @@ static bool feed_line(HttpParser *p, uint8_t c) {
         if (p->line_len && p->line[p->line_len - 1] == '\r') p->line_len--;
         p->line[p->line_len] = 0;
         p->line_over = false;
+        if (p->loc_spill) {
+            size_t l = strlen(p->location);
+            if (l && p->location[l - 1] == '\r') p->location[l - 1] = 0;
+            // Cut short is not a smaller redirect, it is a different one.
+            if (p->loc_over) p->location[0] = 0;
+            p->loc_spill = false;
+        }
         return true;
+    }
+    if (p->loc_spill) {
+        size_t l = strlen(p->location);
+        if (l + 1 < sizeof(p->location)) { p->location[l] = (char)c; p->location[l + 1] = 0; }
+        else p->loc_over = true;
+        return false;
     }
     if (p->line_len + 1 < sizeof(p->line)) {
         p->line[p->line_len++] = (char)c;
+    } else if (p->state == HTTP_ST_HEADERS && !p->line_over) {
+        // A full line buffer. If it is a Location header, its value carries on
+        // into `location` rather than being dropped with the tail.
+        p->line[p->line_len] = 0;
+        if (hdr_is(p->line, "location")) {
+            const char *v = hdr_value(p->line);
+            copy_bounded(p->location, sizeof(p->location), v, strlen(v));
+            size_t l = strlen(p->location);
+            if (l + 1 < sizeof(p->location)) { p->location[l] = (char)c; p->location[l + 1] = 0; }
+            p->loc_spill = p->loc_spilled = true;
+        } else {
+            p->line_over = true;
+        }
     } else {
         p->line_over = true;
     }
@@ -207,6 +233,8 @@ static void parse_header_line(HttpParser *p) {
         buf[n] = 0;
         if (strstr(buf, "chunked")) p->chunked = true;
     } else if (hdr_is(p->line, "location")) {
+        // Already taken in full by feed_line when it was longer than a line.
+        if (p->loc_spilled) { p->loc_spilled = false; return; }
         const char *v = hdr_value(p->line);
         copy_bounded(p->location, sizeof(p->location), v, strlen(v));
     }

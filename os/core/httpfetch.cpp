@@ -1,6 +1,7 @@
 #include "httpfetch.h"
 
 #include <string.h>
+#include <stdlib.h>
 #include <stdio.h>
 
 #define DEFAULT_REDIRECTS  5
@@ -21,6 +22,7 @@ const char *fetch_error_str(int err) {
         case FETCH_ERR_ENCODING:  return "unsupported encoding";
         case FETCH_ERR_SINK:      return "could not write";
         case FETCH_ERR_ABORTED:   return "cancelled";
+        case FETCH_ERR_MEMORY:    return "not enough memory";
         default:                  return "failed";
     }
 }
@@ -158,14 +160,14 @@ static int guarded_sink(void *ctx, const uint8_t *data, uint32_t len) {
 
 // One request/response exchange. Redirects are handled by the caller looping.
 static int one_hop(const HttpTransport *t, const HttpUrl *u, const FetchOpts *o,
-                   SinkGuard *guard, HttpParser *p, FetchResult *res) {
+                   SinkGuard *guard, HttpParser *p, FetchResult *res,
+                   char *req, uint32_t req_cap) {
     if (t->open(t->ctx, u->host, u->port, u->tls) != 0) {
         snprintf(res->detail, sizeof(res->detail), "%s:%u", u->host, u->port);
         return FETCH_ERR_CONNECT;
     }
 
-    char req[HTTP_PATH_MAX + HTTP_HOST_MAX + HTTP_EXTRA_MAX + 224];
-    int n = http_build_request_ex(req, sizeof(req), u, o);
+    int n = http_build_request_ex(req, req_cap, u, o);
     if (n < 0) { t->close(t->ctx); return FETCH_ERR_URL; }
 
     if (t->send(t->ctx, (const uint8_t *)req, (uint32_t)n) != 0) {
@@ -194,7 +196,12 @@ static int one_hop(const HttpTransport *t, const HttpUrl *u, const FetchOpts *o,
         if (o->poll && o->poll(o->poll_ctx) != 0) { err = FETCH_ERR_ABORTED; break; }
 
         int got = t->recv(t->ctx, buf, sizeof(buf));
-        if (got < 0) { err = FETCH_ERR_RECV; break; }
+        if (got < 0) {
+            // A read cut short by Ctrl+C is a cancel, not a lost connection:
+            // it used to print "connection lost" above "Interrupted".
+            err = (o->poll && o->poll(o->poll_ctx) != 0) ? FETCH_ERR_ABORTED : FETCH_ERR_RECV;
+            break;
+        }
         if (got == 0) {                       // clean close
             http_parser_eof(p);
             break;
@@ -242,7 +249,19 @@ bool http_fetch(const HttpTransport *t, const char *url,
 
     uint32_t max_redirects = opts->max_redirects ? opts->max_redirects : DEFAULT_REDIRECTS;
 
-    HttpUrl u;
+    // The fetch's working state, on the heap for its length: two URLs and a
+    // request of up to 1 KB of path each, and the parser, are about 5 KB, and
+    // a fetch runs on whatever task asked for it (the shell's, an SSH
+    // session's, a package's), none of which has 5 KB of stack to spare.
+    struct Work {
+        HttpUrl    u, next;
+        HttpParser p;
+        char       req[HTTP_PATH_MAX + HTTP_HOST_MAX + HTTP_EXTRA_MAX + 224];
+    };
+    Work *w = (Work *)malloc(sizeof(Work));
+    if (!w) { res->error = FETCH_ERR_MEMORY; return false; }
+    struct Free { Work *w; ~Free() { free(w); } } freer{w};
+    HttpUrl &u = w->u;
     if (!http_parse_url(url, &u)) {
         res->error = FETCH_ERR_URL;
         snprintf(res->detail, sizeof(res->detail), "%.80s", url);
@@ -264,8 +283,8 @@ bool http_fetch(const HttpTransport *t, const char *url,
             return false;
         }
 
-        HttpParser p;
-        int err = one_hop(t, &u, opts, &guard, &p, res);
+        HttpParser &p = w->p;
+        int err = one_hop(t, &u, opts, &guard, &p, res, w->req, sizeof(w->req));
         res->status = p.status;
         res->bytes = guard.seen;
         res->redirects = hop;
@@ -273,7 +292,7 @@ bool http_fetch(const HttpTransport *t, const char *url,
         if (err != FETCH_OK) { res->error = err; return false; }
 
         if (guard.follow && http_is_redirect(&p)) {
-            HttpUrl next;
+            HttpUrl &next = w->next;
             if (!http_resolve_redirect(&u, p.location, &next)) {
                 res->error = FETCH_ERR_REDIRECT;
                 snprintf(res->detail, sizeof(res->detail), "%.80s", p.location);
