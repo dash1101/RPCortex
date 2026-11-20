@@ -225,6 +225,22 @@ D1's workers do this, on either core), and `link`'s `EXEC`. So:
 - **lwIP, including its heap, exists only after the radio has been started.**
   Parsing the TLS roots (which allocate on lwIP's heap) with the radio off hung the
   board in `mem_malloc` until the watchdog fired. Check `net_radio_is_up()`.
+- **Hold the network only around the lwIP calls, never across a wait.** A
+  `NetOwn` (or `net_op_acquire`) held through a sleep, a reply wait or a whole
+  download keeps every other user of the network waiting, an SSH session's own
+  output and Ctrl+C included, and holding it defers preemption on that core.
+  Take it for the open, each send or read, and the close; wait with nothing
+  held (see `cmd_ping`, `net_resolve`, `lw_recv`). State an lwIP callback writes
+  to must then outlive the task (a static slot, not the stack).
+- **lwIP is initialised once and outlives a radio restart; the driver does
+  not.** Nothing may enter lwIP while the radio is down (`TcpOwn` in nettcp.cpp),
+  and `radio_down` closes every connection first (`nettcp_radio_down`,
+  `http_radio_down`, `ping_radio_down`). Anything that keeps a PCB between
+  `NetOwn` scopes records `net_radio_gen()` and treats a change as "gone".
+  Getting this wrong hard-faulted v2.03-beta on `wifi off` with SSH on.
+- **Moving to the radio's core is a scheduler operation** (`task_migrate_to`).
+  `smp_test` phase 4 covers the case that broke: the core being left had nothing
+  else to run.
 - **Status reads must never enter the radio driver.** A battery icon that did
   froze the GUI and hung one cold boot in three.
 - TLS needs about 45 KB of free heap. The clock must be set (`ntp sync`) or every
