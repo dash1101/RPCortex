@@ -8,6 +8,22 @@ good notes is in `RELEASING.md`.
 
 ## Unreleased
 
+Summary: 
+
+### New
+
+### Improved
+
+### Fixed
+
+### Security
+
+### Changed
+
+### Known issues
+
+## v2.02-beta (build 582), 2026-11-20
+
 Summary: A small fix release: the browser tool shows the RPCortex mark instead of its own lettering.
 
 ### New

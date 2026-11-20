@@ -2,6 +2,98 @@
   "schema": 1,
   "releases": [
     {
+      "tag": "v2.02-beta",
+      "display": "v2.02-beta",
+      "version": "2.02",
+      "build": 582,
+      "commit": "10e358d89ddebd9659dd0cd2af3338df0437c81d",
+      "codename": "Vela II",
+      "date": "2026-11-20",
+      "prerelease": true,
+      "title": "RPCortex v2.02-beta (build 582)",
+      "summary": "A small fix release: the browser tool shows the RPCortex mark instead of its own lettering.",
+      "notes": {
+        "new": [],
+        "improved": [],
+        "fixed": [
+          "The browser tool (`tools/web`, and the Tool page on rpc.novalabs.app) spelled RPCortex in its own gradient lettering. It shows the RPCortex R mark now, the same one as the website."
+        ],
+        "security": [],
+        "changed": [],
+        "issues": [
+          "Only the Pico 2 W has run this build. The Pico 2, Pico W and Pico images build and pass the image checks; the Pico image boots in the emulator.",
+          "A saved rollback copy takes most of a Pico 2 W's filesystem; the next update removes it to make room."
+        ]
+      },
+      "assets": [
+        {
+          "board": "pico2_w",
+          "kind": "bin",
+          "file": "rpcortex-v2.02-beta-pico2_w.bin",
+          "size": 894052,
+          "sha256": "dd376e37496105a592356dcc7380dd78801868bebb8fad027305a1c4152bec0b",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.02-beta/rpcortex-v2.02-beta-pico2_w.bin"
+        },
+        {
+          "board": "pico2_w",
+          "kind": "uf2",
+          "file": "rpcortex-v2.02-beta-pico2_w.uf2",
+          "size": 1788928,
+          "sha256": "84e853789c7a8593b41a9420507d43d0543c55733acdad747d6cce54c516e25c",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.02-beta/rpcortex-v2.02-beta-pico2_w.uf2"
+        },
+        {
+          "board": "pico_w",
+          "kind": "bin",
+          "file": "rpcortex-v2.02-beta-pico_w.bin",
+          "size": 839164,
+          "sha256": "06937a64d4dbbaee65176c195813d43d8db28b0fb8828fcb4d5aa64fc98730f2",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.02-beta/rpcortex-v2.02-beta-pico_w.bin"
+        },
+        {
+          "board": "pico_w",
+          "kind": "uf2",
+          "file": "rpcortex-v2.02-beta-pico_w.uf2",
+          "size": 1678336,
+          "sha256": "035c7bc34bad3e6486dae88b5dbfa1ce88bb02d55a25dfceb0c545baab819cd8",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.02-beta/rpcortex-v2.02-beta-pico_w.uf2"
+        },
+        {
+          "board": "pico2",
+          "kind": "bin",
+          "file": "rpcortex-v2.02-beta-pico2.bin",
+          "size": 377188,
+          "sha256": "e4d0a68ef5b26f78929e745ca68cd7ea7b2c408e10f76a96d4b250f4c49bae70",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.02-beta/rpcortex-v2.02-beta-pico2.bin"
+        },
+        {
+          "board": "pico2",
+          "kind": "uf2",
+          "file": "rpcortex-v2.02-beta-pico2.uf2",
+          "size": 755200,
+          "sha256": "573796d5ca4fa056236dfa7e8e539c68edce3084ddadc293c68a8a70fb07f117",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.02-beta/rpcortex-v2.02-beta-pico2.uf2"
+        },
+        {
+          "board": "pico",
+          "kind": "bin",
+          "file": "rpcortex-v2.02-beta-pico.bin",
+          "size": 317208,
+          "sha256": "776656146907a21caba50ac3708c895244c35e5715a922f7d016971279c93305",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.02-beta/rpcortex-v2.02-beta-pico.bin"
+        },
+        {
+          "board": "pico",
+          "kind": "uf2",
+          "file": "rpcortex-v2.02-beta-pico.uf2",
+          "size": 634880,
+          "sha256": "2f40ea409bb7643b1baf7936974951be878ad702d70be219e39dde51b60fef8e",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.02-beta/rpcortex-v2.02-beta-pico.uf2"
+        }
+      ],
+      "url": "https://github.com/dash1101/RPCortex/releases/tag/v2.02-beta"
+    },
+    {
       "tag": "v2.01-beta",
       "display": "v2.01-beta",
       "version": "2.01",
