@@ -29,6 +29,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+bool fs_rmtree(const char *path, int depth);
+
 static const char *kDirs[] = { "/os", "/os/pkg", "/etc", "/home", "/tmp", "/usb" };
 #define N_DIRS (sizeof(kDirs) / sizeof(kDirs[0]))
 
@@ -49,7 +51,19 @@ bool fs_is_layout_dir(const char *abs) {
 // everything it checked.
 static bool ensure_dir(const char *path) {
     bool is_dir = false;
-    if (storage_stat(path, &is_dir, nullptr) && is_dir) return false;
+    bool exists = storage_stat(path, &is_dir, nullptr);
+    if (exists && is_dir) return false;
+    // A FILE where the directory belongs blocks it for good: mkdir fails, every
+    // boot reports it repaired, and everything that writes there fails. Seen on
+    // a Pico 2 W, where /tmp had become a file. Moved aside rather than deleted,
+    // since what is in it is somebody's.
+    if (exists) {
+        char aside[64];
+        snprintf(aside, sizeof(aside), "%s.displaced", path);
+        storage_remove(aside);
+        if (storage_rename(path, aside))
+            log_addf(LOG_K_WARN, "fs: a file stood where %s belongs; moved to %s", path, aside);
+    }
     storage_mkdir(path);
     return true;
 }
@@ -85,12 +99,19 @@ void fs_layout_check(bool verbose) {
     // /tmp is scratch by definition, so anything left in it is from a run that
     // did not finish. Clearing it at boot is the difference between scratch
     // space and a directory that silently fills up forever.
-    storage_walk("/tmp", [](void *, const char *name, bool is_dir, uint32_t) {
-        if (is_dir) return;
-        char p[96];
-        snprintf(p, sizeof(p), "/tmp/%s", name);
-        storage_remove(p);
-    }, nullptr);
+    //
+    // The whole tree, by rm -r's own walk, and then the directory again. This
+    // used to remove files from inside a walk of the directory, skip
+    // subdirectories entirely (so they stayed for ever) and copy each name
+    // into 96 bytes.
+    bool has_any = false;
+    storage_walk("/tmp", [](void *ctx, const char *, bool, uint32_t) {
+        *(bool *)ctx = true;
+    }, &has_any);
+    if (has_any) {
+        fs_rmtree("/tmp", 0);
+        storage_mkdir("/tmp");
+    }
 
     if (repaired && !verbose)
         out_warnp("fs", "Repaired %u missing director%s.",

@@ -224,30 +224,6 @@ static bool glob_match(const char *pat, const char *name) {
 #define RM_PATH_MAX 256
 #define RM_DEPTH_MAX 16
 
-static char g_rm_path[RM_PATH_MAX];
-
-struct RmFirst { char name[64]; bool is_dir; bool found; };
-
-static void rm_first_cb(void *ctx, const char *name, bool is_dir, uint32_t) {
-    RmFirst *f = (RmFirst *)ctx;
-    if (f->found) return;
-    snprintf(f->name, sizeof(f->name), "%s", name);
-    f->is_dir = is_dir;
-    f->found = true;
-}
-
-// Append "/name" to the shared path. Returns the length to truncate back to, or
-// 0 if it would not fit — a path too deep to name is a path this will not walk.
-static size_t rm_push(const char *name) {
-    size_t was = strlen(g_rm_path);
-    size_t need = was + 1 + strlen(name);
-    if (need + 1 >= RM_PATH_MAX) return 0;
-    if (was == 0 || g_rm_path[was - 1] != '/')
-        strncat(g_rm_path, "/", RM_PATH_MAX - strlen(g_rm_path) - 1);
-    strncat(g_rm_path, name, RM_PATH_MAX - strlen(g_rm_path) - 1);
-    return was;
-}
-
 // THE LAYOUT DIRECTORIES STAY. `/`, /os, /os/pkg, /etc, /home, /tmp and /usb
 // are what everything else writes into. `rm /tmp` (an empty directory, so no
 // -r needed) went through silently on a Pico 2 W, and every later write to
@@ -266,7 +242,7 @@ static bool keep_layout(const char *abs, const char *verb) {
     return true;
 }
 
-struct RmMatch { const char *pat; const char *dir; char name[64]; bool found; unsigned kept; };
+struct RmMatch { const char *pat; const char *dir; char name[256]; bool found; unsigned kept; };
 
 static void rm_match_cb(void *ctx, const char *name, bool is_dir, uint32_t) {
     RmMatch *m = (RmMatch *)ctx;
@@ -284,40 +260,61 @@ static void rm_match_cb(void *ctx, const char *name, bool is_dir, uint32_t) {
     m->found = true;
 }
 
-static bool rm_tree(unsigned depth, unsigned *removed) {
+// THE PATH IS THE CALLER'S, one buffer per removal. It was a file-level static,
+// so `bg rm -r /a` beside `rm -r /b` at the prompt shared it and either could
+// end up removing under the other's path.
+//
+// And the child's name goes straight onto it from inside the walk, rather than
+// through a 64-byte copy: a name of 64 characters or more came out truncated,
+// named nothing, and left its directory impossible to remove with rm -r.
+// littlefs allows 255.
+struct RmFirst { char *path; bool found; bool fits; };
+
+static void rm_first_cb(void *ctx, const char *name, bool, uint32_t) {
+    RmFirst *f = (RmFirst *)ctx;
+    if (f->found) return;
+    f->found = true;
+    size_t was = strlen(f->path), n = strlen(name);
+    bool slash = !(was && f->path[was - 1] == '/');
+    if (was + (slash ? 1 : 0) + n + 1 > RM_PATH_MAX) { f->fits = false; return; }
+    if (slash) f->path[was++] = '/';
+    memcpy(f->path + was, name, n + 1);
+    f->fits = true;
+}
+
+static bool rm_tree(char *path, unsigned depth, unsigned *removed) {
     if (depth > RM_DEPTH_MAX) return false;
 
     bool is_dir = false;
-    if (!storage_stat(g_rm_path, &is_dir, nullptr)) return false;
+    if (!storage_stat(path, &is_dir, nullptr)) return false;
     if (!is_dir) {
-        if (!storage_remove(g_rm_path)) return false;
+        if (!storage_remove(path)) return false;
         (*removed)++;
         return true;
     }
 
+    size_t back = strlen(path);
     for (;;) {
-        RmFirst f;
-        f.found = false;
-        if (!storage_walk(g_rm_path, rm_first_cb, &f)) return false;
+        RmFirst f{path, false, false};
+        if (!storage_walk(path, rm_first_cb, &f)) return false;
         if (!f.found) break;                      // empty: remove it below
-
-        size_t back = rm_push(f.name);
-        if (!back) return false;                  // too deep to name
-        bool ok = rm_tree(depth + 1, removed);
-        g_rm_path[back] = 0;                      // back out one level
+        if (!f.fits) return false;                // too deep to name
+        bool ok = rm_tree(path, depth + 1, removed);
+        path[back] = 0;                           // back out one level
         if (!ok) return false;
         if (intr_check()) return false;
     }
-    if (!storage_remove(g_rm_path)) return false;
+    if (!storage_remove(path)) return false;
     (*removed)++;
     return true;
 }
 
-// Start a removal at `path`. The shared buffer means this is the only way in.
+// Start a removal at `path`.
 static bool rm_at(const char *path, unsigned *removed) {
-    if (strlen(path) + 1 >= RM_PATH_MAX) return false;
-    snprintf(g_rm_path, RM_PATH_MAX, "%s", path);
-    return rm_tree(0, removed);
+    char buf[RM_PATH_MAX];
+    if (strlen(path) + 1 >= sizeof(buf)) return false;
+    snprintf(buf, sizeof(buf), "%s", path);
+    return rm_tree(buf, 0, removed);
 }
 
 // Say what is actually wrong. "(directory not empty?)" was printed for every
@@ -642,37 +639,12 @@ static void du_walk(const char *base, int depth, DuCtx *acc) {
 // directory. Quadratic, and it does not matter: this runs once, from a command
 // that reboots afterwards.
 bool fs_rmtree(const char *path, int depth) {
-    if (depth > 8) return false;              // same ceiling the other walkers use
-
-    struct First {
-        char name[64];
-        bool is_dir;
-        bool found;
-    };
-    struct Cb {
-        static void first(void *ctx, const char *name, bool is_dir, uint32_t) {
-            First *f = (First *)ctx;
-            if (f->found) return;
-            snprintf(f->name, sizeof(f->name), "%s", name);
-            f->is_dir = is_dir;
-            f->found  = true;
-        }
-    };
-
-    // Bounded so a directory that will not empty cannot spin forever.
-    for (int guard = 0; guard < 2048; guard++) {
-        First f{};
-        storage_walk(path, Cb::first, &f);
-        if (!f.found) break;
-
-        char child[128];
-        if (strcmp(path, "/") == 0) snprintf(child, sizeof(child), "/%s", f.name);
-        else                        snprintf(child, sizeof(child), "%s/%s", path, f.name);
-
-        bool ok = f.is_dir ? fs_rmtree(child, depth + 1) : storage_remove(child);
-        if (!ok) return false;
-    }
-    return storage_remove(path);
+    // rm -r's own walk, which keeps every name whole. This had its own copy with
+    // a 64-byte name and a 128-byte path, so a long-named file under /home
+    // survived the factory reset that was meant to remove it.
+    (void)depth;
+    unsigned removed = 0;
+    return rm_at(path, &removed);
 }
 
 static int cmd_du(int argc, char **argv) {
