@@ -34,4 +34,11 @@ void ident_attach(const char *user, const TaskTerm *term, uint16_t intr_dom, con
 // as restricted: it fails closed.
 bool ident_restricted(void);
 
+// May the calling task stop task `pid` (`kill`)? An admin may stop anything.
+// An ordinary account only what is its own: from a remote login, the tasks of
+// logins as the same user; at the console, the tasks that follow the console.
+// The SSH server, another person's session and the device's services are an
+// admin's to stop.
+bool ident_may_stop(int pid);
+
 #endif  // RPC_IDENT_H

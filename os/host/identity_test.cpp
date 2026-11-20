@@ -140,15 +140,26 @@ static int guest_login(void *) {
     ck(!fs_may_change("/home/guest/../root/.ssh/authorized_keys"), "nor by walking up out of its own");
     ck(fs_may_change("/home/guest/.ssh/authorized_keys") && fs_may_read("/home/guest/.ssh/known_hosts"),
        "its own .ssh is its own");
-    ck(fs_may_read("/home/root/notes.txt") && fs_may_read("/home/root"), "ordinary files are as before");
+    ck(fs_may_read("/home/root/notes.txt") && fs_may_read("/home/root"), "other people's ordinary files can be read");
+    ck(!fs_may_change("/home/root/notes.txt") && !fs_may_change("/home/root/boot.rps"),
+       "but not changed: root may run them");
+    ck(fs_may_change("/home/guest/notes.txt") && fs_may_change("/tmp/x"), "its own and the shared ones can");
+    // What runs at boot as the console's user: none of it may be changed.
+    ck(!fs_may_change("/etc/startup.cfg") && !fs_may_change("/etc/services.cfg") &&
+       !fs_may_change("/etc/tasks.cfg") && !fs_may_change("/etc"),
+       "startup items, services and scheduled tasks stay shut");
+    ck(!fs_may_change("/os/pkg/index.cfg") && !fs_may_change("/os/pkg/novad1.app") &&
+       !fs_may_change("/os/ca.pem") && !fs_may_change("/OS/Pkg/x.app"),
+       "installed packages and the trusted certificates stay shut");
+    ck(fs_may_read("/etc/startup.cfg") && fs_may_read("/os/ca.pem"), "and can still be read");
     // A package it runs writes settings as it: only its own.
     ck(!perms_reg_write_ok("System.Autonomous", ident_restricted(), ident_remote()) &&
        !perms_reg_write_ok("SSH.Server", ident_restricted(), ident_remote()) &&
        !perms_reg_write_ok("Alias.exit", ident_restricted(), ident_remote()) &&
-       !perms_reg_write_ok("WiFi.Auto", ident_restricted(), ident_remote()),
-       "a remote guest's packages cannot write device settings");
-    ck(perms_reg_write_ok("Apps.Game_Score", ident_restricted(), ident_remote()) &&
-       perms_reg_write_ok("User.Theme", ident_restricted(), ident_remote()),
+       !perms_reg_write_ok("WiFi.Auto", ident_restricted(), ident_remote()) &&
+       !perms_reg_write_ok("User.Theme", ident_restricted(), ident_remote()),
+       "a remote guest's packages cannot write device settings, nor the console user's own");
+    ck(perms_reg_write_ok("Apps.Game_Score", ident_restricted(), ident_remote()),
        "but can write their own");
 
     // Its own directory, separate from the console's.
@@ -161,7 +172,9 @@ static int guest_login(void *) {
     intr_clear();
     ck(!intr_pending(), "and clears");
 
-    task_spawn("job", nullptr, job_body, nullptr, TASK_STACK_SHELL, AFFINITY_ANY);
+    int job = task_spawn("job", nullptr, job_body, nullptr, TASK_STACK_SHELL, AFFINITY_ANY);
+    ck(ident_may_stop(job), "the guest may stop its own job");
+    ck(!ident_may_stop(1), "but not the console's tasks");
     for (int i = 0; i < 2; i++) task_yield();
     g_guest_done = true;
     return 0;
@@ -253,8 +266,9 @@ int main(void) {
        perms_reg_write_ok("WiFi.Auto", ident_restricted(), ident_remote()),
        "a console guest's packages cannot reach the keys that grant access");
     g_root_dom = intr_domain_new();
-    task_spawn("ssh-root", nullptr, root_login, nullptr, TASK_STACK_SHELL, AFFINITY_ANY);
-    task_yield();
+    int rootpid = task_spawn("ssh-root", nullptr, root_login, nullptr, TASK_STACK_SHELL, AFFINITY_ANY);
+    task_yield();                      // it attaches its identity first thing
+    ck(!ident_may_stop(rootpid), "the console's guest may not stop a remote root's session");
     ck(!strcmp(ident_user(), "guest") && fs_session_restricted() && !fs_may_read(kSecret),
        "a remote root does not make the console's guest an admin");
     run_until(&g_root_done);

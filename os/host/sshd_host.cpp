@@ -269,6 +269,12 @@ int shell_run_input(char *line) {
         out_multi("%s", ok ? "admin" : "not admin");
         return ok ? 0 : 1;
     }
+    if (!strcmp(c, "write") && argc > 1) {
+        if (!fs_allow_change(argv[1])) return 1;
+        bool ok = storage_write_file(argv[1], (const uint8_t *)"x\n", 2);
+        out_multi("%s", ok ? "written" : "could not write");
+        return ok ? 0 : 1;
+    }
     if (!strcmp(c, "readsecret")) {
         if (!fs_allow_read("/os/users.cfg")) return 1;
         out_multi("allowed");
@@ -318,7 +324,7 @@ int main(int argc, char **argv) {
     g_root = argv[2];
     task_init("console");
 
-    for (const char *d : { "/os", "/home", "/home/root", "/home/root/.ssh", "/home/bob",
+    for (const char *d : { "/os", "/etc", "/home", "/home/root", "/home/root/.ssh", "/home/bob",
                            "/home/guest", "/home/guest/.ssh", "/tmp" })
         storage_mkdir(d);
     put_file("/os/users.cfg", "the account file\n");

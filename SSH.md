@@ -106,9 +106,13 @@ Not supported: port forwarding of any kind, agent and X11 forwarding, `scp` and
   a minute to finish logging in, and after ten refusals in a minute from anywhere,
   nobody gets in for a minute. Two sessions at most. Every login and every refusal
   is in `logdump`.
-- **Files that decide who gets in are protected.** The host key lives in `/os/ssh`,
-  which only an admin can read. An ordinary account cannot read or change anyone
-  else's `~/.ssh`, so it cannot add itself to root's `authorized_keys`.
+- **Files that decide who gets in, or what runs as root, are protected.** The host
+  key lives in `/os/ssh`, which only an admin can read. An ordinary account cannot
+  change anything in `/os` or `/etc` (startup items, services, installed packages,
+  trusted certificates), or in anyone else's home, and cannot read anyone else's
+  `~/.ssh`, so it cannot add itself to root's `authorized_keys`. A package it runs
+  over SSH may only write its own settings (`Apps.*`), and `kill` stops only its
+  own tasks.
 - **It is not audited.** It is built on mbedTLS's primitives and tested against
   OpenSSH, but nobody independent has reviewed it. Keep it to networks you trust.
 
@@ -123,9 +127,11 @@ Not supported: port forwarding of any kind, agent and X11 forwarding, `scp` and
   core and can pause the console for a moment — and anyone who can reach the port
   can keep that core busy by connecting over and over, before logging in.
 - Remote sessions share the device's aliases and settings with the console;
-  per-user `User.` settings are the console user's. A package run from a remote
-  session by an account that is not an admin may only write its own settings
-  (`Apps.*`, `User.*`).
+  per-user `User.` settings are the console user's, so a remote session reads
+  those and (as an admin) writes them. `Apps.*`, which an ordinary account's
+  packages may write, includes package settings such as Nova D1's pin map.
+- There is no command history (up-arrow) in a remote session yet, and re-keying
+  happens by data volume, not by time.
 
 ## Testing
 

@@ -10,6 +10,7 @@
 #include "task.h"
 #include "kernel.h"   // heap_free
 #include "fmt.h"
+#include "ident.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -103,6 +104,16 @@ static int cmd_kill(int argc, char **argv) {
 
         const TaskInfo *t = task_find((int)pid);
         if (!t) { out_err("No task with pid %ld.", pid); bad++; continue; }
+
+        // An ordinary account stops only what is its own. Over SSH that means
+        // the tasks of its own logins; at the console, the ones that follow
+        // the console. Anything else — the SSH server, another person's
+        // session, a service — is an admin's to stop.
+        if (!ident_may_stop((int)pid)) {
+            out_err("pid %ld is not yours to stop. An admin can.", pid);
+            bad++;
+            continue;
+        }
 
         // A finished task is reaped rather than killed — same command, since
         // "get rid of this line in ps" is the same intent either way.

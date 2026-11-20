@@ -72,7 +72,19 @@ static bool is_dot_ssh(const char *s, size_t n) {
     return s[0] == '.' && (s[1] | 32) == 's' && (s[2] | 32) == 's' && (s[3] | 32) == 'h';
 }
 
-bool protect_home_ssh(const char *path, const char *self, bool change) {
+bool protect_system(const char *path) {
+    if (!path) return false;
+    char c[CANON_MAX];
+    if (!canon(path, c)) return true;
+    static const char *const kSystem[] = { "/os", "/etc" };
+    for (const char *d : kSystem) {
+        size_t dl = strlen(d);
+        if (strncmp(c, d, dl) == 0 && (c[dl] == 0 || c[dl] == '/')) return true;
+    }
+    return false;
+}
+
+bool protect_home(const char *path, const char *self, bool change) {
     if (!path) return false;
     // Normalised but NOT lower-cased: the user name is matched exactly.
     char c[CANON_MAX];
@@ -91,9 +103,13 @@ bool protect_home_ssh(const char *path, const char *self, bool change) {
     if (has_wild(x, xn)) return true;                  // could be anybody's
     bool mine = self && self[0] && strlen(self) == xn && strncmp(x, self, xn) == 0;
     if (mine) return false;
-    if (!slash) return change;                         // the whole home of someone else
+    // Changing anything in someone else's home: refused. Their .ssh decides who
+    // logs in as them, and anything else there can be a script they — an admin,
+    // perhaps — run without looking, at boot or by hand.
+    if (change) return true;
 
-    // Inside someone else's home: the next component decides.
+    // Reading: open, except their .ssh. Their home itself can be listed.
+    if (!slash) return false;
     const char *y = slash + 1;
     const char *slash2 = strchr(y, '/');
     size_t yn = slash2 ? (size_t)(slash2 - y) : strlen(y);

@@ -23,17 +23,24 @@ bool protect_secret(const char *path);
 // copying and overwriting.
 bool protect_reaches(const char *path);
 
-// Does this path touch ANOTHER user's ~/.ssh? Those files decide who may log
-// in as that user (authorized_keys) and whom they trust (known_hosts), and
-// hold their private key — so an ordinary account that could write one could
-// log in as root over SSH, and one that could read one could impersonate them.
+// Does this path belong to ANOTHER user's home? Changing anything there is
+// refused to an ordinary account: ~/.ssh decides who may log in as that user
+// (an authorized_keys an ordinary account could write was a way in as root
+// over SSH), and anything else there may be a script its owner — an admin,
+// perhaps — runs at boot or by hand. Reading stays open except ~/.ssh, which
+// holds a private key and the list of hosts trusted.
 //
-// `self` may touch their own. With `change`, the test is "reaches", as above:
-// the home directory itself (removing or moving it takes .ssh with it), /home,
-// and a wildcard where a home or a .ssh could match. Without it, only .ssh and
-// what is inside it, and a wildcard that could match .ssh. Case is ignored in
+// `self` may do anything in their own. With `change`, /home itself and a
+// wildcard that could match a home count too. Case is ignored in "/home" and
 // ".ssh"; the user name has to match exactly, as the filesystem does. A path
-// too long to judge reaches.
-bool protect_home_ssh(const char *path, const char *self, bool change);
+// too long to judge counts.
+bool protect_home(const char *path, const char *self, bool change);
+
+// Is this /os or /etc, or inside them? Everything the device runs at boot as
+// the console's user is there — startup items, services, scheduled tasks,
+// installed packages and their index, the trusted certificates, a staged
+// update — so an ordinary account that could CHANGE any of it would be root
+// at the next restart. Reading is a separate question (protect_secret).
+bool protect_system(const char *path);
 
 #endif

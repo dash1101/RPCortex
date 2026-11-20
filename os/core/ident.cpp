@@ -29,6 +29,15 @@ void ident_attach(const char *user, const TaskTerm *term, uint16_t intr_dom, con
     ts->own_user = true;
 }
 
+bool ident_may_stop(int pid) {
+    if (!ident_restricted()) return true;
+    bool own = false;
+    char who[TASK_USER_MAX];
+    if (!task_identity(pid, &own, who, sizeof(who))) return false;
+    if (ident_remote()) return own && strcmp(who, task_shell()->user) == 0;
+    return !own;
+}
+
 bool ident_restricted(void) {
     TaskShell *ts = task_shell();
     if (ts->own_user) return !ts->user[0] || !users_is_admin(ts->user);

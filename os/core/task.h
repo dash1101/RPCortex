@@ -465,6 +465,10 @@ struct TaskShell {
 };
 TaskShell *task_shell(void);
 
+// Whom ANOTHER task acts for: false if there is no such task. `own` is false
+// for a task that follows the console, and `user` is then left empty.
+bool task_identity(int pid, bool *own, char *user, uint32_t cap);
+
 // A remote terminal: where a task's keys come from and what ends its login.
 // Defined here because interrupt.cpp, session.cpp and the TUI all have to ask
 // it, and none of them may depend on the SSH code that implements it.

@@ -327,6 +327,12 @@ check "sshd.cpp: bob by password: '$out'" test "$out" = "bob"
 out=$(pw bobpw bob readsecret); rc=$?
 check "sshd.cpp: bob cannot read the account file while root is at the console ($rc)" \
       test $rc -eq 1 -a -n "$(grep 'Permission denied' <<<"$out")" -a -z "$(grep allowed <<<"$out")"
+out=$(pw bobpw bob 'write /etc/startup.cfg'); rc=$?
+check "sshd.cpp: bob cannot change what runs at boot ($rc)" test $rc -eq 1 -a ! -e droot/etc/startup.cfg
+out=$(pw bobpw bob 'write /home/root/.ssh/authorized_keys'); rc=$?
+check "sshd.cpp: bob cannot add himself to root's keys ($rc)" test $rc -eq 1 -a -z "$(grep -x x droot/home/root/.ssh/authorized_keys)"
+out=$(pw bobpw bob 'write /home/bob/notes.txt'); rc=$?
+check "sshd.cpp: bob can write his own files ($rc: '$out')" test $rc -eq 0 -a "$out" = "written"
 out=$(pw bobpw bob isadmin); rc=$?
 check "sshd.cpp: bob is not an admin over SSH ($rc: '$out')" test $rc -eq 1 -a "$out" = "not admin"
 out=$(pw bobpw bob bgjob)
@@ -397,7 +403,7 @@ check "sshd.cpp: the session beside it was not interrupted" test "$(cat beside.o
 
 # A client that vanishes mid-command: the session is torn down and its
 # socket given back, three times over.
-for i in 1 2 3; do (timeout -s KILL 1.5 ssh $DK root@127.0.0.1 'sleep 30' >/dev/null 2>&1) 2>/dev/null; done
+{ for i in 1 2 3; do timeout -s KILL 1.5 ssh $DK root@127.0.0.1 'sleep 30' >/dev/null 2>&1; done; } 2>/dev/null
 sleep 1
 run $DK root@127.0.0.1 'sleep 1' > a.out 2>&1 & pa=$!
 run $DK root@127.0.0.1 'sleep 1' > b.out 2>&1 & pb=$!

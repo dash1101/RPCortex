@@ -23,15 +23,16 @@ Summary:
 
 ### Security
 
-- An ordinary account can no longer read or change another user's `~/.ssh`, or remove another user's home directory; `/os/ssh`, where the SSH host key lives, is closed to everyone but an admin.
+- An ordinary account can no longer change anything in `/os` or `/etc` (startup items, services and scheduled tasks, installed packages and their index, the trusted certificates, a staged update: all of it runs as the console's user at the next boot), nor anything in another user's home, and it cannot read another user's `~/.ssh`. Reading is otherwise as before. `/os/ssh`, where the SSH host key lives, is closed to everyone but an admin. `/etc` used to be open to every account, which was a way to root at the next restart; with SSH it would have been one from the network.
+- `kill` by an ordinary account stops only its own tasks: from a remote login, that login's; at the console, the ones that follow the console. The SSH server, another person's session and the device's services are an admin's to stop.
 - Defining or removing an alias needs an admin now. Aliases are expanded in everyone's shell before any command is looked up, so an ordinary account could put `exit=<anything>` in front of the admin; a built-in alias (`exit`, `id`, `exec`) can no longer be shadowed at all.
-- A package run by an ordinary account can no longer write the settings that decide who gets in (`System.Autonomous`, `System.Setup`, `SSH.*`, `Alias.*`), and one run from a remote login only its own (`Apps.*`, `User.*`). Before, any package anybody could `run` could set the device to boot straight into root's shell.
+- A package run by an ordinary account can no longer write the settings that decide who gets in (`System.Autonomous`, `System.Setup`, `SSH.*`, `Alias.*`), and one run from a remote login only its own (`Apps.*`; not `User.*`, which is the console user's). Before, any package anybody could `run` could set the device to boot straight into root's shell.
 
 ### Changed
 
 - Who a command runs as belongs to the task now, not to the console. A remote login's shell, and everything it starts, acts for that login's user, in its own working directory, with its own Ctrl+C; every other task follows whoever is signed in at the console, as before. So a guest logged in over SSH stays a guest while root is at the serial port, and a remote root does not make the console's guest an admin. `logout` in a remote session ends that session and leaves the console alone. Each task carries 160 bytes more for this (about 2 KB in all).
 - A full-screen app belongs to the terminal that opened it; one started on a second terminal while another is open is refused instead of drawing into the first.
-- These cost the Pico W 2.4 KB of slot (16 KB left), where SSH itself is not built.
+- These cost the Pico W 2.8 KB of slot (15.5 KB left), where SSH itself is not built.
 
 ### Known issues
 

@@ -1024,6 +1024,18 @@ TaskShell *task_shell(void) {
     return t ? &t->shell : &boot;
 }
 
+bool task_identity(int pid, bool *own, char *user, uint32_t cap) {
+    for (uint32_t i = 0; i < TASK_MAX; i++) {
+        const Task *t = &g_tasks[i];
+        if (t->info.state == TASK_FREE || t->info.pid != pid) continue;
+        bool o = t->shell.own_user;
+        if (own) *own = o;
+        if (user && cap) snprintf(user, cap, "%s", o ? t->shell.user : "");
+        return true;
+    }
+    return false;
+}
+
 Arena *task_arena(void) {
     Task *t = cur();
     return t ? t->arena : nullptr;

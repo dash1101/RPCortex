@@ -7,7 +7,10 @@ static bool starts(const char *s, const char *p) { return strncmp(s, p, strlen(p
 bool perms_reg_write_ok(const char *key, bool restricted, bool remote) {
     if (!key) return false;
     if (!restricted) return true;
-    if (remote) return starts(key, "Apps.") || starts(key, "User.");
+    // Not User.*: those land in the CONSOLE user's own settings (the
+    // per-user scope follows the console's login), which a remote account
+    // has no business writing.
+    if (remote) return starts(key, "Apps.");
     // Exact-case prefixes, as the registry compares keys exactly.
     return !starts(key, "System.Autonomous") && !starts(key, "System.Setup") &&
            !starts(key, "System.Active_User") && !starts(key, "SSH.") && !starts(key, "Alias.");

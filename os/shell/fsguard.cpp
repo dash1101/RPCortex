@@ -15,12 +15,12 @@ bool fs_session_restricted(void) { return ident_restricted(); }
 
 bool fs_may_read(const char *abs) {
     if (!fs_session_restricted()) return true;
-    return !protect_secret(abs) && !protect_home_ssh(abs, ident_user(), false);
+    return !protect_secret(abs) && !protect_home(abs, ident_user(), false);
 }
 
 bool fs_may_change(const char *abs) {
     if (!fs_session_restricted()) return true;
-    return !protect_reaches(abs) && !protect_home_ssh(abs, ident_user(), true);
+    return !protect_reaches(abs) && !protect_system(abs) && !protect_home(abs, ident_user(), true);
 }
 
 static void refuse(const char *abs, const char *verb) {

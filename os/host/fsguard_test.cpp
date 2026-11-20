@@ -48,12 +48,23 @@ int main(void) {
         ck(!fs_may_read("/OS/Users.CFG") && !fs_may_read("/os/../os/device.key") && !fs_may_change("os//registry.cfg"),
            "and spelling the path differently does not help");
 
+        // What runs at boot as the console's user is in /etc and /os, so none of
+        // it may be CHANGED by an account that is not an admin — that would be
+        // root at the next restart. A deliberate change of policy: /etc used to
+        // be ordinary files.
+        ck(fs_may_read(open_file) && !fs_may_change(open_file), "startup items can be read, not changed");
+        ck(!fs_may_change("/os/pkg/index.cfg") && !fs_may_change("/os/ca.pem"),
+           "nor installed packages, nor the trusted certificates");
+
         // What must stay open, or the rule swallows the filesystem.
-        ck(fs_may_read(open_file) && fs_may_change(open_file), "ordinary files are untouched");
         ck(fs_may_read(os_dir) && fs_may_read("/os/crash.log") && fs_may_read("/os/version"),
            "the /os directory can still be listed, and its other files read");
-        ck(fs_may_change("/home/sam/notes.txt") && fs_may_change("/tmp/x") && fs_may_change("/usb/*"),
-           "a person's own files can be changed");
+        char own[48];
+        snprintf(own, sizeof(own), "/home/%s/notes.txt", who);
+        ck(fs_may_change(own) && fs_may_change("/tmp/x") && fs_may_change("/usb/*"),
+           "a person's own files, and the shared areas, can be changed");
+        ck(fs_may_read("/home/root/notes.txt") && !fs_may_change("/home/root/notes.txt"),
+           "someone else's can be read, not changed");
     }
 
     // --- the message ----------------------------------------------------------------
