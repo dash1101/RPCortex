@@ -56,8 +56,8 @@ cat /usb/id_ed25519.pub >> /home/root/.ssh/authorized_keys
 Ed25519 keys (what `ssh-keygen` makes unless told otherwise), ECDSA (P-256) keys
 and RSA keys of 2048 bits or more all work. An Ed25519 login is the slowest of the
 three: checking its signature takes about half a second, against about a third
-of that for ECDSA. That figure is worked out on a model of the Pico 2 W's processor; it
-has not been timed on a board yet.
+of that for ECDSA. On a Pico 2 W a whole login took 2.0 to 2.4 s with an Ed25519 key
+and 1.8 s with ECDSA.
 
 A line with options in front of the key (`from=`, `command=`, `no-pty`...) is
 ignored, not honoured without its options: a key that was meant to run one
@@ -172,5 +172,5 @@ logging in with an ECDSA key and with a password, a wrong password refused, a
 command's exit status, an interactive session with Tab and Ctrl+C, two sessions
 at once, 20 logins in a row with no memory lost (about 1.3 s each, key exchange
 included), and 64 KB of binary output byte for byte. Not yet on hardware: the
-device's own `ssh` client, full-screen apps over SSH, the failure cooldowns, and
-Ed25519 keys.
+device's own `ssh` client, full-screen apps over SSH, and the failure cooldowns.
+Logging in with an Ed25519 key works too, and an unknown one is refused.

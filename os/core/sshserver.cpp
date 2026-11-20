@@ -131,8 +131,8 @@ static void on_userauth(SshServer *s, SshR *r) {
         // An ssh-ed25519 check is the slow one, about half a second on a Pico
         // 2 W (ed25519.cpp), and it runs on the server's task without yielding;
         // the stall guard's first warning is at 3 s. Only a key the account
-        // lists gets this far. DEVICE-UNCONFIRMED: the half second is counted
-        // on a model of the core, not timed on a board.
+        // lists gets this far. On a Pico 2 W a login with an Ed25519 key took
+        // 2.0 to 2.4 s against 1.8 s with ECDSA, which agrees.
         bool ok = !w.err && ssh_sig_verify(blob, bn, sig, sn, data, w.len, alg);
         free(data);
         if (ok) succeeded(s, user, "publickey");

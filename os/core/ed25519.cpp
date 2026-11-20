@@ -48,9 +48,9 @@
 // 65 million instructions; an mbedTLS ECDSA P-256 verify, counted the same
 // way, is 19 million. At 1.0 to 1.5 cycles an instruction that is 0.43 to
 // 0.65 s at 150 MHz. -O2 and -O3 execute more instructions, not fewer, and -O3
-// makes this file 14 KB instead of 4. DEVICE-UNCONFIRMED: counted on a model
-// of the core, not timed on an RP2350; the cycles per instruction are an
-// assumption.
+// makes this file 14 KB instead of 4. On a Pico 2 W, whole SSH logins with an
+// Ed25519 key took 2.0 to 2.4 s against 1.8 s with ECDSA, which agrees with
+// the estimate; the verify itself has not been timed alone.
 //
 // STACK. A gf is 128 bytes. The deepest point is equation()'s two points
 // (1.1 KB with the rest of its frame), scalarbase's point (0.5 KB), add's nine
