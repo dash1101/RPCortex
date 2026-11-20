@@ -33,7 +33,7 @@
 // cannot disagree with the image. It is shown next to the version wherever two
 // builds of one version could be confused for each other.
 #define RPC_OS_MAJOR    "2"
-#define RPC_OS_ITER     "02"                     // two digits; compared as a number
+#define RPC_OS_ITER     "03"                     // two digits; compared as a number
 #define RPC_OS_SUFFIX   "-beta"                  // "-beta", "-rc", "-rc2", ... or "" when final
 #define RPC_OS_CODENAME "Vela II"                // the generation's name
 #define RPC_OS_VERNUM   RPC_OS_MAJOR "." RPC_OS_ITER      // no 'v': what comparisons use
