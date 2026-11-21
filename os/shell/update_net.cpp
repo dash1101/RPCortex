@@ -145,7 +145,7 @@ int update_check(bool quiet) {
     // the version is frozen, so comparing only that would report "up to date"
     // for every build ever published.
     int cmp = repo_version_cmp(e.ver, RPC_OS_BUILDVER);
-    out_multi("  Installed  %s (build %s)", RPC_OS_VERSION, RPC_OS_BUILD);
+    out_multi("  Installed  %s", RPC_OS_VERSION);
     out_multi("  Available  %s", e.ver);
     if (e.size) out_multi("  Size       %lu KB", (unsigned long)(e.size / 1024));
 
@@ -175,8 +175,7 @@ int update_online(bool force, bool yes) {
     if (!fetch_manifest(&e)) return 1;
 
     if (!force && repo_version_cmp(e.ver, RPC_OS_BUILDVER) <= 0) {
-        out_ok("Already running %s build %s. 'sudo update install --force' to reinstall.",
-               RPC_OS_VERSION, RPC_OS_BUILD);
+        out_ok("Already running %s. 'sudo update install --force' to reinstall.", RPC_OS_VERSION);
         return 0;
     }
     if (!force && !strcmp(reg_get("System.Rollback_Refused", ""), e.ver)) {

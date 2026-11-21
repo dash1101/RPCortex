@@ -6,45 +6,48 @@ its commands.
 
 ## Versions
 
-`vMAJOR.ITER`, with the build number beside it: `v2.01-beta (build 520)`.
+`vMAJOR.MINOR.BUILD`, with a label until it is final: `v2.0.640-beta`.
 
+- **BUILD** is the commit count when the images were built. It rises on its own and is never typed
+  by hand, so every release has a number no other release has and a later one is always newer.
+- **MINOR** moves for a step in what the generation runs on or can do: v2.1 is the ESP32 port.
+  It does not move for each release.
 - **MAJOR** is a generation. It is the only thing with a codename (v1 Vela, v2 Vela II) and it
-  changes when the platform does: a new kernel, a new package ABI, a new architecture.
-- **ITER** is the number of the release, written with two digits, with no ceiling. **Every release
-  published to GitHub takes the next number, whatever it is labelled.** A number is never reused and
-  a later number is always newer.
+  changes when the platform does: a new kernel, a new package ABI. A release never breaks packages;
+  a change that would is a new MAJOR.
 - **The label** says how finished a release is:
 
   | Release | Meaning |
   |---|---|
-  | `v2.00-beta` | The first release of v2: the beta published on GitHub on 2026-10-28 (tag `v2.0.0`). |
-  | `v2.01-beta` | The next one published, still a beta. |
-  | `v2.03-rc`, `v2.04-rc2`, `v2.05-rc3` | Release candidates; each further one counts up. |
-  | `v2.06` | No longer a beta: the label is dropped, and the number keeps counting. |
+  | `v2.0.640-beta` | A beta of v2.0, built at commit 640. |
+  | `v2.0.702-rc`, `v2.0.715-rc2` | Release candidates; each further one counts up. |
+  | `v2.0.731` | No longer a beta: the label is dropped. |
+  | `v2.1.800-beta` | The next minor, a beta again until it settles. |
 
-- **The build number** is the commit count when the images were built. It rises on its own and is
-  never typed by hand. Devices compare `MAJOR.ITER.BUILD` (`2.01.520`), so a later release, and a
-  later build of the same release, always beats an earlier one. The label is not part of the comparison.
-- A release never breaks packages. A change that would is a new MAJOR.
+- Devices compare `MAJOR.MINOR.BUILD` (`2.0.640`), so a later release always beats an earlier one.
+  The label is not part of the comparison.
 
-**Builds are not releases.** A release is cut on a schedule, when there is enough to say, and the
-builds in between are not published; `ver` tells them apart by build number. That keeps the schedule
-steady and the work per release small: the unit of work is the changelog entry, written as the change
-lands, not a release per commit.
+**Earlier releases.** v2.00-beta (tag `v2.0.0`) through v2.05-beta used `vMAJOR.ITER`, an iteration
+count. They keep their tags and their notes. A device running one of them compares `2.05.635` with
+`2.0.640` and sees the new form as older, so it moves across once with `sudo update online --force`
+(or a reflash); after that, updates are offered as usual.
 
-The version in `os/kernel/kernel.h` is the one the **next** release will carry. `tools/release.py label
-beta|rc|final` changes the label (counting release candidates automatically), `bump iter` and `bump major
-"Name"` change the number, and cutting a release steps `kernel.h` to the following number by itself.
+**Builds are not releases.** Only what is cut with `tools/release.py` is published; `ver` shows the
+build of whatever is running, so the builds in between are told apart by their number.
+
+The version in `os/kernel/kernel.h` is the line and label the **next** release will carry (MAJOR,
+MINOR, label); the build is added when it is cut. `tools/release.py label beta|rc|final` changes the
+label (counting release candidates automatically), and `bump minor` / `bump major "Name"` move the line.
 
 ## When a release is cut
 
 - **Every push of `main` to GitHub is a release.** Commit locally as the work happens, and when it
   is time to publish, `tools/release.py cut --publish` builds, tags, pushes and creates the GitHub
   release in one go. Nothing reaches `main` on GitHub without a version number of its own.
-- **An urgent fix goes out on its own**, straight away, as the next number. It is not held back
+- **An urgent fix goes out on its own**, straight away, as its own release. It is not held back
   for other work that is not ready.
-- The number always goes up by one, whatever the release holds. The label says how finished the
-  line is: `-beta`, then `-rc` and `-rc2` and so on, then no label (see Versions above).
+- The build number makes each release's version its own. The label says how finished the line is:
+  `-beta`, then `-rc` and `-rc2` and so on, then no label (see Versions above).
 - The `Summary:` line names the most important change first. A release with only Fixed and
   Security entries is a fix release and its summary says so ("Fixes for ..."). One with New
   entries leads with the biggest new thing.

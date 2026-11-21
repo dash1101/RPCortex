@@ -8,7 +8,7 @@ good notes is in `RELEASING.md`.
 
 ## Unreleased
 
-Summary: 
+Summary: version numbers become vMAJOR.MINOR.BUILD (this is v2.0.640-beta; a device on v2.01 to v2.05 moves across with `sudo update online --force`), Nova D1 1.8.0, and a Bluetooth scan no longer holds up the network.
 
 ### New
 
@@ -16,10 +16,13 @@ Summary:
 
 ### Fixed
 
+- A Bluetooth scan held the network for the whole scan, so for its 6 seconds nothing else could use it and an SSH session's output stood still. It holds it only to start and stop the scan now.
 ### Security
 
 ### Changed
 
+- Nova D1 is 1.8.0, the first version of the package since 1.7.1 in August: the sub-GHz library, NFC dumps, GPS waypoints and clock, the Wi-Fi scan and WiGLE wardrive, the built-in apps and sudo.
+- Versions are three numbers now: `v2.0.640-beta` is generation 2, line 0, build 640. The build is the commit count, so every release has a number of its own; the middle number moves for a step in what the OS runs on (v2.1 will be the ESP32 port), and the label (`-beta`, `-rc`, none) says how finished it is. `ver` and the banner show it whole, with no separate build line. v2.00-beta to v2.05-beta keep their names. **A device on v2.01-beta to v2.05-beta sees the new numbers as older, so it moves across once with `sudo update online --force`**; after that, updates are offered as usual.
 ### Known issues
 
 ## v2.05-beta (build 635), 2026-11-20

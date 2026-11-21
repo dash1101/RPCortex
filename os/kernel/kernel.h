@@ -11,50 +11,49 @@
 // Single source of truth for version + codename, as v1 kept them in
 // RPCortex.py. The banner and `ver` both read these.
 //
-// THE SCHEME: vMAJOR.ITER, with a build number beside it.
+// THE SCHEME: vMAJOR.MINOR.BUILD, with a label when it is not final.
 //
-//     v2.00-beta (build 483)   the first release of the generation, a beta
-//     v2.01-beta               the next one published, still a beta
-//     v2.03-rc, v2.04-rc2      release candidates, counted
-//     v2.05                    no longer a beta: the label is simply dropped
+//     v2.0.640-beta     a beta of v2.0, built at commit 640
+//     v2.0.702-rc       a release candidate
+//     v2.0.731          no label: final
+//     v2.1.800          the next minor: a platform step (v2.1 is the ESP32 port)
 //
-// MAJOR is a generation, the only thing with a codename, and it changes when the
-// platform does: a new kernel, a new package ABI, a new architecture. ITER is the
-// number of the release, written with two digits, and has no ceiling (v2.99 is
-// followed by v2.100). EVERY release published takes the next number whatever it is
-// labelled, so a number is never reused and a later number is always newer; the
-// label (RPC_OS_SUFFIX: "-beta", "-rc", "-rc2", or none) says how finished it is.
-// A release never breaks packages; a change that would is a new MAJOR.
+// BUILD is the commit count, set by CMake, so it rises on its own, nobody types
+// it, and it cannot disagree with the image. Every published release therefore
+// has a number no other release has, and a later one is always newer. MINOR moves
+// for a step in what the generation runs on or can do (a new architecture, a new
+// subsystem), not for each release. MAJOR is a generation, the only thing with a
+// codename, and changes with the platform: a new kernel, a new package ABI. A
+// release never breaks packages; a change that would is a new MAJOR.
 //
-// The version written here is the one the NEXT release will carry. tools/release.py
-// moves it: `label` changes the suffix and cutting a release steps ITER forward.
-// Builds between two releases are not releases; they are told apart by the build
-// number, which is the commit count, so nobody has to remember to move it and it
-// cannot disagree with the image. It is shown next to the version wherever two
-// builds of one version could be confused for each other.
+// The label (RPC_OS_SUFFIX) says how finished it is: "-beta", "-rc", "-rc2", or
+// none. tools/release.py moves MINOR, MAJOR and the label; nothing else is
+// hand-edited.
+//
+// Releases v2.01-beta to v2.05-beta used vMAJOR.ITER (an iteration count). They
+// keep their tags; a device running one compares "2.05.635" against "2.0.640"
+// and sees the new form as older, so it moves across once with
+// `update online --force` (the v2.0 release notes say so).
 #define RPC_OS_MAJOR    "2"
-#define RPC_OS_ITER     "06"                     // two digits; compared as a number
+#define RPC_OS_MINOR    "0"
 #define RPC_OS_SUFFIX   "-beta"                  // "-beta", "-rc", "-rc2", ... or "" when final
 #define RPC_OS_CODENAME "Vela II"                // the generation's name
-#define RPC_OS_VERNUM   RPC_OS_MAJOR "." RPC_OS_ITER      // no 'v': what comparisons use
-#define RPC_OS_VERSION  "v" RPC_OS_VERNUM RPC_OS_SUFFIX   // what people read
 
-// The build number, set by CMake from the commit count so it rises on its own
-// and no one has to remember. "0" keeps a host build compiling; those do not
-// run CMake's git step.
+// The build number, set by CMake from the commit count. "0" keeps a host build
+// compiling; those do not run CMake's git step.
 #ifndef RPC_OS_BUILD
 #define RPC_OS_BUILD "0"
 #endif
 
-// What people read where the build matters: "v2.01-beta (build 486)".
-#define RPC_OS_LONG     RPC_OS_VERSION " (build " RPC_OS_BUILD ")"
+#define RPC_OS_VERNUM   RPC_OS_MAJOR "." RPC_OS_MINOR       // no 'v', no build: "2.0"
+// What people read: "v2.0.640-beta". The build is in it, so it is never shown twice.
+#define RPC_OS_VERSION  "v" RPC_OS_VERNUM "." RPC_OS_BUILD RPC_OS_SUFFIX
+#define RPC_OS_LONG     RPC_OS_VERSION
 
-// What the updater compares: the version with the build as a third component,
-// "2.01.486". repo_version_cmp counts a missing component as zero and compares
-// number by number, so "2.10" follows "2.09", "00" is zero, a later build beats an
-// earlier one, and an older device's "2.0.0.483" is still older than any build of
-// the new form. The label is not in it. The git sha is deliberately NOT in here: it carries a '+' when the tree was dirty, which is
-// not a number and would not compare.
+// What the updater compares: "2.0.640". repo_version_cmp compares number by
+// number, so a later build beats an earlier one and "2.1.x" beats every "2.0.x".
+// The label is not in it, and neither is the git sha (a dirty tree adds a '+',
+// which is not a number).
 #define RPC_OS_BUILDVER RPC_OS_VERNUM "." RPC_OS_BUILD
 
 enum LogLevel { LOG_INFO = 0, LOG_WARN = 1, LOG_ERROR = 2 };

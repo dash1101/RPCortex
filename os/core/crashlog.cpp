@@ -51,7 +51,7 @@ size_t crashlog_format(char *out, size_t cap, const BlackBox *bb) {
     out[0] = 0;
     Out o{out, cap, 0, false};
 
-    o.line("RPCortex %s \"%s\" build %s", RPC_OS_VERSION, RPC_OS_CODENAME, RPC_OS_BUILD);
+    o.line("RPCortex %s \"%s\"", RPC_OS_VERSION, RPC_OS_CODENAME);
     o.line("Crash report, written at boot #%u. Times below are milliseconds since each",
            (unsigned)log_boot_count());
     o.line("boot began, so they restart at every \"boot #\" marker.");

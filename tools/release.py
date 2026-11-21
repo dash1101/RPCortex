@@ -5,13 +5,13 @@
     tools/release.py notes                the release notes as GitHub will show them
     tools/release.py cut                  dry run: every step is printed, nothing changes
     tools/release.py cut --publish        build, write, commit, tag, push, create the release
-    tools/release.py label beta|rc|final  what the next release is called: v2.01-beta, v2.03-rc, v2.05
-    tools/release.py bump iter            v2.11 -> v2.12   (edits os/kernel/kernel.h)
-    tools/release.py bump major "Name"    v2.11 -> v3.00   (new codename)
+    tools/release.py label beta|rc|final  how finished the next release is: v2.0.640-beta, v2.0.702-rc, v2.0.731
+    tools/release.py bump minor           v2.0 -> v2.1     (edits os/kernel/kernel.h)
+    tools/release.py bump major "Name"    v2.1 -> v3.0     (new codename)
 
 WHERE THINGS COME FROM
 ----------------------
-  version    os/kernel/kernel.h  (RPC_OS_MAJOR, RPC_OS_ITER, RPC_OS_SUFFIX, RPC_OS_CODENAME):
+  version    os/kernel/kernel.h  (RPC_OS_MAJOR, RPC_OS_MINOR, RPC_OS_SUFFIX, RPC_OS_CODENAME):
              the number and label the NEXT release will carry
   build      the commit count at the time the images are built
   notes      the `## Unreleased` section of CHANGELOG.md
@@ -25,11 +25,13 @@ WHAT IT WRITES
   CHANGELOG.md             `## Unreleased` becomes a dated section; a new empty one is added
   out/release-<tag>/       versioned copies of the images and SHA256SUMS, uploaded to GitHub
 
-EVERY release published takes the next number, whatever its label: v2.01-beta, then v2.02-beta,
-then v2.03-rc, v2.04-rc2, then v2.05 once it is no longer a beta. The tag is the version as written,
-so there is no build in a tag; the build is in the title and the notes. After a release is cut, kernel.h
-is stepped to the next number (an rc counts up to rc2, rc3, ...) and that is committed. A tag is
-never moved or deleted by this tool.
+A version is vMAJOR.MINOR.BUILD with its label: v2.0.640-beta. BUILD is the commit count, so
+every release has a number no other release has, and the tag, the title and the device's comparison
+all carry it. MINOR moves for a step in what the generation runs on (v2.1 is the ESP32 port) and
+MAJOR for a new generation; `bump` does both. After a release candidate is cut, kernel.h counts the
+label on (-rc, -rc2, ...) and that is committed; otherwise nothing changes after a release. A tag is
+never moved or deleted by this tool. Releases v2.01-beta to v2.05-beta used the older vMAJOR.ITER
+form and keep their tags.
 
 Only the standard library is needed, so it runs on a fresh checkout.
 """
@@ -73,36 +75,39 @@ def read_version(text=None):
         if not m:
             raise SystemExit("kernel.h has no %s" % name)
         return m.group(1)
-    return {"major": grab("RPC_OS_MAJOR"), "iter": grab("RPC_OS_ITER"),
+    return {"major": grab("RPC_OS_MAJOR"), "minor": grab("RPC_OS_MINOR"),
             "suffix": grab("RPC_OS_SUFFIX"), "codename": grab("RPC_OS_CODENAME")}
 
 
-def display(v):
-    return "v%s.%s%s" % (v["major"], v["iter"], v["suffix"])
+def display(v, build=None):
+    """vMAJOR.MINOR.BUILD with its label: "v2.0.640-beta". Without a build, the line: "v2.0-beta"."""
+    if build is None:
+        return "v%s.%s%s" % (v["major"], v["minor"], v["suffix"])
+    return "v%s.%s.%s%s" % (v["major"], v["minor"], build, v["suffix"])
 
 
 def tag_for(v, build=None):
     """The tag is the version as written. Every release takes a new number, so it is unique."""
-    return display(v)
+    return display(v, build)
 
 
 def comparable(v, build):
-    """What a device compares: MAJOR.ITER.BUILD."""
-    return "%s.%s.%s" % (v["major"], v["iter"], build)
+    """What a device compares: MAJOR.MINOR.BUILD."""
+    return "%s.%s.%s" % (v["major"], v["minor"], build)
 
 
 def title_for(v, build):
-    return "RPCortex %s (build %s)" % (display(v), build)
+    return "RPCortex %s" % display(v, build)
 
 
 def bump(v, what, name=None):
     v = dict(v)
-    if what == "iter":
-        v["iter"] = "%02d" % (int(v["iter"]) + 1)
+    if what == "minor":
+        v["minor"] = str(int(v["minor"]) + 1)
     elif what == "major":
         if not name:
             raise SystemExit("a new major needs its codename: bump major \"Name\"")
-        v["major"], v["iter"], v["codename"] = str(int(v["major"]) + 1), "00", name
+        v["major"], v["minor"], v["codename"] = str(int(v["major"]) + 1), "0", name
     return v
 
 
@@ -129,8 +134,9 @@ def relabel(v, what, last_published=None):
 
 
 def next_after(v):
-    """The version to carry once `v` has been published: the next number, and the next rc if it was one."""
-    n = bump(v, "iter")
+    """The version to carry once `v` has been published. The build number moves on
+    its own, so only a release candidate's count changes: -rc becomes -rc2."""
+    n = dict(v)
     if (v["suffix"] or "").startswith("-rc"):
         n["suffix"] = rc_after(v["suffix"])
     return n
@@ -138,7 +144,7 @@ def next_after(v):
 
 def write_version(v):
     s = open(KERNEL_H).read()
-    for key, name in (("major", "RPC_OS_MAJOR"), ("iter", "RPC_OS_ITER"),
+    for key, name in (("major", "RPC_OS_MAJOR"), ("minor", "RPC_OS_MINOR"),
                       ("suffix", "RPC_OS_SUFFIX"), ("codename", "RPC_OS_CODENAME")):
         s, n = re.subn(r'(#define\s+%s\s+")[^"]*(")' % name, r'\g<1>%s\g<2>' % v[key], s)
         if n != 1:
@@ -270,7 +276,7 @@ def last_label(hist=None):
     hist = hist if hist is not None else load_json(os.path.join(RELEASES, "releases.json"), {"releases": []})
     if not hist["releases"]:
         return None
-    m = re.match(r"^v\d+\.\d+(-.*)?$", hist["releases"][0]["display"])
+    m = re.match(r"^v\d+\.\d+(?:\.\d+)?(-.*)?$", hist["releases"][0]["display"])
     return (m.group(1) or "") if m else ""
 
 
@@ -284,7 +290,7 @@ def cmd_status(_a):
     v = read_version()
     build = build_number()
     notes = parse_unreleased(open(CHANGELOG).read())
-    print("version   %s   codename %s   build %s (the commit count now)" % (display(v), v["codename"], build))
+    print("version   %s   codename %s   build %s (the commit count now)" % (display(v, build), v["codename"], build))
     print("tag       %s   (the next release; the last published was %s)" % (
         tag_for(v, build), (load_json(os.path.join(RELEASES, "releases.json"), {"releases": []})["releases"] or [{"display": "none"}])[0]["display"]))
     print("device    compares %s" % comparable(v, build))
@@ -356,8 +362,8 @@ def cmd_cut(a):
     if out(["git", "tag", "--list", tag]):
         raise SystemExit("tag %s already exists; a tag is never moved" % tag)
     hist0 = load_json(os.path.join(RELEASES, "releases.json"), {"releases": []})
-    if any(r["display"] == display(v) for r in hist0["releases"]):
-        raise SystemExit("%s is already in releases.json; bump the number" % display(v))
+    if any(r["display"] == display(v, build) for r in hist0["releases"]):
+        raise SystemExit("%s is already in releases.json; commit something first" % display(v, build))
 
     # 1. images
     if a.skip_build:
@@ -407,7 +413,7 @@ def cmd_cut(a):
     plan("write releases/latest.json and the images it points at (%d boards)" % len(ota), dry)
     plan("write out/release-%s/ with versioned names and SHA256SUMS" % tag, dry)
 
-    entry = {"tag": tag, "display": display(v), "version": "%s.%s" % (v["major"], v["iter"]),
+    entry = {"tag": tag, "display": display(v, build), "version": "%s.%s" % (v["major"], v["minor"]),
              "build": int(build), "commit": commit, "codename": v["codename"], "date": date,
              "prerelease": bool(v["suffix"]), "title": title, "summary": notes["summary"],
              "notes": {k: notes[k] for k, _ in SECTIONS},
@@ -421,8 +427,7 @@ def cmd_cut(a):
     hist = load_json(hist_path, {"schema": 1, "releases": []})
     hist["releases"] = [r for r in hist["releases"] if r["tag"] != tag]
     hist["releases"].insert(0, entry)
-    heading = ("%s (build %s), %s" % (display(v), build, date)) if v["suffix"] \
-        else ("%s, %s" % (display(v), date))
+    heading = "%s, %s" % (display(v, build), date)
     plan("CHANGELOG.md: Unreleased becomes '## %s'" % heading, dry)
     plan("releases/releases.json: add %s (the sites read this)" % tag, dry)
 
@@ -465,12 +470,15 @@ def cmd_cut(a):
     print("\npublished %s\n%s" % (tag, entry["url"]))
 
     # the next release carries the next number
+    # The build number moves by itself, so kernel.h changes only when a release
+    # candidate's count does (-rc to -rc2). Nothing to commit otherwise.
     nxt = next_after(v)
-    write_version(nxt)
-    sh(["git", "add", KERNEL_H])
-    sh(["git", "commit", "-q", "-m", "version: the next release is %s" % display(nxt)])
-    sh(["git", "push", "origin", "main"])
-    print("kernel.h is now %s" % display(nxt))
+    if nxt != v:
+        write_version(nxt)
+        sh(["git", "add", KERNEL_H])
+        sh(["git", "commit", "-q", "-m", "version: the next release is %s" % display(nxt)])
+        sh(["git", "push", "origin", "main"])
+        print("kernel.h is now %s" % display(nxt))
 
 
 def main():
@@ -484,7 +492,7 @@ def main():
     c.add_argument("--skip-build", action="store_true", help="use the images already in out/")
     c.set_defaults(fn=cmd_cut)
     b = sub.add_parser("bump")
-    b.add_argument("what", choices=("iter", "major"))
+    b.add_argument("what", choices=("minor", "major"))
     b.add_argument("name", nargs="?", help="the codename, for a new major")
     b.add_argument("--yes", action="store_true")
     b.set_defaults(fn=cmd_bump)
