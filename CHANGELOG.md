@@ -8,6 +8,22 @@ good notes is in `RELEASING.md`.
 
 ## Unreleased
 
+Summary: 
+
+### New
+
+### Improved
+
+### Fixed
+
+### Security
+
+### Changed
+
+### Known issues
+
+## v2.0.640-beta, 2026-11-21
+
 Summary: version numbers become vMAJOR.MINOR.BUILD (this is v2.0.640-beta; a device on v2.01 to v2.05 moves across with `sudo update online --force`), Nova D1 1.8.0, and a Bluetooth scan no longer holds up the network.
 
 ### New

@@ -2,6 +2,98 @@
   "schema": 1,
   "releases": [
     {
+      "tag": "v2.0.640-beta",
+      "display": "v2.0.640-beta",
+      "version": "2.0",
+      "build": 640,
+      "commit": "299568f8f59aff365ea42f8aa590c47838b227d8",
+      "codename": "Vela II",
+      "date": "2026-11-21",
+      "prerelease": true,
+      "title": "RPCortex v2.0.640-beta",
+      "summary": "version numbers become vMAJOR.MINOR.BUILD (this is v2.0.640-beta; a device on v2.01 to v2.05 moves across with `sudo update online --force`), Nova D1 1.8.0, and a Bluetooth scan no longer holds up the network.",
+      "notes": {
+        "new": [],
+        "improved": [],
+        "fixed": [
+          "A Bluetooth scan held the network for the whole scan, so for its 6 seconds nothing else could use it and an SSH session's output stood still. It holds it only to start and stop the scan now."
+        ],
+        "security": [],
+        "changed": [
+          "Nova D1 is 1.8.0, the first version of the package since 1.7.1 in August: the sub-GHz library, NFC dumps, GPS waypoints and clock, the Wi-Fi scan and WiGLE wardrive, the built-in apps and sudo.",
+          "Versions are three numbers now: `v2.0.640-beta` is generation 2, line 0, build 640. The build is the commit count, so every release has a number of its own; the middle number moves for a step in what the OS runs on (v2.1 will be the ESP32 port), and the label (`-beta`, `-rc`, none) says how finished it is. `ver` and the banner show it whole, with no separate build line. v2.00-beta to v2.05-beta keep their names. **A device on v2.01-beta to v2.05-beta sees the new numbers as older, so it moves across once with `sudo update online --force`**; after that, updates are offered as usual."
+        ],
+        "issues": []
+      },
+      "assets": [
+        {
+          "board": "pico2_w",
+          "kind": "bin",
+          "file": "rpcortex-v2.0.640-beta-pico2_w.bin",
+          "size": 868604,
+          "sha256": "63f16bf0405e11e7b6be497e20c4d348890fc412edfb5390be3815796c42ba40",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.640-beta/rpcortex-v2.0.640-beta-pico2_w.bin"
+        },
+        {
+          "board": "pico2_w",
+          "kind": "uf2",
+          "file": "rpcortex-v2.0.640-beta-pico2_w.uf2",
+          "size": 1737728,
+          "sha256": "a6b9ba3d5367d3d6b2c0a91b1a92bd7b6cdd87d4f4f64306c9b5f27f49d41047",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.640-beta/rpcortex-v2.0.640-beta-pico2_w.uf2"
+        },
+        {
+          "board": "pico_w",
+          "kind": "bin",
+          "file": "rpcortex-v2.0.640-beta-pico_w.bin",
+          "size": 775532,
+          "sha256": "5370a3c610333dc73d779f36b5790ac412e8e84c60cb769f905f2bd597631544",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.640-beta/rpcortex-v2.0.640-beta-pico_w.bin"
+        },
+        {
+          "board": "pico_w",
+          "kind": "uf2",
+          "file": "rpcortex-v2.0.640-beta-pico_w.uf2",
+          "size": 1551360,
+          "sha256": "f381864f6a7b2e979233fcc0acb41f830fb4124bd1c020858043101622a42224",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.640-beta/rpcortex-v2.0.640-beta-pico_w.uf2"
+        },
+        {
+          "board": "pico2",
+          "kind": "bin",
+          "file": "rpcortex-v2.0.640-beta-pico2.bin",
+          "size": 373452,
+          "sha256": "1013fa10ac4f5f40d948113d85a35a0b97863953104d56644678005d547d0815",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.640-beta/rpcortex-v2.0.640-beta-pico2.bin"
+        },
+        {
+          "board": "pico2",
+          "kind": "uf2",
+          "file": "rpcortex-v2.0.640-beta-pico2.uf2",
+          "size": 747520,
+          "sha256": "15de204c5b7900950058991270e456fc4a215187aa717c52697a0c150681cdd7",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.640-beta/rpcortex-v2.0.640-beta-pico2.uf2"
+        },
+        {
+          "board": "pico",
+          "kind": "bin",
+          "file": "rpcortex-v2.0.640-beta-pico.bin",
+          "size": 311944,
+          "sha256": "c6ba7d0f28da9a3fb9db32320461dc12cffb8c6d4208e811ef067b457e12acb8",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.640-beta/rpcortex-v2.0.640-beta-pico.bin"
+        },
+        {
+          "board": "pico",
+          "kind": "uf2",
+          "file": "rpcortex-v2.0.640-beta-pico.uf2",
+          "size": 624128,
+          "sha256": "c0ebccafc57dbe8b27d11fdc347f22b405996363f8b0f3cb0116da4cdce3ebad",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.640-beta/rpcortex-v2.0.640-beta-pico.uf2"
+        }
+      ],
+      "url": "https://github.com/dash1101/RPCortex/releases/tag/v2.0.640-beta"
+    },
+    {
       "tag": "v2.05-beta",
       "display": "v2.05-beta",
       "version": "2.05",
