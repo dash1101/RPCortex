@@ -206,6 +206,7 @@
 
 // The radio owner, shared with WiFi rather than duplicated. Declared here
 // because radio.cpp owns it: two locks over one chip would defeat the point.
+#include "netown.h"
 void net_op_acquire(void);
 void net_op_release(void);
 bool net_core_ok(void);
@@ -401,8 +402,9 @@ static int bt_adv_start(const uint8_t *data, uint8_t len, uint8_t adv_type,
                         bool use_random, unsigned secs, const char *desc) {
     if (!len || len > 31) { out_err("Nothing to advertise."); return 1; }
 
-    net_op_acquire();                  // waits out any running scan; serialises HCI
+    net_op_acquire();                  // serialises HCI
     if (!net_core_ok()) { net_op_release(); out_err("Not available from this core."); return 1; }
+    if (g_scanning)     { net_op_release(); out_err("A Bluetooth scan is running; try again when it finishes."); return 1; }
     if (!bt_up())       { net_op_release(); return 1; }
 
     // Replace whatever was advertising rather than stack a second advert.
@@ -570,12 +572,18 @@ static int bt_scan(bool classic, unsigned seconds) {
     if (!bt_up()) { net_op_release(); return 1; }
 
     // Scanning and advertising both drive the LE radio, and this OS keeps one
-    // task in it at a time. A start waits behind a scan (it takes net_op, which
-    // this holds end to end); the other direction cannot block the same way, so
-    // it is refused explicitly rather than left to run two operations at once.
+    // operation in it at a time. The network lock is NOT held for the scan
+    // (only to start and stop it), so the two exclude each other by flag: a
+    // scan refuses while an advert is live or another scan runs, and an advert
+    // refuses while a scan runs.
     if (g_adv_active) {
         net_op_release();
         out_err("Advertising is on; stop it first (bt advertise stop).");
+        return 1;
+    }
+    if (g_scanning) {
+        net_op_release();
+        out_err("A Bluetooth scan is already running.");
         return 1;
     }
 
@@ -591,17 +599,26 @@ static int bt_scan(bool classic, unsigned seconds) {
         gap_start_scan();
     }
 
+    // Results arrive through the stack's callbacks, so the wait holds nothing:
+    // held for the scan, the lock kept every other user of the network
+    // waiting, an SSH session's own output included.
+    uint32_t gen = net_radio_gen();
+    net_op_release();
+
     out_info("Scanning for %u seconds...", seconds);
     uint32_t until = task_now_ms() + seconds * 1000;
     while (task_now_ms() < until) {
         if (intr_check()) break;
+        if (net_radio_gen() != gen) break;      // the radio went down under it
         task_sleep_ms(100);
     }
 
-    if (classic) gap_inquiry_stop();
-    else         gap_stop_scan();
+    net_op_acquire();
+    if (net_core_ok() && net_radio_gen() == gen && net_radio_is_up()) {
+        if (classic) gap_inquiry_stop();
+        else         gap_stop_scan();
+    }
     g_scanning = false;
-
     net_op_release();
     print_seen();
     return 0;
