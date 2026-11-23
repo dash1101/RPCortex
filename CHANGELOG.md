@@ -8,7 +8,7 @@ good notes is in `RELEASING.md`.
 
 ## Unreleased
 
-Summary: 
+Summary: the computer-side tools, `rpc` and `rpc tui`, move to RPCortex Studio, their own repository with a program for each system
 
 ### New
 
