@@ -255,6 +255,37 @@ int main(void) {
         ok(b.n == 0, "nothing written once the limit would be exceeded");
     }
     {
+        // Announced as too big: stop at the headers, not after streaming all
+        // that fits. A bridged download onto a nearly full board ran for 25 s
+        // before the disk refused it.
+        static char big[40000];
+        int h = snprintf(big, sizeof(big), "HTTP/1.1 200 OK\r\nContent-Length: 30000\r\n\r\n");
+        memset(big + h, 'z', 30000); big[h + 30000] = 0;
+        Fake f{}; f.responses[0] = big; f.count = 1; f.step = 512;
+        HttpTransport t = fake_transport(&f);
+        Buf b{}; b.refuse_after = -1;
+        FetchOpts o{}; o.max_bytes = 10000;
+        FetchResult r;
+        ok(!http_fetch(&t, "http://a.test/big", sink, &b, &o, &r), "announced too big: refused");
+        ok(r.error == FETCH_ERR_TOO_BIG, "announced too big: the reason");
+        ok(b.n == 0, "announced too big: nothing written");
+        ok(f.at < 4096, "announced too big: stopped at the headers, not after the body");
+        ok(strstr(r.detail, "30 KB") && strstr(r.detail, "limit is 9 KB"), "announced too big: the sizes, in KB");
+    }
+    {
+        // A redirect's own small body is not the download: the limit is for
+        // the 2xx answer.
+        static const char *redir = "HTTP/1.1 302 Found\r\nLocation: http://b.test/y\r\nContent-Length: 50000\r\n\r\n";
+        Fake f{}; f.responses[0] = redir; f.responses[1] = R200; f.count = 2;
+        HttpTransport t = fake_transport(&f);
+        Buf b{}; b.refuse_after = -1;
+        FetchOpts o{}; o.max_bytes = 10000;
+        FetchResult r;
+        bool fine = http_fetch(&t, "http://a.test/x", sink, &b, &o, &r);
+        ok(r.error != FETCH_ERR_TOO_BIG, "a redirect announcing a big body is not refused for it");
+        (void)fine;
+    }
+    {
         Fake f{}; f.responses[0] = R200; f.count = 1;
         HttpTransport t = fake_transport(&f);
         Buf b{}; b.refuse_after = 4;         // "disk full" after 4 bytes

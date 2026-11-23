@@ -314,6 +314,20 @@ static int cmd_wget(int argc, char **argv) {
 
     if (!good) {
         storage_remove(full);        // a partial file is worse than none
+        // Out of room is the likeliest reason a download stops, and the plain
+        // "too large" / "could not write" left people guessing at the network.
+        if (r.error == FETCH_ERR_TOO_BIG) {
+            out_err("Not enough room for it: %s.", r.detail[0] ? r.detail : "too large");
+            out_multi("  Nothing was written. 'df' shows the space, 'du /' what is using it.");
+            return 1;
+        }
+        if (r.error == FETCH_ERR_SINK) {
+            out_err("Could not write %s after %llu KB: the filesystem is full or failing (%lu KB free).",
+                    full, (unsigned long long)(r.bytes / 1024),
+                    (unsigned long)(storage_free_bytes() / 1024));
+            out_multi("  The partial file was removed. 'df' shows the space, 'du /' what is using it.");
+            return 1;
+        }
         // With the reason: over the bridge every failure is a transport
         // failure, and "connection lost" alone says nothing about which.
         http_report_failure(&r);

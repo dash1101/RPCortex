@@ -129,6 +129,7 @@ struct SinkGuard {
     bool      sink_refused;
     const HttpParser *parser;   // to see the status before the body is passed on
     bool      follow;           // redirects are being followed, so a 3xx body is discarded
+    FetchResult *res;           // for a detail a person can act on
 };
 
 static int guarded_sink(void *ctx, const uint8_t *data, uint32_t len) {
@@ -148,6 +149,18 @@ static int guarded_sink(void *ctx, const uint8_t *data, uint32_t len) {
     // on the filesystem that has to be cleaned up, at the moment the
     // filesystem is the thing under pressure.
     if (g->limit && g->seen + len > g->limit) { g->over_limit = true; return -1; }
+    // Announced as bigger than allowed: refuse at the first body byte, not
+    // after streaming everything that fits. A bridged 848 KB download onto a
+    // board with 840 KB free ran for 25 s before the disk said no.
+    if (g->limit && g->seen == 0 && g->parser && g->parser->content_length > 0 &&
+        (uint64_t)g->parser->content_length > g->limit) {
+        g->over_limit = true;
+        if (g->res)
+            snprintf(g->res->detail, sizeof(g->res->detail), "%llu KB, and the limit is %llu KB",
+                     (unsigned long long)(((uint64_t)g->parser->content_length + 1023) / 1024),
+                     (unsigned long long)(g->limit / 1024));
+        return -1;
+    }
 
     if (g->inner) {
         int rc = g->inner(g->inner_ctx, data, len);
@@ -272,6 +285,7 @@ bool http_fetch(const HttpTransport *t, const char *url,
     guard.inner = sink;
     guard.inner_ctx = sink_ctx;
     guard.limit = opts->max_bytes;
+    guard.res = res;
     guard.progress = opts->progress;
     guard.progress_ctx = opts->progress_ctx;
     guard.follow = method_is(opts->method, "GET") && opts->body_len == 0;
