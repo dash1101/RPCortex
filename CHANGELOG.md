@@ -8,29 +8,27 @@ good notes is in `RELEASING.md`.
 
 ## Unreleased
 
-Summary: 
+Summary: files over USB and the network bridge are about 50% faster, finished background jobs give their memory back, a fresh board installs from the package list it shipped with, and every image is 4.5 KB smaller
 
 ### New
 
 ### Improved
 
 - Every image is about 4.5 KB smaller: the package list it ships with is minified (1.6 KB), and a second printf engine that came in with `mallinfo` and was never used is gone (about 3 KB). The Pico image has 64 KB of its slot free again.
-
 - A background job gives its memory back when it finishes. It used to keep its stack and its package memory (37 KB for a job that ran a package, on a board with 319 KB) until somebody cleared it with `kill` or its slot was needed. Its line in `ps` and `jobs`, and its exit status, stay as before.
-
 - Files sent to a board over USB arrive about 50% faster: `rpc put` went from 24 to 37 KB/s, and a download through the network bridge from 16.9 to 11.0 s for 382 KB. The console used to be read one byte per call, each a trip through the USB stack, and receiving a line took longer than writing it to flash. Link mode and the bridge read it a buffer at a time now, and give back anything past the line they wanted, so a command's Ctrl+C and keys typed during a download still arrive, in order.
 
 ### Fixed
 
 - v2.0.640-beta to v2.0.664-beta shipped a package list naming Nova D1 1.8.0 before it was published, so on a freshly flashed board `pkg install novad1` failed its checksum. An image now carries the list as published, and `pkg install` that meets a list older than the repository (a package updated since it was fetched, or the one an older image shipped with) fetches the current list and tries once more, instead of stopping at "Checksum mismatch".
-
 - Two tasks loading or unloading packages at the same time (a background job beside the prompt) could register one package twice, or free a table slot another was filling. The resident package table has its own lock for those changes now; looking a package up stays lock-free.
-
 - A download bigger than the free space streamed everything that fitted (25 s for 848 KB through the bridge) before failing with a bare "could not write". A body announced as too big is refused before its first byte now, and `wget` says how big it is and how much room there is, or how far it got when the disk filled part way.
 
 ### Security
 
 ### Changed
+
+- `websearch` 2.2 (its source is here, in os/apps): `wiki` and `search` work on a board without Wi-Fi, through the computer, and with no network say both ways to get one.
 
 ### Known issues
 
