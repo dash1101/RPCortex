@@ -8,6 +8,22 @@ good notes is in `RELEASING.md`.
 
 ## Unreleased
 
+Summary: 
+
+### New
+
+### Improved
+
+### Fixed
+
+### Security
+
+### Changed
+
+### Known issues
+
+## v2.0.661-beta, 2026-11-23
+
 Summary: the computer-side tools, `rpc` and `rpc tui`, move to RPCortex Studio, their own repository with a program for each system
 
 ### New

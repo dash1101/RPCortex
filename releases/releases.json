@@ -2,6 +2,96 @@
   "schema": 1,
   "releases": [
     {
+      "tag": "v2.0.661-beta",
+      "display": "v2.0.661-beta",
+      "version": "2.0",
+      "build": 661,
+      "commit": "ec32507c3b909a53a371ff986ef5d070e9571316",
+      "codename": "Vela II",
+      "date": "2026-11-23",
+      "prerelease": true,
+      "title": "RPCortex v2.0.661-beta",
+      "summary": "the computer-side tools, `rpc` and `rpc tui`, move to RPCortex Studio, their own repository with a program for each system",
+      "notes": {
+        "new": [],
+        "improved": [],
+        "fixed": [],
+        "security": [],
+        "changed": [
+          "`rpc` and `rpc tui` moved to a repository of their own, [RPCortex Studio](https://github.com/dash1101/rpcortex-studio), with their history, and get a program file per system there (Linux, macOS and Windows, with `SHA256SUMS`). `tools/rpc` is gone from this repository; the browser tool and LINK.md stay. The host suites run Studio's tests from a checkout beside this one (`RPC_STUDIO_DIR`), and say so when there is none.",
+          "Studio 1.0.0 fixes a crash on quitting `rpc tui` under Python 3.12 and older, which the copy in this repository still had."
+        ],
+        "issues": []
+      },
+      "assets": [
+        {
+          "board": "pico2_w",
+          "kind": "bin",
+          "file": "rpcortex-v2.0.661-beta-pico2_w.bin",
+          "size": 868844,
+          "sha256": "3741ea6fb5b3d1bdf50771ed866039c112efbdde6279eed33ca8f5858e57f5d6",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.661-beta/rpcortex-v2.0.661-beta-pico2_w.bin"
+        },
+        {
+          "board": "pico2_w",
+          "kind": "uf2",
+          "file": "rpcortex-v2.0.661-beta-pico2_w.uf2",
+          "size": 1738240,
+          "sha256": "b2491d69b1b34309e4012f3a1d6f3a20bce62077a06b12193b7957f0253928b1",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.661-beta/rpcortex-v2.0.661-beta-pico2_w.uf2"
+        },
+        {
+          "board": "pico_w",
+          "kind": "bin",
+          "file": "rpcortex-v2.0.661-beta-pico_w.bin",
+          "size": 775836,
+          "sha256": "986cb31be39a0f16546df4f443713c5fab8aa2258e9d1c79014065dfad1c6c02",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.661-beta/rpcortex-v2.0.661-beta-pico_w.bin"
+        },
+        {
+          "board": "pico_w",
+          "kind": "uf2",
+          "file": "rpcortex-v2.0.661-beta-pico_w.uf2",
+          "size": 1551872,
+          "sha256": "3f7822696ad052dd3dd4248e7cf05900187635a65f070393c25b50d5354d3af5",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.661-beta/rpcortex-v2.0.661-beta-pico_w.uf2"
+        },
+        {
+          "board": "pico2",
+          "kind": "bin",
+          "file": "rpcortex-v2.0.661-beta-pico2.bin",
+          "size": 391428,
+          "sha256": "9e0ae214511bae11816ed8fc8ab878bd406314c6d5d6519158d83bf2bec686aa",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.661-beta/rpcortex-v2.0.661-beta-pico2.bin"
+        },
+        {
+          "board": "pico2",
+          "kind": "uf2",
+          "file": "rpcortex-v2.0.661-beta-pico2.uf2",
+          "size": 783872,
+          "sha256": "a349c0ce28c6976d7307e16034ae19dae15878d118495bc5eaa198e9bbd24d8f",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.661-beta/rpcortex-v2.0.661-beta-pico2.uf2"
+        },
+        {
+          "board": "pico",
+          "kind": "bin",
+          "file": "rpcortex-v2.0.661-beta-pico.bin",
+          "size": 330768,
+          "sha256": "66faa8fa370768baf5ce0773866fd0bc3c98932e68370d4c4a0f37cab6b44bd9",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.661-beta/rpcortex-v2.0.661-beta-pico.bin"
+        },
+        {
+          "board": "pico",
+          "kind": "uf2",
+          "file": "rpcortex-v2.0.661-beta-pico.uf2",
+          "size": 662016,
+          "sha256": "9de8424a2a37bac022c240d526f7de8ef13da44b7b65981a856022859609c66b",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.661-beta/rpcortex-v2.0.661-beta-pico.uf2"
+        }
+      ],
+      "url": "https://github.com/dash1101/RPCortex/releases/tag/v2.0.661-beta"
+    },
+    {
       "tag": "v2.0.658-beta",
       "display": "v2.0.658-beta",
       "version": "2.0",
