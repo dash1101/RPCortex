@@ -501,8 +501,30 @@ static void test_door(void) {
     ok(passed.size() > 500, "a line longer than any frame is given back as typing");
 }
 
+static void test_offer(void) {
+    printf("  the offer: nothing is sent until a host has made one\n");
+    BridgeOffer o{};
+    ok(!bridge_may_use(&o, true, true), "no offer: the bridge is not used, even from the console");
+    bridge_offer_set(&o, true, true);
+    ok(bridge_may_use(&o, true, true), "offered over USB, asked from the console's shell: used");
+    ok(!bridge_may_use(&o, true, false), "asked from a background job or a remote login: not used");
+    ok(bridge_offer_valid(&o, true), "and the offer still stands after that");
+    bridge_offer_dtr(&o, true);
+    ok(bridge_offer_valid(&o, true), "DTR raised again changes nothing");
+    bridge_offer_dtr(&o, false);
+    ok(!bridge_may_use(&o, true, true), "the port closed (DTR dropped): the offer is gone");
+    bridge_offer_set(&o, true, true);
+    ok(!bridge_may_use(&o, false, true), "the port gone without the callback seeing it: gone too");
+    ok(!bridge_offer_valid(&o, true), "and it does not come back when a port opens again");
+    bridge_offer_set(&o, true, false);
+    ok(bridge_may_use(&o, false, true), "offered over a UART console (no DTR): stands");
+    bridge_offer_set(&o, false, true);
+    ok(!bridge_may_use(&o, true, true), "BRIDGE off ends it");
+}
+
 int main(void) {
     printf("bridge_test\n");
+    test_offer();
     test_simple();
     test_no_len();
     test_big();

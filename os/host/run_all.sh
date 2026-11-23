@@ -383,10 +383,12 @@ fi
 # pass nor a failure: a skipped test is not a passed one.
 JSRUN=""
 if command -v node > /dev/null 2>&1; then JSRUN="node"
-elif command -v deno > /dev/null 2>&1; then JSRUN="deno run"
+elif command -v deno > /dev/null 2>&1; then JSRUN="deno run --allow-net=127.0.0.1"
 fi
 # Every *.test.js in tools/web/test (the protocol client, the version
-# comparison, the update and package flows), each in its own process.
+# comparison, the update and package flows, the network bridge), each in its
+# own process. The bridge's test serves its URLs from 127.0.0.1, which is all
+# the network Deno is allowed.
 printf '  %-16s ' "web_link_js"
 if [ -z "$JSRUN" ]; then
     echo "not run: no node or deno on PATH"

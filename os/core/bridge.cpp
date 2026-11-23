@@ -469,6 +469,26 @@ void bridge_transport(BridgeConn *c, HttpTransport *t) {
     t->ctx = c;
 }
 
+// --- the offer -------------------------------------------------------------------
+
+void bridge_offer_set(BridgeOffer *o, bool on, bool usb_connected) {
+    o->on = on;
+    o->usb = on && usb_connected;
+}
+
+void bridge_offer_dtr(BridgeOffer *o, bool dtr) {
+    if (!dtr) o->on = false;
+}
+
+bool bridge_offer_valid(BridgeOffer *o, bool usb_connected) {
+    if (o->on && o->usb && !usb_connected) o->on = false;
+    return o->on;
+}
+
+bool bridge_may_use(BridgeOffer *o, bool usb_connected, bool console_shell) {
+    return bridge_offer_valid(o, usb_connected) && console_shell;
+}
+
 // --- the input door ------------------------------------------------------------
 
 enum DoorState : uint8_t { D_IDLE = 0, D_RS, D_SKIP };

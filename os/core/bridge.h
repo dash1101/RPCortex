@@ -86,6 +86,28 @@ void bridge_transport(BridgeConn *c, HttpTransport *t);
 // What went wrong last, or "" when nothing did.
 const char *bridge_detail(const BridgeConn *c);
 
+// --- the offer -----------------------------------------------------------------
+//
+// The device sends nothing until a host has said it can answer (LINK.md): a
+// terminal program that knows nothing of the bridge must never see a frame. The
+// offer belongs to the USB connection, not to a login or a link session, so it
+// outlives link's BYE and ends when the port is closed (DTR drops), when the host
+// says BRIDGE off, or when a fetch goes unanswered.
+struct BridgeOffer {
+    bool on;
+    bool usb;                       // made over USB, so the port closing ends it
+};
+
+void bridge_offer_set(BridgeOffer *o, bool on, bool usb_connected);
+// The USB host changed DTR. Dropping it is the port being closed.
+void bridge_offer_dtr(BridgeOffer *o, bool dtr);
+// Whether the offer stands; it ends here when it was made over USB and the
+// port is no longer open (a drop the line-state callback did not report).
+bool bridge_offer_valid(BridgeOffer *o, bool usb_connected);
+// Whether a request may go over the bridge: the offer stands, and it comes from
+// the console's own shell, the one task that may read the console.
+bool bridge_may_use(BridgeOffer *o, bool usb_connected, bool console_shell);
+
 // --- the console's input door ------------------------------------------------
 //
 // Every byte typed at the console (the prompt, the login prompt, a program

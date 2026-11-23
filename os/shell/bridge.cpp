@@ -44,8 +44,7 @@ static BridgeConn g_conn;
 static bool       g_ready;
 static HttpTransport g_inner;
 
-static volatile bool g_offered;
-static bool       g_offer_usb;      // offered over USB, so DTR going away ends it
+static BridgeOffer g_offer;         // core/bridge.cpp decides; this keeps it
 static BridgeDoor g_door;
 static volatile bool g_reading;     // a fetch is reading the host's lines: the door stands aside
 
@@ -72,8 +71,8 @@ static void io_idle(void *) { task_sleep_ms(1); }
 static void io_lost(void *) {
     // The host has gone quiet in the middle of a fetch. Whatever it was, it is
     // not answering, and the next command must not send frames at it.
-    if (g_offered) log_add(LOG_K_WARN, "bridge: the host stopped answering; offer withdrawn");
-    g_offered = false;
+    if (g_offer.on) log_add(LOG_K_WARN, "bridge: the host stopped answering; offer withdrawn");
+    bridge_offer_set(&g_offer, false, false);
 }
 
 static void ensure_ready(void) {
@@ -105,22 +104,19 @@ static void t_close(void *ctx) {
 // TinyUSB calls this from the USB task (usbdev.cpp); the SDK does not define it.
 extern "C" void tud_cdc_line_state_cb(uint8_t itf, bool dtr, bool rts) {
     (void)itf; (void)rts;
-    if (!dtr) g_offered = false;
+    bridge_offer_dtr(&g_offer, dtr);
 }
 
 static void offer(bool on) {
-    if (on && !g_offered) log_add(LOG_K_INFO, "bridge: offered by the host on the console");
-    g_offered = on;
-    g_offer_usb = on && stdio_usb_connected();
+    if (on && !g_offer.on) log_add(LOG_K_INFO, "bridge: offered by the host on the console");
+    bridge_offer_set(&g_offer, on, stdio_usb_connected());
 }
 
 bool bridge_available(void) { return true; }
 
-bool bridge_offered(void) {
-    // The callback is the reliable signal; this is for a drop it did not see.
-    if (g_offered && g_offer_usb && !stdio_usb_connected()) g_offered = false;
-    return g_offered;
-}
+// The callback is the reliable signal; asking about the port as well catches a
+// drop it did not report.
+bool bridge_offered(void) { return bridge_offer_valid(&g_offer, stdio_usb_connected()); }
 
 bool bridge_set_offer(bool on) { offer(on); return true; }
 
@@ -154,7 +150,7 @@ static bool console_command(void) {
 }
 
 bool bridge_transport_get(HttpTransport *t) {
-    if (!bridge_offered() || !console_command()) return false;
+    if (!bridge_may_use(&g_offer, stdio_usb_connected(), console_command())) return false;
     ensure_ready();
     *t = g_inner;
     t->open = t_open;
