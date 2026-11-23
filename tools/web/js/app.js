@@ -2,15 +2,19 @@
 // else. Switching panes switches the device between the two.
 
 import {
-  enterLink, installPackage, joinPath, parentPath, quote, LinkError, RpcError,
+  enterLink, joinPath, parentPath, quote, LinkError, RpcError,
 } from "./link.js";
-import { REPO_DEFAULT, archRunsHere, boardArch, choose, download, loadIndex } from "./repo.js";
+import { linkArch, packagesPane } from "./pkgs.js";
 import { SerialLine, RPI_VID, resetToBootsel, webSerialSupported } from "./serial.js";
 import { createTerminal } from "./terminal.js";
+import { firmwarePane } from "./updates.js";
 
 const $ = (s) => document.querySelector(s);
 const enc = new TextEncoder();
 const LINK_PANES = new Set(["files", "run", "packages", "device"]);
+// Panes with an error line of their own (`<pane>-error`), where a failure is
+// shown beside what it was about rather than in a toast.
+const ERROR_PANES = new Set(["files", "run", "packages", "firmware", "device"]);
 const SYSTEM_DIRS = new Set(["/os", "/os/pkg", "/etc", "/home", "/tmp", "/usb"]);
 const DEMO = new URLSearchParams(location.search).has("demo");
 
@@ -23,8 +27,9 @@ const S = {
   term: null,
   pane: "connect",
   cwd: "/",
-  index: null,
   runAbort: null,
+  fw: null,           // the Firmware pane (updates.js)
+  pk: null,           // the Packages pane (pkgs.js)
 };
 
 // --- small helpers ----------------------------------------------------------------
@@ -57,7 +62,22 @@ function explain(e) {
   return (e && e.message) || String(e);
 }
 
-function fail(e) { console.error(e); toast(explain(e), true); }
+// A failure goes on the error line of the pane it happened in, which stays
+// until it is dismissed or the pane is opened again; elsewhere, a toast.
+function showError(pane, e) {
+  const box = pane && ERROR_PANES.has(pane) ? $(`#${pane}-error`) : null;
+  if (!box) { toast(explain(e), true); return; }
+  box.textContent = "";
+  box.append(el("span", {}, explain(e)), el("button", {
+    class: "dismiss", "aria-label": "Dismiss", title: "Dismiss", onclick: () => { box.hidden = true; },
+  }, "\u00d7"));
+  box.hidden = false;
+  box.scrollIntoView({ block: "nearest" });
+}
+
+function clearError(pane) { const box = $(`#${pane}-error`); if (box) box.hidden = true; }
+
+function fail(e) { console.error(e); showError(S.pane, e); }
 
 // A question in a dialog. Resolves to the typed text (or true), or null.
 function ask({ title, body = "", input = null, ok = "OK", danger = false, secret = false }) {
@@ -74,13 +94,21 @@ function ask({ title, body = "", input = null, ok = "OK", danger = false, secret
   okBtn.textContent = ok;
   okBtn.className = danger ? "danger" : "primary";
   return new Promise((resolve) => {
+    // Enter in the field means OK. Left to the form, it would press the first
+    // button, which is Cancel.
+    const enter = (e) => { if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); d.close("ok"); } };
+    inp.addEventListener("keydown", enter);
     d.addEventListener("close", () => {
+      inp.removeEventListener("keydown", enter);
+      const value = secret ? inp.value : inp.value.trim();
+      // A password is handed over once and not left in the page.
+      if (secret) inp.value = "";
       if (d.returnValue !== "ok") resolve(null);
-      else resolve(input === null ? true : (secret ? inp.value : inp.value.trim()) || null);
+      else resolve(input === null ? true : value || null);
     }, { once: true });
     d.returnValue = "";
     d.showModal();
-    if (input !== null) { inp.focus(); inp.select(); }
+    if (input !== null) { inp.focus(); inp.select(); } else okBtn.focus();
   });
 }
 
@@ -172,7 +200,8 @@ async function doSwitch(target) {
       S.cwd = S.link.hello.cwd || "/";
       setMode("link");
       renderFacts();
-      renderRepo();
+      if (S.pk) S.pk.render();
+      if (S.fw) S.fw.refresh();
       return S.link;
     } catch (e) {
       if (S.line && S.mode === "switching") { S.line.setSink(termWrite); setMode("terminal"); }
@@ -200,10 +229,20 @@ const needLink = () => switchTo("link");
 
 // --- connecting ------------------------------------------------------------------
 
+// What the browser says when it cannot open a port, in words that say what
+// to do about it.
+function openError(e) {
+  const n = e && e.name;
+  if (n === "NetworkError") return new RpcError("Another program has this port open: a terminal, Thonny, rpc term, or this page in another tab. Close it there, then choose the device again.");
+  if (n === "InvalidStateError") return new RpcError("That port is already open in this page. Disconnect first.");
+  if (n === "SecurityError") return new RpcError("The browser did not allow this page to open the port.");
+  return e;
+}
+
 async function openPort(port) {
   const line = new SerialLine(port);
   line.onLost = lost;
-  await line.open();
+  try { await line.open(); } catch (e) { throw openError(e); }
   S.port = port;
   S.line = line;
   line.setSink(termWrite);
@@ -221,32 +260,100 @@ async function choosePort() {
     await openPort(port);
   } catch (e) {
     if (e && e.name === "NotFoundError") return;           // the picker was closed
-    if (e && e.name === "InvalidStateError") {
-      fail(new RpcError("That port is open in another tab or program. Close it there first."));
-      return;
-    }
-    fail(e);
+    $("#connect-status").textContent = explain(openError(e));
+    fail(openError(e));
   }
 }
 
 async function disconnect() {
   const line = S.line;
   if (!line) return;
+  // A command still running is stopped first, so the device is not left
+  // waiting in the middle of it.
+  if (S.runAbort) S.runAbort.abort();
   try { if (S.mode === "link" && S.link) await S.link.bye(); } catch (e) { /* closing anyway */ }
   S.line = null;
   S.link = null;
   await line.close();
   setMode("off");
-  $("#connect-status").textContent = "Disconnected.";
+  $("#connect-status").textContent = "Disconnected. The device is back at its own prompt.";
+  if (S.fw) S.fw.refresh();
+  if (S.pk) S.pk.render();
 }
 
 function lost() {
   S.line = null;
   S.link = null;
   setMode("off");
-  $("#connect-status").textContent = "The device disconnected: it restarted, or the cable came out.";
   $("#btn-reconnect").hidden = false;
+  if (S.fw) S.fw.refresh();
+  if (S.pk) S.pk.render();
+  // A firmware update drops the port on purpose; the Firmware tab says so.
+  if (S.fw && S.fw.expectingRestart()) {
+    $("#connect-status").textContent = "The device is restarting with its new firmware.";
+    return;
+  }
+  $("#connect-status").textContent = "The device disconnected: it restarted, or the cable came out.";
   toast("The device disconnected. When it is back, choose Reconnect on the Connect tab.");
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+function samePort(p) {
+  const want = S.port && S.port.getInfo ? S.port.getInfo() : {};
+  const i = p.getInfo ? p.getInfo() : {};
+  return i.usbVendorId === want.usbVendorId && i.usbProductId === want.usbProductId;
+}
+
+// After a restart: wait for the board to come back on USB and open it again.
+// The port can be listed before it can be opened, so opening is retried.
+async function waitForDevice(ms) {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    if (S.line) return true;
+    if (S.port && S.serial) {
+      let ports = [];
+      try { ports = await S.serial.getPorts(); } catch (e) { ports = []; }
+      const port = ports.find(samePort);
+      if (port) {
+        try { await openPort(port); return true; } catch (e) { /* still enumerating */ }
+      }
+    }
+    await sleep(1500);
+  }
+  return !!S.line;
+}
+
+// The raw console, for a step that has to be typed at the prompt: link mode
+// ends, and what the device prints is read here and passed to the Terminal.
+async function consoleFor() {
+  await switchTo("terminal");
+  if (!S.line) throw new RpcError("Not connected.");
+  const line = S.line;
+  setMode("switching");          // the Terminal's keys stay out of it meanwhile
+  line.setSink(null);
+  return {
+    stream: line,
+    echo: termWrite,
+    release: () => { if (S.line === line) { line.setSink(termWrite); setMode("terminal"); } },
+  };
+}
+
+function saveFile(data, name) {
+  const url = URL.createObjectURL(new Blob([data]));
+  const a = el("a", { href: url, download: name });
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+
+async function bootselNow() {
+  const port = S.port;
+  if (!port) return;
+  await disconnect();
+  await resetToBootsel(port);
+  $("#connect-status").textContent = "The board is restarting into BOOTSEL. Look for a drive named RP2350 or RPI-RP2.";
 }
 
 async function reconnect() {
@@ -259,7 +366,9 @@ async function reconnect() {
     }) || S.port;
     await openPort(port);
   } catch (e) {
-    fail(new RpcError(`Could not reopen the port (${explain(e)}). Choose the device again.`));
+    const why = e instanceof RpcError ? e : new RpcError(`Could not reopen the port (${explain(e)}). Choose the device again.`);
+    $("#connect-status").textContent = explain(why);
+    fail(why);
   }
 }
 
@@ -270,33 +379,75 @@ async function bootsel() {
     ok: "Reset to BOOTSEL", danger: true,
   });
   if (!yes) return;
-  const port = S.port;
-  await disconnect();
-  await resetToBootsel(port);
-  $("#connect-status").textContent = "The board is restarting into BOOTSEL. Look for a drive named RP2350 or RPI-RP2.";
+  await bootselNow();
 }
 
 // --- panes ------------------------------------------------------------------------
 
 async function showPane(name) {
   S.pane = name;
-  for (const b of document.querySelectorAll(".tabs button")) b.setAttribute("aria-selected", String(b.dataset.pane === name));
+  for (const b of document.querySelectorAll(".tabs button")) {
+    const on = b.dataset.pane === name;
+    b.setAttribute("aria-selected", String(on));
+    b.tabIndex = on ? 0 : -1;
+  }
   for (const p of document.querySelectorAll(".pane")) p.hidden = p.id !== "pane-" + name;
-  if (!S.line) return;
+  clearError(name);
   try {
+    // These two show the release and the index with no device at all.
+    if (name === "firmware" && !S.line) { await S.fw.show(); return; }
+    if (name === "packages" && !S.line) { await S.pk.show(); return; }
+    if (!S.line) return;
     if (name === "terminal") {
       await switchTo("terminal");
       if (S.term) { S.term.fit(); S.term.focus(); }
+    } else if (name === "firmware") {
+      S.fw.refresh();
+      await needLink().catch((e) => showError("firmware", e));
+      await S.fw.show();
     } else if (LINK_PANES.has(name)) {
       await needLink();
       if (name === "files") await loadDir(S.cwd);
-      if (name === "packages") await listInstalled();
+      if (name === "packages") await S.pk.show();
       if (name === "device") renderFacts();
       if (name === "run") $("#run-input").focus();
     }
   } catch (e) {
-    fail(e);
+    showError(name, e);
   }
+}
+
+// Arrow keys, Home and End move between the tabs (the ARIA tabs pattern);
+// Tab moves on into the pane.
+function tabKeys(e) {
+  const tabs = [...document.querySelectorAll(".tabs button")];
+  const i = tabs.indexOf(document.activeElement);
+  if (i < 0) return;
+  let j = null;
+  if (e.key === "ArrowDown" || e.key === "ArrowRight") j = (i + 1) % tabs.length;
+  else if (e.key === "ArrowUp" || e.key === "ArrowLeft") j = (i - 1 + tabs.length) % tabs.length;
+  else if (e.key === "Home") j = 0;
+  else if (e.key === "End") j = tabs.length - 1;
+  if (j === null) return;
+  e.preventDefault();
+  tabs[j].focus();
+  showPane(tabs[j].dataset.pane);
+}
+
+// --- colours ----------------------------------------------------------------------
+
+const THEME_KEY = "rpc-web-theme";
+const THEMES = ["auto", "light", "dark"];
+const THEME_TEXT = { auto: "Auto", light: "Light", dark: "Dark" };
+
+function setTheme(t) {
+  if (!THEMES.includes(t)) t = "auto";
+  if (t === "auto") delete document.documentElement.dataset.theme;
+  else document.documentElement.dataset.theme = t;
+  const b = $("#btn-theme");
+  b.textContent = THEME_TEXT[t];
+  b.setAttribute("aria-label", t === "auto" ? "Colours: follow the system" : `Colours: ${t}`);
+  try { localStorage.setItem(THEME_KEY, t); } catch (e) { /* private window */ }
 }
 
 // --- files ------------------------------------------------------------------------
@@ -338,13 +489,13 @@ async function loadDir(path) {
   renderPrompt();
 }
 
-function transferRow(label) {
+function transferRow(label, list = "#transfers") {
   const prog = el("progress", { max: "1", value: "0" });
   const state = el("span", { class: "state" }, "waiting");
   const ctl = new AbortController();
   const cancel = el("button", { onclick: () => ctl.abort() }, "Cancel");
   const li = el("li", {}, el("span", { class: "what" }, label), el("span", {}, state, " ", cancel), prog);
-  $("#transfers").prepend(li);
+  $(list).prepend(li);
   return {
     signal: ctl.signal,
     progress: (done, total) => {
@@ -482,97 +633,14 @@ async function runCommand(line) {
   }
 }
 
-// --- packages ---------------------------------------------------------------------
-
-async function listInstalled() {
-  const link = await needLink();
-  const r = await link.exec("pkg list");
-  $("#pkg-installed").textContent = r.text;
-}
-
-function pkgLog(text) {
-  const log = $("#pkg-log");
-  log.hidden = false;
-  log.textContent += text + "\n";
-  log.scrollTop = log.scrollHeight;
-}
-
-async function installData(data, name) {
-  const link = await needLink();
-  const t = transferRow(`${name} to /tmp`);
-  try {
-    const r = await installPackage(link, data, name, { progress: t.progress, signal: t.signal });
-    t.finish(r.rc === 0 ? "installed" : "refused", r.rc !== 0);
-    pkgLog(r.text.trim());
-    await listInstalled();
-  } catch (e) {
-    t.finish(explain(e), true);
-    throw e;
-  }
-}
-
-async function loadRepo() {
-  const url = $("#repo-url").value.trim() || REPO_DEFAULT;
-  $("#repo-rows").textContent = "";
-  $("#repo-rows").append(el("tr", {}, el("td", { colspan: "4", class: "empty" }, "Loading...")));
-  try {
-    S.index = await loadIndex(url);
-    renderRepo();
-  } catch (e) {
-    $("#repo-rows").textContent = "";
-    $("#repo-rows").append(el("tr", {}, el("td", { colspan: "4", class: "empty" }, explain(e))));
-  }
-}
-
-function renderRepo() {
-  const rows = $("#repo-rows");
-  rows.textContent = "";
-  if (!S.index) return;
-  const q = $("#repo-filter").value.trim().toLowerCase();
-  const board = S.link ? S.link.hello.board : null;
-  // Firmware from v2.01-beta says which build it runs; older link firmware
-  // leaves it to the board name.
-  const said = S.link ? S.link.hello.arch : null;
-  const arch = (said === "armv6m" || said === "armv8m") ? said : boardArch(board);
-  const shown = S.index.filter((p) => !q || (p.name + " " + p.desc).toLowerCase().includes(q))
-    .sort((a, b) => a.name.localeCompare(b.name));
-  if (!shown.length) rows.append(el("tr", {}, el("td", { colspan: "4", class: "empty" }, "Nothing matches.")));
-  for (const p of shown) {
-    // `pkg install <file>` does not check the architecture, so a board this
-    // page cannot place gets no Install buttons rather than a guess.
-    const runs = !!arch && archRunsHere(p.arch, arch);
-    rows.append(el("tr", {},
-      el("td", {}, el("span", { class: "name" }, p.name), p.kind && p.kind !== "app" ? el("span", { class: "tag" }, p.kind) : null),
-      el("td", { class: "mono" }, p.ver),
-      el("td", { class: "wide" }, p.desc),
-      el("td", { class: "acts" }, el("button", {
-        disabled: !runs,
-        title: runs ? `Install ${p.name} ${p.ver}` : arch ? `Built for ${p.arch}; this board is ${arch}` : "Connect first, so the board's architecture is known",
-        onclick: () => installFromRepo(p.name).catch(fail),
-      }, runs ? "Install" : arch ? "Not for this board" : "Connect first"))));
-  }
-}
-
-async function installFromRepo(name) {
-  const link = await needLink();
-  const said = link.hello.arch;
-  const arch = (said === "armv6m" || said === "armv8m") ? said : boardArch(link.hello.board);
-  if (!arch) throw new RpcError(`This page does not know which architecture the board '${link.hello.board}' runs, so it will not guess. Use rpc install --arch.`);
-  const pkg = choose(S.index, name, arch);
-  pkgLog(`${pkg.name} ${pkg.ver} (${pkg.arch || "any architecture"}), downloading...`);
-  const { data, verified } = await download(pkg);
-  pkgLog(verified ? "Checksum matches the index." : "The index publishes no checksum for this package; it is installed unverified.");
-  await installData(data, pkg.name + ".app");
-}
-
 // --- device -----------------------------------------------------------------------
 
 function renderFacts() {
   const dl = $("#facts");
   dl.textContent = "";
   const h = S.link ? S.link.hello : {};
-  const rows = [["Firmware", h.os ? `${h.os} (build ${h.build})` : null], ["Board", h.board], ["Account", h.user],
-    ["Folder", h.cwd], ["Link protocol", h.proto]];
+  const rows = [["Firmware", h.os ? `${h.os} (build ${h.build})` : null], ["Board", h.board],
+    ["Packages", S.link ? linkArch(h) : null], ["Account", h.user], ["Folder", h.cwd], ["Link protocol", h.proto]];
   for (const [k, v] of rows) if (v) dl.append(el("dt", {}, k), el("dd", {}, v));
   renderPrompt();
 }
@@ -608,9 +676,40 @@ async function start() {
   } else {
     $("#unsupported").hidden = false;
     $("#btn-choose").disabled = true;
+    const phone = (navigator.userAgentData && navigator.userAgentData.mobile) || /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+    if (phone) $("#unsupported-why").textContent = "Phones and tablets cannot open serial ports from a browser.";
+    else if (!isSecureContext) $("#unsupported-why").textContent = "Serial ports are offered only to a secure page: open this one over https, or as http://localhost.";
   }
 
-  for (const b of document.querySelectorAll(".tabs button")) b.addEventListener("click", () => showPane(b.dataset.pane));
+  let theme = "auto";
+  try { theme = localStorage.getItem(THEME_KEY) || "auto"; } catch (e) { /* private window */ }
+  setTheme(theme);
+  $("#btn-theme").addEventListener("click", () => {
+    const now = document.documentElement.dataset.theme || "auto";
+    setTheme(THEMES[(THEMES.indexOf(now) + 1) % THEMES.length]);
+  });
+
+  // What the Firmware and Packages panes borrow from the page.
+  const ctx = {
+    el, ask, human, explain, toast, showError, transferRow, saveFile, demo: DEMO,
+    releasesBase: new URLSearchParams(location.search).get("releases") || undefined,
+    link: () => (S.mode === "link" && S.link && !S.link.dropped ? S.link : null),
+    line: () => S.line,
+    connected: () => !!S.line,
+    knownPort: () => !!S.port,
+    needLink,
+    waitForDevice,
+    console: consoleFor,
+    bootsel: bootselNow,
+  };
+  S.fw = firmwarePane(ctx);
+  S.pk = packagesPane(ctx);
+
+  for (const b of document.querySelectorAll(".tabs button")) {
+    b.tabIndex = b.getAttribute("aria-selected") === "true" ? 0 : -1;
+    b.addEventListener("click", () => showPane(b.dataset.pane));
+  }
+  $(".tabs").addEventListener("keydown", tabKeys);
   $("#btn-choose").addEventListener("click", choosePort);
   $("#btn-reconnect").addEventListener("click", reconnect);
   $("#btn-disconnect").addEventListener("click", () => disconnect().catch(fail));
@@ -645,17 +744,6 @@ async function start() {
     $("#run-input").value = histPos < 0 ? "" : history[histPos];
   });
   renderHistory();
-
-  $("#repo-url").value = REPO_DEFAULT;
-  $("#btn-pkg-list").addEventListener("click", () => listInstalled().catch(fail));
-  $("#pkg-file").addEventListener("change", () => { $("#btn-pkg-file").disabled = !$("#pkg-file").files.length; });
-  $("#btn-pkg-file").addEventListener("click", async () => {
-    const f = $("#pkg-file").files[0];
-    if (!f) return;
-    try { await installData(new Uint8Array(await f.arrayBuffer()), f.name); } catch (e) { fail(e); }
-  });
-  $("#btn-repo-load").addEventListener("click", loadRepo);
-  $("#repo-filter").addEventListener("input", renderRepo);
 
   for (const b of document.querySelectorAll("#pane-device [data-cmd]")) b.addEventListener("click", () => deviceCommand(b.dataset.cmd).catch(fail));
   $("#btn-reboot").addEventListener("click", () => reboot().catch(fail));

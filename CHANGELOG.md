@@ -12,7 +12,13 @@ Summary:
 
 ### New
 
+- The browser tool has a Firmware tab. It shows the device's version against the latest release, the release notes, and which boards have run it, and it updates three ways: over the air (`sudo update online` through link mode), from the computer (the page downloads the image, checks it and sends it over the cable, so a board with no Wi-Fi updates too), or by writing the `.uf2` onto the BOOTSEL drive, with "save it and drag it there" always on offer. It waits for the board to restart and says what it runs afterwards.
+- The Firmware tab spots a device on v2.01-beta to v2.05-beta, which reads the new version numbers as older, says so, and moves it across with `--force`. It compares versions exactly as the device does.
+
 ### Improved
+
+- The browser tool's Packages tab lists what is installed against the repository, with Update all (one password, asked first), Update and Remove for each package, and each package's architecture and ABI. `armv8m` packages are offered only to a Pico 2 or Pico 2 W.
+- The browser tool shows a failure on the tab it happened on, says plainly when another program has the port open, takes Enter in the password box (it used to cancel), moves between tabs with the arrow keys, fits a phone's width, and has a light, dark or system colour switch.
 
 ### Fixed
 

@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>RPCortex device tools</title>
-<meta name="description" content="Connect to an RPCortex v2 device over USB from the browser: a terminal, files, commands, packages.">
+<meta name="description" content="Connect to an RPCortex v2 device over USB from the browser: a terminal, files, commands, packages and firmware updates.">
 <meta name="color-scheme" content="light dark">
 <link rel="stylesheet" href="css/style.css">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%2314b8a6'/%3E%3Cpath d='M4 5l3 3-3 3M8 11h4' stroke='white' stroke-width='1.6' fill='none' stroke-linecap='round'/%3E%3C/svg%3E">
@@ -16,9 +16,12 @@
     <span class="wordmark">RPCortex</span>
     <span class="brand-sub">device tools</span>
   </div>
-  <div class="conn" aria-live="polite">
-    <code class="conn-prompt" id="conn-prompt">no device</code>
-    <span class="chip" id="conn-mode">Not connected</span>
+  <div class="conn">
+    <span class="conn-live" aria-live="polite">
+      <code class="conn-prompt" id="conn-prompt">no device</code>
+      <span class="chip" id="conn-mode">Not connected</span>
+    </span>
+    <button class="theme" id="btn-theme" type="button" title="Colours: follow the system, light or dark" aria-label="Colours: follow the system">Auto</button>
   </div>
 </header>
 
@@ -29,6 +32,7 @@
     <button role="tab" id="tab-files" data-pane="files" data-link>Files</button>
     <button role="tab" id="tab-run" data-pane="run" data-link>Run</button>
     <button role="tab" id="tab-packages" data-pane="packages" data-link>Packages</button>
+    <button role="tab" id="tab-firmware" data-pane="firmware">Firmware</button>
     <button role="tab" id="tab-device" data-pane="device" data-link>Device</button>
   </nav>
 
@@ -37,8 +41,8 @@
     <section class="pane" id="pane-connect" role="tabpanel" aria-labelledby="tab-connect">
       <h1>Connect</h1>
       <div class="notice" id="unsupported" hidden>
-        <p><strong>This browser cannot open serial ports.</strong> The page talks to the device through Web Serial, which Chrome and Edge on a desktop computer offer, and only on a secure page (https, or http://localhost). Firefox and Safari do not have it.</p>
-        <p>The command-line tool does everything this page does: <code>pip install -e tools/rpc</code>, then <code>rpc term</code>.</p>
+        <p><strong id="unsupported-why">This browser cannot open serial ports.</strong> The page talks to the device through Web Serial, which Chrome and Edge on a desktop computer offer, and only on a secure page (https, or http://localhost). Firefox and Safari do not have it, and neither does any phone or tablet browser.</p>
+        <p>The Firmware tab still works here: it shows the latest release and its notes, and saves the images. The command-line tool does everything else: <code>pip install -e tools/rpc</code>, then <code>rpc term</code>.</p>
       </div>
 
       <div class="row">
@@ -70,8 +74,8 @@
       </div>
 
       <div class="block danger-zone">
-        <h2>Firmware update</h2>
-        <p>Resetting to BOOTSEL restarts the board into its bootloader. The connection closes and a drive named <code>RP2350</code> or <code>RPI-RP2</code> appears; copy an RPCortex <code>.uf2</code> onto it and the board restarts with the new firmware. Files on the device are kept.</p>
+        <h2>BOOTSEL</h2>
+        <p>Resetting to BOOTSEL restarts the board into its bootloader. The connection closes and a drive named <code>RP2350</code> or <code>RPI-RP2</code> appears; copy an RPCortex <code>.uf2</code> onto it and the board restarts with the new firmware. Files on the device are kept. The Firmware tab does all of this for you, and has the other ways of updating.</p>
         <button class="danger" id="btn-bootsel" disabled>Reset to BOOTSEL</button>
       </div>
     </section>
@@ -101,6 +105,7 @@
           <input type="file" id="upload-input" multiple hidden>
         </div>
       </div>
+      <div class="pane-error" id="files-error" role="alert" hidden></div>
       <nav class="crumbs" id="crumbs" aria-label="Folder"></nav>
       <div class="drop" id="drop">
         <table class="files">
@@ -115,6 +120,7 @@
     <!-- Run -->
     <section class="pane" id="pane-run" role="tabpanel" aria-labelledby="tab-run" hidden>
       <h1>Run</h1>
+      <div class="pane-error" id="run-error" role="alert" hidden></div>
       <form class="runbar" id="run-form" autocomplete="off">
         <input id="run-input" spellcheck="false" placeholder="ls /home ; df" aria-label="Command line">
         <button class="primary" type="submit" id="run-go">Run</button>
@@ -128,37 +134,115 @@
 
     <!-- Packages -->
     <section class="pane" id="pane-packages" role="tabpanel" aria-labelledby="tab-packages" hidden>
-      <h1>Packages</h1>
-      <div class="block">
-        <div class="pane-head"><h2>Installed</h2><button id="btn-pkg-list">Refresh</button></div>
-        <pre class="out" id="pkg-installed"></pre>
-      </div>
-      <div class="block">
-        <h2>Install a package file</h2>
+      <div class="pane-head">
+        <h1>Packages</h1>
         <div class="row">
-          <input type="file" id="pkg-file" accept=".app">
-          <button class="primary" id="btn-pkg-file" disabled>Install</button>
+          <button id="btn-pkg-list" data-pk>Refresh</button>
+          <button class="primary" id="pkg-upgrade-all" data-pk data-off="1">Update all</button>
         </div>
       </div>
+      <div class="pane-error" id="packages-error" role="alert" hidden></div>
+      <p class="hint" aria-live="polite"><span id="pkg-summary"></span> <span id="pkg-arch"></span></p>
+      <div class="block flush">
+        <table class="pkgs">
+          <thead><tr><th>Installed</th><th>Version</th><th>Arch, ABI</th><th class="wide">Description</th><th class="acts"><span class="sr">Actions</span></th></tr></thead>
+          <tbody id="pkg-rows"></tbody>
+        </table>
+      </div>
+      <ul class="transfers" id="pkg-transfers"></ul>
+      <pre class="out" id="pkg-log" hidden></pre>
       <div class="block">
         <h2>From the repository</h2>
-        <p class="hint">The index and the package are downloaded here, checked against the SHA-256 the index publishes, then sent to the device, so it does not need a network of its own.</p>
+        <p class="hint">The index and the package are downloaded here, checked against the SHA-256 the index publishes, then sent to the device, so it does not need a network of its own. Packages marked <code>armv8m</code> run only on an RP2350 (Pico 2, Pico 2 W). A package built for a newer ABI than the firmware has is refused by the device: update the firmware first.</p>
         <div class="row">
           <input id="repo-url" spellcheck="false" aria-label="Package index URL">
-          <button id="btn-repo-load">Load list</button>
+          <button id="btn-repo-load" data-pk>Load list</button>
           <input id="repo-filter" placeholder="Filter" aria-label="Filter packages" spellcheck="false">
         </div>
+        <p class="hint" id="repo-state" aria-live="polite"></p>
         <table class="pkgs">
-          <thead><tr><th>Package</th><th>Version</th><th class="wide">Description</th><th><span class="sr">Install</span></th></tr></thead>
+          <thead><tr><th>Package</th><th>Version</th><th>Arch, ABI</th><th class="wide">Description</th><th class="acts"><span class="sr">Install</span></th></tr></thead>
           <tbody id="repo-rows"></tbody>
         </table>
       </div>
-      <pre class="out" id="pkg-log" hidden></pre>
+      <div class="block">
+        <h2>Install a package file</h2>
+        <p class="hint">A <code>.app</code> from this computer. The device does not check which board it was built for, so choose the right one.</p>
+        <div class="row">
+          <input type="file" id="pkg-file" accept=".app" aria-label="Package file">
+          <button class="primary" id="btn-pkg-file" data-pk data-off="1" disabled>Install</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Firmware -->
+    <section class="pane" id="pane-firmware" role="tabpanel" aria-labelledby="tab-firmware" hidden>
+      <div class="pane-head">
+        <h1>Firmware</h1>
+        <button id="fw-refresh" data-fw>Check again</button>
+      </div>
+      <div class="pane-error" id="firmware-error" role="alert" hidden></div>
+      <div class="block">
+        <div class="fields" id="fw-board-row">
+          <label>Board
+            <select id="fw-board">
+              <option value="pico2_w">Pico 2 W</option>
+              <option value="pico2">Pico 2</option>
+              <option value="pico_w">Pico W</option>
+              <option value="pico">Pico</option>
+            </select>
+          </label>
+        </div>
+        <dl class="facts" id="fw-facts"></dl>
+        <p class="hint" id="fw-latest" aria-live="polite"></p>
+        <div class="notice" id="fw-verdict" hidden></div>
+      </div>
+
+      <div class="ways">
+        <div class="block way">
+          <h2>Over the air</h2>
+          <p class="hint" id="fw-ota-hint"></p>
+          <button class="primary" id="fw-ota" data-fw>Update over the air</button>
+        </div>
+        <div class="block way">
+          <h2>From this computer</h2>
+          <p class="hint">The page downloads the image, checks it against the release, and sends it over the cable. This one works on a board with no Wi-Fi.</p>
+          <div class="row">
+            <button id="fw-send" data-fw>Send the latest image</button>
+            <button id="fw-send-file" data-fw>Choose a .bin</button>
+            <input type="file" id="fw-bin" accept=".bin" hidden>
+          </div>
+        </div>
+        <div class="block way">
+          <h2>BOOTSEL</h2>
+          <p class="hint" id="fw-uf2-hint"></p>
+          <div class="row">
+            <button id="fw-uf2-write" data-fw>Write to the BOOTSEL drive</button>
+            <button id="fw-uf2" data-fw>Save the .uf2</button>
+          </div>
+        </div>
+      </div>
+
+      <ol class="steps" id="fw-steps" hidden aria-live="polite"></ol>
+      <pre class="out console" id="fw-console" hidden aria-label="The device's console"></pre>
+
+      <div class="block">
+        <h2>Release notes</h2>
+        <div id="fw-notes"></div>
+      </div>
+      <div class="block flush">
+        <h2 class="inset">Boards</h2>
+        <table class="boards">
+          <thead><tr><th>Board</th><th>Chip</th><th>On hardware</th><th class="wide">Notes</th></tr></thead>
+          <tbody id="fw-board-rows"></tbody>
+        </table>
+      </div>
     </section>
 
     <!-- Device -->
     <section class="pane" id="pane-device" role="tabpanel" aria-labelledby="tab-device" hidden>
       <h1>Device</h1>
+      <div class="pane-error" id="device-error" role="alert" hidden></div>
       <dl class="facts" id="facts"></dl>
       <div class="row">
         <button data-cmd="meminfo">Memory</button>
@@ -174,11 +258,11 @@
 
 <div class="toasts" id="toasts" aria-live="assertive"></div>
 
-<dialog id="ask">
+<dialog id="ask" aria-labelledby="ask-title" aria-describedby="ask-body">
   <form method="dialog">
     <h2 id="ask-title"></h2>
     <p id="ask-body"></p>
-    <input id="ask-input" spellcheck="false" hidden>
+    <input id="ask-input" spellcheck="false" autocapitalize="off" aria-labelledby="ask-title" hidden>
     <div class="row end">
       <button value="cancel" formnovalidate>Cancel</button>
       <button value="ok" class="primary" id="ask-ok">OK</button>

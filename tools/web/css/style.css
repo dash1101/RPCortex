@@ -17,7 +17,10 @@
   --danger: #c2410c;
   --danger-soft: #fdeadf;
   --ok: #15803d;
+  --ok-soft: #dcf5e4;
   --fail: #b91c1c;
+  --warn: #a16207;
+  --warn-soft: #fdf3d3;
   --p-user: #0e7490;
   --p-host: #6b7280;
   --p-path: #2563eb;
@@ -31,8 +34,10 @@
   --r-block: 10px;
 }
 
+/* Dark: by the system's choice unless the page was told light, or by the
+   page's own switch. The same tokens either way. */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --bg: #11161e;
     --surface: #18202b;
     --ink: #e1e7ef;
@@ -44,17 +49,48 @@
     --danger: #fb923c;
     --danger-soft: #3a2316;
     --ok: #4ade80;
+    --ok-soft: #12301f;
     --fail: #f87171;
+    --warn: #fbbf24;
+    --warn-soft: #3a2f12;
     --p-user: #22d3ee;
     --p-host: #94a3b8;
     --p-path: #60a5fa;
     --mark-1: #2dd4be; --mark-2: #60a5fa; --mark-3: #a855f7; --mark-4: #f472b6;
     --term-bg: #0d1219;
     --term-sel: #263547;
+    color-scheme: dark;
   }
 }
+:root[data-theme="dark"] {
+  --bg: #11161e;
+  --surface: #18202b;
+  --ink: #e1e7ef;
+  --muted: #8d99ab;
+  --line: #29333f;
+  --accent: #2dd4be;
+  --accent-ink: #052b26;
+  --accent-soft: #123a37;
+  --danger: #fb923c;
+  --danger-soft: #3a2316;
+  --ok: #4ade80;
+  --ok-soft: #12301f;
+  --fail: #f87171;
+  --warn: #fbbf24;
+  --warn-soft: #3a2f12;
+  --p-user: #22d3ee;
+  --p-host: #94a3b8;
+  --p-path: #60a5fa;
+  --mark-1: #2dd4be; --mark-2: #60a5fa; --mark-3: #a855f7; --mark-4: #f472b6;
+  --term-bg: #0d1219;
+  --term-sel: #263547;
+  color-scheme: dark;
+}
+:root[data-theme="light"] { color-scheme: light; }
 
 * { box-sizing: border-box; }
+/* hidden means hidden, whatever display a class gives the element. */
+[hidden] { display: none !important; }
 html { -webkit-text-size-adjust: 100%; }
 body {
   margin: 0;
@@ -99,6 +135,8 @@ a { color: var(--accent); }
 .brand-sub { color: var(--muted); font-size: 0.9rem; white-space: nowrap; }
 
 .conn { display: flex; align-items: center; gap: 0.6rem; min-width: 0; }
+.conn-live { display: flex; align-items: center; gap: 0.6rem; min-width: 0; }
+.theme { padding: 0.15rem 0.6rem; font-size: 0.82rem; border-radius: 999px; color: var(--muted); }
 .conn-prompt {
   color: var(--muted);
   white-space: nowrap;
@@ -189,6 +227,26 @@ details.block[open] > summary { margin-bottom: 0.6rem; }
 .row.end { justify-content: flex-end; }
 .hint { color: var(--muted); font-size: 0.9rem; }
 .notice { background: var(--danger-soft); border-left: 3px solid var(--danger); padding: 0.8rem 1rem; border-radius: var(--r-control); margin-bottom: 1rem; }
+.notice.info { background: var(--accent-soft); border-left-color: var(--accent); }
+.notice.good { background: var(--ok-soft); border-left-color: var(--ok); }
+.notice.warn { background: var(--warn-soft); border-left-color: var(--warn); }
+.notice:last-child { margin-bottom: 0; }
+
+/* A failure, on the pane it belongs to. */
+.pane-error {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.8rem;
+  background: var(--danger-soft);
+  border-left: 3px solid var(--fail);
+  border-radius: var(--r-control);
+  padding: 0.6rem 0.6rem 0.6rem 0.9rem;
+  margin: 0 0 1rem;
+  overflow-wrap: anywhere;
+}
+.pane-error[hidden] { display: none; }
+.pane-error .dismiss { border: 0; background: none; padding: 0 0.4rem; font-size: 1.2rem; line-height: 1; color: var(--muted); }
 .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
 
 /* --- controls ---------------------------------------------------------------- */
@@ -196,6 +254,12 @@ details.block[open] > summary { margin-bottom: 0.6rem; }
 button, input, select {
   font: inherit;
   color: inherit;
+}
+select {
+  border: 1px solid var(--line);
+  background: var(--bg);
+  border-radius: var(--r-control);
+  padding: 0.38rem 0.5rem;
 }
 button {
   border: 1px solid var(--line);
@@ -301,12 +365,70 @@ td.empty { color: var(--muted); }
 .transfers .state.bad { color: var(--fail); }
 
 .pkgs { margin-top: 0.8rem; }
+.block.flush { padding: 0; overflow: hidden; }
+.block.flush .pkgs { margin-top: 0; }
+.block.flush .inset { padding: 1rem 1.1rem 0; }
+.sub { display: block; font-family: var(--sans); font-size: 0.78rem; color: var(--muted); }
+td .sub { margin-top: 0.1rem; }
+.mono .sub { display: inline; }
+.arrow { color: var(--ok); white-space: nowrap; }
+.state-upgrade .sub { color: var(--ok); }
+.state-elsewhere .sub, .state-unlisted .sub { color: var(--muted); }
 .pkgs td.wide { color: var(--muted); font-size: 0.9rem; }
 .pkgs .tag { font-size: 0.75rem; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 0 0.4rem; margin-left: 0.3rem; }
 
 .facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 0.3rem 1.2rem; margin: 0 0 1rem; }
 .facts dt { color: var(--muted); }
 .facts dd { margin: 0; font-family: var(--mono); }
+
+/* --- firmware --------------------------------------------------------------------- */
+
+.ways { display: grid; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); gap: 0 1rem; }
+.way { display: flex; flex-direction: column; margin: 0 0 1rem; }
+.way .hint { flex: 1; }
+.way > button, .way .row { align-self: flex-start; }
+
+.steps { list-style: none; padding: 0; margin: 0 0 1rem; counter-reset: step; }
+.steps[hidden] { display: none; }
+.step { counter-increment: step; display: grid; grid-template-columns: 1.6rem minmax(0, 1fr); gap: 0 0.5rem; padding: 0.3rem 0; color: var(--muted); }
+.step::before {
+  content: counter(step);
+  grid-row: span 2;
+  width: 1.4rem; height: 1.4rem;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 0.78rem;
+}
+.step .label { font-weight: 600; }
+.step .detail { font-size: 0.88rem; overflow-wrap: anywhere; }
+.step.active { color: var(--ink); }
+.step.active::before { border-color: var(--accent); color: var(--accent); }
+.step.done::before { content: "\2713"; background: var(--ok-soft); border-color: var(--ok); color: var(--ok); }
+.step.failed { color: var(--ink); }
+.step.failed::before { content: "!"; background: var(--danger-soft); border-color: var(--fail); color: var(--fail); }
+.step.failed .detail { color: var(--fail); }
+@media (prefers-reduced-motion: no-preference) {
+  .step.active::before { animation: pulse 1.6s ease-in-out infinite; }
+  @keyframes pulse { 50% { box-shadow: 0 0 0 4px var(--accent-soft); } }
+}
+
+.out.console { font-size: 0.84rem; max-height: 18rem; }
+
+.release { border-top: 1px solid var(--line); padding: 0.6rem 0; }
+.release:first-child { border-top: 0; padding-top: 0; }
+.release > summary { cursor: pointer; }
+.rel-name { font-family: var(--mono); font-weight: 600; }
+.notes { margin-top: 0.4rem; }
+.notes h3 { font-size: 0.9rem; margin: 0.8rem 0 0.2rem; }
+.notes ul { margin: 0; padding-left: 1.2rem; }
+.notes li { margin: 0.2rem 0; max-width: 72ch; }
+
+.boards tr.here td { background: var(--accent-soft); }
+.boards .tag { font-size: 0.75rem; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 0 0.4rem; margin-left: 0.3rem; }
+.status.good { color: var(--ok); }
+.status.untested { color: var(--muted); }
+.boards td.wide { color: var(--muted); font-size: 0.9rem; }
 
 /* --- toasts and the question box -------------------------------------------- */
 
@@ -336,7 +458,16 @@ dialog input { width: 100%; margin-bottom: 1rem; font-family: var(--mono); }
   .tabs button[aria-selected="true"] { box-shadow: inset 0 -2px 0 var(--accent); }
   .tabs button[data-link]::after { content: none; }
   main { padding: 1rem 1rem 3rem; }
-  .pkgs td.wide, .pkgs th.wide { display: none; }
+  .pkgs td.wide, .pkgs th.wide, .boards td.wide, .boards th.wide { display: none; }
+  .pkgs thead { display: none; }
+  .pkgs tr { display: grid; grid-template-columns: minmax(0, 1fr) auto; border-bottom: 1px solid var(--line); }
+  .pkgs tbody tr:last-child { border-bottom: 0; }
+  .pkgs td { border-bottom: 0; padding-top: 0.3rem; padding-bottom: 0.3rem; }
+  .pkgs td.acts { grid-column: 1 / -1; text-align: left; width: auto; }
+  .pkgs td.empty { grid-column: 1 / -1; }
+  .runbar { flex-wrap: wrap; }
+  .runbar input { flex-basis: 100%; }
+  .row input:not([type="checkbox"]):not([type="file"]) { flex: 1 1 12rem; }
   .files thead { display: none; }
   .files tr { display: grid; grid-template-columns: minmax(0, 1fr) auto; border-bottom: 1px solid var(--line); }
   .files tbody tr:last-child { border-bottom: 0; }
