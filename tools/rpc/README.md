@@ -82,8 +82,8 @@ Ctrl+C.
 | `install` | `rpc install build/apps/greet.app` installs a package file. `rpc install calc` downloads `calc` from the package repository on this computer, checks it against the SHA-256 in the index, and installs it, so the device needs no network. `rpc install --list` shows what the repository offers; `--index` points at another one. |
 | `fetch` | `rpc fetch https://example.com/data.csv /home/root/` downloads on this computer and sends the file. |
 | `wget` | `rpc wget https://example.com/data.csv` has the device download it itself; it must be online. |
-| `backup` | `rpc backup device.zip` copies `/home`, `/etc`, `/usb` and everything else a person put on the device into a zip (or a folder). `/os`, `/tmp` and `/sd` are left out; `--with-packages` adds the installed packages. |
-| `restore` | `rpc restore device.zip` puts it back and reinstalls any packages it holds. `--dry-run` says what it would do. |
+| `backup` | `rpc backup device.zip` copies `/home`, `/etc`, `/usb` and everything else a person put on the device into a zip (or a folder). `/os`, `/tmp` and `/sd` are left out, and the summary says so. `--with-packages` adds the installed packages. `--with-system` adds the settings and saved Wi-Fi networks, the accounts, the device key and the SSH host key, read with sudo. Keep a backup like that as safe as the device. |
+| `restore` | `rpc restore device.zip` puts it back and reinstalls any packages it holds. `--dry-run` says what it would do. System files are put back only after a question that names each one (`--yes` answers it, `--skip-system` leaves them), and then the device restarts without saving, since a plain `reboot` would write its settings back over them. |
 | `reboot` | `rpc reboot --wait` restarts the device and waits for the port to return. |
 | `log` | `rpc log` prints the device's log (`logdump`). |
 | `ps` | `rpc ps` lists its tasks. |

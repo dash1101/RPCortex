@@ -518,11 +518,30 @@ def cmd_backup(ctx, a):
     log = (lambda s: None) if a.quiet else (lambda s: err(s))
     n, size, skipped = _backup.backup(
         dev, a.dest, a.with_packages, log=log, warn=lambda s: err("warning: " + s),
-        progress=lambda path, sz: ctx.progress(posixpath.basename(path)))
+        progress=lambda path, sz: ctx.progress(posixpath.basename(path)),
+        with_system=a.with_system)
     out("Backed up {} file{}, {}, to {}{}".format(
         n, "" if n == 1 else "s", human(size), a.dest,
         "  ({} skipped)".format(skipped) if skipped else ""))
+    out("Not included:")
+    for what, option in _backup.not_included(a.with_packages, a.with_system):
+        out("  {}{}".format(what, "  (add with {})".format(option) if option else ""))
     return 1 if skipped else 0
+
+
+def _confirm_system(a):
+    def ask(notice):
+        err(notice)
+        if a.yes:
+            return True
+        if not sys.stdin.isatty():
+            err("Not asked, since nothing here can answer; --yes restores them, "
+                "--skip-system leaves them.")
+            return False
+        sys.stderr.write("Replace them? [y/N] ")
+        sys.stderr.flush()
+        return sys.stdin.readline().strip().lower() in ("y", "yes")
+    return ask
 
 
 def cmd_restore(ctx, a):
@@ -531,10 +550,13 @@ def cmd_restore(ctx, a):
     done, failed = _backup.restore(
         dev, a.src, packages=not a.skip_packages, dry_run=a.dry_run, log=log,
         warn=lambda s: err("warning: " + s),
-        progress=lambda path, sz: ctx.progress(posixpath.basename(path)))
+        progress=lambda path, sz: ctx.progress(posixpath.basename(path)),
+        system=not a.skip_system, confirm=_confirm_system(a))
     out("{} {} item{}{}".format("Would restore" if a.dry_run else "Restored", done,
                                 "" if done == 1 else "s",
                                 ", {} failed".format(failed) if failed else ""))
+    if dev.gone:
+        out("The device is restarting with the restored settings.")
     return 1 if failed else 0
 
 
@@ -760,11 +782,18 @@ def build_parser():
     p.add_argument("dest", metavar="dir|file.zip")
     p.add_argument("--with-packages", action="store_true",
                    help="include the installed packages (/os/pkg/*.app)")
+    p.add_argument("--with-system", action="store_true",
+                   help="include the settings and Wi-Fi networks, the accounts, the device key "
+                        "and the SSH host key (needs sudo)")
 
     p = add("restore", cmd_restore, "put a backup back on the device")
     p.add_argument("src", metavar="dir|file.zip")
     p.add_argument("--skip-packages", action="store_true",
                    help="do not reinstall packages the backup holds")
+    p.add_argument("--skip-system", action="store_true",
+                   help="leave the system files as they are, even if the backup holds them")
+    p.add_argument("-y", "--yes", action="store_true",
+                   help="replace the system files without asking")
     p.add_argument("-n", "--dry-run", action="store_true", help="say what would be done")
 
     p = add("reboot", cmd_reboot, "restart the device")

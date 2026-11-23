@@ -14,6 +14,8 @@ Summary:
 
 - The browser tool has a Firmware tab. It shows the device's version against the latest release, the release notes, and which boards have run it, and it updates three ways: over the air (`sudo update online` through link mode), from the computer (the page downloads the image, checks it and sends it over the cable, so a board with no Wi-Fi updates too), or by writing the `.uf2` onto the BOOTSEL drive, with "save it and drag it there" always on offer. It waits for the board to restart and says what it runs afterwards.
 - The Firmware tab spots a device on v2.01-beta to v2.05-beta, which reads the new version numbers as older, says so, and moves it across with `--force`. It compares versions exactly as the device does.
+- `rpc backup --with-system` keeps what a backup used to leave behind: the settings and saved Wi-Fi networks, the accounts, the device key and the SSH host key. It reads them with sudo. `rpc restore` puts them back only after naming each file and asking, then restarts the device without saving, so the restored settings stay. The saved Wi-Fi passwords open only with the device key they were sealed under, so on a different device they work only when the key from the backup goes back too.
+- Every backup now ends by listing what it left out, and the option that adds each part.
 
 ### Improved
 
