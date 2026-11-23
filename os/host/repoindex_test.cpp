@@ -223,6 +223,56 @@ int main(void) {
         ok(e.sha256[0] == 0 && e.size == 0, "v1-format entry reports no hash and no size");
     }
 
+    {
+        // The catalogue an image ships is the index MINIFIED (tools_stock_index.py):
+        // every entry must parse exactly as it does from the published layout.
+        uint32_t len = 0;
+        char *pretty = slurp("../stock_index.json", &len);
+        ok(pretty != nullptr, "the tracked stock index is readable");
+        if (pretty) {
+            char *mini = (char *)malloc(len + 1);
+            uint32_t m = 0;
+            bool in_str = false, esc = false;
+            for (uint32_t i = 0; i < len; i++) {
+                char c = pretty[i];
+                if (in_str) {
+                    mini[m++] = c;
+                    if (esc) esc = false;
+                    else if (c == '\\') esc = true;
+                    else if (c == '"') in_str = false;
+                    continue;
+                }
+                if (c == '"') { in_str = true; mini[m++] = c; continue; }
+                if (c == ' ' || c == '\n' || c == '\r' || c == '\t') continue;
+                mini[m++] = c;
+            }
+            mini[m] = 0;
+            ok(m < len, "minifying shrank it");
+            struct All { RepoEntry e[32]; int n; };
+            static All a, b;
+            a.n = b.n = 0;
+            auto collect = [](void *ctx, const RepoEntry *e) -> bool {
+                All *x = (All *)ctx;
+                if (x->n < 32) x->e[x->n++] = *e;
+                return true;
+            };
+            repo_walk(pretty, len, collect, &a);
+            repo_walk(mini, m, collect, &b);
+            ok(a.n > 10 && a.n == b.n, "minified: the same number of packages");
+            bool same = a.n == b.n;
+            for (int i = 0; same && i < a.n; i++)
+                same = !strcmp(a.e[i].name, b.e[i].name) && !strcmp(a.e[i].ver, b.e[i].ver) &&
+                       !strcmp(a.e[i].url, b.e[i].url) && !strcmp(a.e[i].sha256, b.e[i].sha256) &&
+                       !strcmp(a.e[i].abi, b.e[i].abi) && !strcmp(a.e[i].arch, b.e[i].arch) &&
+                       !strcmp(a.e[i].desc, b.e[i].desc) && a.e[i].size == b.e[i].size;
+            ok(same, "minified: every field of every entry identical");
+            RepoEntry e;
+            ok(repo_find(mini, m, "greet", &e) && strlen(e.sha256) == 64, "minified: find by name, full hash");
+            free(mini);
+            free(pretty);
+        }
+    }
+
     printf("  %d checks, %d failed\n", checks, fails);
     return fails ? 1 : 0;
 }

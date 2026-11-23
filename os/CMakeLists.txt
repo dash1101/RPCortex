@@ -743,19 +743,32 @@ target_compile_definitions(rpcortex_v2 PRIVATE
 # between releases, which is what `pkg update` is for — but a fresh device
 # should be able to see what exists before it can reach the network.
 #
-# WHERE IT COMES FROM. The package repository, when it is checked out beside this
-# one, so a build always carries the current catalogue. Otherwise stock_index.json
-# in this directory, a copy that is refreshed when a release is cut, so a fresh
-# clone of this repository builds on its own (CI does, and so can anyone else).
-set(STOCK_INDEX ${OS_ROOT}/../../RPCortex-repo/repo-v2/index.json)
-if(NOT EXISTS ${STOCK_INDEX})
-    set(STOCK_INDEX ${OS_ROOT}/stock_index.json)
-endif()
+# WHERE IT COMES FROM. What the package repository has PUBLISHED: its index as
+# committed on origin/main, when it is checked out beside this one (as of that
+# checkout's last fetch). Otherwise stock_index.json in this directory, so a
+# fresh clone of this repository builds on its own (CI does, and so can anyone
+# else). Never the checkout's working copy: an image that listed a package
+# committed there but not yet pushed told a fresh board to expect a file the
+# repository did not serve, and the install failed its checksum.
+# tools_stock_index.py explains, and minifies it (a sixth of it was whitespace).
+set(STOCK_REPO ${OS_ROOT}/../../RPCortex-repo)
+set(STOCK_DEPS ${OS_ROOT}/stock_index.json ${OS_ROOT}/tools_stock_index.py)
+foreach(f .git/FETCH_HEAD .git/refs/remotes/origin/main .git/packed-refs)
+    if(EXISTS ${STOCK_REPO}/${f})
+        list(APPEND STOCK_DEPS ${STOCK_REPO}/${f})
+    endif()
+endforeach()
+add_custom_command(
+    OUTPUT ${CMAKE_BINARY_DIR}/stock_index.json
+    COMMAND python3 ${OS_ROOT}/tools_stock_index.py
+            ${STOCK_REPO} ${OS_ROOT}/stock_index.json ${CMAKE_BINARY_DIR}/stock_index.json
+    DEPENDS ${STOCK_DEPS}
+)
 add_custom_command(
     OUTPUT ${CMAKE_BINARY_DIR}/stock_index.cpp
     COMMAND ${CMAKE_COMMAND} -E env python3 ${OS_ROOT}/tools_bin2c.py
-            ${STOCK_INDEX} ${CMAKE_BINARY_DIR}/stock_index.cpp stock_index
-    DEPENDS ${STOCK_INDEX} ${OS_ROOT}/tools_bin2c.py
+            ${CMAKE_BINARY_DIR}/stock_index.json ${CMAKE_BINARY_DIR}/stock_index.cpp stock_index
+    DEPENDS ${CMAKE_BINARY_DIR}/stock_index.json ${OS_ROOT}/tools_bin2c.py
 )
 add_custom_target(stock_index_src DEPENDS ${CMAKE_BINARY_DIR}/stock_index.cpp)
 target_sources(rpcortex_v2 PRIVATE ${CMAKE_BINARY_DIR}/stock_index.cpp)

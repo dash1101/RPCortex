@@ -135,17 +135,12 @@ int pkg_fetch_update(void) {
     return 0;
 }
 
-int pkg_fetch_install(const char *name) {
-    // No list yet (a new board, or one that has never run `pkg update`): fetch
-    // it first rather than send the person away to type another command.
-    {
-        char path[40]; cache_path(0, path, sizeof(path));
-        bool is_dir = false; uint32_t size = 0;
-        if (!storage_stat(path, &is_dir, &size) || is_dir || !size) {
-            out_info("No package list yet; fetching it first.");
-            if (pkg_fetch_update() != 0) return 1;
-        }
-    }
+// One attempt: find the package in the cached list, download it, check it
+// against the list, install it. INSTALL_STALE when the download does not match
+// the list and this is not the last try, so the caller can refresh the list.
+enum { INSTALL_STALE = 2 };
+
+static int fetch_install_once(const char *name, bool last_try) {
     char *buf; uint32_t len;
     if (!require_index(&buf, &len)) return 1;
     free(buf);
@@ -174,10 +169,17 @@ int pkg_fetch_install(const char *name) {
     if (e.sha256[0]) {
         if (strcmp(hex, e.sha256) != 0) {
             storage_remove(TMP_PKG);
+            if (!last_try) {
+                // Most likely the list here is older than the repository: a
+                // package was updated since it was fetched, or this is the
+                // catalogue the image shipped with. Said once, then fixed.
+                out_warn("The package list here is out of date for %s; fetching the current one.", e.name);
+                return INSTALL_STALE;
+            }
             out_err("Checksum mismatch - the download does not match the index.");
             out_multi("  expected  %s", e.sha256);
             out_multi("  received  %s", hex);
-            out_multi("  Nothing was installed. Try 'pkg update' and again.");
+            out_multi("  Nothing was installed. The repository may be changing; try again shortly.");
             return 1;
         }
         out_ok("Checksum verified.");
@@ -196,6 +198,29 @@ int pkg_fetch_install(const char *name) {
     storage_remove(TMP_PKG);
     out_ok("Installed %s %s (%lu bytes).", e.name, e.ver, (unsigned long)got);
     return 0;
+}
+
+int pkg_fetch_install(const char *name) {
+    // No list yet (a new board, or one that has never run `pkg update`): fetch
+    // it first rather than send the person away to type another command.
+    {
+        char path[40]; cache_path(0, path, sizeof(path));
+        bool is_dir = false; uint32_t size = 0;
+        if (!storage_stat(path, &is_dir, &size) || is_dir || !size) {
+            out_info("No package list yet; fetching it first.");
+            if (pkg_fetch_update() != 0) return 1;
+        }
+    }
+    for (int attempt = 0; attempt < 2; attempt++) {
+        int rc = fetch_install_once(name, /*last_try*/ attempt == 1);
+        if (rc != INSTALL_STALE) return rc;
+        // A list that disagrees with the repository: fetch it and try once
+        // more. A fresh board used to stop here with "Checksum mismatch", from
+        // the catalogue its image shipped with, about a package that had been
+        // updated since.
+        if (pkg_fetch_update() != 0) return 1;
+    }
+    return 1;
 }
 
 struct UpCtx { int found; int done; int failed; };
