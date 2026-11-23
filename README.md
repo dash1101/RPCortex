@@ -109,6 +109,9 @@ keep it current from then on.
 Both run commands, move files in either direction, install packages from the
 repository (even on a board with no network) and flash firmware. They talk to
 the board over its USB serial port using the protocol in [LINK.md](LINK.md).
+A board with no network of its own can also borrow the computer's while one of
+them is attached: `sudo pkg install greet`, `update check` and `wget` at its
+prompt then fetch through the computer (LINK.md, "The network bridge").
 
 ## Building from source
 
@@ -148,8 +151,10 @@ included, since they run on the same radio), `bluetooth`, `ssh`,
 drivers, and `devpkgs`, the test packages, which only go in when asked for with
 `--with devpkgs`. Leaving one out takes its code out of the image rather than
 switching it off. Its commands stay behind to explain: on a Pico W built without
-Wi-Fi, `wget` says "This image was built without Wi-Fi." and `ver` lists what the
-image has.
+Wi-Fi, `wifi` says "This image was built without Wi-Fi." and `ver` lists what the
+image has. The HTTP client stays in every image: without Wi-Fi, `wget`, `curl`,
+`pkg install <name>` and `update` go through the network bridge when `rpc` or the
+browser tool is attached, and say there is no network when not.
 
 What it buys on the wireless boards, measured (`./build.sh --features` has the
 rest). "Left" is room in the firmware slot; the memory a feature frees goes to the

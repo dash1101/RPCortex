@@ -144,6 +144,39 @@ new release as older. The page spots that case (an old-style version with a lowe
 build than the release), says so in one sentence, and updates with `--force`.
 After that one update, updates are offered as usual.
 
+## The network bridge
+
+A board with no network of its own (a Pico, a Pico 2, or a Pico 2 W built
+without Wi-Fi, on firmware with link protocol 3) can fetch through this page
+while it is connected. In the Terminal tab, `sudo pkg install greet`, `pkg
+update`, `update check`, `wget` and `curl` then work as they would over Wi-Fi:
+the device asks, the page fetches the URL with the browser's own `fetch()` and
+sends the body back over the cable, one acknowledged chunk at a time. The same
+goes for commands run from the other tabs through link mode. The bridge's
+traffic stays off the screen, keys typed during a download are sent once it
+ends, and Ctrl+C stops it. Each request is a line in the Messages box.
+
+A web page can read only what a server lets it (CORS), so the page bridges less
+than `rpc` does:
+
+- **Works:** `raw.githubusercontent.com`, which allows any page to read it. That
+  is the package repository, every package in it, and the update manifest and
+  the images it points at, so `pkg install`, `pkg update`, `update check` and
+  `update install` all work.
+- **Does not:** GitHub release downloads (`github.com/.../releases/download/...`):
+  neither the redirect nor the file it leads to allows a page to read it. Nor do
+  most other sites. The device then says the browser could not fetch it, and
+  `rpc term` can.
+- **Only GET and HEAD**, with none of the device's own headers: anything else
+  makes the browser ask the server first (a preflight), which
+  raw.githubusercontent.com refuses. `curl -X POST` or `curl -H` needs `rpc term`.
+- **No length up front:** the browser undoes gzip itself, so the device is told
+  the body ends when it ends rather than how long it is.
+
+Only `http` and `https` are fetched, and a redirect that ends anywhere else is not
+passed on. (`Bridge` in `js/link.js` also takes an allowlist and a size cap, 8 MB
+by default; the page uses neither list nor a smaller cap today.)
+
 ## The files
 
 ```
@@ -166,7 +199,7 @@ test/*.test.js     the tests (below); test/harness.js is their few lines of runn
 
 ```
 for t in tools/web/test/*.test.js; do node "$t"; done      # Node 20 or later
-for t in tools/web/test/*.test.js; do deno run "$t"; done
+for t in tools/web/test/*.test.js; do deno run --allow-net=127.0.0.1 "$t"; done
 ```
 
 No dependencies and no browser. `os/host/run_all.sh` runs every file here.
@@ -189,8 +222,16 @@ No dependencies and no browser. `os/host/run_all.sh` runs every file here.
 - `pkgs.test.js`: reading what is installed, the plan against the index, Update
   all with a wrong password and a lapsed grace, a bad download among good ones, an
   RP2040 never being sent an `armv8m` package, and removing.
+- `bridge.test.js`: the network bridge against a pretend device with no network
+  and an HTTP server on 127.0.0.1 (the only network it needs, hence
+  `--allow-net=127.0.0.1` under Deno): the offer, `wget` and `curl` mid-EXEC, `sudo
+  pkg install` by name, the allowlist, the size cap, the device stopping part
+  way, one chunk in flight at a time, the browser's limits (GET and HEAD, http
+  and https, a CORS failure said plainly), and the terminal: frames kept off the
+  screen, keys held during a download, and a stray answer never reaching the
+  prompt.
 
 The pretend device (`js/mockdev.js`) speaks link protocol 2 with `AUTH` and
-`ERR sudo`, asks for the password at its own prompt, forgets the grace when link
+`ERR sudo` (protocol 3 and the bridge with `netless`), asks for the password at its own prompt, forgets the grace when link
 mode ends, runs `update` and `pkg` the way the firmware does, refuses a PUT that
 would fill it, and restarts: its port drops and comes back with the new version.

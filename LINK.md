@@ -282,7 +282,7 @@ The host says it will, or will no longer, answer the device's fetch requests.
 > BRIDGE on
 < 0x1E OK bridge=on chunk=768
 > BRIDGE off
-< 0x1E OK bridge=off
+< 0x1E OK bridge=off chunk=768
 ```
 
 - `BRIDGE` alone reports the state without changing it.
@@ -387,9 +387,10 @@ And from the device while the body arrives:
   The `FHDR` lines after it are the response headers the host chose to pass on
   (`Content-Type`, `ETag`, `Last-Modified`), each under 200 bytes.
 - After each `FDATA` the host waits for the device's `FACK` before sending the
-  next. The device acknowledges a chunk once it has dealt with it (written it to
-  flash, say), so the host is held to the speed of the slowest part and the device
-  holds one chunk at a time.
+  next, and sends `FDONE ok` only after the last one is acknowledged. The device
+  acknowledges a chunk once it has dealt with it (written it to flash, say), so
+  the host is held to the speed of the slowest part and the device holds one
+  chunk at a time. `FWAIT` may come between chunks while the server is slow.
 - `FDONE ok` ends a fetch that went through, whatever its status. `FDONE err`
   ends one that did not. The codes are `refused` (the host will not fetch that URL:
   not http or https, not on its allowlist), `toobig` (over the host's size cap),

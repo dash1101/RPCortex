@@ -137,6 +137,13 @@ every feature it can have except SSH on the Pico W (its slot is too tight) and
   report, which the recovery ladder needs; update_net.cpp checks and downloads).
   `pkg install <file>` must keep working without Wi-Fi: it is how tools/rpc and
   tools/web install a package on a board with no network.
+- **The HTTP client is in every image; only its transport is Wi-Fi.** httpfetch,
+  httpparse, pkgfetch.cpp, update_net.cpp and httpclient.cpp (wget, curl, runurl,
+  `fw_http_*`) are built everywhere and ask `http_route()` (shell/httproute.h)
+  which way a request goes: lwIP and TLS in httptransport.cpp with Wi-Fi, the
+  network bridge in bridge.cpp without it. New code that fetches a URL goes
+  through `http_route()` and `http_https_ready()`, never straight to a transport,
+  or it works on one kind of image only.
 - **The defines are always 0 or 1**, so they work in a plain `if`: `RPC_HAS_WIFI`,
   `RPC_HAS_BLUETOOTH`, `RPC_HAS_SSH`, `RPC_HAS_SD`, `RPC_HAS_PERIPHERALS`;
   `RPC_CAN_<X>` for whether the board could have it at all; and `RPC_STD_SSH` for
@@ -343,6 +350,30 @@ D1's workers do this, on either core), and `link`'s `EXEC`. So:
   froze the GUI and hung one cold boot in three.
 - TLS needs about 45 KB of free heap. The clock must be set (`ntp sync`) or every
   certificate check fails with "handshake NOT DONE".
+
+### The network bridge (no Wi-Fi)
+
+- **The device sends no frame until a host has offered.** An image without Wi-Fi
+  fetches through rpc or the browser tool (LINK.md, "The network bridge"), but
+  only after link's `BRIDGE on` or a terminal's `0x1E 0x1F`, and the offer ends
+  when DTR drops (`tud_cdc_line_state_cb` in shell/bridge.cpp). A frame sent to a
+  plain terminal is garbage on someone's screen and a 10-second wait; anything
+  that adds a frame keeps to that rule.
+- **Only the console's shell task may use it** (`console_command()` in
+  shell/bridge.cpp). It reads the console, which only that task may do; a `bg`
+  job, a service, a package worker or a remote login gets "no network". Do not
+  take an `InputClaim` in the bridge: inside `EXEC` the claim is link's, and a
+  claim is per task, so releasing one there releases link's.
+- **Every early stop drains.** A fetch that ends before the host's `FDONE`
+  (Ctrl+C, a size cap, a full filesystem) sends `FSTOP` and reads up to `FDONE`
+  (core/bridge.cpp `drain`). A host line left on the wire is read as the next
+  link request, or typed at the prompt. The input door (`bridge_door`, applied by
+  `intr_getkey` and the line editor through `intr_filter_key`) is the second line
+  of defence: it drops any `0x1E` line arriving as keys. Ctrl+C always passes it.
+- **The host decides what is fetched.** http and https only, on every redirect
+  hop, an allowlist and a size cap (tools/rpc/rpctool/bridge.py; the browser's
+  fetch in tools/web/js/link.js). Never add a scheme, a file read or a header the
+  device can use to reach the host's own files or cookies.
 
 ### Hardware specifics
 

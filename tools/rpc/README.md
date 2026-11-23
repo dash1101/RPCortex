@@ -54,6 +54,45 @@ request; a typed password that is wrong is asked for again, three times at most.
 ask. `rpc exec` runs the line as written: `rpc exec "sudo pkg remove gps"`.
 Firmware without sudo is never asked.
 
+## The network bridge
+
+A Pico or Pico 2 has no radio, and a Pico 2 W can be built without Wi-Fi. On those
+boards (firmware with link protocol 3), `rpc` lends the device this computer's
+connection while it is attached. On a Pico, in `rpc term`:
+
+```
+root@vela:/> sudo pkg install greet
+Password for root, to run 'pkg install' ••>  ••••••
+[:] No package list yet; fetching it first.
+[:] Fetching package lists...
+    ...
+[:] Installing greet 1.0
+[@] Checksum verified.
+[@] Installed greet 1.0 (1436 bytes).
+```
+
+That just works; so do `pkg update`, `update check`, `sudo update install`, `wget`,
+`curl` and `runurl`, at the prompt in `rpc term` or as `rpc exec "sudo pkg install
+greet"`. The device asks, `rpc` fetches the URL with this computer's network,
+checks HTTPS against this computer's trusted certificates, follows redirects, and
+sends the body back over the cable one acknowledged chunk at a time. Each request
+is logged on stderr (`[rpc] bridge: GET https://...`), with a progress bar outside
+the terminal.
+
+It is on by default, and `rpc` decides what is fetched:
+
+- only `http` and `https`, on every redirect too; never a file on this computer;
+- `--bridge-allow raw.githubusercontent.com` (repeat it, or a comma list;
+  `.example.com` covers the subdomains) fetches only from those hosts;
+- `--bridge-max 2M` caps one download (8 MB unless told);
+- `--no-bridge` turns it off, and the device says it has no network.
+
+In `rpc term` the bridge's traffic never reaches the screen, and what is typed
+while a download runs is held and sent when it ends; Ctrl+C goes straight
+through and stops it. Only commands run at the console use the bridge: a `bg`
+job or a service on the device gets no network. A board with Wi-Fi of its own
+never asks. LINK.md, "The network bridge", has the protocol.
+
 Every command leaves the device at its normal prompt when it finishes,
 including after an error or Ctrl+C. Lines the device's background services
 print while `rpc` works are shown on stderr as `[device] ...`; `-q` hides them
@@ -81,7 +120,7 @@ Ctrl+C.
 | `cat` | `rpc cat /etc/startup.cfg` |
 | `install` | `rpc install build/apps/greet.app` installs a package file. `rpc install calc` downloads `calc` from the package repository on this computer, checks it against the SHA-256 in the index, and installs it, so the device needs no network. `rpc install --list` shows what the repository offers; `--index` points at another one. |
 | `fetch` | `rpc fetch https://example.com/data.csv /home/root/` downloads on this computer and sends the file. |
-| `wget` | `rpc wget https://example.com/data.csv` has the device download it itself; it must be online. |
+| `wget` | `rpc wget https://example.com/data.csv` has the device download it itself, over its own network or, on a board without one, this computer's (the bridge). |
 | `backup` | `rpc backup device.zip` copies `/home`, `/etc`, `/usb` and everything else a person put on the device into a zip (or a folder). `/os`, `/tmp` and `/sd` are left out, and the summary says so. `--with-packages` adds the installed packages. `--with-system` adds the settings and saved Wi-Fi networks, the accounts, the device key and the SSH host key, read with sudo. Keep a backup like that as safe as the device. |
 | `restore` | `rpc restore device.zip` puts it back and reinstalls any packages it holds. `--dry-run` says what it would do. System files are put back only after a question that names each one (`--yes` answers it, `--skip-system` leaves them), and then the device restarts without saving, since a plain `reboot` would write its settings back over them. |
 | `reboot` | `rpc reboot --wait` restarts the device and waits for the port to return. |
@@ -240,4 +279,8 @@ also runs the real serial library against the mock on a pseudo-terminal.
 `tests/test_tui.py` drives the TUI key by key against the mock, drawing on a grid
 of text in place of curses: every screen's actions, the sudo prompt, unplugging
 and plugging back in, cancelling, the terminal and backups with system files.
+`test_bridge.py` gives the mock no network (`netless=True`): it asks for URLs in
+the middle of an `exec` and at its prompt under `rpc term`, and `rpc` answers
+from an HTTP server on 127.0.0.1 (redirects, a 404, gzip, a slow server, the
+allowlist on every hop, the size cap, a cancel from either side).
 `os/host/run_all.sh` runs them too.

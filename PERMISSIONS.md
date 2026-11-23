@@ -146,6 +146,11 @@ from `$RPC_PASSWORD` for `rpc`), and then repeat the request. `rpc --sudo` asks
 first, for a long job that should not stop half way. With older firmware they ask
 nothing, because there is nothing to ask.
 
+The network bridge (LINK.md, protocol 3) changes none of this. A board without Wi-Fi
+that fetches through the host still runs `sudo pkg install` and `sudo update
+install` with sudo, asked for at its own prompt in `rpc term` and through `AUTH`
+from `rpc exec`; the host only fetches the bytes, and decides which URLs it will.
+
 ## Forgotten passwords
 
 Physical presence is enough, and it is the only way.

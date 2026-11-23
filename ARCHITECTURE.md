@@ -240,9 +240,12 @@ Three decisions that belong at the start rather than the middle:
   permanent by accident. If it is ever temporarily off it says so at runtime,
   every time, rather than in a document nobody reads twice.
 
-On the boards with no wireless (`pico`, `pico2`), `pkg install <name>` follows
-the `#else` stub pattern `net.cpp` already uses: a clear "no wireless on this
-board — use `pkg install <file>`", never a link error or a hang.
+On the boards with no wireless (`pico`, `pico2`), and any image built without
+Wi-Fi, `pkg install <name>` goes through the network bridge instead (LINK.md,
+protocol 3): the host on the console fetches the URL and the device receives the
+body through the same HttpTransport seam, so the HTTP client above is unchanged.
+With no host offering it, the answer is a clear "no wireless on this board",
+never a link error or a hang.
 
 The socket layer stays behind the seam `core/` already uses, so a later port
 does not have to unpick it.
