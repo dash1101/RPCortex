@@ -230,6 +230,8 @@ export function otaLine(link, force) {
 // `gone()` says whether the port has closed, which is what a successful update
 // looks like from here: the device never sends the final frame, because it
 // restarts in the middle of the command.
+// DEVICE-UNCONFIRMED: that a board's USB drop during the write surfaces here
+// as the port closing; shown against the mock and the demo port only.
 export async function otaUpdate(link, { force = false, gone = () => false } = {}) {
   // Asked before the long wait, not after it (PERMISSIONS.md: rpc --sudo).
   if (link.hasSudo) await link.authenticate();

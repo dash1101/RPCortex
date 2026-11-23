@@ -230,7 +230,8 @@ const needLink = () => switchTo("link");
 // --- connecting ------------------------------------------------------------------
 
 // What the browser says when it cannot open a port, in words that say what
-// to do about it.
+// to do about it. DEVICE-UNCONFIRMED: NetworkError for a port another program holds is
+// Chrome's documented behaviour, not yet seen through this page.
 function openError(e) {
   const n = e && e.name;
   if (n === "NetworkError") return new RpcError("Another program has this port open: a terminal, Thonny, rpc term, or this page in another tab. Close it there, then choose the device again.");
@@ -307,6 +308,8 @@ function samePort(p) {
 
 // After a restart: wait for the board to come back on USB and open it again.
 // The port can be listed before it can be opened, so opening is retried.
+// DEVICE-UNCONFIRMED: that Chrome lists the re-enumerated board in getPorts()
+// with the same VID/PID after an update; shown with the demo port only.
 async function waitForDevice(ms) {
   const end = Date.now() + ms;
   while (Date.now() < end) {

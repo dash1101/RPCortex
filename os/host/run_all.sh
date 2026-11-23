@@ -394,7 +394,10 @@ else
         web_n=$((web_n+1))
         echo "== $(basename "$t")" >> "$OUT/web_link_js.out"
         if $JSRUN "$t" >> "$OUT/web_link_js.out" 2>&1; then
-            web_pass=$((web_pass + $(tail -1 "$OUT/web_link_js.out" | awk '{print $1}')))
+            # "N passed, ..." when the file says so; any other last line counts nothing.
+            n=$(tail -1 "$OUT/web_link_js.out" | awk '{print $1}')
+            case "$n" in ''|*[!0-9]*) n=0 ;; esac
+            web_pass=$((web_pass + n))
         else
             web_ok=0
         fi
