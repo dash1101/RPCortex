@@ -420,19 +420,29 @@ static int cmd_update(int argc, char **argv) {
         return rollback_command(argc, argv);
 
     if (!strcmp(sub, "from-file")) {
-        if (argc < 3) { out_multi("Usage: update from-file <image.bin>"); return 1; }
+        // --yes/-y answers the question, as `update online` takes it: a host tool
+        // sending the image over the link runs this through EXEC, where nobody
+        // is at a prompt to answer it. The path is the first other argument.
+        const char *file = nullptr;
+        bool yes = false;
+        for (int i = 2; i < argc; i++) {
+            if (!strcmp(argv[i], "--yes") || !strcmp(argv[i], "-y")) yes = true;
+            else if (!file) file = argv[i];
+            else { out_err("Unknown option: %s", argv[i]); return 1; }
+        }
+        if (!file) { out_multi("Usage: update from-file <image.bin> [--yes]"); return 1; }
         if (!users_is_admin(session_user())) { out_err("Only an admin can update the firmware."); return 1; }
-        out_warn("Writing %s over the firmware, unverified.", argv[2]);
+        out_warn("Writing %s over the firmware, unverified.", file);
         out_multi("  A local file has no checksum to check it against.");
-        if (!session_confirm("  Continue?")) return 0;
-        return update_apply_file(argv[2], nullptr, /*at_boot*/false) ? 0 : 1;
+        if (!yes && !session_confirm("  Continue?")) return 0;
+        return update_apply_file(file, nullptr, /*at_boot*/false) ? 0 : 1;
     }
 
     out_multi("Usage:");
     out_multi("  update check              is there a newer release");
     out_multi("  update install            fetch, verify and apply it");
     out_multi("  update install --force    reinstall the current version");
-    out_multi("  update from-file <path>   apply an image already on the device");
+    out_multi("  update from-file <path> [--yes]   apply an image already on the device");
     out_multi("  update rollback           go back to the previous firmware");
     return 1;
 }

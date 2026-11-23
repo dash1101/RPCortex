@@ -17,11 +17,13 @@ Summary:
 
 ### Improved
 
+- `update from-file <image> --yes` applies an image without stopping to ask, as `update online --yes` does, so a host tool can run it. The browser tool uses it to update a board from the computer in one step, and still types the command at the prompt on firmware from before it.
 - The browser tool's Packages tab lists what is installed against the repository, with Update all (one password, asked first), Update and Remove for each package, and each package's architecture and ABI. `armv8m` packages are offered only to a Pico 2 or Pico 2 W.
 - The browser tool shows a failure on the tab it happened on, says plainly when another program has the port open, takes Enter in the password box (it used to cancel), moves between tabs with the arrow keys, fits a phone's width, and has a light, dark or system colour switch.
 
 ### Fixed
 
+- The browser tool froze when a serial port closed cleanly instead of with an error: its reader asked the finished stream for more, for ever. It treats that as the port going away now.
 ### Security
 
 ### Changed

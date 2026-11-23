@@ -99,8 +99,10 @@ function b64(bytes) {
 export class MockDevice {
   constructor({ link = true, login = false, crlf = true, noise = 0, board = "pico2_w", user = "root",
                 proto = 2, os = "v2.01-beta", build = "554", network = true, manifest = null,
-                capacity = 16 << 20, updateDelay = 30 } = {}) {
+                capacity = 16 << 20, updateDelay = 30, fromFileYes = true } = {}) {
     this.linkSupported = link;
+    // Firmware with `update from-file --yes` (false: one from before it).
+    this.fromFileYes = fromFileYes;
     // What HELLO and `update` say this firmware is.
     this.os = os;
     this.build = String(build);
@@ -574,12 +576,15 @@ export class MockDevice {
       return this.restart({ os, build: String(e.ver).split(".").pop() });
     }
     if (sub === "from-file") {
-      if (!a[2]) { this.out("Usage: update from-file <image.bin>\n"); return 1; }
-      const p = resolve(this.cwd, a[2]);
+      const yes = a.slice(2).some((x) => x === "--yes" || x === "-y");
+      const rest = a.slice(2).filter((x) => x !== "--yes" && x !== "-y");
+      if (yes && !this.fromFileYes) { this.err("Unknown option: --yes"); return 1; }
+      if (!rest[0]) { this.out("Usage: update from-file <image.bin>\n"); return 1; }
+      const p = resolve(this.cwd, rest[0]);
       this.updates.push({ sub, path: p });
-      this.warn(`Writing ${a[2]} over the firmware, unverified.`);
+      this.warn(`Writing ${rest[0]} over the firmware, unverified.`);
       this.out("  A local file has no checksum to check it against.\n");
-      if (!(await this.confirm("  Continue?"))) return 0;
+      if (!yes && !(await this.confirm("  Continue?"))) return 0;
       const data = this.files.get(p);
       if (!data) { this.err(`No image at ${p}.`); return 1; }
       let head = dec.decode(data.slice(0, 80)).split("\n")[0].split(" ");

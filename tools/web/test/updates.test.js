@@ -7,7 +7,7 @@ import { test, eq, ok, rejects, run } from "./harness.js";
 import { enterLink, RpcError, DigestError, TimeoutError, sha256hex } from "../js/link.js";
 import {
   parseManifest, manifestFor, loadReleases, uf2Expect, imageUrl, fetchBytes, binChip, uf2Chip,
-  sniffImage, bootselChip, writeUf2, otaLine, otaUpdate, sendImage, runAtConsole, FROM_FILE, IMAGE_PATH, consoleText,
+  sniffImage, bootselChip, writeUf2, otaLine, otaUpdate, sendImage, runAtConsole, FROM_FILE, IMAGE_PATH, consoleText, fromFileExec,
   ROLLBACK_IMG,
 } from "../js/updates.js";
 import { verdict, deviceVersion } from "../js/version.js";
@@ -272,6 +272,30 @@ test("from the page: the image goes to /os/update.bin with sudo, then from-file 
   const back = await reconnect(dev);
   eq(back.hello.os, "v2.0.640-beta");
   await back.bye(); dev.stop();
+});
+
+test("from the page, current firmware: from-file --yes through EXEC, no console needed", async () => {
+  const { dev, link } = await connected({ os: "v2.0.650-beta", build: "650" });
+  const img = makeImage("pico2_w", "v2.0.660-beta", "660", 5000);
+  await sendImage(link, img, {});
+  const r = await fromFileExec(link, { gone: () => dev.gone });
+  ok(r.restarted, "it restarted: " + JSON.stringify(r));
+  ok(dev.requests.includes("EXEC sudo update from-file /os/update.bin --yes"), dev.requests.join(" | "));
+  eq(dev.updates, [{ sub: "from-file", path: IMAGE_PATH }]);
+  const back = await reconnect(dev);
+  eq(back.hello.os, "v2.0.660-beta");
+  await back.bye(); dev.stop();
+});
+
+test("from the page, firmware from before --yes: EXEC says so, nothing is written", async () => {
+  const { dev, link } = await connected({ os: "v2.0.640-beta", build: "640", fromFileYes: false });
+  const img = makeImage("pico2_w", "v2.0.660-beta", "660", 5000);
+  await sendImage(link, img, {});
+  const r = await fromFileExec(link, { gone: () => dev.gone });
+  eq(r.unsupported, true, "the caller falls back to the console");
+  eq(r.restarted, false);
+  eq(dev.updates, [], "nothing was written");
+  await link.bye(); dev.stop();
 });
 
 test("from the page: a password the page already checked is not asked for again", async () => {

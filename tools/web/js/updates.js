@@ -291,8 +291,26 @@ export async function sendImage(link, data, { progress, signal, confirmForget, a
   }
 }
 
-// `update from-file` always stops to ask "Continue? (yes/no)" and has no
-// --yes, so it cannot run through EXEC. It is typed at the console instead,
+// `update from-file --yes` runs through EXEC on firmware that has it. The
+// device restarts in the middle of the command when it works, so the port
+// closing (`gone()`) is success, as for the update over the air. Firmware from
+// before --yes answers "Unknown option: --yes"; then `unsupported` is set and
+// the caller types the command at the console instead (below).
+export async function fromFileExec(link, { gone = () => false } = {}) {
+  let r;
+  try {
+    r = await link.exec(link.sudoLine(FROM_FILE + " --yes"));
+  } catch (e) {
+    if (gone()) return { restarted: true };
+    throw e;
+  }
+  const text = r.text || "";
+  if (/Unknown option: --yes/.test(text)) return { restarted: false, unsupported: true, text };
+  return { restarted: false, rc: r.rc, text };
+}
+
+// Without --yes, `update from-file` stops to ask "Continue? (yes/no)", so on
+// older firmware it cannot run through EXEC. It is typed at the console instead,
 // where the page answers the password prompt sudo shows there (link mode's
 // grace ends with link mode) and the question, and passes everything the
 // device prints to `echo` so the person sees it happen.
@@ -749,17 +767,25 @@ export function firmwarePane(ctx) {
         progress: (a, t) => steps.start(2, `${human(a)} of ${human(t)}`),
       });
       steps.done(2, `${IMAGE_PATH}, SHA-256 checked.`);
-      steps.start(3, "The device's own output is below.");
-      $("#fw-console").hidden = false;
+      steps.start(3, "Writing it.");
       P.expecting = true;
-      const con = await ctx.console();
-      let r;
-      try {
-        r = await runAtConsole(con.stream, link.sudoLine(FROM_FILE), {
-          password: pw, echo: (bytes) => { con.echo(bytes); view.write(bytes); },
-        });
-      } finally {
-        con.release();
+      const line = ctx.line();
+      let r = await fromFileExec(link, { gone: () => !line || line.closed });
+      if (r.unsupported) {
+        // Firmware from before `update from-file --yes`: at the console.
+        steps.start(3, "The device's own output is below.");
+        $("#fw-console").hidden = false;
+        const con = await ctx.console();
+        try {
+          r = await runAtConsole(con.stream, link.sudoLine(FROM_FILE), {
+            password: pw, echo: (bytes) => { con.echo(bytes); view.write(bytes); },
+          });
+        } finally {
+          con.release();
+        }
+      } else if (!r.restarted && r.text) {
+        $("#fw-console").hidden = false;
+        view.write(new TextEncoder().encode(r.text));
       }
       if (!r.restarted) {
         P.expecting = false;

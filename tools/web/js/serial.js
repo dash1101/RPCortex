@@ -41,10 +41,11 @@ export class SerialLine {
     try {
       while (this.port.readable && !this.closing) {
         this.reader = this.port.readable.getReader();
+        let ended = false;
         try {
           for (;;) {
             const { value, done } = await this.reader.read();
-            if (done) break;
+            if (done) { ended = true; break; }
             if (value && value.length) this._push(value);
           }
         } catch (e) {
@@ -53,7 +54,10 @@ export class SerialLine {
         } finally {
           try { this.reader.releaseLock(); } catch (e) { /* already released */ }
         }
-        if (this.closing) break;
+        // A stream that ended is a port that is gone. Asking it for another
+        // reader would get `done` straight away, for ever: the page froze
+        // when a port closed cleanly instead of erroring.
+        if (this.closing || ended) break;
       }
     } finally {
       this.closed = true;
