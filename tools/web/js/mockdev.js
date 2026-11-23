@@ -1,5 +1,5 @@
 // A pretend RPCortex v2 device, for the tests and for the page's demo mode
-// (index.html?demo). It is the JavaScript twin of tools/rpc/tests/mockdev.py,
+// (index.html?demo). It is the JavaScript twin of tests/mockdev.py in RPCortex Studio,
 // smaller: the prompt and its echo, the login prompt, firmware without link
 // mode, and link mode as os/shell/link.cpp implements it. With netless (and
 // proto 3) it has no network of its own and uses the host's through the bridge

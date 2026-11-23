@@ -102,8 +102,9 @@ keep it current from then on.
 
 ## Tools for the computer
 
-- [`tools/rpc`](tools/rpc/README.md) is a command-line tool for Linux, macOS and
-  Windows.
+- [RPCortex Studio](https://github.com/dash1101/rpcortex-studio) is the program for Linux, macOS and Windows: a
+  full-screen app for the device, and the `rpc` command-line tool. It has its own
+  repository and releases, one program file per system.
 - [`tools/web`](tools/web/README.md) does the same from a browser, over Web Serial.
 
 Both run commands, move files in either direction, install packages from the

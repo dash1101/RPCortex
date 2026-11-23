@@ -2,7 +2,7 @@
 
 How a program on a computer drives an RPCortex v2 device over its serial console:
 run a command and get its output and exit status back, send a file, fetch a file,
-list a directory. It is what `tools/rpc` (the command-line tool) and `tools/web`
+list a directory. It is what [RPCortex Studio](https://github.com/dash1101/rpcortex-studio) (`rpc` and `rpc tui`) and `tools/web`
 (the browser tool) speak.
 
 The console is built for a person: a line editor that echoes and repaints, colour,

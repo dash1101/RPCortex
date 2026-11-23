@@ -11,7 +11,7 @@
 // uses them still loads.
 //
 // What still works without a network: `pkg install <file>` (which is how
-// tools/rpc and the browser tool put a package on a board), `pkg search` and
+// rpc and the browser tool put a package on a board), `pkg search` and
 // `pkg info` from the catalogue that shipped with the image, and `update
 // from-file` and `update rollback`. And with rpc or the browser tool on the
 // console, everything the HTTP client does: wget, curl, runurl, `pkg install

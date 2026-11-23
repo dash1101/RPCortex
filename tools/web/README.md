@@ -50,7 +50,7 @@ other browsers built on Chromium. The page talks to the board through the
 which Firefox and Safari do not implement, and which no phone or tablet browser
 has. On a browser without it the page says so; the Firmware tab still shows the
 latest release, its notes and the board status there, and saves the images. The
-command-line tool (`tools/rpc`) does the rest from a terminal. The page itself
+command-line tool (`rpc`, from [RPCortex Studio](https://github.com/dash1101/rpcortex-studio)) does the rest from a terminal. The page itself
 fits a phone's width.
 
 If another program has the port open (a terminal, Thonny, `rpc term`, the page in
@@ -59,7 +59,7 @@ browser's "Failed to open serial port".
 
 The browser asks which port to use the first time. The list shows Raspberry Pi
 boards only; "List every serial port" shows the rest. On Linux the account
-needs to be in the `dialout` group (see `tools/rpc/README.md`). A port can be
+needs to be in the `dialout` group (see RPCortex Studio's README). A port can be
 open in one program at a time, so close any other terminal on it first.
 
 ## What is on it

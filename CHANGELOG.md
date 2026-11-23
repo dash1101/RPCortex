@@ -20,6 +20,9 @@ Summary:
 
 ### Changed
 
+- `rpc` and `rpc tui` moved to a repository of their own, [RPCortex Studio](https://github.com/dash1101/rpcortex-studio), with their history, and get a program file per system there (Linux, macOS and Windows, with `SHA256SUMS`). `tools/rpc` is gone from this repository; the browser tool and LINK.md stay. The host suites run Studio's tests from a checkout beside this one (`RPC_STUDIO_DIR`), and say so when there is none.
+- Studio 1.0.0 fixes a crash on quitting `rpc tui` under Python 3.12 and older, which the copy in this repository still had.
+
 ### Known issues
 
 ## v2.0.658-beta, 2026-11-23

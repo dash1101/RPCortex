@@ -368,11 +368,17 @@ else
     fail=$((fail+1))
 fi
 
-# The host tools (tools/rpc, tools/web) against their mock devices: the link
-# protocol from the computer's side, every rpc command, and the browser tool's
-# protocol client. No board and no serial port is touched.
+# The computer's side, RPCortex Studio (rpc, rpc tui, the bridge's host end),
+# against its mock devices, with this repository as its RPCORTEX_DIR so its
+# tests also check it against the firmware's own files. Studio is its own
+# repository: RPC_STUDIO_DIR names a checkout, by default one beside this
+# repository. Without one it is not run, and counts as neither a pass nor a
+# failure: a skipped test is not a passed one.
+STUDIO="${RPC_STUDIO_DIR:-../../../rpcortex-studio}"
 printf '  %-16s ' "rpc_tools"
-if python3 -m unittest discover -s ../../tools/rpc/tests > "$OUT/rpc_tools.out" 2>&1; then
+if [ ! -d "$STUDIO/tests" ]; then
+    echo "not run: no rpcortex-studio checkout at $STUDIO (set RPC_STUDIO_DIR)"
+elif RPCORTEX_DIR="$(cd ../.. && pwd)" python3 -m unittest discover -s "$STUDIO/tests" > "$OUT/rpc_tools.out" 2>&1; then
     echo "ok  $(grep -o 'Ran [0-9]* tests' "$OUT/rpc_tools.out")"
     pass=$((pass+1))
 else

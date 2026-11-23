@@ -52,7 +52,12 @@ jobs:
           git clone --depth 1 --branch "$LITTLEFS_TAG" \
             https://github.com/littlefs-project/littlefs.git littlefs
 
+      - name: RPCortex Studio, for its suite against this firmware's files
+        uses: actions/checkout@v4
+        with: { repository: dash1101/rpcortex-studio, path: rpcortex-studio }
+
       - name: Build ${{ matrix.board }} and run the host suites
+        env: { RPC_STUDIO_DIR: "${{ github.workspace }}/rpcortex-studio" }
         run: ./build.sh ${{ matrix.board }}
 
       - name: Image size

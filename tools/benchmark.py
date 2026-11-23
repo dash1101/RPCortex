@@ -6,7 +6,7 @@
 
 `run` measures the board it finds, whatever firmware it runs. It works through
 link mode where the firmware has it and through the prompt where it does not
-(v2.00-beta), using tools/rpc. The board should have a saved Wi-Fi network,
+(v2.00-beta), using rpctool from RPCortex Studio. The board should have a saved Wi-Fi network,
 and the computer should be on the same network for the ping test.
 
 What it measures:
@@ -40,7 +40,9 @@ import sys
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(HERE, "rpc"))
+# rpctool comes from RPCortex Studio: installed with pip, or a checkout named by
+# RPC_STUDIO_DIR (by default one beside this repository).
+sys.path.insert(0, os.environ.get("RPC_STUDIO_DIR") or os.path.join(HERE, "..", "..", "rpcortex-studio"))
 
 import serial                                         # noqa: E402
 from rpctool import device as _device                 # noqa: E402

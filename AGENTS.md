@@ -16,7 +16,7 @@ Other documents, and when to read them:
 | `PACKAGES.md` | Before writing or changing a package, or the package ABI (`os/include/rpc_app.h`, `os/api.cpp`). |
 | `TESTING.md` | To see what each host suite proves and what needs a board. |
 | `RELEASING.md` | Before touching versions or `CHANGELOG.md`. |
-| `LINK.md` | Before changing `link` (`os/shell/link.cpp`) or the host tools in `tools/rpc` and `tools/web`. |
+| `LINK.md` | Before changing `link` (`os/shell/link.cpp`) or the host tools: `tools/web` here, and RPCortex Studio (`rpc`, its own repository, dash1101/rpcortex-studio, usually checked out beside this one). |
 | `PERMISSIONS.md` | Before adding a command, or changing who may run one, or the file guard. The table of what needs sudo is there. |
 | `CHANGELOG.md` | Every change that a user would notice goes under `## Unreleased`. |
 
@@ -135,7 +135,7 @@ every feature it can have except SSH on the Pico W (its slot is too tight) and
   (pkgrepo.cpp keeps the catalogue and `pkg install <file>`, pkgfetch.cpp
   downloads) and `update` (update.cpp keeps from-file, rollback and the boot
   report, which the recovery ladder needs; update_net.cpp checks and downloads).
-  `pkg install <file>` must keep working without Wi-Fi: it is how tools/rpc and
+  `pkg install <file>` must keep working without Wi-Fi: it is how rpc (RPCortex Studio) and
   tools/web install a package on a board with no network.
 - **The HTTP client is in every image; only its transport is Wi-Fi.** httpfetch,
   httpparse, pkgfetch.cpp, update_net.cpp and httpclient.cpp (wget, curl, runurl,
@@ -371,7 +371,7 @@ D1's workers do this, on either core), and `link`'s `EXEC`. So:
   `intr_getkey` and the line editor through `intr_filter_key`) is the second line
   of defence: it drops any `0x1E` line arriving as keys. Ctrl+C always passes it.
 - **The host decides what is fetched.** http and https only, on every redirect
-  hop, an allowlist and a size cap (tools/rpc/rpctool/bridge.py; the browser's
+  hop, an allowlist and a size cap (rpctool/bridge.py in RPCortex Studio; the browser's
   fetch in tools/web/js/link.js). Never add a scheme, a file read or a header the
   device can use to reach the host's own files or cookies.
 
@@ -411,7 +411,7 @@ D1's workers do this, on either core), and `link`'s `EXEC`. So:
 A Pico 2 W is sometimes attached over USB as `/dev/ttyACM*` (Linux),
 `/dev/cu.usbmodem*` (macOS) or `COMn` (Windows), 115200 baud.
 
-- **Use `tools/rpc`** (or LINK.md directly) to run commands and move files. It
+- **Use `rpc`** from RPCortex Studio (or LINK.md directly) to run commands and move files. It
   gives exact output, an exit status and SHA-256-checked transfers. Scraping the
   interactive console is unreliable: the line editor repaints as it goes, and
   suggestion text appears in the byte stream.
@@ -421,7 +421,7 @@ A Pico 2 W is sometimes attached over USB as `/dev/ttyACM*` (Linux),
 - **Flashing:** open the port at 1200 baud to reset into BOOTSEL, then
   `picotool load out/rpcortex-v2-<board>.uf2 && picotool reboot` (a picotool built
   with USB support), or copy the UF2 onto the BOOTSEL drive. Files on the device
-  are kept. `tools/rpc flash` does this. `update from-file` is the over-the-air
+  are kept. `rpc flash` does this. `update from-file` is the over-the-air
   path, from a `.bin` on the device.
 - **Wiping:** erasing the filesystem region (it starts at the firmware reserve
   plus the package slot; see `RPC_FW_RESERVE` in `os/CMakeLists.txt`) makes the
@@ -486,7 +486,7 @@ add it to `os/host/fakehw.cpp` so packages stay testable, document it in
 PACKAGES.md.
 
 **A new link verb:** document it in LINK.md first, then implement it in
-`os/shell/link.cpp` and in `tools/rpc` and `tools/web`.
+`os/shell/link.cpp`, in `tools/web` and in RPCortex Studio (a protocol change is a change in both repositories).
 
 **A bug report from the board:** reproduce it, find the line, write the host or
 emulator test that fails, fix it, watch the test pass, then confirm on the board.

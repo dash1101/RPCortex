@@ -78,7 +78,7 @@ Two checks run on every build and fail it early rather than on a device:
 ## Getting it onto a device
 
 From a PC, over the serial console, with the command-line tool
-([tools/rpc](tools/rpc/README.md)):
+(`rpc`, from [RPCortex Studio](https://github.com/dash1101/rpcortex-studio)):
 
 ```
 rpc install os/build_pico2_w/apps/greet.app

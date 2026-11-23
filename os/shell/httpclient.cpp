@@ -9,7 +9,7 @@
 //
 // CONFIRMED on a Pico 2 W over Wi-Fi: `wget` and `curl` over HTTPS, and the
 // websearch and speedtest packages. Over the bridge: DEVICE-UNCONFIRMED; the host
-// suites (bridge_test, tools/rpc, tools/web) drive it against a fake host.
+// suites (bridge_test, RPCortex Studio, tools/web) drive it against a fake host.
 
 #include "command.h"
 #include "session.h"
