@@ -135,6 +135,11 @@ static int shell_getch(void *, uint32_t timeout_us) {
         // what turns "one thing at a time" into real concurrency — a service
         // gets to run in the gaps between someone's keystrokes without the
         // shell being written any differently.
+        // Give back the memory of background jobs that have finished, while
+        // nothing is being typed: one flag read when there are none. Here, on
+        // the shell's own 8 KB stack, and not in init, because the hooks it runs
+        // can close a finished task's network connections.
+        task_release_finished();
         if (timeout_us == 0) task_yield();
         return LE_NO_KEY;
     }

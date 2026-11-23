@@ -356,6 +356,11 @@ void task_stack_guard_set(const void *bottom, uint32_t size);
 // the table is full.
 void task_slot_recycled(int slot);
 
+// Give back the stack and package memory of tasks that have finished, keeping
+// their slots for the exit status. Cheap when nothing has finished (one flag).
+// Called by init, which otherwise only yields. Returns how many it released.
+int task_release_finished(void);
+
 // Put this task's protection back after something has stood on another stack.
 //
 // The context switch releases the stack limit before moving SP, because writing

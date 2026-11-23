@@ -14,6 +14,8 @@ Summary:
 
 ### Improved
 
+- A background job gives its memory back when it finishes. It used to keep its stack and its package memory (37 KB for a job that ran a package, on a board with 319 KB) until somebody cleared it with `kill` or its slot was needed. Its line in `ps` and `jobs`, and its exit status, stay as before.
+
 - Files sent to a board over USB arrive about 50% faster: `rpc put` went from 24 to 37 KB/s, and a download through the network bridge from 16.9 to 11.0 s for 382 KB. The console used to be read one byte per call, each a trip through the USB stack, and receiving a line took longer than writing it to flash. Link mode and the bridge read it a buffer at a time now, and give back anything past the line they wanted, so a command's Ctrl+C and keys typed during a download still arrive, in order.
 
 ### Fixed

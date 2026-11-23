@@ -138,6 +138,9 @@ static ReadResult read_line_inner(char *buf, uint32_t cap, uint32_t timeout_ms,
             // A millisecond, not a yield: link mode mostly waits, and a yield
             // loop would hold a core at 100% doing it. Bytes already queued
             // are all read before this is reached again.
+            // While a computer is attached the prompt's idle wait never runs,
+            // so finished background jobs give their memory back here instead.
+            task_release_finished();
             task_sleep_ms(1);
             continue;
         }

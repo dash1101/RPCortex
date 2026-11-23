@@ -68,7 +68,14 @@ struct Task {
     // Owned by whoever set it; the scheduler only carries it.
     Arena     *arena;
     TaskShell  shell;
+    // Finished, and what it held already given back by task_release_finished:
+    // the slot stays only for its exit status and the figures ps shows.
+    bool       released;
 };
+
+// Set by task_exit, cleared by the sweep that acts on it: is there a finished
+// task whose memory may not have been given back yet?
+static volatile bool g_finished_pending;
 
 static bool     g_up;                // task_init has run
 static Task     g_tasks[TASK_MAX];
@@ -489,6 +496,7 @@ int task_spawn(const char *name, const char *path, TaskFn fn, void *arg,
     }
     t->live  = false;        // slots are reused; the memset above only clears info
     t->crit  = 0;
+    t->released = false;
 
     t->sp    = task_ctx_init((uint8_t *)stack + stack_bytes, task_trampoline);
 
@@ -935,6 +943,7 @@ void task_exit(int code) {
     me->info.exit_code  = code;
     me->info.stack_used = high_water(me);
     me->info.state      = TASK_DONE;
+    g_finished_pending  = true;          // task_release_finished gives it back
     // The stack is NOT freed here. This function is still RUNNING on it, and so
     // is the reschedule below, right up to the register save inside the context
     // switch. Freeing it here hands live memory back to the allocator while it
@@ -975,7 +984,7 @@ const TaskInfo *task_at(uint32_t idx) {
         if (g_tasks[i].info.state == TASK_FREE) continue;
         // Keep the live high-water mark fresh for whoever is listing, so `ps`
         // does not report a number frozen at the last context switch.
-        if (g_tasks[i].info.state != TASK_DONE)
+        if (g_tasks[i].info.state != TASK_DONE && !g_tasks[i].released)
             g_tasks[i].info.stack_used = high_water(&g_tasks[i]);
         if (n++ == idx) return &g_tasks[i].info;
     }
@@ -985,6 +994,54 @@ const TaskInfo *task_at(uint32_t idx) {
 const TaskInfo *task_find(int pid) {
     Task *t = slot_of(pid);
     return t ? &t->info : nullptr;
+}
+
+// Give back what finished tasks hold, keeping their slots.
+//
+// A task that ends keeps its slot so its exit status can be read, and used to
+// keep everything else with it until somebody reaped it or a spawn needed the
+// slot: its stack and the package stack and heap the pool keeps per task. A
+// background job that ran a package held 37 KB (of 319) that way after it had
+// finished, for as long as nobody ran `kill` on it.
+//
+// Only a task that is off its stack (`live` cleared, which happens inside the
+// context switch after its stack pointer is saved) is touched. The slot is
+// marked reserved while the recycle hook runs, so a spawn on the other core
+// cannot take it and then have the hook clear the new task's state; then it is
+// DONE again, with released set so this is done once. task_reap and a spawn's
+// reclaim later find nothing to free and run the hook again, which every hook
+// takes as a no-op. Returns how many were released.
+int task_release_finished(void) {
+    if (!g_finished_pending) return 0;
+    g_finished_pending = false;          // a task finishing during this sets it again
+    int n = 0;
+    for (uint32_t i = 0; i < TASK_MAX; i++) {
+        Task *t = &g_tasks[i];
+        lock_hw_enter();
+        if (t->info.state != TASK_DONE || t->released) { lock_hw_exit(); continue; }
+        if (t->live) {
+            // Still switching away on the other core: next time.
+            g_finished_pending = true;
+            lock_hw_exit();
+            continue;
+        }
+        void *freeing = t->stack_raw;
+        t->stack = t->stack_raw = nullptr;
+        t->app_mem_set = false;
+        t->arena = nullptr;
+        t->released = true;
+        t->info.state = TASK_BLOCKED;    // reserved while the hook runs
+        lock_hw_exit();
+
+        if (freeing) free(freeing);
+        task_slot_recycled((int)i);
+
+        lock_hw_enter();
+        t->info.state = TASK_DONE;
+        lock_hw_exit();
+        n++;
+    }
+    return n;
 }
 
 bool task_reap(int pid) {

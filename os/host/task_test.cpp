@@ -287,6 +287,32 @@ int main(void) {
     ck(ai->stack_used < ai->stack_size, "and is under the allocation");
     eq(ai->path, "/bin/a", "the path is kept for the task manager");
 
+    // --- giving back a finished task's memory, keeping its slot -------------
+    //
+    // A finished background job held its stack and its package memory until
+    // somebody reaped it. task_release_finished gives them back at once, and
+    // leaves the slot, the exit status and the figures ps shows.
+    {
+        uint32_t used_before = task_find(a)->stack_used;
+        int recycled_before = g_recycled;
+        int n = task_release_finished();
+        ck(n == 2, "both finished tasks are released");
+        ck(g_recycled == recycled_before + 2, "the recycle hook ran for each");
+        ck(task_find(a) && task_find(a)->state == TASK_DONE, "a released task is still DONE");
+        ck(task_find(a)->exit_code == 7, "its exit status is kept");
+        (void)task_at(0); (void)task_at(1); (void)task_at(2);   // what ps does
+        ck(task_find(a)->stack_used == used_before, "ps does not re-measure a stack it gave back");
+        ck(task_release_finished() == 0, "nothing more to release: released once");
+        recycled_before = g_recycled;
+        int q2 = task_spawn("q2", nullptr, task_quick, nullptr, ST, AFFINITY_ANY);
+        ck(q2 > 0, "spawning still works beside released slots");
+        for (int i = 0; i < 4; i++) task_yield();
+        ck(task_find(q2) && task_find(q2)->state == TASK_DONE, "and the new one finishes");
+        ck(task_release_finished() == 1, "only the newly finished one is released");
+        ck(task_reap(q2), "a released task can still be reaped");
+        ck(g_recycled == recycled_before + 2, "reaping runs the hook again (a no-op for every hook)");
+    }
+
     // --- reaping ------------------------------------------------------------
     ck(task_reap(a), "a DONE task can be reaped");
     ck(!task_reap(a), "reaping twice does nothing");
