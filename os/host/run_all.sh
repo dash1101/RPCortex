@@ -382,15 +382,30 @@ JSRUN=""
 if command -v node > /dev/null 2>&1; then JSRUN="node"
 elif command -v deno > /dev/null 2>&1; then JSRUN="deno run"
 fi
+# Every *.test.js in tools/web/test (the protocol client, the version
+# comparison, the update and package flows), each in its own process.
 printf '  %-16s ' "web_link_js"
 if [ -z "$JSRUN" ]; then
     echo "not run: no node or deno on PATH"
-elif $JSRUN ../../tools/web/test/link.test.js > "$OUT/web_link_js.out" 2>&1; then
-    echo "ok  $(tail -1 "$OUT/web_link_js.out" | tr -s ' ')"
-    pass=$((pass+1))
 else
-    echo "FAILED"; sed 's/^/      /' "$OUT/web_link_js.out" | tail -12
-    fail=$((fail+1))
+    : > "$OUT/web_link_js.out"
+    web_ok=1; web_n=0; web_pass=0
+    for t in ../../tools/web/test/*.test.js; do
+        web_n=$((web_n+1))
+        echo "== $(basename "$t")" >> "$OUT/web_link_js.out"
+        if $JSRUN "$t" >> "$OUT/web_link_js.out" 2>&1; then
+            web_pass=$((web_pass + $(tail -1 "$OUT/web_link_js.out" | awk '{print $1}')))
+        else
+            web_ok=0
+        fi
+    done
+    if [ "$web_ok" = 1 ] && [ "$web_n" -gt 0 ]; then
+        echo "ok  $web_pass passed in $web_n files"
+        pass=$((pass+1))
+    else
+        echo "FAILED"; grep -B1 -A3 "FAIL\|error" "$OUT/web_link_js.out" | sed 's/^/      /' | tail -16
+        fail=$((fail+1))
+    fi
 fi
 
 # SSH against the system's real OpenSSH, client and (when installed) sshd.

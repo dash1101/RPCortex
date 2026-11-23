@@ -3,8 +3,11 @@
 // smaller: the prompt and its echo, the login prompt, firmware without link
 // mode, and link mode as os/shell/link.cpp implements it.
 
+import { versionCmp } from "./version.js";
+
 const enc = new TextEncoder();
 const dec = new TextDecoder();
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function concat(a, b) {
   const out = new Uint8Array(a.length + b.length);
@@ -70,6 +73,18 @@ export function makeApp(name, ver = "1.0", size = 600) {
   return out;
 }
 
+// A pretend firmware image: what `update from-file` reads its version from.
+// The real one is checked by its vector table; this one by its first line.
+export function makeImage(board, os, build, size = 4096) {
+  const head = enc.encode(`RPCIMG ${board} ${os} ${build}\n`);
+  const out = new Uint8Array(Math.max(size, head.length));
+  out.set(head, 0);
+  for (let i = head.length; i < out.length; i++) out[i] = (i * 13) & 0xff;
+  return out;
+}
+
+const BOARD_RADIO = { pico2_w: true, pico_w: true, pico2: false, pico: false };
+
 async function sha256hex(bytes) {
   const d = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
   return Array.from(d, (b) => b.toString(16).padStart(2, "0")).join("");
@@ -83,8 +98,26 @@ function b64(bytes) {
 
 export class MockDevice {
   constructor({ link = true, login = false, crlf = true, noise = 0, board = "pico2_w", user = "root",
-                proto = 2 } = {}) {
+                proto = 2, os = "v2.01-beta", build = "554", network = true, manifest = null,
+                capacity = 16 << 20, updateDelay = 30 } = {}) {
     this.linkSupported = link;
+    // What HELLO and `update` say this firmware is.
+    this.os = os;
+    this.build = String(build);
+    // The update: `manifest` is latest.json as the device would fetch it;
+    // `network` is whether Wi-Fi is up (a board without a radio never has it).
+    this.radio = BOARD_RADIO[board] !== false;
+    this.network = network && this.radio;
+    this.manifest = manifest;
+    this.updateDelay = updateDelay;
+    this.updateFails = null;        // a message: the download "fails" with it
+    this.updates = [];              // the update commands that reached the device
+    this.gone = false;              // restarting: the port is closed
+    this.restarts = 0;
+    // The filesystem's size. PUT refuses what would take it past 98%, without
+    // counting the file it replaces, as link.cpp does.
+    this.capacity = capacity;
+    this.linkAuthed = false;
     // Protocol 2 is the firmware with sudo (core/sudo.cpp): `pkg install` and
     // a PUT into /os or /etc need it, EXEC never asks for a password and says
     // ERR sudo instead, and AUTH starts the grace. 1 is the firmware before.
@@ -126,17 +159,57 @@ export class MockDevice {
 
   rand() { this.seed = (this.seed * 1103515245 + 12345) & 0x7fffffff; return this.seed / 0x7fffffff; }
 
-  // the host's end: write(bytes), read(ms), discard()
+  // the host's end: write(bytes), read(ms), discard(). After a restart the
+  // port is gone, as a real one is: reading and writing throw, the way
+  // serial.js does once the USB device has dropped.
   stream() {
+    const q = { to: this.toHost, from: this.fromHost };
+    const lost = () => this.gone || q.to !== this.toHost;
     return {
-      write: async (b) => { this.fromHost.push(b); },
-      read: async (ms) => { try { return await this.toHost.take(1 << 16, ms); } catch (e) { return new Uint8Array(0); } },
-      discard: () => this.toHost.clear(),
+      write: async (b) => { if (lost()) throw new Error("the port is closed"); q.from.push(b); },
+      read: async (ms) => {
+        if (lost()) throw new Error("the port closed");
+        try { return await q.to.take(1 << 16, ms); } catch (e) {
+          if (lost()) throw new Error("the port closed");
+          return new Uint8Array(0);
+        }
+      },
+      discard: () => q.to.clear(),
+      get closed() { return lost(); },
     };
   }
 
   start() { this._main().catch(() => {}); return this; }
   stop() { this.toHost.close(); this.fromHost.close(); }
+
+  // The board restarting: the port drops and everything in memory goes. What
+  // runs from here never returns, like the code after a firmware write.
+  async restart(to) {
+    this.gone = true;
+    this.restarts++;
+    if (to) { this.os = to.os; this.build = String(to.build); }
+    this.toHost.close();
+    this.fromHost.close();
+    if (this.onReboot) this.onReboot();
+    await new Promise(() => {});
+  }
+
+  // ...and coming back: a fresh port, the shell at its prompt (signed in, as
+  // autonomy does), no sudo grace, nothing in link mode.
+  revive() {
+    this.toHost = new ByteQueue();
+    this.fromHost = new ByteQueue();
+    this.gone = false;
+    this.inLink = false;
+    this.grace = false;
+    this.linkAuthed = false;
+    this.elevated = false;
+    this.capture = null;
+    this.cwd = "/";
+    for (const p of [...this.files.keys()]) if (p.startsWith("/tmp/")) this.files.delete(p);
+    this.start();
+    return this;
+  }
 
   emit(data) {
     let b = typeof data === "string" ? enc.encode(data) : data;
@@ -269,6 +342,19 @@ export class MockDevice {
     return status;
   }
 
+  // RpcAppHeader (rpc_app.h): magic 'RPCA', api major and minor, name[24],
+  // version[12]. Null when the bytes hold none.
+  static appHeader(data) {
+    const cstr = (o, n) => { let s = ""; for (let i = o; i < o + n && data[i]; i++) s += String.fromCharCode(data[i]); return s; };
+    for (let i = 0; i + 48 <= data.length; i++) {
+      if (data[i] !== 0x41 || data[i + 1] !== 0x43 || data[i + 2] !== 0x50 || data[i + 3] !== 0x52) continue;
+      if (data[i + 4] !== 1 || data[i + 5] !== 0) continue;          // api_major 1
+      const name = cstr(i + 8, 24), version = cstr(i + 32, 12);
+      if (/^[A-Za-z0-9_.-]+$/.test(name) && /^[A-Za-z0-9_.-]+$/.test(version)) return { name, version };
+    }
+    return null;
+  }
+
   static isSystem(p) { return p === "/os" || p === "/etc" || p.startsWith("/os/") || p.startsWith("/etc/"); }
 
   needsSudo(p) {
@@ -289,10 +375,22 @@ export class MockDevice {
     }
     if (this.proto < 2) return this.command(a.slice(1));
     if (!this.elevated && !this.grace) {
-      // Only link mode reaches this mock's shell, and EXEC never asks.
-      this.sudoBlocked = true;
-      this.err("sudo needs a password and cannot ask for one here; run `sudo -v` first.");
-      return 1;
+      if (this.capture) {
+        // EXEC never asks (TaskShell::noprompt).
+        this.sudoBlocked = true;
+        this.err("sudo needs a password and cannot ask for one here; run `sudo -v` first.");
+        return 1;
+      }
+      // At the console's prompt sudo asks, three tries, as core/sudo.cpp does.
+      let good = false;
+      for (let i = 0; i < 3 && !good; i++) {
+        const pw = await this.readField(`Password for ${this.user}, to run '${a.slice(1, 3).join(" ")}'`, true);
+        this.auths.push(pw);
+        good = pw === this.users[this.user];
+        if (!good) this.warn("Sorry, try again.");
+      }
+      if (!good) { this.err("Three wrong passwords. Nothing was run."); return 1; }
+      this.grace = true;
     }
     if (a[1] === "-v") return 0;
     const was = this.elevated;
@@ -320,6 +418,7 @@ export class MockDevice {
         for (const x of rest) {
           const p = r(x);
           if (SYSTEM.includes(p)) this.err(`${p} is a system directory and stays.`);
+          else if (this.needsSudo(p)) this.err(`${p} is part of the system. Run it with sudo: sudo rm ${x}`);
           else if (fs.has(p)) fs.delete(p);
           else if (dirs.has(p)) {
             if (!rec) this.err(`${p} is a directory; rm -r removes it`);
@@ -343,7 +442,18 @@ export class MockDevice {
         this.err(`Could not move ${x}`); return 1;
       }
       case "meminfo": this.info("Memory"); this.out("  Total : 480 KB\n  Free  : 280 KB\n  Largest block : 180 KB\n"); return 0;
-      case "df": this.info("Filesystem"); this.out("  Total : 3072 KB\n  Used  : 100 KB  (3%)\n  Free  : 2972 KB\n"); return 0;
+      case "df": {
+        const used = this.used(), cap = this.capacity;
+        this.info("Filesystem");
+        this.out(`  Total : ${cap >> 10} KB\n  Used  : ${used >> 10} KB  (${Math.round((100 * used) / cap)}%)\n  Free  : ${(cap - used) >> 10} KB\n`);
+        return 0;
+      }
+      case "update": return this.update(a);
+      case "_pkgs":
+        this.out("PKGS_BEGIN\n" + `OS:${this.os}:${this.board}\n`);
+        for (const k of Object.keys(this.installed).sort()) this.out(`PKG:${k}:${this.installed[k]}\n`);
+        this.out("PKGS_END\n");
+        return 0;
       case "ps": this.out("  PID  STATE  NAME\n    1  wait   init\n    2  run    shell\n"); return 0;
       case "logdump": this.out("[0.412] boot ok\n"); return 0;
       case "sleep": {
@@ -360,19 +470,32 @@ export class MockDevice {
         if (a[1] === "install" && a[2]) {
           const p = r(a[2]);
           if (!fs.has(p)) { this.err(`No such file: ${p}`); return 1; }
-          const head = dec.decode(fs.get(p).slice(0, 64)).split("\n")[0].split(" ");
+          let head = dec.decode(fs.get(p).slice(0, 64)).split("\n")[0].split(" ");
+          if (head[0] !== "RPCAPP") {
+            // A real package (the demo installs them): RpcAppHeader, found
+            // by its magic, with the name and version inside it.
+            const real = MockDevice.appHeader(fs.get(p));
+            if (real) head = ["RPCAPP", real.name, real.version];
+          }
           if (head[0] !== "RPCAPP") { this.err("Not a valid package: bad magic"); return 1; }
           fs.set(`/os/pkg/${head[1]}.app`, fs.get(p));
           this.installed[head[1]] = head[2];
           this.ok(`[pkg] Installed ${head[1]} ${head[2]}`);
           return 0;
         }
-        this.out("Usage: pkg install|list ...\n"); return 1;
+        if (a[1] === "remove" && a[2]) {
+          const name = Object.keys(this.installed).find((k) => k.toLowerCase() === a[2].toLowerCase());
+          if (!name) { this.err(`Not installed: ${a[2]}`); return 1; }
+          delete this.installed[name];
+          fs.delete(`/os/pkg/${name}.app`);
+          this.ok(`[pkg] Removed ${name}`);
+          return 0;
+        }
+        this.out("Usage: pkg install|list|remove ...\n"); return 1;
       }
       case "reboot":
         this.info("Rebooting system...");
-        if (this.onReboot) this.onReboot();
-        await new Promise(() => {});   // gone
+        await this.restart();
         return 0;
       case "link":
         if (this.linkSupported) return this.link();
@@ -380,6 +503,117 @@ export class MockDevice {
       default:
     }
     this.err(`'${a[0]}' is not a command or executable file.`);
+    return 1;
+  }
+
+  used() {
+    let n = 0;
+    for (const v of this.files.values()) n += v.length;
+    return n;
+  }
+
+  // The yes/no question session_confirm asks. It reads keys until Enter, and
+  // under EXEC nobody sends any: the command waits for ever, as on a board.
+  async confirm(q) { return (await this.readField(`${q} (yes/no)`, false)) === "yes"; }
+
+  // update: check, install/online [--force] [--yes], from-file, rollback
+  // --forget, after update.cpp and update_net.cpp. The comparison is the
+  // device's (repo_version_cmp against version-and-build).
+  async update(a) {
+    const sub = a[1] || "check";
+    const buildver = () => {
+      let num = this.os.replace(/^v/, "");
+      if (num.includes("-")) num = num.slice(0, num.indexOf("-"));
+      return num.endsWith("." + this.build) ? num : `${num}.${this.build}`;
+    };
+    const entry = () => {
+      const list = (this.manifest && this.manifest.packages) || [];
+      return list.find((p) => p.name.toLowerCase() === this.board) || null;
+    };
+    const changes = sub === "install" || sub === "online" || sub === "from-file" ||
+      (sub === "rollback" && a[2] && a[2] !== "status");
+    if (changes && this.proto >= 2 && !this.elevated) {
+      this.err(`'update ${sub}' changes the system. Run it with sudo: sudo ${a.join(" ")}`);
+      return 1;
+    }
+    if (sub === "check" || sub === "install" || sub === "online") {
+      if (!this.radio) {
+        this.err("This board has no wireless hardware.");
+        this.out("  'update from-file <image.bin>' applies an image copied onto the device.\n");
+        return 1;
+      }
+      let force = false, yes = false;
+      for (const o of a.slice(2)) {
+        if (o === "--force" || o === "-f") force = true;
+        else if (o === "--yes" || o === "-y") yes = true;
+        else { this.err(`Unknown option: ${o}`); return 1; }
+      }
+      if (sub !== "check") this.updates.push({ sub, force, yes });
+      this.info("Checking for an update...");
+      if (!this.network) { this.err("No network. Connect first."); return 1; }
+      const e = entry();
+      if (!e) { this.err(`No release listed for this board (${this.board}).`); return 1; }
+      const cmp = versionCmp(e.ver, buildver());
+      if (sub === "check") {
+        this.out(`  Installed  ${this.os}\n  Available  ${e.ver}\n`);
+        if (cmp <= 0) this.ok("Already up to date.");
+        else this.info("An update is available. 'sudo update install' to fetch and apply it.");
+        return 0;
+      }
+      if (!force && cmp <= 0) {
+        this.ok(`Already running ${this.os}. 'sudo update install --force' to reinstall.`);
+        return 0;
+      }
+      this.info(`Downloading ${e.ver} (${(e.size || 0) >> 10} KB)...`);
+      await sleep(this.updateDelay);
+      if (this.updateFails) { this.err(this.updateFails); return 1; }
+      this.ok("Checksum verified.");
+      if (!yes && !(await this.confirm("  Continue?"))) { this.info("Cancelled. The download is kept."); return 0; }
+      const os = (/v\d\S*/.exec(e.desc || "") || ["v" + e.ver])[0];
+      this.info("Writing firmware...");
+      return this.restart({ os, build: String(e.ver).split(".").pop() });
+    }
+    if (sub === "from-file") {
+      if (!a[2]) { this.out("Usage: update from-file <image.bin>\n"); return 1; }
+      const p = resolve(this.cwd, a[2]);
+      this.updates.push({ sub, path: p });
+      this.warn(`Writing ${a[2]} over the firmware, unverified.`);
+      this.out("  A local file has no checksum to check it against.\n");
+      if (!(await this.confirm("  Continue?"))) return 0;
+      const data = this.files.get(p);
+      if (!data) { this.err(`No image at ${p}.`); return 1; }
+      let head = dec.decode(data.slice(0, 80)).split("\n")[0].split(" ");
+      if (head[0] !== "RPCIMG") {
+        // A real image (the demo sends one): the vector table where this
+        // board's chip keeps it, and the version string inside.
+        const v = new DataView(data.buffer, data.byteOffset, data.byteLength);
+        const at = /^pico(_w)?$/.test(this.board) ? 0x100 : 0;
+        const sp = data.length > at + 8 ? v.getUint32(at, true) : 0, entry = data.length > at + 8 ? v.getUint32(at + 4, true) : 0;
+        let text = "";
+        for (let i = 0; i < data.length; i += 0x8000) text += String.fromCharCode.apply(null, data.subarray(i, i + 0x8000));
+        const ver = /v2\.\d+(?:\.\d+)?(?:-[a-z0-9]+)?/.exec(text);
+        if (sp >= 0x20000000 && sp < 0x20090000 && entry >= 0x10000000 && entry < 0x10200000 && ver) {
+          head = ["RPCIMG", this.board, ver[0], (/^v\d+\.\d+\.(\d+)/.exec(ver[0]) || [0, "0"])[1]];
+        }
+      }
+      if (head[0] !== "RPCIMG" || head[1] !== this.board) {
+        this.err("The staged image does not look like firmware for this board.");
+        return 1;
+      }
+      this.info(`Staging ${data.length >> 10} KB...`);
+      // Only the file update itself downloaded is removed (update.cpp).
+      if (p === "/os/update.bin") this.files.delete(p);
+      this.ok("Staged and verified.");
+      this.info("Writing firmware...");
+      return this.restart({ os: head[2], build: head[3] });
+    }
+    if (sub === "rollback" && a[2] === "--forget") {
+      const had = this.files.get("/os/rollback.img");
+      this.files.delete("/os/rollback.img");
+      this.ok(had ? `Removed the saved image. ${had.length >> 10} KB freed.` : "There was nothing saved. Cleaned up anyway.");
+      return 0;
+    }
+    this.out("Usage:\n  update check\n  update install\n  update from-file <path>\n  update rollback\n");
     return 1;
   }
 
@@ -416,7 +650,7 @@ export class MockDevice {
 
   hello() {
     const cwd = this.cwd.replace(/%/g, "%25").replace(/ /g, "%20");
-    this.frame(`HELLO proto=${this.proto} os=v2.01-beta build=554 board=${this.board} arch=${/^pico(_w)?$/.test(this.board) ? "armv6m" : "armv8m"} user=${this.user} cwd=${cwd} chunk=768 exec_max=32768`);
+    this.frame(`HELLO proto=${this.proto} os=${this.os} build=${this.build} board=${this.board} arch=${/^pico(_w)?$/.test(this.board) ? "armv6m" : "armv8m"} user=${this.user} cwd=${cwd} chunk=768 exec_max=32768`);
   }
 
   async link() {
@@ -445,6 +679,9 @@ export class MockDevice {
     }
     this.inLink = false;
     this.frame("BYE");          // the firmware says so however link mode ends
+    // A grace AUTH started ends with link mode (link.cpp), so sudo typed at
+    // the prompt afterwards asks again.
+    if (this.linkAuthed) { this.grace = false; this.linkAuthed = false; }
     this.emit("Left link mode.\n");
     return 0;
   }
@@ -472,6 +709,7 @@ export class MockDevice {
     if (!this.admins.has(this.user)) return this.frame(`ERR perm ${this.user} is not an admin`);
     if (pw !== this.users[this.user]) return this.frame("ERR auth wrong password");
     this.grace = true;
+    this.linkAuthed = true;
     this.frame("OK grace=300");
   }
 
@@ -482,6 +720,10 @@ export class MockDevice {
     if (this.needsSudo(p) && !this.grace) return this.frame(`ERR sudo ${p} is part of the system: send AUTH first`);
     if (this.dirs.has(p)) return this.frame(`ERR nofile ${p} is a directory`);
     if (!this.dirs.has(dirname(p))) return this.frame(`ERR io could not open ${p} for writing`);
+    // storage_would_fit: the size against what is free, nothing past 98%
+    // full, and the file being replaced still counted as used.
+    const free = Math.floor(this.capacity * 0.98) - this.used();
+    if (size > free) return this.frame(`ERR nospace ${Math.max(0, this.capacity - this.used())} bytes free`);
     this.frame("READY chunk=768");
     let got = new Uint8Array(0);
     while (got.length < size) {

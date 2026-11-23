@@ -4,6 +4,6 @@
   "type": "module",
   "description": "The RPCortex v2 browser tool. Static files, no build step; this file only marks the scripts as ES modules for Node.",
   "scripts": {
-    "test": "node test/link.test.js"
+    "test": "for t in test/*.test.js; do node \"$t\" || exit 1; done"
   }
 }
