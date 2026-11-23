@@ -96,12 +96,37 @@ enum ReadResult { RL_OK, RL_TIMEOUT, RL_INTR, RL_LONG, RL_GONE };
 // One line, without its newline. `timeout_ms` 0 waits for ever; otherwise it is
 // the longest gap between bytes. `watch_usb` ends the wait when the host has
 // closed the port.
+//
+// Read a buffer at a time (intr_getkeys), not a byte at a time: one byte per
+// call is a trip through the SDK's stdio and the USB stack for each, and that,
+// not the flash, was what set the speed of `rpc put`. What is left in the
+// buffer when the line is complete goes straight back (intr_unget), so nothing
+// past this line is ever held here: a command an EXEC runs, polling for Ctrl+C,
+// sees every byte after its own request, as it did when reading byte by byte.
+static ReadResult read_line_inner(char *buf, uint32_t cap, uint32_t timeout_ms,
+                                  bool watch_usb, uint32_t *len, char *rx, int *rx_n, int *rx_at);
+
 static ReadResult read_line(char *buf, uint32_t cap, uint32_t timeout_ms,
                             bool watch_usb, uint32_t *len) {
+    char rx[256];
+    int rx_n = 0, rx_at = 0;
+    ReadResult r = read_line_inner(buf, cap, timeout_ms, watch_usb, len, rx, &rx_n, &rx_at);
+    if (rx_at < rx_n) intr_unget(rx + rx_at, rx_n - rx_at);
+    return r;
+}
+
+static ReadResult read_line_inner(char *buf, uint32_t cap, uint32_t timeout_ms,
+                                  bool watch_usb, uint32_t *len, char *rx, int *rx_n, int *rx_at) {
     uint32_t n = 0, last = task_now_ms(), gone_since = 0;
     bool over = false;
     for (;;) {
-        int c = intr_getkey();
+        int c = -1;
+        if (*rx_at >= *rx_n) {
+            *rx_at = 0;
+            *rx_n = intr_getkeys(rx, 256);
+            if (*rx_n < 0) *rx_n = 0;
+        }
+        if (*rx_at < *rx_n) c = (unsigned char)rx[(*rx_at)++];
         if (c < 0) {
             uint32_t now = task_now_ms();
             if (timeout_ms && now - last >= timeout_ms) return RL_TIMEOUT;

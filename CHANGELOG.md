@@ -14,6 +14,8 @@ Summary:
 
 ### Improved
 
+- Files sent to a board over USB arrive about 50% faster: `rpc put` went from 24 to 37 KB/s, and a download through the network bridge from 16.9 to 11.0 s for 382 KB. The console used to be read one byte per call, each a trip through the USB stack, and receiving a line took longer than writing it to flash. Link mode and the bridge read it a buffer at a time now, and give back anything past the line they wanted, so a command's Ctrl+C and keys typed during a download still arrive, in order.
+
 ### Fixed
 
 ### Security

@@ -90,6 +90,28 @@ int  intr_filter_key(int c);
 typedef int (*IntrPollFn)(void);      // returns a byte, or -1 if none waiting
 void intr_set_poll(IntrPollFn fn);
 
+// Several keys at once, for a reader that takes whole lines off the console
+// (the network bridge): the same rules as intr_getkey (a remote terminal's own
+// keys, only the shell's task, the stash first, every byte through the filter),
+// with the wire read in bulk. Returns how many were put in `buf`, 0 for none.
+//
+// Why it exists: one byte per call costs a trip through the SDK's stdio and the
+// USB stack for each one, and a bridged download spent more time there than
+// writing the file. Reading up to `cap` at a time halved the time to receive
+// a chunk (measured on a Pico 2 W).
+int  intr_getkeys(char *buf, int cap);
+
+// Bytes a bulk reader took and did not use, given back so the next reader sees
+// them first and in order (they go in front of anything stashed since). What
+// does not fit is dropped; with a 512-byte stash and a reader that takes at
+// most a couple of hundred, it fits.
+void intr_unget(const char *buf, int n);
+
+// The bulk counterpart of IntrPollFn: up to `cap` bytes, without blocking.
+// Without one, intr_getkeys reads a byte at a time through the IntrPollFn.
+typedef int (*IntrPollBulkFn)(char *buf, int cap);
+void intr_set_poll_bulk(IntrPollBulkFn fn);
+
 // The millisecond clock a timed console claim ages against. Defaults to the
 // real one; a host test overrides it to drive a deadline by hand. Passing null
 // restores the default rather than disabling expiry — a claim that could never

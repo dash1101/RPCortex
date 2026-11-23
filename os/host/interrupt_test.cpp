@@ -332,6 +332,63 @@ int main(void) {
     intr_set_clock(nullptr);                 // back to the real clock for anything after
     intr_stash_clear();
 
+    // --- several keys at once (intr_getkeys), and giving some back -----------
+    //
+    // The bridge reads whole lines this way. It must see exactly what
+    // intr_getkey would, in the same order: the stash first, then the wire,
+    // every byte through the filter, and what it gives back comes out first.
+    {
+        char b[64];
+        intr_clear(); intr_stash_clear();
+        intr_set_poll(fake_poll);
+        intr_set_poll_bulk(nullptr);
+        feed("xy");
+        ck(intr_getkeys(b, sizeof(b)) == 1 && b[0] == 'x', "no bulk poll: one byte through the plain poll");
+        ck(intr_getkeys(b, sizeof(b)) == 1 && b[0] == 'y', "and the next");
+        ck(intr_getkeys(b, sizeof(b)) == 0, "nothing left: 0");
+
+        static const char *bulk_src; static int bulk_at;
+        struct B { static int poll(char *o, int cap) {
+            int n = 0;
+            while (n < cap && bulk_src && bulk_src[bulk_at]) o[n++] = bulk_src[bulk_at++];
+            return n;
+        } };
+        intr_set_poll_bulk(B::poll);
+        // Something already in the stash (taken by intr_check) comes first.
+        feed("ST");
+        intr_check();
+        bulk_src = "wire-bytes"; bulk_at = 0;
+        int n = intr_getkeys(b, sizeof(b));
+        ck(n == 2 && b[0] == 'S' && b[1] == 'T', "the stash first, alone");
+        n = intr_getkeys(b, sizeof(b));
+        ck(n == 10 && !memcmp(b, "wire-bytes", 10), "then the wire, in bulk");
+        bulk_src = "abcdef"; bulk_at = 0;
+        n = intr_getkeys(b, 4);
+        ck(n == 4 && !memcmp(b, "abcd", 4), "no more than asked for");
+        n = intr_getkeys(b, sizeof(b));
+        ck(n == 2 && !memcmp(b, "ef", 2), "and the rest stays on the wire");
+
+        // The filter sees every byte and may keep some.
+        struct F { static int drop_z(int c) { return c == 'z' ? -1 : c; } };
+        intr_set_key_filter(F::drop_z);
+        bulk_src = "azbzc"; bulk_at = 0;
+        n = intr_getkeys(b, sizeof(b));
+        ck(n == 3 && !memcmp(b, "abc", 3), "the filter applies to each byte read in bulk");
+        intr_set_key_filter(nullptr);
+
+        // Given back: in front of anything stashed since, and in order.
+        feed("later");
+        intr_check();                      // "later" goes into the stash
+        intr_unget("first", 5);
+        char got[16]; int k = 0, c;
+        while (k < 15 && (c = intr_stashed()) >= 0) got[k++] = (char)c;
+        got[k] = 0;
+        ck(!strcmp(got, "firstlater"), "given-back bytes come out first, in order");
+
+        intr_set_poll_bulk(nullptr);
+        intr_stash_clear();
+    }
+
     // --- no poll installed ---------------------------------------------------
     intr_set_poll(nullptr);
     intr_clear();

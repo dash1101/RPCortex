@@ -123,6 +123,55 @@ int intr_getkey(void) {
 
 void intr_set_poll(IntrPollFn fn) { g_poll = fn; }
 
+static IntrPollBulkFn g_poll_bulk;
+void intr_set_poll_bulk(IntrPollBulkFn fn) { g_poll_bulk = fn; }
+
+int intr_getkeys(char *buf, int cap) {
+    if (!buf || cap <= 0) return 0;
+    // A remote terminal has its own reader, one key at a time.
+    if (my_term()) {
+        int c = intr_getkey();
+        if (c < 0) return 0;
+        buf[0] = (char)c;
+        return 1;
+    }
+    if (!may_read_keys()) return 0;
+    // The stash is older than anything on the wire: all of it first.
+    int n = 0;
+    while (n < cap) {
+        int c = intr_stashed();
+        if (c < 0) break;
+        c = intr_filter_key(c);
+        if (c >= 0) buf[n++] = (char)c;
+    }
+    if (n) return n;
+    if (!g_poll_bulk) {
+        int c = g_poll ? intr_filter_key(g_poll()) : -1;
+        if (c < 0) return 0;
+        buf[0] = (char)c;
+        return 1;
+    }
+    int k = g_poll_bulk(buf, cap);
+    if (k <= 0) return 0;
+    if (k > cap) k = cap;
+    // Through the filter one by one, keeping what it passes, in place.
+    for (int i = 0; i < k; i++) {
+        int c = intr_filter_key((unsigned char)buf[i]);
+        if (c >= 0) buf[n++] = (char)c;
+    }
+    return n;
+}
+
+void intr_unget(const char *buf, int n) {
+    if (!buf || n <= 0 || my_term()) return;
+    // In front of the tail, last byte first, so they come out in order.
+    for (int i = n - 1; i >= 0; i--) {
+        if (stash_full()) return;
+        g_tail = (g_tail + STASH_N - 1) % STASH_N;
+        g_stash[g_tail] = buf[i];
+    }
+}
+
 // Who owns the console byte stream.
 //
 // Held as a flag AND a pid rather than "pid or a sentinel": task_self() has no

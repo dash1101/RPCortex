@@ -153,6 +153,13 @@ static int shell_poll_byte(void) {
     return (c == PICO_ERROR_TIMEOUT) ? -1 : c;
 }
 
+// The same, up to `cap` bytes in one trip through stdio and the USB stack
+// (getchar_timeout_us is this with a length of one). intr_getkeys uses it.
+static int shell_poll_bulk(char *buf, int cap) {
+    int n = stdio_get_until(buf, cap, make_timeout_time_us(0));
+    return n > 0 ? n : 0;
+}
+
 static const char *shell_history(void *, int depth) { return hist_get(depth); }
 
 // Completion. At the start of the line the candidates are commands and aliases;
@@ -694,6 +701,7 @@ static void shell_load_aliases(void);
 
 void shell_register_builtins(void) {
     intr_set_poll(shell_poll_byte);
+    intr_set_poll_bulk(shell_poll_bulk);
 
     static const Command builtins[] = {
         {"run", "run <app.app | script.rps> [arg]", cmd_run, nullptr, LEVEL_USER, FORMS_RUN},
