@@ -33,6 +33,19 @@ static bool      g_used[APPS_MAX];
 
 // See LoaderGuard in apps.h.
 static RpcLock   g_loader_lock;
+
+// The resident table's own lock, for the two things that change it: storing a
+// package (look the name up, claim a slot) and unloading one (look it up, check
+// nobody is inside, free it). Without it two tasks loading the same package at
+// once could both find the name free and register it twice, and an unload could
+// free a slot a store was filling (PAR-73). Lookups stay lock-free, because one
+// happens on every call a package makes; a slot is published only once it is
+// complete (see apps_store).
+static RpcLock   g_table_lock;
+struct TableGuard {
+    TableGuard()  { lock_acquire(&g_table_lock); }
+    ~TableGuard() { lock_release(&g_table_lock); }
+};
 LoaderGuard::LoaderGuard()  { lock_acquire(&g_loader_lock); }
 LoaderGuard::~LoaderGuard() { lock_release(&g_loader_lock); }
 
@@ -912,10 +925,14 @@ bool app_enter_owner(const void *owner, TaskAppMem *saved, bool *had_saved) {
 }
 
 LoadedApp *apps_store(const LoadedApp *app) {
+    TableGuard held;
     if (find(app->header.name)) return nullptr;      // already resident
     for (int i = 0; i < APPS_MAX; i++) {
         if (!g_used[i]) {
             g_apps[i] = *app;      // image/veneer pointers copy over and stay valid
+            // The entry is complete before the slot says so: a lookup on the
+            // other core reads g_used first and then the entry.
+            __atomic_thread_fence(__ATOMIC_RELEASE);
             g_used[i] = true;
             return &g_apps[i];
         }
@@ -928,6 +945,7 @@ bool apps_resident(const char *name) {
 }
 
 bool apps_unload(const char *name) {
+    TableGuard held;
     LoadedApp *a = find(name);
     if (!a) return false;
     // Nobody may be INSIDE it.

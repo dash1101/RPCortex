@@ -18,6 +18,8 @@ Summary:
 
 ### Fixed
 
+- Two tasks loading or unloading packages at the same time (a background job beside the prompt) could register one package twice, or free a table slot another was filling. The resident package table has its own lock for those changes now; looking a package up stays lock-free.
+
 - A download bigger than the free space streamed everything that fitted (25 s for 848 KB through the bridge) before failing with a bare "could not write". A body announced as too big is refused before its first byte now, and `wget` says how big it is and how much room there is, or how far it got when the disk filled part way.
 
 ### Security
