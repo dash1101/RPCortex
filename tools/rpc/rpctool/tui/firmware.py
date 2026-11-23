@@ -104,7 +104,7 @@ def plan(running, manifest):
             p.note = ("This device runs {}, from before the version numbers changed on "
                       "2026-11-21. It reads {} as older than itself, so this one update "
                       "needs --force; after it, updates are offered as usual."
-                      .format(running.display, display_ver(ver)))
+                      .format(running.display, display_ver(entry)))
         return p
     if cmp_dev > 0:
         p.state = "update"
@@ -125,6 +125,13 @@ def _new_scheme(v):
 
 
 def display_ver(ver):
+    """What to call a release: a manifest entry (its desc carries the label, as
+    in "RPCortex v2.0.640-beta Vela II for pico2_w") or a bare version string."""
+    if isinstance(ver, dict):
+        m = re.search(r"\bv\d+\.\d+(?:\.\d+)?(?:-[a-z0-9]+)?", ver.get("desc") or "")
+        if m:
+            return m.group(0)
+        ver = ver.get("ver", "")
     return "v" + ver if ver and not ver.startswith("v") else (ver or "?")
 
 

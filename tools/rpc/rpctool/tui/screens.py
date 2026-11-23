@@ -1111,7 +1111,7 @@ class FirmwareScreen(Screen):
             if p.latest is None:
                 app.say(p.note or "The release list has not been read.", "warn")
                 return True
-            ver = _fw.display_ver(p.latest.get("ver"))
+            ver = _fw.display_ver(p.latest)
             run = _fw.Running(app.hello)
             text = ("Update {} to {}? The device downloads it itself, over its own Wi-Fi, "
                     "checks it against the release's SHA-256, writes it and restarts. Its "
@@ -1157,7 +1157,7 @@ class FirmwareScreen(Screen):
             app.say(p.note or "The release list has not been read.", "warn")
             return
         url, sha = _fw.uf2_source(p.latest, self.history)
-        ver = _fw.display_ver(p.latest.get("ver"))
+        ver = _fw.display_ver(p.latest)
         text = ("Download {} for {} and flash it through BOOTSEL? The board restarts into its "
                 "boot ROM, the image is copied onto its drive, and it starts again. Files are "
                 "kept.\n\n{}\n{}".format(ver, p.latest.get("name"), url,
@@ -1184,7 +1184,7 @@ class FirmwareScreen(Screen):
         run = _fw.Running(app.hello) if app.hello else None
         p = self.plan if app.hello else _fw.Plan()
         c.box(y, x, 9, w, "firmware")
-        latest = _fw.display_ver(p.latest.get("ver")) if p.latest else "-"
+        latest = _fw.display_ver(p.latest) if p.latest else "-"
         state = {"update": ("update available", "warn"), "current": ("up to date", "ok"),
                  "newer": ("newer than the latest release", "muted"),
                  "noboard": ("no release for this board", "muted")}.get(
