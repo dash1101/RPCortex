@@ -2,6 +2,95 @@
   "schema": 1,
   "releases": [
     {
+      "tag": "v2.0.664-beta",
+      "display": "v2.0.664-beta",
+      "version": "2.0",
+      "build": 664,
+      "commit": "6bf3162bc86675179470ee118cbdf0f1c20131a1",
+      "codename": "Vela II",
+      "date": "2026-11-23",
+      "prerelease": true,
+      "title": "RPCortex v2.0.664-beta",
+      "summary": "the browser tool points at RPCortex Studio",
+      "notes": {
+        "new": [],
+        "improved": [],
+        "fixed": [
+          "The browser tool, opened in a browser without Web Serial, still told you to `pip install -e tools/rpc`, which is gone. It links to RPCortex Studio's download instead."
+        ],
+        "security": [],
+        "changed": [],
+        "issues": []
+      },
+      "assets": [
+        {
+          "board": "pico2_w",
+          "kind": "bin",
+          "file": "rpcortex-v2.0.664-beta-pico2_w.bin",
+          "size": 868844,
+          "sha256": "1967b5d5843ba100bd04b58106ae1afc8d4c774cf8dc96856584d2ffe579819b",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.664-beta/rpcortex-v2.0.664-beta-pico2_w.bin"
+        },
+        {
+          "board": "pico2_w",
+          "kind": "uf2",
+          "file": "rpcortex-v2.0.664-beta-pico2_w.uf2",
+          "size": 1738240,
+          "sha256": "15444266e8cd6dc4ec10bc9dbef19adc5b7de1891e5920b84799059d639e72ab",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.664-beta/rpcortex-v2.0.664-beta-pico2_w.uf2"
+        },
+        {
+          "board": "pico_w",
+          "kind": "bin",
+          "file": "rpcortex-v2.0.664-beta-pico_w.bin",
+          "size": 775836,
+          "sha256": "5a3a34d7edf80b97a28696cfcfde25b4ac86214dfd4b39fe1bb76243f04392d1",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.664-beta/rpcortex-v2.0.664-beta-pico_w.bin"
+        },
+        {
+          "board": "pico_w",
+          "kind": "uf2",
+          "file": "rpcortex-v2.0.664-beta-pico_w.uf2",
+          "size": 1551872,
+          "sha256": "f937578ca68c76c0229ac03217402eda19c1e748eb9d8058ade7c4f0ad7e6f44",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.664-beta/rpcortex-v2.0.664-beta-pico_w.uf2"
+        },
+        {
+          "board": "pico2",
+          "kind": "bin",
+          "file": "rpcortex-v2.0.664-beta-pico2.bin",
+          "size": 391428,
+          "sha256": "b088e6400cce4e3fe6ce26b14f311b9e2f3698967e1b02f5df0d76b848a70e0c",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.664-beta/rpcortex-v2.0.664-beta-pico2.bin"
+        },
+        {
+          "board": "pico2",
+          "kind": "uf2",
+          "file": "rpcortex-v2.0.664-beta-pico2.uf2",
+          "size": 783872,
+          "sha256": "511af204472b11893ed30c5dab026b273dc4d1b24bd4484a4cbd3a6fd2572f4f",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.664-beta/rpcortex-v2.0.664-beta-pico2.uf2"
+        },
+        {
+          "board": "pico",
+          "kind": "bin",
+          "file": "rpcortex-v2.0.664-beta-pico.bin",
+          "size": 330768,
+          "sha256": "b5e8e4b09da5356d51c89d582d0a10562ab4c36eb8577f032ebed8bf8f78185c",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.664-beta/rpcortex-v2.0.664-beta-pico.bin"
+        },
+        {
+          "board": "pico",
+          "kind": "uf2",
+          "file": "rpcortex-v2.0.664-beta-pico.uf2",
+          "size": 662016,
+          "sha256": "ccdcc52d332e77da72dda250767d3d6c9fdfe8b1f43b0c7be4af5225f58bb550",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.664-beta/rpcortex-v2.0.664-beta-pico.uf2"
+        }
+      ],
+      "url": "https://github.com/dash1101/RPCortex/releases/tag/v2.0.664-beta"
+    },
+    {
       "tag": "v2.0.661-beta",
       "display": "v2.0.661-beta",
       "version": "2.0",
