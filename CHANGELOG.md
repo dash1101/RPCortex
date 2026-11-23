@@ -8,6 +8,22 @@ good notes is in `RELEASING.md`.
 
 ## Unreleased
 
+Summary: 
+
+### New
+
+### Improved
+
+### Fixed
+
+### Security
+
+### Changed
+
+### Known issues
+
+## v2.0.676-beta, 2026-11-23
+
 Summary: Nova D1 in the background keeps its controls when a computer connects or Ctrl+C is pressed at the console
 
 ### New

@@ -2,6 +2,95 @@
   "schema": 1,
   "releases": [
     {
+      "tag": "v2.0.676-beta",
+      "display": "v2.0.676-beta",
+      "version": "2.0",
+      "build": 676,
+      "commit": "9084481fdfda316751cb967db0ac3f7b9496e56e",
+      "codename": "Vela II",
+      "date": "2026-11-23",
+      "prerelease": true,
+      "title": "RPCortex v2.0.676-beta",
+      "summary": "Nova D1 in the background keeps its controls when a computer connects or Ctrl+C is pressed at the console",
+      "notes": {
+        "new": [],
+        "improved": [],
+        "fixed": [
+          "Nova D1 run in the background (`novad1 gui --bg`) lost its knob and buttons the moment anything sent the console a Ctrl+C: `rpc` connecting does, and so does stopping any command at the prompt. Its input task shared the console's Ctrl+C, and the prompt raised it for a few milliseconds even when only clearing a line. Background tasks (`bg` jobs, services, and whatever a command leaves running when it returns) no longer answer the console's Ctrl+C; `kill` still stops them, and a command in the foreground still stops on Ctrl+C with its helper tasks."
+        ],
+        "security": [],
+        "changed": [],
+        "issues": []
+      },
+      "assets": [
+        {
+          "board": "pico2_w",
+          "kind": "bin",
+          "file": "rpcortex-v2.0.676-beta-pico2_w.bin",
+          "size": 866228,
+          "sha256": "5f83a2bcdfe2c5e323679475cb4f916d2e433ea0f510ece0782be8218c0e3988",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.676-beta/rpcortex-v2.0.676-beta-pico2_w.bin"
+        },
+        {
+          "board": "pico2_w",
+          "kind": "uf2",
+          "file": "rpcortex-v2.0.676-beta-pico2_w.uf2",
+          "size": 1733120,
+          "sha256": "ebc652a30e98ee43fe54cb3597bbf351eb15c14122dfd415e118935a9638924e",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.676-beta/rpcortex-v2.0.676-beta-pico2_w.uf2"
+        },
+        {
+          "board": "pico_w",
+          "kind": "bin",
+          "file": "rpcortex-v2.0.676-beta-pico_w.bin",
+          "size": 772248,
+          "sha256": "839d07971494a6c4f9a2c0729af23acdbe51d7359dbcc3eb059abc7a823a494a",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.676-beta/rpcortex-v2.0.676-beta-pico_w.bin"
+        },
+        {
+          "board": "pico_w",
+          "kind": "uf2",
+          "file": "rpcortex-v2.0.676-beta-pico_w.uf2",
+          "size": 1544704,
+          "sha256": "06a5ef4698aac556c193d844e9fb59ece0482b5be4b5ba79b41abbba63eb9c1a",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.676-beta/rpcortex-v2.0.676-beta-pico_w.uf2"
+        },
+        {
+          "board": "pico2",
+          "kind": "bin",
+          "file": "rpcortex-v2.0.676-beta-pico2.bin",
+          "size": 388964,
+          "sha256": "a1bacd18d4850d947225cfb951eec716917f95b2620a78c61ac49c6b98b24c95",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.676-beta/rpcortex-v2.0.676-beta-pico2.bin"
+        },
+        {
+          "board": "pico2",
+          "kind": "uf2",
+          "file": "rpcortex-v2.0.676-beta-pico2.uf2",
+          "size": 778752,
+          "sha256": "bb503abd576dc5ba8c18b0234b5ed0287716c331557d7cf251a7777e77d557f4",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.676-beta/rpcortex-v2.0.676-beta-pico2.uf2"
+        },
+        {
+          "board": "pico",
+          "kind": "bin",
+          "file": "rpcortex-v2.0.676-beta-pico.bin",
+          "size": 327308,
+          "sha256": "9b6bd6f474741ca56f4f9a0eebdb2b4eaf7fafa0b2507b57c9a007b48d89e00d",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.676-beta/rpcortex-v2.0.676-beta-pico.bin"
+        },
+        {
+          "board": "pico",
+          "kind": "uf2",
+          "file": "rpcortex-v2.0.676-beta-pico.uf2",
+          "size": 654848,
+          "sha256": "4852b607041707dd6696fe370613944f53833b62a88d60561249df4f6f33f7a7",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.676-beta/rpcortex-v2.0.676-beta-pico.uf2"
+        }
+      ],
+      "url": "https://github.com/dash1101/RPCortex/releases/tag/v2.0.676-beta"
+    },
+    {
       "tag": "v2.0.673-beta",
       "display": "v2.0.673-beta",
       "version": "2.0",
