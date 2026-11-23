@@ -8,6 +8,22 @@ good notes is in `RELEASING.md`.
 
 ## Unreleased
 
+Summary: 
+
+### New
+
+### Improved
+
+### Fixed
+
+### Security
+
+### Changed
+
+### Known issues
+
+## v2.0.658-beta, 2026-11-23
+
 Summary: a board with no network of its own can use the computer's connection, `rpc tui` is a full-screen program for a device, and the browser tool updates firmware and packages
 
 ### New
