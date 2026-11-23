@@ -8,13 +8,15 @@ good notes is in `RELEASING.md`.
 
 ## Unreleased
 
-Summary: 
+Summary: the browser tool points at RPCortex Studio
 
 ### New
 
 ### Improved
 
 ### Fixed
+
+- The browser tool, opened in a browser without Web Serial, still told you to `pip install -e tools/rpc`, which is gone. It links to RPCortex Studio's download instead.
 
 ### Security
 
