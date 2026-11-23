@@ -8,7 +8,7 @@ good notes is in `RELEASING.md`.
 
 ## Unreleased
 
-Summary: 
+Summary: a board with no network of its own can use the computer's connection, `rpc tui` is a full-screen program for a device, and the browser tool updates firmware and packages
 
 ### New
 
@@ -32,7 +32,6 @@ Summary:
 
 ### Fixed
 
-- Before this release, an image without Wi-Fi (a plain Pico 2, or one built `--without wifi`) asked for the plain Pico's RP2040 image when it checked for an update, because the updater found out which board it was from headers only the Wi-Fi build includes. It uses the board name the build sets for every file now, and an image missing it does not build.
 - The last check before an update overwrites the firmware accepted an image built for either chip on either chip. It knows which layout belongs to which chip now (RP2040: the vector table at 0x100; RP2350: the table at 0 and a picobin block), so an image for the wrong chip is refused before anything is written. Tested on the host against every board's release image.
 - `sreboot` restarted with a bare watchdog reset, so the next start reported a hang and saved a crash report. It is a deliberate restart now, and still the one that saves nothing first, which is what `rpc restore` needs.
 - The browser tool froze when a serial port closed cleanly instead of with an error: its reader asked the finished stream for more, for ever. It treats that as the port going away now.
@@ -44,6 +43,10 @@ Summary:
 ### Changed
 
 ### Known issues
+
+- `rpc tui` has run on Linux only. Windows needs `pip install windows-curses`; macOS and Windows are untested.
+- Over the bridge, the browser can fetch from raw.githubusercontent.com (the package list, every package and the firmware images) but not GitHub release downloads, which do not allow it; the device is told so, and `rpc term` fetches them.
+- `update install` on a custom image built without a feature installs the board's standard image, with every feature.
 
 ## v2.0.640-beta, 2026-11-21
 
