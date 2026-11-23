@@ -1,5 +1,7 @@
 // Per-target glue that the pure cores need. On the RP2350/RP2040 these are
 // backed by SDK hardware; the host tests provide their own.
+#include <stdio.h>
+#include <stdarg.h>
 #include "pico/rand.h"
 #include "pico/aon_timer.h"
 #include "registry.h"
@@ -24,4 +26,22 @@ extern "C" uint32_t rpc_now_epoch(void) {
     if (!aon_timer_get_time_calendar(&t)) return 0;
     time_t e = mktime(&t);
     return (e <= 0) ? 0 : (uint32_t)e;
+}
+
+// --- newlib's second printf ----------------------------------------------------
+//
+// mallinfo() (kernel.cpp's memory figures) lives in newlib's mstats.o beside
+// malloc_stats(), and malloc_stats prints with fiprintf. Linking mallinfo
+// therefore dragged in newlib's whole integer printf engine (_vfiprintf_r,
+// __sprint_r, __sbprintf: about 3 KB) for a function nothing here calls. The
+// firmware prints through the SDK's printf everywhere else; this fiprintf
+// forwards there, so newlib's never links. It matters on the Pico, whose image
+// had come within 4 KB of its slot's warning line.
+extern "C" int fiprintf(FILE *f, const char *fmt, ...) {
+    (void)f;                      // stdout and stderr are the same console here
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vprintf(fmt, ap);
+    va_end(ap);
+    return n;
 }

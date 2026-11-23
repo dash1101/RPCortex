@@ -14,7 +14,7 @@ Summary:
 
 ### Improved
 
-- The package list an image ships with is minified: 1.6 KB less flash on every board.
+- Every image is about 4.5 KB smaller: the package list it ships with is minified (1.6 KB), and a second printf engine that came in with `mallinfo` and was never used is gone (about 3 KB). The Pico image has 64 KB of its slot free again.
 
 - A background job gives its memory back when it finishes. It used to keep its stack and its package memory (37 KB for a job that ran a package, on a board with 319 KB) until somebody cleared it with `kill` or its slot was needed. Its line in `ps` and `jobs`, and its exit status, stay as before.
 
