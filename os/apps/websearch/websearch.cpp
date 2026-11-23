@@ -21,7 +21,7 @@
 // never holds two.
 #include "rpc_app.h"
 
-RPC_APP_VER("websearch", "2.1");
+RPC_APP_VER("websearch", "2.2");
 
 // One response at a time, and never more than this. Wikipedia summaries run to
 // two or three kilobytes and DuckDuckGo's answers to rather more; anything that
@@ -249,17 +249,24 @@ static void print_wrapped(const char *text, const char *indent) {
 
 // --- fetching ----------------------------------------------------------------
 
-static bool online(void) {
-    if (fw_net_connected()) return true;
-    fw_printf("Not connected. Use 'wifi connect <ssid>' first.\n");
-    return false;
-}
+// No check before asking. A board without Wi-Fi can still fetch, through the
+// computer it is plugged into (the network bridge, while rpc or the browser
+// tool is attached), and fw_net_connected() only knows about Wi-Fi: checking it
+// first turned such a board away with "Not connected" from a request that
+// would have worked. The firmware routes the request; a failure says why.
+static bool online(void) { return true; }
 
 // Fetch into `buf`, terminate it, and report anything that went wrong in the
 // caller's words rather than as a number.
 static bool fetch(const char *url, char *buf, unsigned cap) {
     int n = fw_http_get(url, buf, cap - 1);
     if (n < 0) {
+        if (!fw_net_connected()) {
+            fw_printf("No network. Connect with 'wifi connect <ssid>', or, on a board\n");
+            fw_printf("without Wi-Fi, run this from rpc or the browser tool, which lend\n");
+            fw_printf("the computer's connection.\n");
+            return false;
+        }
         fw_printf("The request failed. The site may be unreachable, or its\n");
         fw_printf("certificate could not be verified against /os/ca.pem.\n");
         return false;
