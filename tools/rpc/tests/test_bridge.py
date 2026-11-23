@@ -109,7 +109,9 @@ class BridgeBase(unittest.TestCase):
         self.dev = MockDevice(**dev_args).start()
         self.dev.repo_index = self.url + "/index.json"
         self.log = []
-        self.bridge = _bridge.Bridge(policy or _bridge.Policy(), log=self.log.append)
+        # The server is on this computer, which the bridge refuses unless named.
+        self.bridge = _bridge.Bridge(policy or _bridge.Policy(allow=["127.0.0.1"]),
+                                     log=self.log.append)
         self.d = support.connect(self.dev, bridge=self.bridge, sudo_password="rootpw")
         return self.d
 
@@ -252,6 +254,17 @@ class TestPolicy(BridgeBase):
         self.assertEqual(r.rc, 1)
         self.assertIn("allowlist", r.text)
 
+    def test_this_computer_needs_naming(self):
+        d = self.make(_bridge.Policy())
+        for url in ("http://127.0.0.1:1/", "http://localhost/", "http://[::1]/",
+                    "http://169.254.169.254/latest/meta-data/"):
+            self.assertRaises(_bridge.Refused, self.bridge.policy.check, url)
+        r = d.exec("curl {}/small.txt".format(self.url))
+        self.assertEqual(r.rc, 1)
+        self.assertIn("this computer itself", r.text)
+        self.assertIn("will not fetch that", r.text, "worded as the firmware words it")
+        _bridge.Policy(allow=["169.254.169.254"]).check("http://169.254.169.254/")
+
     def test_only_http_and_https(self):
         d = self.make()
         for url in ("file:///etc/passwd", "ftp://example.com/x", "data:text/plain,hi"):
@@ -267,7 +280,7 @@ class TestPolicy(BridgeBase):
         self.assertNotIn("root:", r.text)
 
     def test_size_cap(self):
-        d = self.make(_bridge.Policy(max_bytes=4096))
+        d = self.make(_bridge.Policy(allow=["127.0.0.1"], max_bytes=4096))
         r = d.exec("wget {}/big.bin /home/root/big.bin".format(self.url))
         self.assertEqual(r.rc, 1)
         self.assertIn("bridge limit", r.text)
@@ -320,7 +333,8 @@ class TestTerminal(BridgeBase):
         self.dev = MockDevice(proto=3, netless=True).start()
         self.dev.repo_index = self.url + "/index.json"
         self.log = []
-        self.bridge = _bridge.Bridge(policy or _bridge.Policy(), log=self.log.append)
+        self.bridge = _bridge.Bridge(policy or _bridge.Policy(allow=["127.0.0.1"]),
+                                     log=self.log.append)
         t = support.transport.Transport(self.dev.open(), "mock")
         r, w = os.pipe()
         out = support._Out()
@@ -412,17 +426,19 @@ class TestTermPieces(unittest.TestCase):
 class TestCli(BridgeBase):
     def test_flags(self):
         self.dev = MockDevice(proto=3, netless=True).start()
-        rc, out, err = support.run_cli(self.dev, ["exec", "curl", self.url + "/small.txt"])
+        rc, out, err = support.run_cli(self.dev, ["--bridge-allow", "127.0.0.1", "exec", "curl", self.url + "/small.txt"])
         self.assertEqual(rc, 0, err)
         self.assertEqual(out, b"hello through the bridge\n")
         self.assertIn("[rpc] bridge: GET " + self.url + "/small.txt", err)
-        rc, out, err = support.run_cli(self.dev, ["--no-bridge", "exec", "curl", self.url + "/small.txt"])
+        rc, out, err = support.run_cli(self.dev, ["exec", "curl", self.url + "/small.txt"])
+        self.assertEqual(rc, 1, "this computer is refused unless named")
+        rc, out, err = support.run_cli(self.dev, ["--bridge-allow", "127.0.0.1", "--no-bridge", "exec", "curl", self.url + "/small.txt"])
         self.assertEqual(rc, 1)
         rc, out, err = support.run_cli(self.dev, ["--bridge-allow", "example.com", "exec", "curl",
                                                   self.url + "/small.txt"])
         self.assertEqual(rc, 1)
         self.assertIn("allowlist", out.decode())
-        rc, out, err = support.run_cli(self.dev, ["--bridge-max", "1K", "exec", "curl",
+        rc, out, err = support.run_cli(self.dev, ["--bridge-allow", "127.0.0.1", "--bridge-max", "1K", "exec", "curl",
                                                   self.url + "/big.bin"])
         self.assertEqual(rc, 1)
         self.assertIn("bridge limit", out.decode())

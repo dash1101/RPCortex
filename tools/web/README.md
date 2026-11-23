@@ -173,8 +173,9 @@ than `rpc` does:
 - **No length up front:** the browser undoes gzip itself, so the device is told
   the body ends when it ends rather than how long it is.
 
-Only `http` and `https` are fetched, and a redirect that ends anywhere else is not
-passed on. (`Bridge` in `js/link.js` also takes an allowlist and a size cap, 8 MB
+Only `http` and `https` are fetched, never this computer itself (`localhost`,
+`127.x`, `::1`) or a link-local address, and a redirect that ends anywhere else is
+not passed on. (`Bridge` in `js/link.js` also takes an allowlist and a size cap, 8 MB
 by default; the page uses neither list nor a smaller cap today.)
 
 ## The files

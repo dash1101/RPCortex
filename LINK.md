@@ -407,8 +407,9 @@ And from the device while the body arrives:
 
 The host decides what to fetch. It fetches only `http` and `https`, checks every
 redirect the same way, verifies HTTPS with its own trust store, never reads its own
-files on the device's behalf, may refuse anything (an allowlist, a size cap), and
-logs every request it serves.
+files on the device's behalf, may refuse anything (an allowlist, a size cap; the
+host tools refuse the computer's own loopback and link-local addresses unless they
+are named), and logs every request it serves.
 
 ```
 < 0x1E FETCH 3 GET https://raw.githubusercontent.com/.../repo-v2/index.json

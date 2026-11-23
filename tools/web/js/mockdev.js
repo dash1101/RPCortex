@@ -750,8 +750,12 @@ export class MockDevice {
         } else if (l.type === "FDONE") {
           if (l.rest.startsWith("err")) {
             const msg = l.rest.split(" ").slice(2).join(" ");
-            this.bridgeFetches.push([method, url, l.rest.split(" ")[1], 0]);
-            return { why: msg };
+            const code = l.rest.split(" ")[1];
+            this.bridgeFetches.push([method, url, code, 0]);
+            // Worded as core/bridge.cpp's host_failed words it.
+            const lead = { refused: "the computer will not fetch that: ", toobig: "over the computer's size limit: ",
+              timeout: "the server went quiet: " }[code] || "the computer could not fetch it: ";
+            return { why: lead + msg };
           }
           this.bridgeFetches.push([method, url, status, data.length]);
           return { status, body: data };

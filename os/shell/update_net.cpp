@@ -94,9 +94,7 @@ static bool download(const char *url, const char *dest, char *hex, uint64_t *byt
 
     if (!good) {
         storage_remove(dest);
-        out_err("%s%s%s", fetch_error_str(r.error), r.detail[0] ? " - " : "", r.detail);
-        char d[192]; http_last_detail(d, sizeof(d));
-        out_multi("  %s", d);
+        http_report_failure(&r);
         return false;
     }
     uint8_t digest[32];

@@ -34,6 +34,12 @@ bool http_https_ready(const char *url, HttpVia via);
 // What the last transfer did, for a failure message worth reading.
 void http_last_detail(char *out, unsigned cap);
 
+// Say why a fetch failed, as an error: what went wrong, and for a transport
+// failure what the connection managed. Over the bridge a transport failure is
+// whatever the host said (refused, too big, the server unreachable, no answer),
+// and that is the line, not a footnote under "connection lost".
+void http_report_failure(const FetchResult *r);
+
 // --- answered by the feature files ---------------------------------------------
 
 // httptransport.cpp, or net_off.cpp: false without a connection.

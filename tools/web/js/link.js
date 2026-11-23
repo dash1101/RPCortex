@@ -794,9 +794,18 @@ export class Bridge {
       throw new BridgeRefused("refused", `only http and https are bridged, not ${u.protocol.replace(":", "")}`);
     }
     const host = u.hostname.toLowerCase();
-    if (this.allow.length && !this.allow.some((a) => a === "*" || a === host ||
-        (a.startsWith(".") && host.endsWith(a)) || (a.startsWith("*.") && host.endsWith(a.slice(1))))) {
+    const listed = this.allow.some((a) => a === host ||
+      (a.startsWith(".") && host.endsWith(a)) || (a.startsWith("*.") && host.endsWith(a.slice(1))));
+    if (this.allow.length && !listed && !this.allow.includes("*")) {
       throw new BridgeRefused("refused", `${host} is not on this page's bridge allowlist`);
+    }
+    // This computer itself and link-local addresses are for this computer, not
+    // for a device on its USB port; named in the allowlist, they are allowed.
+    const h = host.replace(/^\[|\]$/g, "");
+    const local = h === "localhost" || h.endsWith(".localhost") || /^127\./.test(h) || h === "::1" ||
+      /^169\.254\./.test(h) || /^fe80:/.test(h) || h === "0.0.0.0" || h === "::";
+    if (local && !listed) {
+      throw new BridgeRefused("refused", `${host} is this computer itself or link-local; the page will not fetch it for the device`);
     }
   }
 

@@ -968,8 +968,15 @@ class MockDevice(object):
                 elif typ == "FDONE":
                     if rest.startswith("err"):
                         msg = rest.split(" ", 2)[2] if len(rest.split(" ", 2)) > 2 else rest
-                        self.bridge_fetches.append((method, url, rest.split(" ")[1], 0))
-                        return None, None, msg
+                        code = rest.split(" ")[1] if len(rest.split(" ")) > 1 else ""
+                        self.bridge_fetches.append((method, url, code, 0))
+                        # Worded as core/bridge.cpp's host_failed words it, which
+                        # is the line wget, curl and pkg print (http_report_failure).
+                        return None, None, {
+                            "refused": "the computer will not fetch that: ",
+                            "toobig": "over the computer's size limit: ",
+                            "timeout": "the server went quiet: ",
+                        }.get(code, "the computer could not fetch it: ") + msg
                     if length is not None and len(data) != length:
                         return None, None, "truncated after {} bytes".format(len(data))
                     self.bridge_fetches.append((method, url, status, len(data)))

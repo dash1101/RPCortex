@@ -82,6 +82,11 @@ the terminal.
 It is on by default, and `rpc` decides what is fetched:
 
 - only `http` and `https`, on every redirect too; never a file on this computer;
+- not this computer itself (`localhost`, `127.0.0.1`, `::1`) or a link-local
+  address (`169.254.x.x`, where cloud machines keep their credentials), unless
+  named with `--bridge-allow`; a package on the device has no business reaching
+  the services on this computer. Other machines on the local network are
+  fetched like any other host; `--bridge-allow` narrows that too;
 - `--bridge-allow raw.githubusercontent.com` (repeat it, or a comma list;
   `.example.com` covers the subdomains) fetches only from those hosts;
 - `--bridge-max 2M` caps one download (8 MB unless told);

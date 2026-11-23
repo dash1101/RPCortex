@@ -70,6 +70,21 @@ void http_last_detail(char *out, unsigned cap) {
     else                               http_net_last_detail(out, cap);
 }
 
+void http_report_failure(const FetchResult *r) {
+    bool transport = r->error == FETCH_ERR_RECV || r->error == FETCH_ERR_CONNECT ||
+                     r->error == FETCH_ERR_SEND;
+    if (transport && g_last_via == HTTP_VIA_BRIDGE) {
+        out_err("%s", bridge_last_detail());
+        return;
+    }
+    out_err("%s%s%s", fetch_error_str(r->error), r->detail[0] ? " - " : "", r->detail);
+    if (transport) {
+        char d[192];
+        http_last_detail(d, sizeof(d));
+        out_multi("  %s", d);
+    }
+}
+
 // --- wget -------------------------------------------------------------------
 
 struct FileSink { void *h; };
@@ -299,8 +314,9 @@ static int cmd_wget(int argc, char **argv) {
 
     if (!good) {
         storage_remove(full);        // a partial file is worse than none
-        out_err("%s%s%s", fetch_error_str(r.error),
-                r.detail[0] ? " - " : "", r.detail);
+        // With the reason: over the bridge every failure is a transport
+        // failure, and "connection lost" alone says nothing about which.
+        http_report_failure(&r);
         return 1;
     }
 
@@ -442,14 +458,7 @@ static int cmd_curl(int argc, char **argv) {
     // show the headers; v1 returned the status and printed no error either.
     if (!good && head && r.error == FETCH_ERR_STATUS) return 0;
 
-    if (!good) {
-        out_err("%s%s%s", fetch_error_str(r.error), r.detail[0] ? " - " : "", r.detail);
-        if (r.error == FETCH_ERR_RECV || r.error == FETCH_ERR_CONNECT || r.error == FETCH_ERR_SEND) {
-            char d[192]; http_last_detail(d, sizeof(d));
-            out_multi("  %s", d);
-        }
-        return 1;
-    }
+    if (!good) { http_report_failure(&r); return 1; }
     return 0;
 }
 

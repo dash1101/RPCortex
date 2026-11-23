@@ -96,10 +96,34 @@ class Policy(object):
         host = (u.hostname or "").lower()
         if not host:
             raise Refused("refused", "no host in the URL")
-        if self.allow and not any(host == a or (a.startswith(".") and host.endswith(a)) or
-                                  (a.startswith("*.") and host.endswith(a[1:])) or a == "*"
-                                  for a in self.allow):
+        listed = any(host == a or (a.startswith(".") and host.endswith(a)) or
+                     (a.startswith("*.") and host.endswith(a[1:])) for a in self.allow)
+        if self.allow and not listed and "*" not in self.allow:
             raise Refused("refused", "{} is not on this computer's bridge allowlist".format(host))
+        # This computer itself (localhost, 127.x, ::1) and link-local addresses
+        # (169.254.x, where cloud machines keep their credentials) are services
+        # meant for this computer, not for a device on its USB port. Named in the
+        # allowlist, they are allowed.
+        if not listed and _is_local(host):
+            raise Refused("refused", "{} is this computer itself or link-local; name it with "
+                                     "--bridge-allow to fetch from it".format(host))
+
+
+def _is_local(host):
+    """Whether `host` is, or resolves to, a loopback or link-local address."""
+    import ipaddress
+    h = host.strip("[]")
+    try:
+        addrs = [ipaddress.ip_address(h)]
+    except ValueError:
+        if h == "localhost" or h.endswith(".localhost"):
+            return True
+        try:
+            addrs = [ipaddress.ip_address(i[4][0].split("%")[0])
+                     for i in socket.getaddrinfo(h, None)]
+        except (socket.gaierror, OSError, ValueError):
+            return False            # unresolvable: the fetch will fail on its own
+    return any(a.is_loopback or a.is_link_local or a.is_unspecified for a in addrs)
 
 
 class _Redirects(HTTPRedirectHandler):

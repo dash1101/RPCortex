@@ -71,7 +71,8 @@ async function linked(opts = {}, bridgeOpts = {}) {
   const dev = new MockDevice({ proto: 3, netless: true, ...opts }).start();
   dev.repoIndex = BASE + "/index.json";
   const log = [];
-  const bridge = new Bridge({ log: (l) => log.push(l), ...bridgeOpts });
+  // The server is on this computer, which the bridge refuses unless named.
+  const bridge = new Bridge({ log: (l) => log.push(l), allow: ["127.0.0.1"], ...bridgeOpts });
   const r = await enterLink(dev.stream(), { timing: FAST, bridge });
   return { dev, link: r.link, bridge, log };
 }
@@ -82,7 +83,7 @@ async function terminal() {
   dev.repoIndex = BASE + "/index.json";
   const s = dev.stream();
   const notes = [];
-  const tb = new TermBridge(new Bridge(), (b) => s.write(b), { onNote: (n) => notes.push(n) });
+  const tb = new TermBridge(new Bridge({ allow: ["127.0.0.1"] }), (b) => s.write(b), { onNote: (n) => notes.push(n) });
   let shown = new Uint8Array(0);
   let running = true;
   (async () => {
@@ -197,6 +198,21 @@ test("only GET and HEAD, only http and https, CORS said plainly", async () => {
   d = fakeDevice(["FGO 3 chunk=768"]);
   await cors.serve(new Frame(enc.encode("FETCH 3 GET https://example.com/")), d.next, d.write);
   ok(d.wrote.some((l) => l.startsWith("FDONE 3 err net") && l.includes("CORS")), d.wrote.join("|"));
+});
+
+test("this computer and link-local addresses only when named", async () => {
+  const b = new Bridge();
+  for (const url of ["http://127.0.0.1:8/", "http://localhost/", "http://[::1]/", "http://169.254.169.254/"]) {
+    let threw = false;
+    try { b.check(url); } catch (e) { threw = true; }
+    ok(threw, url + " refused");
+  }
+  new Bridge({ allow: ["127.0.0.1"] }).check("http://127.0.0.1:8/");
+  const { dev, link } = await linked({}, { allow: [] });
+  const r = await link.exec(`curl ${BASE}/small.txt`);
+  eq(r.rc, 1);
+  ok(r.text.includes("this computer itself") && r.text.includes("will not fetch that"), r.text);
+  await link.bye(); dev.stop();
 });
 
 test("one chunk in flight: nothing more before the FACK", async () => {

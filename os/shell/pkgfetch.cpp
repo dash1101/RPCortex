@@ -78,15 +78,10 @@ static bool download(const char *url, const char *dest, char *hex_out, uint64_t 
 
     if (!good) {
         storage_remove(dest);
-        out_err("%s%s%s", fetch_error_str(r.error), r.detail[0] ? " - " : "", r.detail);
         // A transport failure on its own says almost nothing. What the
-        // connection actually managed is what points at the cause.
-        if (r.error == FETCH_ERR_RECV || r.error == FETCH_ERR_CONNECT ||
-            r.error == FETCH_ERR_SEND) {
-            char d[192];
-            http_last_detail(d, sizeof(d));
-            out_multi("  %s", d);
-        }
+        // connection actually managed (or the bridge's host said) is what
+        // points at the cause.
+        http_report_failure(&r);
         return false;
     }
     uint8_t digest[32];
