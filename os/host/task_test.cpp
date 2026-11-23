@@ -19,6 +19,7 @@
 #include <ucontext.h>
 
 static int checks = 0, fails = 0;
+static volatile bool g_seen_detached;
 static void ck(bool c, const char *m) {
     checks++;
     if (!c) { fails++; printf("  FAIL: %s\n", m); }
@@ -311,6 +312,24 @@ int main(void) {
         ck(task_release_finished() == 1, "only the newly finished one is released");
         ck(task_reap(q2), "a released task can still be reaped");
         ck(g_recycled == recycled_before + 2, "reaping runs the hook again (a no-op for every hook)");
+    }
+
+    // --- what a command leaves running is background --------------------------
+    {
+        struct D { static int run(void *) {
+            for (int i = 0; i < 6; i++) { g_seen_detached = task_shell()->intr_detached; task_yield(); }
+            return 0;
+        } };
+        g_seen_detached = true;
+        int x = task_spawn("left", nullptr, D::run, nullptr, ST, AFFINITY_ANY);
+        task_yield();
+        ck(!g_seen_detached, "a task starts in the foreground of its parent's domain");
+        task_detach_console_leftovers();
+        task_yield();
+        ck(g_seen_detached, "once the command returns, a task it left running is background");
+        ck(!task_shell()->intr_detached, "the caller (the shell) stays in the foreground");
+        for (int i = 0; i < 8; i++) task_yield();
+        task_reap(x);
     }
 
     // --- reaping ------------------------------------------------------------

@@ -389,6 +389,19 @@ int main(void) {
         intr_stash_clear();
     }
 
+    // --- a detached task (background) does not answer the console's Ctrl+C --
+    {
+        intr_clear(); intr_stash_clear(); feed("");
+        intr_raise();
+        ck(intr_pending(), "the foreground sees the console's Ctrl+C");
+        task_shell()->intr_detached = true;
+        ck(!intr_pending(), "a detached task does not");
+        ck(!intr_check(), "nor through intr_check");
+        task_shell()->intr_detached = false;
+        ck(intr_pending(), "back in the foreground, it does again");
+        intr_clear();
+    }
+
     // --- no poll installed ---------------------------------------------------
     intr_set_poll(nullptr);
     intr_clear();

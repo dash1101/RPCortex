@@ -238,6 +238,7 @@ static void do_exec(LinkState *st, const char *line) {
     ts->noprompt++;
     ts->sudo_flags &= (uint8_t)~SUDO_F_BLOCKED;
     int rc = shell_run_line_now(st->cmd);
+    task_detach_console_leftovers();      // what the command left running is background now
     ts->noprompt--;
     bool blocked = ts->sudo_flags & SUDO_F_BLOCKED;
     ts->sudo_flags &= (uint8_t)~SUDO_F_BLOCKED;

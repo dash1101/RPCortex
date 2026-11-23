@@ -483,9 +483,20 @@ struct TaskShell {
     char        user[TASK_USER_MAX];
     char        cwd[TASK_CWD_MAX];
     uint16_t    intr_dom;          // 0: the console's Ctrl+C
+    // Not the console's foreground: a `bg` job or service, or a task a command
+    // left running when it returned (a GUI started with --bg). Its domain's
+    // Ctrl+C does not reach it; `kill` still does. Inherited by what it spawns.
+    // Without it, Nova D1's input task, started in the background, stopped at
+    // the next Ctrl+C anyone typed at the console, or that rpc sent connecting.
+    bool        intr_detached;
     const TaskTerm *term;
 };
 TaskShell *task_shell(void);
+
+// The foreground command on the console has returned: every task still running
+// in the console's domain, other than the caller, is background from now on
+// (intr_detached). Called by the prompt after a line, and by link after EXEC.
+void task_detach_console_leftovers(void);
 
 // Whom ANOTHER task acts for: false if there is no such task. `own` is false
 // for a task that follows the console, and `user` is then left empty.

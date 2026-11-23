@@ -8,13 +8,15 @@ good notes is in `RELEASING.md`.
 
 ## Unreleased
 
-Summary: 
+Summary: Nova D1 in the background keeps its controls when a computer connects or Ctrl+C is pressed at the console
 
 ### New
 
 ### Improved
 
 ### Fixed
+
+- Nova D1 run in the background (`novad1 gui --bg`) lost its knob and buttons the moment anything sent the console a Ctrl+C: `rpc` connecting does, and so does stopping any command at the prompt. Its input task shared the console's Ctrl+C, and the prompt raised it for a few milliseconds even when only clearing a line. Background tasks (`bg` jobs, services, and whatever a command leaves running when it returns) no longer answer the console's Ctrl+C; `kill` still stops them, and a command in the foreground still stops on Ctrl+C with its helper tasks.
 
 ### Security
 

@@ -265,7 +265,12 @@ bool intr_input_may_read(int pid) {
 }
 
 void intr_raise(void)  { if (volatile bool *f = flag_of(my_dom())) *f = true; }
-bool intr_pending(void){ volatile bool *f = flag_of(my_dom()); return f && *f; }
+// A detached task (a background job, or what a command left running) does not
+// answer its domain's Ctrl+C: that belongs to whatever is in the foreground.
+bool intr_pending(void){
+    if (task_shell()->intr_detached) return false;
+    volatile bool *f = flag_of(my_dom()); return f && *f;
+}
 void intr_clear(void)  { if (volatile bool *f = flag_of(my_dom())) *f = false; }
 
 static bool may_read_keys(void) {
@@ -287,6 +292,8 @@ bool intr_check(void) {
 
     // This task's own domain: a remote session's Ctrl+C, or the console's.
     if (intr_pending()) return true;
+    // A background task neither reads the wire nor answers the console's flag.
+    if (task_shell()->intr_detached) return false;
     if (!g_poll) return false;
     // A task attached to a remote terminal never reads the console. Its
     // Ctrl+C arrives through the domain above, raised by the task that reads

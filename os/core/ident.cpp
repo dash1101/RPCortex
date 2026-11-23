@@ -29,6 +29,9 @@ void ident_attach(const char *user, const TaskTerm *term, uint16_t intr_dom, con
     // SSH server may have been turned on by a sudo'd command, and a session
     // inheriting that would be every remote login with sudo for free.
     ts->elevated = false;
+    // And in the foreground of its own domain: the SSH server is background, and
+    // a session inheriting that would ignore its own Ctrl+C.
+    ts->intr_detached = false;
     ts->noprompt = 0;
     ts->sudo_flags = 0;
     // Last: from here on every check this task makes is answered for `user`.

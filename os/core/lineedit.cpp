@@ -327,10 +327,12 @@ uint32_t line_edit(const LineEdit *le, char *buf, uint32_t cap) {
             return len;
         }
 
-        // Ctrl+C: abandon the line, as every shell does. The flag is raised as
-        // well so anything that checks it sees a consistent story.
+        // Ctrl+C: abandon the line, as every shell does. Not raised as a flag:
+        // it was raised here and cleared after printing "^C" and the prompt,
+        // and in those few milliseconds every task in the console's domain saw
+        // a Ctrl+C. Nova D1's input task, polling every 2 ms, stopped whenever
+        // rpc connected (rpc clears the prompt with a Ctrl+C).
         if (c == 0x03) {
-            intr_raise();
             t.puts("^C\n");
             len = 0; pos = 0; buf[0] = 0; ghost[0] = 0;
             intr_clear();               // consumed here; the next line is clean

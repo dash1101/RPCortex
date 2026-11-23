@@ -583,6 +583,9 @@ static int bg_entry(void *arg) {
     // A service: the line came from /etc/services.cfg, which only somebody
     // with sudo could have written, so it runs with sudo (core/sudo.h).
     if (job->trusted) task_shell()->elevated = true;
+    // In the background from the start: the console's Ctrl+C is for its
+    // foreground, not for this (kill stops it).
+    task_shell()->intr_detached = true;
     int rc = run_segment(job->line);
     free(job);
     return rc;
@@ -1251,6 +1254,7 @@ void shell_run(void) {
         hist_add(line);          // record before the parser chops it up
         bb_note_command(line);   // so a hang can name the command, not just the task
         run_line(line, /*top*/true);
+        task_detach_console_leftovers();   // what it left running is background now
         bb_note_command("");     // finished cleanly; do not blame it for the next hang
     }
 }

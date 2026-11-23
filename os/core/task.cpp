@@ -492,6 +492,7 @@ int task_spawn(const char *name, const char *path, TaskFn fn, void *arg,
             memcpy(t->shell.cwd, parent->shell.cwd, sizeof(t->shell.cwd));
         }
         t->shell.intr_dom = parent->shell.intr_dom;
+        t->shell.intr_detached = parent->shell.intr_detached;
         t->shell.elevated = parent->shell.elevated;
     }
     t->live  = false;        // slots are reused; the memset above only clears info
@@ -1118,6 +1119,18 @@ bool task_app_mem_get(TaskAppMem *out) {
     if (!t || !t->app_mem_set) return false;
     if (out) *out = t->app_mem;
     return true;
+}
+
+void task_detach_console_leftovers(void) {
+    Task *me = cur();
+    lock_hw_enter();
+    for (uint32_t i = 0; i < TASK_MAX; i++) {
+        Task *t = &g_tasks[i];
+        if (t == me || t->shell.intr_dom != 0 || t->shell.term) continue;
+        if (t->info.state == TASK_FREE || t->info.state == TASK_DONE) continue;
+        t->shell.intr_detached = true;
+    }
+    lock_hw_exit();
 }
 
 TaskShell *task_shell(void) {
