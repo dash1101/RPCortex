@@ -1,6 +1,7 @@
 // The package repository, between its two halves: pkgrepo.cpp (the catalogue,
-// which works offline) and pkgfetch.cpp (everything that downloads, which an
-// image without Wi-Fi leaves out and net_off.cpp stands in for).
+// which works offline) and pkgfetch.cpp (everything that downloads). Both are in
+// every image: without Wi-Fi a download goes through the bridge (LINK.md), when a
+// host on the console offers it.
 #ifndef RPC_PKGREPO_H
 #define RPC_PKGREPO_H
 
@@ -33,11 +34,14 @@ void walk_all_repos(RepoEntryFn cb, void *ctx);
 typedef bool (*RepoUrlFn)(void *ctx, const char *url, int index);
 int  repo_each(RepoUrlFn cb, void *ctx);
 
-// --- pkgfetch.cpp, or net_off.cpp without Wi-Fi -------------------------------
+// --- pkgfetch.cpp ------------------------------------------------------------
 
 int pkg_fetch_update(void);                       // pkg update
 int pkg_fetch_install(const char *name);          // pkg install <name>
 int pkg_fetch_upgrade(void);                      // pkg upgrade
+
+// --- httptransport.cpp, beside the TLS roots; net_off.cpp without Wi-Fi --------
+
 int pkg_fetch_certs(int argc, char **argv);       // pkg certs [install]
 
 #endif  // RPC_PKGREPO_H

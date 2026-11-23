@@ -1,4 +1,4 @@
-// The link protocol client (LINK.md, protocols 1 and 2), for the browser and for Node.
+// The link protocol client (LINK.md, protocols 1 to 3), for the browser and for Node.
 //
 // No DOM here. It talks to a byte stream with two methods:
 //
@@ -8,6 +8,10 @@
 // One request at a time, read to its final OK or ERR before the next is sent;
 // calls made while one is running wait their turn. Lines that are not frames
 // are background output from the device and go to onNoise, never to a parser.
+//
+// Protocol 3 adds the network bridge: a board with no network of its own asks
+// the host to fetch a URL in the middle of a command. Bridge (below) answers,
+// with the browser's fetch(); TermBridge does the same for the terminal.
 
 export const RS = 0x1e;
 export const LINE_MAX = 1100;
@@ -151,9 +155,12 @@ export class FrameReader {
     this.s = stream;
     this.onNoise = onNoise;
     this.buf = new Uint8Array(0);
+    this.pending = [];          // frames handed back to be read again (unread)
   }
 
   feed(bytes) { this.buf = concat(this.buf, bytes); }
+
+  unread(frames) { this.pending.unshift(...frames); }
 
   _line() {
     const i = this.buf.indexOf(0x0a);
@@ -165,6 +172,7 @@ export class FrameReader {
 
   // The next frame, or null after `ms` (null: wait for ever).
   async next(ms) {
+    if (this.pending.length) return this.pending.shift();
     const end = ms == null ? null : Date.now() + ms;
     for (;;) {
       let line;
@@ -207,9 +215,34 @@ export class LinkClient {
     // needs sudo; the password is kept for the rest of the connection.
     this.sudoPassword = null;
     this._sudoKnown = null;
+    this.bridge = null;           // answers FETCH frames (protocol 3), when set
+    this.bridged = false;
   }
 
   get proto() { return parseInt(this.hello.proto || "1", 10) || 1; }
+
+  // The firmware has the bridge and no network of its own (HELLO bridge=1).
+  get canBridge() { return this.proto >= 3 && this.hello.bridge === "1"; }
+
+  // BRIDGE on: this host will answer the device's fetches. The offer outlives
+  // BYE (it belongs to the USB connection), which is what lets the terminal
+  // keep answering after link mode.
+  async bridgeOn() {
+    if (!this.canBridge) return false;
+    const { final } = await this.request("BRIDGE on");
+    this.bridged = final.kv().bridge === "on";
+    return this.bridged;
+  }
+
+  // The next frame, answering any FETCH on the way when there is a bridge.
+  async nextFrame(ms, interrupt) {
+    for (;;) {
+      const f = await this.r.next(ms);
+      if (!f || f.type !== "FETCH" || !this.bridge) return f;
+      const left = await this.bridge.serve(f, (t) => this.r.next(t), (b) => this.s.write(b), interrupt);
+      this.r.unread(left);
+    }
+  }
   get hasSudo() { return this.proto >= 2; }
 
   // `line` as it has to be sent to run with sudo on this firmware.
@@ -280,7 +313,7 @@ export class LinkClient {
   }
 
   async frame(ms) {
-    const f = await this.r.next(ms);
+    const f = await this.nextFrame(ms);
     if (!f) throw new TimeoutError(`no answer from the device in ${Math.round(ms / 1000)} s`);
     return f;
   }
@@ -399,10 +432,21 @@ export class LinkClient {
       const chunks = [];
       let stopped = false;
       let deadline = timeout ? Date.now() + timeout : null;
+      // A deadline or a Stop in the middle of a fetch: one Ctrl+C, which the
+      // device turns into FSTOP as it would one typed at its console.
+      let sent = false;
+      const due = () => {
+        if (sent) return false;
+        const late = deadline !== null && Date.now() >= deadline;
+        const asked = signal && signal.aborted;
+        if (late || asked) { sent = true; return true; }
+        return false;
+      };
       for (;;) {
         let wait = 500;
         if (deadline !== null) wait = Math.max(0, Math.min(500, deadline - Date.now()));
-        const f = await this.r.next(wait);
+        const f = await this.nextFrame(wait, due);
+        if (sent && !stopped) { stopped = true; deadline = Date.now() + this.t.abort; }
         if (!f) {
           const due = (deadline !== null && Date.now() >= deadline) || (signal && signal.aborted);
           if (due && !stopped) {
@@ -649,7 +693,16 @@ function indexOfSeq(hay, needle) {
 // From whatever the console is doing to link mode. Resolves to
 // { mode: "link", link } or, on firmware older than link mode, { mode: "legacy" }
 // with the device left at its prompt. `password` may be a function that asks.
-export async function enterLink(stream, { user, password, timing, onNoise } = {}) {
+export async function enterLink(stream, { user, password, timing, onNoise, bridge } = {}) {
+  const r = await enterLinkMode(stream, { user, password, timing, onNoise });
+  if (r.mode === "link" && bridge) {
+    r.link.bridge = bridge;
+    try { await r.link.bridgeOn(); } catch (e) { /* the commands still run, without a network */ }
+  }
+  return r;
+}
+
+async function enterLinkMode(stream, { user, password, timing, onNoise } = {}) {
   const t = { ...Timing, ...(timing || {}) };
   if (stream.discard) stream.discard();
   for (let attempt = 0; attempt < 4; attempt++) {
@@ -692,4 +745,310 @@ export async function installPackage(link, data, name, { progress, signal } = {}
   } finally {
     try { await link.exec("rm " + quote(tmp)); } catch (e) { /* it is in /tmp, emptied at boot */ }
   }
+}
+
+// --- the network bridge (protocol 3) -------------------------------------------
+//
+// LINK.md, "The network bridge". The device asks; this fetches with the
+// browser's own fetch() and streams the body back, one chunk per FACK. What the
+// browser can fetch is narrower than what rpc can: a page may read only what the
+// server allows it to (CORS). raw.githubusercontent.com does (the package
+// repository, the packages and the update images published there); GitHub's
+// release downloads (github.com/.../releases/download/...) do not, nor do most
+// sites. rpc term has no such limit. And the browser takes only simple requests:
+// GET and HEAD, with no headers of the device's own, since anything else asks the
+// server first (a preflight) and most servers refuse.
+
+export const BRIDGE_TYPES = ["FETCH", "FHDR", "FBODY", "FGO", "FACK", "FSTOP"];
+export const BRIDGE_SHOWN = [...BRIDGE_TYPES, "BRIDGE"];  // kept off a terminal's screen
+export const BRIDGE_OFFER = new Uint8Array([0x1e, 0x1f]);  // a terminal's offer
+const BRIDGE_CHUNK = 768;
+const BRIDGE_WAIT_EVERY = 2000;
+const BRIDGE_ACK_WAIT = 20000;
+const BRIDGE_COLLECT = 5000;
+const PASS = ["content-type", "etag", "last-modified"];
+
+export class BridgeRefused extends RpcError {
+  constructor(code, message) { super(message); this.name = "BridgeRefused"; this.code = code; }
+}
+
+function frameId(f) { const n = parseInt(f.rest, 10); return Number.isFinite(n) ? n : null; }
+function afterId(f) { const i = f.rest.indexOf(" "); return i < 0 ? "" : f.rest.slice(i + 1); }
+
+export class Bridge {
+  // allow: host names (".example.com" covers its subdomains); empty allows any.
+  // maxBytes: the most one fetch may bring in. log(text): a line per request.
+  constructor({ allow = [], maxBytes = 8 * 1024 * 1024, log = null, fetchFn = null } = {}) {
+    this.allow = allow.map((a) => a.trim().toLowerCase()).filter(Boolean);
+    this.maxBytes = maxBytes;
+    this.log = log || (() => {});
+    this.fetchFn = fetchFn || ((...a) => globalThis.fetch(...a));
+    this.busy = false;
+    this.served = [];
+  }
+
+  check(url) {
+    let u;
+    try { u = new URL(url); } catch (e) { throw new BridgeRefused("refused", "not a URL"); }
+    if (u.protocol !== "http:" && u.protocol !== "https:") {
+      throw new BridgeRefused("refused", `only http and https are bridged, not ${u.protocol.replace(":", "")}`);
+    }
+    const host = u.hostname.toLowerCase();
+    if (this.allow.length && !this.allow.some((a) => a === "*" || a === host ||
+        (a.startsWith(".") && host.endsWith(a)) || (a.startsWith("*.") && host.endsWith(a.slice(1))))) {
+      throw new BridgeRefused("refused", `${host} is not on this page's bridge allowlist`);
+    }
+  }
+
+  // Answer the FETCH frame `first`. next(ms) gives the device's next frame or
+  // null; write(bytes) sends to it; interrupt() true sends a Ctrl+C. Resolves
+  // to the frames read on the way that were not this fetch's.
+  async serve(first, next, write, interrupt) {
+    this.busy = true;
+    const nx = interrupt ? async (ms) => { if (interrupt()) await write(new Uint8Array([3])); return next(ms); } : next;
+    try { return await this._serve(first, nx, write); } finally { this.busy = false; }
+  }
+
+  async _serve(first, next, write) {
+    const left = [];
+    const id = frameId(first);
+    const rest = afterId(first);
+    const sp = rest.indexOf(" ");
+    const method = sp < 0 ? "" : rest.slice(0, sp);
+    const url = sp < 0 ? "" : rest.slice(sp + 1);
+    if (id === null || !method || !url) return left;
+    const headers = [];
+    let chunk = BRIDGE_CHUNK;
+    for (;;) {
+      const f = await next(BRIDGE_COLLECT);
+      if (!f) return left;
+      if (BRIDGE_TYPES.includes(f.type) && f.type !== "FETCH" && frameId(f) === id) {
+        if (f.type === "FHDR") headers.push(dec.decode(b64decode(afterId(f))));
+        else if (f.type === "FGO") { chunk = Math.max(1, Math.min(parseInt(f.kv().chunk || BRIDGE_CHUNK, 10) || BRIDGE_CHUNK, BRIDGE_CHUNK)); break; }
+        // FBODY: the browser sends no body (simple requests only).
+      } else { left.push(f); if (f.type === "FETCH") return left; }
+    }
+    return left.concat(await this._answer(id, method, url, headers, chunk, next, write));
+  }
+
+  async _answer(id, method, url, headers, chunk, next, write) {
+    const left = [];
+    const say = (text) => write(enc.encode("\x1e" + text + "\n"));
+    const t0 = Date.now();
+    await say(`FWAIT ${id}`);
+    const done = async (code, msg, status, got = 0) => {
+      if (code) {
+        await say(`FDONE ${id} err ${code} ${msg}`);
+        this.log(`bridge: ${method} ${url} failed: ${msg}`);
+        this.served.push([method, url, code, got]);
+      } else {
+        await say(`FDONE ${id} ok`);
+        this.log(`bridge: ${method} ${url} -> ${status}, ${got} bytes in ${((Date.now() - t0) / 1000).toFixed(1)} s`);
+        this.served.push([method, url, status, got]);
+      }
+    };
+    try {
+      this.check(url);
+      if (method !== "GET" && method !== "HEAD") {
+        throw new BridgeRefused("refused", `the browser bridges only GET and HEAD, not ${method}; rpc term bridges the rest`);
+      }
+    } catch (e) {
+      if (!(e instanceof BridgeRefused)) throw e;
+      this.log(`bridge: ${method} ${url} refused: ${e.message}`);
+      await say(`FDONE ${id} err ${e.code} ${e.message}`);
+      this.served.push([method, url, e.code, 0]);
+      return left;
+    }
+    this.log(`bridge: ${method} ${url}`);
+
+    const ctl = new AbortController();
+    // A simple request: no headers of the device's own and no cookies.
+    const init = { method, redirect: "follow", credentials: "omit", cache: "no-store", signal: ctl.signal };
+    // The response, with FWAIT every couple of seconds while it is coming, and
+    // the device's frames read meanwhile so that its FSTOP is seen.
+    let settled = null;
+    const pending = this.fetchFn(url, init).then((r) => { settled = { r }; }, (e) => { settled = { e }; });
+    let lastWait = Date.now();
+    while (!settled) {
+      const f = await next(20);
+      if (f && f.type === "FSTOP" && frameId(f) === id) { ctl.abort(); await done("cancelled", "stopped by the device"); return left; }
+      if (f) { left.push(f); if (f.final) { ctl.abort(); return left; } }
+      await Promise.race([pending, new Promise((r) => setTimeout(r, 30))]);
+      if (Date.now() - lastWait >= BRIDGE_WAIT_EVERY) { await say(`FWAIT ${id}`); lastWait = Date.now(); }
+    }
+    if (settled.e) {
+      await done("net", "the browser could not fetch it (most sites do not let a page read them: CORS); rpc term can");
+      return left;
+    }
+    const resp = settled.r;
+    // A redirect the browser followed may have gone somewhere the allowlist
+    // does not cover; it cannot be stopped part way, but it is not passed on.
+    try { if (resp.url) this.check(resp.url); } catch (e) {
+      ctl.abort();
+      await done("refused", e.message);
+      return left;
+    }
+    // No len: the browser undoes gzip itself and Content-Length is the size
+    // before that, so the body ends at FDONE instead.
+    await say(`FHEAD ${id} ${resp.status}`);
+    for (const name of PASS) {
+      const v = resp.headers.get(name);
+      if (v && !/[\r\n]/.test(v)) {
+        const line = (name === "etag" ? "ETag" : name.split("-").map((p) => p[0].toUpperCase() + p.slice(1)).join("-")) + ": " + v;
+        if (line.length < 200) await say(`FHDR ${id} ${b64encode(enc.encode(line))}`);
+      }
+    }
+    let got = 0;
+    if (method === "HEAD" || !resp.body) { await done(null, null, resp.status, 0); return left; }
+    const reader = resp.body.getReader();
+    let buf = new Uint8Array(0);
+    let ended = false;
+    try {
+      for (;;) {
+        while (!ended && buf.length < chunk) {
+          const { value, done: end } = await reader.read();
+          if (end) ended = true;
+          else if (value && value.length) buf = concat(buf, value);
+        }
+        if (!buf.length && ended) { await done(null, null, resp.status, got); return left; }
+        if (got + Math.min(chunk, buf.length) > this.maxBytes) {
+          ctl.abort();
+          await done("toobig", `over this page's ${Math.round(this.maxBytes / 1048576)} MB bridge limit`, null, got);
+          return left;
+        }
+        const piece = buf.subarray(0, chunk);
+        buf = buf.slice(piece.length);
+        await say(`FDATA ${id} ${b64encode(piece)}`);
+        got += piece.length;
+        // One chunk in flight: nothing more until the device has dealt with it.
+        const end = Date.now() + BRIDGE_ACK_WAIT;
+        for (;;) {
+          const f = await next(Math.max(0, end - Date.now()));
+          if (!f) { ctl.abort(); this.log(`bridge: ${url}: the device stopped acknowledging`); return left; }
+          if (f.type === "FSTOP" && frameId(f) === id) { ctl.abort(); await done("cancelled", "stopped by the device", null, got); return left; }
+          if (f.type === "FACK" && frameId(f) === id) break;
+          left.push(f);
+          if (f.final) { ctl.abort(); return left; }
+        }
+      }
+    } catch (e) {
+      await done("net", `the download broke off: ${e.message || e}`, null, got);
+      return left;
+    }
+  }
+}
+
+// The terminal's half: what the device prints goes through feed(), which keeps
+// the bridge's frames off the screen and answers them; keys go through key(),
+// which holds them back while a fetch runs, all but Ctrl+C.
+export class TermBridge {
+  constructor(bridge, write, { onNote = null } = {}) {
+    this.bridge = bridge;
+    this.write = write;
+    this.onNote = onNote || (() => {});
+    this.frame = null;            // a 0x1E line still arriving
+    this.q = [];
+    this.waiters = [];
+    this.fetching = false;
+    this.held = [];
+    this.offered = false;
+    this.chain = Promise.resolve();
+    this.running = false;
+  }
+
+  // Bytes from the device in; the bytes to show out.
+  feed(bytes) {
+    const show = [];
+    let i = 0;
+    while (i < bytes.length) {
+      if (this.frame === null) {
+        const j = bytes.indexOf(0x1e, i);
+        if (j < 0) { show.push(bytes.subarray(i)); break; }
+        show.push(bytes.subarray(i, j));
+        this.frame = new Uint8Array(0);
+        i = j + 1;
+        continue;
+      }
+      const j = bytes.indexOf(0x0a, i);
+      if (j < 0) {
+        this.frame = concat(this.frame, bytes.subarray(i));
+        if (this.frame.length > 8192) { show.push(concat(new Uint8Array([0x1e]), this.frame)); this.frame = null; }
+        break;
+      }
+      const raw = concat(this.frame, bytes.subarray(i, j));
+      this.frame = null;
+      i = j + 1;
+      const body = raw.length && raw[raw.length - 1] === 0x0d ? raw.subarray(0, raw.length - 1) : raw;
+      const f = new Frame(body);
+      if (!BRIDGE_SHOWN.includes(f.type)) {
+        show.push(new Uint8Array([0x1e]), raw, new Uint8Array([0x0a]));
+      } else if (f.type === "BRIDGE") {
+        if (!this.offered) { this.offered = true; this.onNote("network bridge on: commands on the device can use this computer's connection"); }
+      } else {
+        if (f.type === "FETCH") this.fetching = true;
+        this._push(f);
+      }
+    }
+    return show.reduce(concat, new Uint8Array(0));
+  }
+
+  _push(f) {
+    this.q.push(f);
+    const w = this.waiters; this.waiters = [];
+    for (const r of w) r();
+    if (!this.running) this._work();
+  }
+
+  async _next(ms) {
+    const end = Date.now() + (ms == null ? 3600000 : ms);
+    while (!this.q.length) {
+      const left = end - Date.now();
+      if (left <= 0) return null;
+      await new Promise((r) => { const t = setTimeout(r, left); this.waiters.push(() => { clearTimeout(t); r(); }); });
+    }
+    return this.q.shift();
+  }
+
+  async _work() {
+    this.running = true;
+    try {
+      while (this.q.length) {
+        const f = this.q.shift();
+        if (f.type !== "FETCH") continue;
+        this.fetching = true;
+        try {
+          const left = await this.bridge.serve(f, (ms) => this._next(ms), (b) => this.write(b));
+          for (const x of left) if (x.type === "FETCH") this.q.push(x);
+        } catch (e) {
+          this.onNote(`bridge: ${e.message || e}`);
+        } finally {
+          await this._release();
+        }
+      }
+    } finally {
+      this.running = false;
+    }
+  }
+
+  async _release() {
+    this.fetching = false;
+    if (this.held.length) {
+      const h = this.held.reduce(concat, new Uint8Array(0));
+      this.held = [];
+      await this.write(h);
+    }
+  }
+
+  // Keys from the person at the terminal.
+  async key(bytes) {
+    if (this.fetching) {
+      if (bytes.includes(3)) await this.write(new Uint8Array([3]));   // Ctrl+C stops the fetch
+      this.held.push(bytes.filter((b) => b !== 3));
+      return;
+    }
+    await this.write(bytes);
+  }
+
+  // Offer the bridge: harmless to any firmware that does not have it.
+  offer() { return this.write(BRIDGE_OFFER); }
 }

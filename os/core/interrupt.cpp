@@ -103,15 +103,22 @@ void intr_stash_clear(void) { if (!my_term()) g_head = g_tail = 0; }
 // `bg download` would have. And not while a transfer has claimed the console.
 static bool may_read_keys(void);
 
+static IntrKeyFilter g_key_filter;
+
+void intr_set_key_filter(IntrKeyFilter fn) { g_key_filter = fn; }
+int  intr_filter_key(int c) { return (g_key_filter && c >= 0) ? g_key_filter(c) : c; }
+
 int intr_getkey(void) {
     // A task attached to a remote terminal reads that terminal and nothing
     // else. This is the one door every key-reading command goes through, so a
     // prompt, a pager or a full-screen app run over SSH reads the right keys.
     if (const TaskTerm *t = my_term()) return t->getkey ? t->getkey(t->ctx) : -1;
     if (!may_read_keys()) return -1;
+    // A byte the filter keeps is simply not a key: "nothing waiting", and the
+    // caller asks again, as it does whenever the wire is quiet.
     int c = intr_stashed();
-    if (c >= 0) return c;
-    return g_poll ? g_poll() : -1;
+    if (c < 0) c = g_poll ? g_poll() : -1;
+    return intr_filter_key(c);
 }
 
 void intr_set_poll(IntrPollFn fn) { g_poll = fn; }

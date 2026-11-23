@@ -107,13 +107,19 @@ static int shell_getch(void *, uint32_t timeout_us) {
     // Anything intr_check pulled off the wire while a command was running is
     // real input that arrived early — a pasted block, or someone typing ahead.
     // It has to come out before anything new, and in order.
+    //
+    // Both go through the same filter intr_getkey applies (the network bridge's
+    // door, in an image without Wi-Fi): a host's offer and a stray 0x1E line are
+    // never keys, and least of all here, where a line is run as a command.
     int stashed = intr_stashed();
     if (stashed >= 0) {
         if (g_idle_limit_ms) g_idle_last_ms = task_now_ms();
-        return stashed;
+        stashed = intr_filter_key(stashed);
+        return stashed >= 0 ? stashed : LE_NO_KEY;
     }
 
     int c = getchar_timeout_us(timeout_us);
+    if (c != PICO_ERROR_TIMEOUT && intr_filter_key(c) < 0) return LE_NO_KEY;
     if (c != PICO_ERROR_TIMEOUT) {
         if (g_idle_limit_ms) g_idle_last_ms = task_now_ms();
     } else if (g_idle_limit_ms && !g_idle_fired && (++g_idle_polls & 63u) == 0 &&

@@ -2,11 +2,12 @@
 // `pkg upgrade` and `pkg certs`.
 //
 // The half of the package manager that needs a network, split out of
-// pkgrepo.cpp so that an image built without Wi-Fi leaves it out; net_off.cpp
-// stands in for it there. pkgrepo.cpp keeps what works offline (the catalogue:
-// search, info and the repository list) and still installs a package from a
-// file. The design notes on why an install goes in the order it does are at the
-// top of pkgrepo.cpp.
+// pkgrepo.cpp, which keeps what works offline (the catalogue: search, info and
+// the repository list) and installs a package from a file. In every image: with
+// Wi-Fi the download goes over it, and without Wi-Fi through the bridge, when rpc
+// or the browser tool on the console offers it (httproute.h, LINK.md). `pkg
+// certs` is TLS and lives with it in httptransport.cpp. The design notes on why
+// an install goes in the order it does are at the top of pkgrepo.cpp.
 
 #include "command.h"
 #include "out.h"
@@ -24,12 +25,7 @@
 #include <string.h>
 #include <stdlib.h>
 
-bool http_transport_get(HttpTransport *t);
-bool http_tls_available(void);
-const char *http_tls_why(void);
-void http_tls_reset(void);
-bool stock_install_cacerts(bool force);
-void http_last_detail(char *out, unsigned cap);
+#include "httproute.h"
 
 #define TMP_PKG    "/os/pkg/.download"
 
@@ -60,17 +56,9 @@ static void hex_of(const uint8_t *digest, char *out) {
 // Download `url` to `dest`, returning the hex digest of what arrived.
 static bool download(const char *url, const char *dest, char *hex_out, uint64_t *bytes) {
     HttpTransport t;
-    if (!http_transport_get(&t)) {
-        out_err("No network. Connect with 'wifi connect <ssid>' first.");
-        return false;
-    }
-    if (!strncmp(url, "https://", 8) && !http_tls_available()) {
-        out_err("HTTPS cannot be verified: %s", http_tls_why());
-        out_multi("  Try 'pkg certs install' — the bundle ships in the firmware.");
-        out_multi("  Unverified HTTPS is not offered: anything on the path could");
-        out_multi("  serve a package and it would be installed.");
-        return false;
-    }
+    HttpVia via = http_route(&t);
+    if (!via) { http_no_route(); return false; }
+    if (!http_https_ready(url, via)) return false;
 
     DlSink d{nullptr, {}};
     sha256_init(&d.sha);
@@ -153,6 +141,16 @@ int pkg_fetch_update(void) {
 }
 
 int pkg_fetch_install(const char *name) {
+    // No list yet (a new board, or one that has never run `pkg update`): fetch
+    // it first rather than send the person away to type another command.
+    {
+        char path[40]; cache_path(0, path, sizeof(path));
+        bool is_dir = false; uint32_t size = 0;
+        if (!storage_stat(path, &is_dir, &size) || is_dir || !size) {
+            out_info("No package list yet; fetching it first.");
+            if (pkg_fetch_update() != 0) return 1;
+        }
+    }
     char *buf; uint32_t len;
     if (!require_index(&buf, &len)) return 1;
     free(buf);
@@ -279,33 +277,4 @@ int pkg_fetch_upgrade(void) {
     if (!u.found) { out_ok("Everything is up to date."); return 0; }
     out_ok("%d upgraded, %d failed.", u.done, u.failed);
     return u.failed ? 1 : 0;
-}
-
-// `pkg certs` — what the trust store looks like, and a way to put it back.
-//
-// The bundle ships in flash and is written on a first boot, but a write can
-// fail, a file can be truncated, and neither announces itself: the only symptom
-// is `pkg update` refusing to verify. This turns that into a readable answer
-// and a one-word repair, without a reflash.
-int pkg_fetch_certs(int argc, char **argv) {
-    if (argc >= 3 && !strcmp(argv[2], "install")) {
-        if (!stock_install_cacerts(/*force*/true)) return 1;
-        http_tls_reset();          // so the repair takes effect immediately
-        out_ok("Trusted roots reinstalled.");
-    }
-
-    bool is_dir = false; uint32_t size = 0;
-    bool present = storage_stat("/os/ca.pem", &is_dir, &size);
-    out_info("Trusted roots");
-    out_multi("  Built in   always available; the image carries its own copy");
-    out_multi("  Override   /os/ca.pem  %s", present ? "present" : "not set");
-    if (present) out_multi("  Size       %lu bytes", (unsigned long)size);
-
-    if (http_tls_available()) {
-        out_ok("HTTPS can be verified.");
-    } else {
-        out_warn("HTTPS cannot be verified: %s", http_tls_why());
-        out_multi("  'pkg certs install' writes the bundle that ships in firmware.");
-    }
-    return 0;
 }

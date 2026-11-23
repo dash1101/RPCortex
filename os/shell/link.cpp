@@ -22,6 +22,8 @@
 #include "linkreq.h"
 #include "sudo.h"
 #include "users.h"
+#include "httproute.h"
+#include "bridge.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -180,9 +182,9 @@ static void hello(LinkState *st) {
 #else
     const char *arch = "armv8m";
 #endif
-    frame(st, "HELLO proto=%d os=%s build=%s board=%s arch=%s user=%s cwd=%s chunk=%d exec_max=%d",
+    frame(st, "HELLO proto=%d os=%s build=%s board=%s arch=%s user=%s cwd=%s chunk=%d exec_max=%d bridge=%d",
           LINK_PROTO, RPC_OS_VERSION, RPC_OS_BUILD, PICO_BOARD, arch, u ? u : "", cwd,
-          LINK_CHUNK, LINK_EXEC_MAX);
+          LINK_CHUNK, LINK_EXEC_MAX, bridge_available() ? 1 : 0);
 }
 
 static void do_exec(LinkState *st, const char *line) {
@@ -245,6 +247,21 @@ static void do_auth(LinkState *st, const char *rest) {
     case SUDO_NOT_ADMIN: ERR(st, "perm", "%s is not an admin", session_user()); break;
     default:             ERR(st, "perm", "nobody is signed in"); break;
     }
+}
+
+// BRIDGE [on|off] (protocol 3): the host will, or will no longer, answer the
+// fetch requests a command sends when this image has no network of its own.
+// The offer is the USB connection's, not link mode's, so BYE leaves it standing
+// for the terminal a host hands the port to next (bridge.cpp says when it ends).
+static void do_bridge(LinkState *st, const char *rest) {
+    bool on = !strcmp(rest, "on"), off = !strcmp(rest, "off");
+    if (rest[0] && !on && !off) { ERR(st, "badreq", "BRIDGE on|off"); return; }
+    if (!bridge_available()) {
+        ERR(st, "nobridge", "this image has a network of its own");
+        return;
+    }
+    if (on || off) bridge_set_offer(on);
+    frame(st, "OK bridge=%s chunk=%d", bridge_offered() ? "on" : "off", BRIDGE_CHUNK);
 }
 
 static void do_put(LinkState *st, const char *rest) {
@@ -430,6 +447,7 @@ static int cmd_link(int, char **) {
         else if (!strcmp(q.verb, "LS"))    do_ls(st, q.rest);
         else if (!strcmp(q.verb, "STAT"))  do_stat(st, q.rest);
         else if (!strcmp(q.verb, "AUTH"))  do_auth(st, q.rest);
+        else if (!strcmp(q.verb, "BRIDGE")) do_bridge(st, q.rest);
         else if (!strcmp(q.verb, "BYE"))   { frame(st, "OK"); break; }
         else ERR(st, "badreq", "unknown verb %s", q.verb);
     }

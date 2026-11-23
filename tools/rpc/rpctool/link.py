@@ -1,8 +1,12 @@
-"""The link protocol client (LINK.md, protocols 1 and 2).
+"""The link protocol client (LINK.md, protocols 1 to 3).
 
 One request at a time, read to its final OK or ERR before the next is sent.
 Anything on the wire that is not a frame is a background line from the device
 and goes to `on_noise`, never to a parser.
+
+Protocol 3: a command can ask the host to fetch a URL in the middle of running
+(the network bridge). With `bridge` set (rpctool.bridge.Bridge), the FETCH
+frames that arrive while a request waits are answered on the spot.
 """
 import base64
 import binascii
@@ -122,9 +126,14 @@ class FrameReader(object):
         self.t = transport
         self.on_noise = on_noise
         self.buf = bytearray()
+        self.pending = []         # frames read ahead and handed back (unread)
 
     def feed(self, data):
         self.buf.extend(data)
+
+    def unread(self, frames):
+        """Put frames back, to be returned before anything new."""
+        self.pending[:0] = list(frames)
 
     def _take_line(self):
         i = self.buf.find(b"\n")
@@ -140,6 +149,8 @@ class FrameReader(object):
 
     def next_frame(self, timeout):
         """The next frame, or None after `timeout` seconds (None: wait for ever)."""
+        if self.pending:
+            return self.pending.pop(0)
         deadline = None if timeout is None else time.monotonic() + timeout
         while True:
             line = self._take_line()
@@ -184,6 +195,8 @@ class LinkClient(object):
         self.hello = {}
         self.busy = None          # the request in flight: exec, put, get, req
         self.dropped = False      # link mode ended under us (a stray Ctrl+C)
+        self.bridge = None        # answers FETCH frames (protocol 3), when set
+        self.bridged = False      # this client said BRIDGE on
 
     # --- basics ---------------------------------------------------------
 
@@ -219,8 +232,19 @@ class LinkClient(object):
     def send(self, line):
         self.t.write(self.encode(line))
 
+    def next(self, timeout, interrupt=None):
+        """The next frame, or None after `timeout`, answering any FETCH on the way
+        (the network bridge) when this client has one to answer with.
+        `interrupt()` true during a fetch sends the device a Ctrl+C."""
+        while True:
+            f = self.r.next_frame(timeout)
+            if f is None or f.type != "FETCH" or self.bridge is None:
+                return f
+            left = self.bridge.serve(f, self.r.next_frame, self.t.write, interrupt)
+            self.r.unread(left)
+
     def frame(self, timeout):
-        f = self.r.next_frame(timeout)
+        f = self.next(timeout)
         if f is None:
             raise DeviceTimeout("no answer from the device in {:.0f} s".format(timeout))
         return f
@@ -334,6 +358,30 @@ class LinkClient(object):
         except ValueError:
             return 0
 
+    @property
+    def can_bridge(self):
+        """The firmware has the bridge and no network of its own (HELLO bridge=1)."""
+        return self.proto >= 3 and self.hello.get("bridge") == "1"
+
+    def bridge_on(self):
+        """BRIDGE on (protocol 3): this host will answer the device's fetches.
+        True when the device took it."""
+        if not self.can_bridge:
+            return False
+        f, _ = self.request("BRIDGE on")
+        self.bridged = f.kv().get("bridge") == "on"
+        return self.bridged
+
+    def bridge_off(self):
+        """BRIDGE off, before leaving, so nothing is sent to a host that has gone."""
+        if not self.bridged or self.dropped:
+            return
+        try:
+            self.request("BRIDGE off")
+        except RpcError:
+            pass
+        self.bridged = False
+
     def hello_request(self):
         f, keep = self.request("HELLO")
         for k in keep:
@@ -375,9 +423,20 @@ class LinkClient(object):
             out = bytearray()
             stopped = False
             deadline = None if not timeout else time.monotonic() + timeout
+            state = {"stopped": False}
+
+            def due():
+                # --timeout running out in the middle of a fetch: a Ctrl+C, once.
+                if deadline is None or state["stopped"] or time.monotonic() < deadline:
+                    return False
+                state["stopped"] = True
+                return True
             while True:
                 wait = None if deadline is None else max(0.0, deadline - time.monotonic())
-                f = self.r.next_frame(wait)
+                f = self.next(wait, due)
+                if state["stopped"] and not stopped:
+                    stopped = True
+                    deadline = time.monotonic() + self.timing.abort
                 if f is None:
                     if not stopped:
                         self.t.write(b"\x03")

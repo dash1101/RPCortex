@@ -1,7 +1,8 @@
 // update check / update install — the half of `update` that needs a network.
 //
-// Split out of update.cpp so that an image built without Wi-Fi leaves it out
-// (net_off.cpp stands in and says so). Writing an image over the firmware,
+// Split out of update.cpp. In every image: over Wi-Fi where the image has it, and
+// otherwise through the bridge, when rpc or the browser tool on the console
+// offers it (httproute.h, LINK.md). Writing an image over the firmware,
 // `update from-file`, `update rollback` and the boot-time report all stay in
 // update.cpp, because the recovery ladder needs them whatever the image has in
 // it. The order this follows, and why, is at the top of update.cpp.
@@ -25,10 +26,7 @@
 #include <string.h>
 #include <stdlib.h>
 
-bool http_transport_get(HttpTransport *t);
-bool http_tls_available(void);
-const char *http_tls_why(void);
-void http_last_detail(char *out, unsigned cap);
+#include "httproute.h"
 
 #define MANIFEST_URL  "https://raw.githubusercontent.com/dash1101/RPCortex/main/releases/latest.json"
 #define MANIFEST_MAX  2048
@@ -74,11 +72,9 @@ static void hex_of(const uint8_t *d, char *out) {
 
 static bool download(const char *url, const char *dest, char *hex, uint64_t *bytes) {
     HttpTransport t;
-    if (!http_transport_get(&t)) { out_err("No network. Connect first."); return false; }
-    if (!strncmp(url, "https://", 8) && !http_tls_available()) {
-        out_err("HTTPS cannot be verified: %s", http_tls_why());
-        return false;
-    }
+    HttpVia via = http_route(&t);
+    if (!via) { http_no_route(); return false; }
+    if (!http_https_ready(url, via)) return false;
 
     Sink s{nullptr, {}};
     sha256_init(&s.sha);

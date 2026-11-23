@@ -18,6 +18,14 @@ rather than from memory:
     in link mode it never asks and EXEC answers ERR sudo instead; AUTH starts
     the grace, which also lets PUT write into /os and /etc. proto=1 is the
     firmware from before, where none of that exists.
+  * the network bridge (protocol 3, core/bridge.cpp and shell/bridge.cpp):
+    with netless=True the device has no network of its own and says bridge=1;
+    a host offers the bridge with BRIDGE on or the bytes 0x1E 0x1F (answered
+    with a BRIDGE frame), the offer ends when the port closes, and then `wget`,
+    `curl`, `pkg update` and `pkg install <name>` send FETCH frames in the
+    middle of the command, at the prompt or in an EXEC, and read the host's
+    answer one acknowledged chunk at a time. The input door drops stray 0x1E
+    lines at the prompt. Without netless, BRIDGE answers ERR nobridge.
 
 Output can end lines with CRLF, as the SDK's console does, and background
 lines can be dropped between frames, as services do.
@@ -243,7 +251,7 @@ class MockDevice(object):
 
     def __init__(self, link=True, login=False, crlf=True, noise=0.0, partial_noise=False,
                  seed=1, board="pico2_w", user="root", xfer_timeout=10.0, gone_after=3.0,
-                 online=False, repaint=True, capacity=1024 * 1024, proto=2):
+                 online=False, repaint=True, capacity=1024 * 1024, proto=2, netless=False):
         self.link_supported = link
         self.proto = proto if link else 1      # no link mode, no sudo either
         self.grace = False            # sudo's grace (AUTH, sudo -v, a typed password)
@@ -266,6 +274,19 @@ class MockDevice(object):
         self.online = online
         self.repaint = repaint
         self.web = {}
+        # the network bridge (protocol 3)
+        self.netless = netless and self.proto >= 3
+        self.bridge_offered = False
+        self.bridge_id = 0
+        self.bridge_quiet = 10.0      # BRIDGE_QUIET_MS
+        self.bridge_fetches = []      # (method, url, status or error, bytes) per fetch
+        self.bridge_frames = []       # every bridge frame the device sent
+        self.bridge_stop_after = None # give up (FSTOP) after this many chunks
+        self.bridge_chunk_delay = 0.0 # seconds per chunk, as a flash write takes
+        self.repo_index = None        # pkg's repository index URL, fetched through the bridge
+        self.raw_reading = False
+        self.door = 0                 # 0 idle, 1 after 0x1E, 2 dropping to the line end
+        self.typed_stray = []         # what the door dropped
         self.installed = {"greet": "1.0"}
         self.fs = MockFS(capacity)
         self._seed_files()
@@ -335,6 +356,7 @@ class MockDevice(object):
         if self.host is s:
             self.dtr = False
             self.dtr_lost = time.monotonic()
+            self.bridge_offered = False   # tud_cdc_line_state_cb: DTR dropped
 
     def _main(self):
         try:
@@ -370,8 +392,41 @@ class MockDevice(object):
         self.to_host.write(data)
 
     def getkey(self, timeout):
-        b = self.from_host.read(1, timeout)
-        return b[0] if b else None
+        end = None if timeout is None else time.monotonic() + timeout
+        while True:
+            left = None if end is None else max(0.0, end - time.monotonic())
+            b = self.from_host.read(1, left)
+            if not b:
+                return None
+            c = b[0]
+            if self.raw_reading or self.proto < 3 or not self.netless:
+                return c
+            r = self._door(c)
+            if r is not None:
+                return r
+
+    def _door(self, c):
+        """core/bridge.cpp's bridge_door: the offer and stray 0x1E lines are not keys."""
+        if c == 3:
+            self.door = 0
+            return c
+        if self.door == 0:
+            if c == 0x1E:
+                self.door = 1
+                return None
+            return c
+        if self.door == 1:
+            if c == 0x1F:
+                self.door = 0
+                self.bridge_offered = True
+                self.emit(RS + "BRIDGE on chunk={}".format(CHUNK).encode() + b"\n")
+                return None
+            self.door = 0 if c in (10, 13) else 2
+            return None
+        if c in (10, 13):
+            self.door = 0
+        self.typed_stray.append(c)
+        return None
 
     # --- output, as os/core/out.cpp writes it -----------------------------
 
@@ -811,10 +866,163 @@ class MockDevice(object):
             if c in (ord("y"), ord("Y")):
                 return 0
 
+    # --- the network bridge (protocol 3) ----------------------------------
+
+    def bridged(self):
+        return self.netless and self.bridge_offered
+
+    def no_route(self):
+        if self.netless:
+            self.out_err("This board has no wireless hardware.")
+            self.out("  With rpc or the browser tool attached, this goes through the computer's\n"
+                     "  connection: 'rpc term', 'rpc exec', or the browser tool's terminal.\n")
+        else:
+            self.out_err("No network. Connect with 'wifi connect <ssid>' first.")
+        return 1
+
+    def bridge_frame(self, text):
+        self.bridge_frames.append(text)
+        self.emit(RS + text.encode("utf-8", "surrogateescape") + b"\n")
+
+    def bridge_line(self, quiet, stoppable=True):
+        """('ok', type, id, rest) | ('stop',) | ('quiet',)"""
+        buf, inframe, last = bytearray(), False, time.monotonic()
+        while True:
+            c = self.getkey(0.01)
+            if c is None:
+                if time.monotonic() - last >= quiet:
+                    return ("quiet",)
+                continue
+            last = time.monotonic()
+            if c == 3:
+                if stoppable:
+                    return ("stop",)
+                continue
+            if c == 0x1E:
+                buf, inframe = bytearray(), True
+                continue
+            if not inframe or c == 13:
+                continue
+            if c == 10:
+                inframe = False
+                parts = bytes(buf).decode("utf-8", "replace").split(" ", 2)
+                if len(parts) >= 2 and parts[1].isdigit():
+                    return ("ok", parts[0], int(parts[1]), parts[2] if len(parts) > 2 else "")
+                continue
+            buf.append(c)
+
+    def bridge_drain(self, rid, stop=True):
+        if stop:
+            self.bridge_frame("FSTOP {}".format(rid))
+        end = time.monotonic() + 3.0
+        while time.monotonic() < end:
+            r = self.bridge_line(max(0.01, end - time.monotonic()), stoppable=False)
+            if r[0] != "ok":
+                return
+            if r[1] == "FDONE" and r[2] == rid:
+                return
+
+    def bridge_fetch(self, method, url, headers=(), body=b""):
+        """(status, body, None) or (None, None, why), the way core/bridge.cpp
+        and httpfetch.cpp between them answer a command."""
+        self.bridge_id += 1
+        rid = self.bridge_id
+        self.bridge_frame("FETCH {} {} {}".format(rid, method, url))
+        for h in headers:
+            self.bridge_frame("FHDR {} {}".format(rid, base64.b64encode(h.encode()).decode()))
+        for i in range(0, len(body), CHUNK):
+            self.bridge_frame("FBODY {} {}".format(rid, base64.b64encode(body[i:i + CHUNK]).decode()))
+        self.bridge_frame("FGO {} chunk={}".format(rid, CHUNK))
+        self.raw_reading = True
+        status, length, data, chunks = None, None, bytearray(), 0
+        try:
+            while True:
+                r = self.bridge_line(self.bridge_quiet)
+                if r[0] == "quiet":
+                    self.bridge_offered = False
+                    why = "the computer did not answer for {:.0f} s".format(self.bridge_quiet)
+                    self.bridge_fetches.append((method, url, "quiet", 0))
+                    return None, None, why
+                if r[0] == "stop":
+                    self.bridge_drain(rid)
+                    self.bridge_fetches.append((method, url, "cancelled", len(data)))
+                    return None, None, "cancelled"
+                _, typ, fid, rest = r
+                if fid != rid:
+                    continue
+                if typ == "FHEAD":
+                    status = int(rest.split(" ")[0])
+                    for w in rest.split(" ")[1:]:
+                        if w.startswith("len="):
+                            length = int(w[4:])
+                elif typ == "FDATA":
+                    data.extend(base64.b64decode(rest))
+                    chunks += 1
+                    if self.bridge_stop_after is not None and chunks >= self.bridge_stop_after:
+                        self.bridge_drain(rid)
+                        self.bridge_fetches.append((method, url, "stopped", len(data)))
+                        return None, None, "too large"
+                    if self.bridge_chunk_delay:
+                        time.sleep(self.bridge_chunk_delay)
+                    self.bridge_frame("FACK {} {}".format(rid, len(data)))
+                elif typ == "FDONE":
+                    if rest.startswith("err"):
+                        msg = rest.split(" ", 2)[2] if len(rest.split(" ", 2)) > 2 else rest
+                        self.bridge_fetches.append((method, url, rest.split(" ")[1], 0))
+                        return None, None, msg
+                    if length is not None and len(data) != length:
+                        return None, None, "truncated after {} bytes".format(len(data))
+                    self.bridge_fetches.append((method, url, status, len(data)))
+                    return status, bytes(data), None
+        finally:
+            self.raw_reading = False
+
+    def get_url(self, url):
+        """(body, None) or (None, why): over the bridge when the device has no
+        network of its own, from self.web when it is online."""
+        if self.online:
+            if url not in self.web:
+                return None, "HTTP 404"
+            return self.web[url], None
+        if not self.bridged():
+            return None, None
+        status, body, why = self.bridge_fetch("GET", url)
+        if why:
+            return None, why
+        if not 200 <= status < 300:
+            return None, "server refused - HTTP {}".format(status)
+        return body, None
+
+    def c_curl(self, a):
+        url = a[-1] if len(a) > 1 else None
+        if not url or url.startswith("-"):
+            self.out("Usage: curl <url>\n")
+            return 1
+        if not (self.online or self.bridged()):
+            return self.no_route()
+        body, why = self.get_url(url)
+        if body is None:
+            self.out_err(why or "failed")
+            return 1
+        self.out(body + (b"" if body.endswith(b"\n") else b"\n"))
+        return 0
+
     def c_wget(self, a):
         if len(a) < 2:
             self.out("Usage: wget <url> [file]\n")
             return 1
+        if self.netless:
+            if not self.bridged():
+                return self.no_route()
+            self.out_info("Fetching {}".format(a[1]))
+            body, why = self.get_url(a[1])
+            if body is None:
+                self.out_err(why)
+                return 1
+            dest = resolve(self.cwd, a[2] if len(a) > 2 else posixpath.basename(a[1]))
+            self.fs.write(dest, body)
+            self.out_ok("Saved {} ({} bytes)".format(dest, len(body)))
+            return 0
         if not self.online:
             self.out_err("No network. Connect with 'wifi connect <ssid>' first.")
             return 1
@@ -844,6 +1052,8 @@ class MockDevice(object):
             self.fs.files.pop("/os/pkg/{}.app".format(a[2]), None)
             self.out_ok("Removed {}.".format(a[2]), "pkg")
             return 0
+        if sub == "install" and len(a) > 2 and "/" not in a[2] and self.netless:
+            return self.pkg_install_bridged(a[2])
         if sub == "install" and len(a) > 2:
             arg = a[2]
             if "/" not in arg:
@@ -865,6 +1075,42 @@ class MockDevice(object):
             return 0
         self.out("Usage: pkg install|list ...\n")
         return 1
+
+    def pkg_install_bridged(self, name):
+        """pkgfetch.cpp: the index, then the package, both through the bridge,
+        and the package's digest checked against the index."""
+        if not self.bridged():
+            return self.no_route()
+        import json
+        idx, why = self.get_url(self.repo_index or "https://repo.invalid/index.json")
+        if idx is None:
+            self.out_err(why)
+            return 1
+        try:
+            entries = json.loads(idx.decode("utf-8")).get("packages", [])
+        except ValueError:
+            self.out_err("nothing readable at this repo")
+            return 1
+        e = next((x for x in entries if x.get("name") == name), None)
+        if e is None:
+            self.out_err("No package called '{}'.".format(name))
+            return 1
+        self.out_info("Installing {} {}".format(name, e.get("ver", "")))
+        data, why = self.get_url(e["url"])
+        if data is None:
+            self.out_err(why)
+            return 1
+        if e.get("sha256") and hashlib.sha256(data).hexdigest() != e["sha256"]:
+            self.out_err("Checksum mismatch - the download does not match the index.")
+            return 1
+        if not data.startswith(b"RPCAPP "):
+            self.out_err("The package downloaded but would not install.")
+            return 1
+        ver = data.split(b"\n", 1)[0].decode().split(" ")[2]
+        self.fs.files["/os/pkg/{}.app".format(name)] = data
+        self.installed[name] = ver
+        self.out_ok("Installed {} {} ({} bytes).".format(name, ver, len(data)))
+        return 0
 
     # --- the old put ------------------------------------------------------
 
@@ -950,9 +1196,10 @@ class MockDevice(object):
         arch = ""
         if getattr(self, "send_arch", True):
             arch = "arch={} ".format("armv6m" if self.board in ("pico", "pico_w") else "armv8m")
+        bridge = " bridge={}".format(1 if self.netless else 0) if self.proto >= 3 else ""
         self.frame("HELLO proto={} os=v2.01-beta build=554 board={} {}user={} cwd={} chunk={} "
-                   "exec_max={}".format(self.proto, self.board, arch, self.user, cwd, CHUNK,
-                                        EXEC_MAX))
+                   "exec_max={}{}".format(self.proto, self.board, arch, self.user, cwd, CHUNK,
+                                          EXEC_MAX, bridge))
 
     def c_link(self, a):
         if self.in_link:
@@ -995,6 +1242,8 @@ class MockDevice(object):
                     self.l_stat(rest)
                 elif verb == "AUTH" and self.proto >= 2:
                     self.l_auth(rest)
+                elif verb == "BRIDGE" and self.proto >= 3:
+                    self.l_bridge(rest)
                 elif verb == "BYE":
                     self.byes += 1
                     self.frame("OK")
@@ -1046,6 +1295,15 @@ class MockDevice(object):
             self.sudo_blocked = False
             return self.err("sudo", "sudo needs a password: send AUTH, then the request again")
         self.frame("OK rc={} truncated={}".format(1 if rc else 0, 1 if over else 0))
+
+    def l_bridge(self, rest):
+        if rest not in ("", "on", "off"):
+            return self.err("badreq", "BRIDGE on|off")
+        if not self.netless:
+            return self.err("nobridge", "this image has a network of its own")
+        if rest:
+            self.bridge_offered = rest == "on"
+        self.frame("OK bridge={} chunk={}".format("on" if self.bridge_offered else "off", CHUNK))
 
     def l_auth(self, rest):
         try:

@@ -13,6 +13,7 @@ import time
 
 from . import __version__
 from . import backup as _backup
+from . import bridge as _bridge
 from . import flash as _flash
 from . import repo as _repo
 from . import term as _term
@@ -88,6 +89,31 @@ class Ctx(object):
     def port(self):
         return transport.choose_port(getattr(self.args, "port", None))
 
+    def bridge(self, term=False):
+        """The network bridge this host offers (link protocol 3), or None with
+        --no-bridge. Each request it serves is logged on stderr."""
+        a = self.args
+        if getattr(a, "no_bridge", False):
+            return None
+        allow = []
+        for item in getattr(a, "bridge_allow", None) or []:
+            allow.extend(x for x in item.split(",") if x.strip())
+        try:
+            cap = _bridge.parse_size(getattr(a, "bridge_max", None) or _bridge.DEFAULT_MAX)
+        except ValueError:
+            raise RpcError("--bridge-max takes a size such as 8M or 512K")
+        quiet = getattr(a, "quiet", False)
+        if term:
+            def log(text):
+                if not quiet:
+                    sys.stderr.write("\r\n[rpc] {}\r\n".format(text))
+                    sys.stderr.flush()
+            progress = None
+        else:
+            log = (lambda text: None) if quiet else (lambda text: err("[rpc] " + text))
+            progress = (lambda name: self.progress("bridge " + name))
+        return _bridge.Bridge(_bridge.Policy(allow, cap), log=log, progress=progress)
+
     def device(self):
         if self.dev is None:
             path = self.port()
@@ -96,7 +122,8 @@ class Ctx(object):
             # typed is asked for again if the device refuses it.
             dev = Device(transport.Transport(ser, path), user=getattr(self.args, "user", None),
                          password=self._password, timing=self.timing, on_noise=self._noise,
-                         sudo_password=os.environ.get("RPC_PASSWORD") or self._sudo_password)
+                         sudo_password=os.environ.get("RPC_PASSWORD") or self._sudo_password,
+                         bridge=self.bridge())
             try:
                 dev.connect()
             except BaseException:
@@ -230,7 +257,7 @@ def cmd_term(ctx, a):
     ser = transport.open_serial(path)
     t = transport.Transport(ser, path)
     try:
-        _term.run(t)
+        _term.run(t, bridge=ctx.bridge(term=True))
     finally:
         t.close()
     return 0
@@ -701,6 +728,14 @@ def _common(p, suppress, short_port=True, port=True):
     p.add_argument("--sudo", action="store_true", default=d(False),
                    help="give the device the password for sudo before starting (it is "
                         "otherwise asked for when first needed; $RPC_PASSWORD is used if set)")
+    p.add_argument("--no-bridge", action="store_true", default=d(False),
+                   help="do not offer a device without a network of its own this computer's "
+                        "connection (the bridge is on by default; LINK.md)")
+    p.add_argument("--bridge-allow", action="append", default=d(None), metavar="HOST",
+                   help="fetch only from these hosts for the device (repeat, or a comma list; "
+                        ".example.com covers its subdomains). Default: any http or https URL")
+    p.add_argument("--bridge-max", default=d(None), metavar="SIZE",
+                   help="the most one bridged fetch may bring in (default 8M)")
 
 
 def build_parser():
@@ -780,7 +815,8 @@ def build_parser():
     p.add_argument("url")
     p.add_argument("remote", nargs="?", default=None, help="default: /<name from the URL>")
 
-    p = add("wget", cmd_wget, "have the device download a URL itself (it must be online)")
+    p = add("wget", cmd_wget, "have the device download a URL itself (over its own network, "
+            "or this computer's through the bridge)")
     p.add_argument("url")
     p.add_argument("remote", nargs="?", default=None)
     p.add_argument("-t", "--timeout", type=float, default=None)

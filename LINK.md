@@ -10,9 +10,11 @@ prompts, suggestions. A program reading that has to guess where a command's outp
 starts and ends. Link mode is the same console with all of that switched off and
 every answer framed, so nothing has to be guessed.
 
-Protocol version: **2**. Version 2 added `AUTH` and the `sudo` error, for firmware
+Protocol version: **3**. Version 2 added `AUTH` and the `sudo` error, for firmware
 where installing a package or changing `/os` or `/etc` needs sudo (PERMISSIONS.md).
-A host reads `proto` from `HELLO` and does not send `AUTH` to a device that says 1.
+Version 3 added the network bridge (below): a board with no network of its own asks
+the host to fetch a URL for it. A host reads `proto` from `HELLO` and does not send
+`AUTH` to a device that says 1, or `BRIDGE` to one that says less than 3.
 
 ## Entering and leaving
 
@@ -94,6 +96,7 @@ Error codes:
 | `io` | the filesystem refused a read or write |
 | `sudo` | the request needs sudo and the session has no grace: send `AUTH`, then the request again (protocol 2) |
 | `auth` | `AUTH` was given the wrong password, or the account has none (protocol 2) |
+| `nobridge` | `BRIDGE on` to an image that has a network of its own (protocol 3) |
 
 Binary data travels as **standard base64** (RFC 4648 alphabet, `=` padding) in
 `D` lines and frames. Each `D` carries at most the `chunk` number of bytes from
@@ -107,12 +110,14 @@ Sent by the device unprompted on entering, and again on request.
 
 ```
 > HELLO
-< 0x1E HELLO proto=2 os=v2.03-beta build=600 board=pico2_w arch=armv8m user=root cwd=/ chunk=768 exec_max=32768
+< 0x1E HELLO proto=3 os=v2.0.640-beta build=640 board=pico arch=armv6m user=root cwd=/ chunk=768 exec_max=32768 bridge=1
 < 0x1E OK
 ```
 
 On entry the `HELLO` frame comes on its own, with no `OK` after it, because there
-was no request. `exec_max` is the most output one `EXEC` returns. `arch` is the package
+was no request. `exec_max` is the most output one `EXEC` returns. `bridge=1` (protocol
+3) says the image has no network of its own and can use the host's (see "The network
+bridge"); an image with Wi-Fi says `bridge=0`. `arch` is the package
 architecture the board runs (`armv8m` on RP2350, `armv6m` on RP2040): a host
 installing a package picks the build for it, since the device does not check.
 `cwd` is
@@ -146,7 +151,10 @@ command finishes.
 - `truncated=1` means the output passed `exec_max` and the rest was dropped.
 - Output arrives when the command has finished, not as it runs.
 - While a command runs, the host must not send anything except a single `0x03`
-  byte, which interrupts it the way Ctrl+C does at the prompt.
+  byte, which interrupts it the way Ctrl+C does at the prompt, and (protocol 3,
+  once the host has offered the bridge) the lines that answer a `FETCH` frame.
+  `FETCH` and the frames that go with it can arrive between the `EXEC` and its
+  `OUT` frames; see "The network bridge".
 - An interrupted command ends `OK rc=1`, with `[?] Interrupted.` in its output.
 - A command that stops to ask a question (a yes/no confirmation) waits for keys
   the host is not sending. Use the terminal for those, or send `0x03` to give up.
@@ -266,6 +274,26 @@ closing), the console is back to asking.
   request. Keeping the password for the rest of the connection lets it send
   `AUTH` again if the grace runs out in the middle of a long job.
 
+### BRIDGE on | off (protocol 3)
+
+The host says it will, or will no longer, answer the device's fetch requests.
+
+```
+> BRIDGE on
+< 0x1E OK bridge=on chunk=768
+> BRIDGE off
+< 0x1E OK bridge=off
+```
+
+- `BRIDGE` alone reports the state without changing it.
+- `chunk` is the most bytes the device takes in one `FDATA` line.
+- An image with a network of its own (`bridge=0` in `HELLO`) answers `ERR nobridge`.
+- The offer outlives `BYE`, so a host can offer it and then hand the port to a
+  terminal. It ends with `BRIDGE off`, when the USB host stops asserting DTR (the
+  port was closed), when a request the device sent goes unanswered, and at a
+  restart. A host that is finishing with the port and will not answer any more
+  sends `BRIDGE off` before `BYE`.
+
 ### BYE
 
 ```
@@ -275,6 +303,137 @@ closing), the console is back to asking.
 ```
 
 The device then returns to the normal prompt.
+
+## The network bridge (protocol 3)
+
+A Pico or Pico 2 has no radio, and an image can be built without Wi-Fi. On those,
+`pkg install <name>`, `pkg update`, `pkg upgrade`, `update check`, `update install`,
+`wget`, `curl`, `runurl` and a package's `fw_http_*` calls can still reach the web
+through the host the board is plugged into. The device asks the host for a URL, the
+host fetches it with its own network and its own trusted certificates, and sends the
+body back over the console.
+
+It bridges HTTP, not TCP. An image without Wi-Fi has no TCP/IP stack and no TLS, so
+the device never sees a socket or a certificate: it sends a method, a URL, headers
+and a body, and receives a status, a few headers and the body. Redirects are
+followed on the host.
+
+### Offering it
+
+The device sends nothing until a host has said it can answer, so a terminal program
+that knows nothing of this never sees a frame.
+
+- In link mode, `BRIDGE on` (above).
+- From a terminal (`rpc term`, the browser tool's terminal), the two bytes
+  `0x1E 0x1F`, sent at any time. The device answers with one frame,
+  `0x1E BRIDGE on chunk=768`. The bytes are control characters: firmware without
+  the bridge, the login prompt, the line editor and the full-screen programs all
+  ignore them, so sending them is harmless whatever the console is doing. No
+  answer within a second or two means no bridge.
+
+The offer belongs to the USB connection, not to a login or a link session, and ends
+as `BRIDGE` says.
+
+### Who can use it
+
+Only a command running on the console's own shell: one typed at the prompt (with the
+host's terminal attached), or one run by `EXEC`. A background job, a service, a
+remote login and a package's worker task cannot, because only the shell's task reads
+the console; they get the same "no network" answer as before, with a line saying
+why. `sudo` is unchanged: `sudo pkg install gps` still needs it, and in `EXEC` the
+grace from `AUTH`.
+
+### One fetch
+
+Device to host, as frames:
+
+```
+0x1E FETCH <id> <method> <url>
+0x1E FHDR <id> <base64 of one "Name: value" header>       zero or more
+0x1E FBODY <id> <base64 of at most 768 bytes>              zero or more
+0x1E FGO <id> chunk=768
+```
+
+Host to device, as lines that also start with `0x1E`:
+
+```
+0x1E FWAIT <id>                                           at once, then every 2 s until FHEAD
+0x1E FHEAD <id> <status> [len=<bytes>]
+0x1E FHDR <id> <base64 of one "Name: value" header>       zero or more
+0x1E FDATA <id> <base64 of at most chunk bytes>           each one waits for FACK
+0x1E FDONE <id> ok
+0x1E FDONE <id> err <code> <message to show a person>
+```
+
+And from the device while the body arrives:
+
+```
+0x1E FACK <id> <bytes so far>
+0x1E FSTOP <id>
+```
+
+- `id` is a decimal number, new for every fetch. A line with any other id is
+  dropped.
+- `url` is the rest of the line. Only `http://` and `https://` are ever sent.
+- The device forwards the request headers it would have sent itself, less `Host`,
+  `User-Agent`, `Accept-Encoding`, `Connection` and `Content-Length`. The host
+  decides which to use.
+- `FGO` ends the request. The host answers `FWAIT` straight away, and every 2
+  seconds until it has a response, so the device can tell a slow server from a host
+  that is not there.
+- `FHEAD` carries the final status, after the host has followed any redirects.
+  `len` is given only when the host knows exactly how many bytes it will send (a
+  `Content-Length` with no content encoding); without it the body ends at `FDONE`.
+  The `FHDR` lines after it are the response headers the host chose to pass on
+  (`Content-Type`, `ETag`, `Last-Modified`), each under 200 bytes.
+- After each `FDATA` the host waits for the device's `FACK` before sending the
+  next. The device acknowledges a chunk once it has dealt with it (written it to
+  flash, say), so the host is held to the speed of the slowest part and the device
+  holds one chunk at a time.
+- `FDONE ok` ends a fetch that went through, whatever its status. `FDONE err`
+  ends one that did not. The codes are `refused` (the host will not fetch that URL:
+  not http or https, not on its allowlist), `toobig` (over the host's size cap),
+  `net` (the host could not reach the server: DNS, a refused connection, a
+  certificate that did not verify), `timeout` (the server went quiet), `cancelled`
+  (after `FSTOP`) and `badreq`.
+- `FSTOP` is the device giving up: Ctrl+C, a body bigger than it can store, a full
+  filesystem. The host stops sending and answers `FDONE <id> err cancelled`. The
+  device reads and drops lines until that `FDONE`, for at most 3 seconds, so a
+  late `FDATA` is never read as a request or typed at the prompt.
+- 10 seconds with no line from the host ends the fetch on the device with "the
+  computer did not answer", and withdraws the offer.
+- A `0x03` from the host during a fetch is Ctrl+C, as it is anywhere else.
+
+The host decides what to fetch. It fetches only `http` and `https`, checks every
+redirect the same way, verifies HTTPS with its own trust store, never reads its own
+files on the device's behalf, may refuse anything (an allowlist, a size cap), and
+logs every request it serves.
+
+```
+< 0x1E FETCH 3 GET https://raw.githubusercontent.com/.../repo-v2/index.json
+< 0x1E FGO 3 chunk=768
+> 0x1E FWAIT 3
+> 0x1E FHEAD 3 200 len=8121
+> 0x1E FHDR 3 Q29udGVudC1UeXBlOiB0ZXh0L3BsYWlu
+> 0x1E FDATA 3 ewogICJuYW1l...
+< 0x1E FACK 3 768
+  ...
+> 0x1E FDATA 3 ...
+< 0x1E FACK 3 8121
+> 0x1E FDONE 3 ok
+```
+
+### In a terminal
+
+A host that runs a terminal on the console looks for `0x1E` in what the device
+prints, as a link host does, and keeps the bridge frames (`BRIDGE`, `FETCH`, `FHDR`,
+`FBODY`, `FGO`, `FACK`, `FSTOP`) off the screen. Everything else, other frames
+included, is shown as it comes. While a fetch is running, the host holds the keys
+typed at it and sends only Ctrl+C (`0x03`), which stops the fetch.
+
+On the device, a line that starts with `0x1E` arriving where keys are read (the
+prompt, the login prompt, a program reading keys, a link request) is never taken as
+keys. It is dropped up to the end of its line. Ctrl+C is never dropped.
 
 ## Older firmware
 

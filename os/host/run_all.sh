@@ -65,6 +65,9 @@ declare -A SRC=(
     [linkreq_test]="$CORE/linkreq.cpp"
     [tuikey_test]="$CORE/tuikey.cpp"
     [httpfetch_test]="$CORE/httpfetch.cpp $CORE/httpparse.cpp"
+    # The network bridge (LINK.md protocol 3): the device's transport driven
+    # through http_fetch against a fake host, and the console's input door.
+    [bridge_test]="$CORE/bridge.cpp $CORE/b64.cpp $CORE/httpfetch.cpp $CORE/httpparse.cpp"
     [cmdline_test]="$CORE/cmdline.cpp"
     [lineedit_test]="$CORE/lineedit.cpp $CORE/interrupt.cpp $CORE/task.cpp $CORE/blackbox.cpp host_task_stub.cpp"
     [fmt_test]="$CORE/fmt.cpp"

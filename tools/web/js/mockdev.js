@@ -1,7 +1,10 @@
 // A pretend RPCortex v2 device, for the tests and for the page's demo mode
 // (index.html?demo). It is the JavaScript twin of tools/rpc/tests/mockdev.py,
 // smaller: the prompt and its echo, the login prompt, firmware without link
-// mode, and link mode as os/shell/link.cpp implements it.
+// mode, and link mode as os/shell/link.cpp implements it. With netless (and
+// proto 3) it has no network of its own and uses the host's through the bridge
+// (LINK.md, protocol 3): BRIDGE on or 0x1E 0x1F offers it, and wget, curl and
+// pkg install <name> then send FETCH frames at the prompt or in an EXEC.
 
 import { versionCmp } from "./version.js";
 
@@ -99,7 +102,7 @@ function b64(bytes) {
 export class MockDevice {
   constructor({ link = true, login = false, crlf = true, noise = 0, board = "pico2_w", user = "root",
                 proto = 2, os = "v2.01-beta", build = "554", network = true, manifest = null,
-                capacity = 16 << 20, updateDelay = 30, fromFileYes = true } = {}) {
+                capacity = 16 << 20, updateDelay = 30, fromFileYes = true, netless = false } = {}) {
     this.linkSupported = link;
     // Firmware with `update from-file --yes` (false: one from before it).
     this.fromFileYes = fromFileYes;
@@ -150,6 +153,18 @@ export class MockDevice {
     this.hadError = false;
     this.onReboot = null;
     this.seed = 7;
+    // the network bridge (protocol 3)
+    this.netless = netless && this.proto >= 3;
+    this.bridgeOffered = false;
+    this.bridgeId = 0;
+    this.bridgeQuiet = 10000;
+    this.bridgeFrames = [];
+    this.bridgeFetches = [];
+    this.bridgeStopAfter = null;
+    this.repoIndex = null;
+    this.rawReading = false;
+    this.door = 0;
+    this.typedLines = [];
     const put = (p, s) => this.files.set(p, typeof s === "string" ? enc.encode(s) : s);
     put("/os/registry.cfg", "System.Setup=true\n");
     put("/os/users.cfg", "root:salted:hash\n");
@@ -227,8 +242,30 @@ export class MockDevice {
   }
 
   async key(ms) {
-    const b = await this.fromHost.take(1, ms);
-    return b.length ? b[0] : null;
+    const end = ms == null ? null : Date.now() + ms;
+    for (;;) {
+      const left = end == null ? null : Math.max(0, end - Date.now());
+      const b = await this.fromHost.take(1, left);
+      if (!b.length) return null;
+      const c = b[0];
+      if (this.rawReading || !this.netless) return c;
+      const r = this.doorKey(c);
+      if (r !== null) return r;
+      if (end != null && Date.now() >= end) return null;
+    }
+  }
+
+  // core/bridge.cpp's bridge_door: the offer and stray 0x1E lines are not keys.
+  doorKey(c) {
+    if (c === 3) { this.door = 0; return c; }
+    if (this.door === 0) { if (c === 0x1e) { this.door = 1; return null; } return c; }
+    if (this.door === 1) {
+      if (c === 0x1f) { this.door = 0; this.bridgeOffered = true; this.emit("\x1eBRIDGE on chunk=768\n"); return null; }
+      this.door = c === 10 || c === 13 ? 0 : 2;
+      return null;
+    }
+    if (c === 10 || c === 13) this.door = 0;
+    return null;
   }
 
   out(text) {
@@ -248,6 +285,7 @@ export class MockDevice {
     for (;;) {
       if (!this.user) await this.sessionBoot();
       const line = await this.readLine();
+      this.typedLines.push(line);
       await this.runLine(line);
     }
   }
@@ -469,6 +507,7 @@ export class MockDevice {
           return 1;
         }
         if (a[1] === "list") { this.info("Installed packages:"); for (const k of Object.keys(this.installed).sort()) this.out(`  ${k.padEnd(14)} ${this.installed[k]}\n`); return 0; }
+        if (a[1] === "install" && a[2] && !a[2].includes("/") && this.netless) return this.pkgInstallBridged(a[2]);
         if (a[1] === "install" && a[2]) {
           const p = r(a[2]);
           if (!fs.has(p)) { this.err(`No such file: ${p}`); return 1; }
@@ -494,6 +533,17 @@ export class MockDevice {
           return 0;
         }
         this.out("Usage: pkg install|list|remove ...\n"); return 1;
+      }
+      case "wget": case "curl": {
+        const url = a[1];
+        if (!url) { this.out(`Usage: ${a[0]} <url>\n`); return 1; }
+        const got = await this.getUrl(url);
+        if (got.body === null) { this.err(got.why); return 1; }
+        if (a[0] === "curl") { this.out(got.body); return 0; }
+        const p = r(a[2] || basename(url));
+        fs.set(p, got.body);
+        this.ok(`Saved ${p} (${got.body.length} bytes)`);
+        return 0;
       }
       case "reboot":
         this.info("Rebooting system...");
@@ -629,6 +679,106 @@ export class MockDevice {
     return out.sort((x, y) => (x.name < y.name ? -1 : 1));
   }
 
+  // --- the network bridge (protocol 3) -------------------------------------
+
+  async getUrl(url) {
+    if (!this.netless || !this.bridgeOffered) {
+      return { body: null, why: "This board has no wireless hardware. With rpc or the browser tool attached, this goes through the computer's connection." };
+    }
+    const r = await this.bridgeFetch("GET", url);
+    if (r.why) return { body: null, why: r.why };
+    if (r.status < 200 || r.status > 299) return { body: null, why: `server refused - HTTP ${r.status}` };
+    return { body: r.body, why: null };
+  }
+
+  bframe(text) { this.bridgeFrames.push(text); this.emit("\x1e" + text + "\n"); }
+
+  async bline(quiet, stoppable = true) {
+    let buf = []; let inFrame = false; let last = Date.now();
+    for (;;) {
+      const c = await this.key(10);
+      if (c === null) { if (Date.now() - last >= quiet) return { r: "quiet" }; continue; }
+      last = Date.now();
+      if (c === 3) { if (stoppable) return { r: "stop" }; continue; }
+      if (c === 0x1e) { buf = []; inFrame = true; continue; }
+      if (!inFrame || c === 13) continue;
+      if (c === 10) {
+        inFrame = false;
+        const t = dec.decode(new Uint8Array(buf));
+        const parts = t.split(" ");
+        if (parts.length >= 2 && /^\d+$/.test(parts[1])) return { r: "ok", type: parts[0], id: Number(parts[1]), rest: parts.slice(2).join(" ") };
+        continue;
+      }
+      buf.push(c);
+    }
+  }
+
+  async bdrain(id) {
+    this.bframe(`FSTOP ${id}`);
+    const end = Date.now() + 3000;
+    while (Date.now() < end) {
+      const l = await this.bline(Math.max(10, end - Date.now()), false);
+      if (l.r !== "ok" || (l.type === "FDONE" && l.id === id)) return;
+    }
+  }
+
+  async bridgeFetch(method, url) {
+    const id = ++this.bridgeId;
+    this.bframe(`FETCH ${id} ${method} ${url}`);
+    this.bframe(`FGO ${id} chunk=768`);
+    this.rawReading = true;
+    let status = null; let data = new Uint8Array(0); let chunks = 0;
+    try {
+      for (;;) {
+        const l = await this.bline(this.bridgeQuiet);
+        if (l.r === "quiet") { this.bridgeOffered = false; this.bridgeFetches.push([method, url, "quiet", 0]); return { why: "the computer did not answer" }; }
+        if (l.r === "stop") { await this.bdrain(id); this.bridgeFetches.push([method, url, "cancelled", data.length]); return { why: "cancelled" }; }
+        if (l.id !== id) continue;
+        if (l.type === "FHEAD") status = Number(l.rest.split(" ")[0]);
+        else if (l.type === "FDATA") {
+          const s = atob(l.rest);
+          const d = new Uint8Array(s.length);
+          for (let i = 0; i < s.length; i++) d[i] = s.charCodeAt(i);
+          data = concat(data, d);
+          chunks++;
+          if (this.bridgeStopAfter !== null && chunks >= this.bridgeStopAfter) {
+            await this.bdrain(id);
+            this.bridgeFetches.push([method, url, "stopped", data.length]);
+            return { why: "too large" };
+          }
+          this.bframe(`FACK ${id} ${data.length}`);
+        } else if (l.type === "FDONE") {
+          if (l.rest.startsWith("err")) {
+            const msg = l.rest.split(" ").slice(2).join(" ");
+            this.bridgeFetches.push([method, url, l.rest.split(" ")[1], 0]);
+            return { why: msg };
+          }
+          this.bridgeFetches.push([method, url, status, data.length]);
+          return { status, body: data };
+        }
+      }
+    } finally {
+      this.rawReading = false;
+    }
+  }
+
+  async pkgInstallBridged(name) {
+    const idx = await this.getUrl(this.repoIndex || "https://repo.invalid/index.json");
+    if (idx.body === null) { this.err(idx.why); return 1; }
+    let e;
+    try { e = (JSON.parse(dec.decode(idx.body)).packages || []).find((x) => x.name === name); } catch (err) { e = null; }
+    if (!e) { this.err(`No package called '${name}'.`); return 1; }
+    this.info(`Installing ${name} ${e.ver || ""}`);
+    const got = await this.getUrl(e.url);
+    if (got.body === null) { this.err(got.why); return 1; }
+    if (e.sha256 && (await sha256hex(got.body)) !== e.sha256) { this.err("Checksum mismatch - the download does not match the index."); return 1; }
+    const head = dec.decode(got.body.slice(0, 64)).split("\n")[0].split(" ");
+    this.files.set(`/os/pkg/${name}.app`, got.body);
+    this.installed[name] = head[2];
+    this.ok(`Installed ${name} ${head[2]} (${got.body.length} bytes).`);
+    return 0;
+  }
+
   // --- link mode -----------------------------------------------------------
 
   frame(text) {
@@ -655,7 +805,8 @@ export class MockDevice {
 
   hello() {
     const cwd = this.cwd.replace(/%/g, "%25").replace(/ /g, "%20");
-    this.frame(`HELLO proto=${this.proto} os=${this.os} build=${this.build} board=${this.board} arch=${/^pico(_w)?$/.test(this.board) ? "armv6m" : "armv8m"} user=${this.user} cwd=${cwd} chunk=768 exec_max=32768`);
+    const bridge = this.proto >= 3 ? ` bridge=${this.netless ? 1 : 0}` : "";
+    this.frame(`HELLO proto=${this.proto} os=${this.os} build=${this.build} board=${this.board} arch=${/^pico(_w)?$/.test(this.board) ? "armv6m" : "armv8m"} user=${this.user} cwd=${cwd} chunk=768 exec_max=32768${bridge}`);
   }
 
   async link() {
@@ -679,6 +830,10 @@ export class MockDevice {
       else if (verb === "LS") this.lLs(rest);
       else if (verb === "STAT") this.lStat(rest);
       else if (verb === "AUTH" && this.proto >= 2) this.lAuth(rest);
+      else if (verb === "BRIDGE" && this.proto >= 3) {
+        if (!this.netless) this.frame("ERR nobridge this image has a network of its own");
+        else { if (rest === "on" || rest === "off") this.bridgeOffered = rest === "on"; this.frame(`OK bridge=${this.bridgeOffered ? "on" : "off"} chunk=768`); }
+      }
       else if (verb === "BYE") { this.byes++; this.frame("OK"); break; }
       else this.frame("ERR badreq unknown verb " + verb);
     }

@@ -1,5 +1,5 @@
-// No Wi-Fi in this image: the stand-in for net.cpp, netapps.cpp, nettcp.cpp,
-// httptransport.cpp, pkgfetch.cpp and update_net.cpp.
+// No Wi-Fi in this image: the stand-in for net.cpp, netapps.cpp, nettcp.cpp and
+// the lwIP half of the HTTP client (httptransport.cpp).
 //
 // Compiled when the image is built without Wi-Fi, which on the plain boards is
 // always: they have no radio. Everything else in the OS that asks about the
@@ -13,7 +13,11 @@
 // What still works without a network: `pkg install <file>` (which is how
 // tools/rpc and the browser tool put a package on a board), `pkg search` and
 // `pkg info` from the catalogue that shipped with the image, and `update
-// from-file` and `update rollback`.
+// from-file` and `update rollback`. And with rpc or the browser tool on the
+// console, everything the HTTP client does: wget, curl, runurl, `pkg install
+// <name>`, `pkg update`, `update check` and `update install` are in every image
+// (httpclient.cpp, pkgfetch.cpp, update_net.cpp) and go through the bridge
+// (bridge.cpp, LINK.md protocol 3), which this image has instead of a network.
 
 #include "command.h"
 #include "out.h"
@@ -22,6 +26,7 @@
 #include "pkgrepo.h"
 #include "radio.h"
 #include "update.h"
+#include "httproute.h"
 
 #include <stdint.h>
 
@@ -62,37 +67,31 @@ int net_pkg_tcp_close(int) { return -1; }
 extern "C" void net_tcp_task_ended(int) {}
 unsigned net_pkg_tcp_open(void) { return 0; }
 
-bool http_tls_available(void) { return false; }
+// No DNS without a network; the bridge carries HTTP, not lookups.
 int net_pkg_resolve(const char *, char *out, unsigned cap) { if (out && cap) out[0] = 0; return -1; }
-int net_pkg_http_get(const char *, void *, unsigned) { return -1; }
-int net_pkg_http_download(const char *, const char *) { return -1; }
-int net_pkg_http_measure(const char *, uint32_t *, uint32_t *) { return -1; }
+
+// --- the HTTP client's network half (httptransport.cpp) -------------------------
+//
+// Never a connection of its own, so http_route (httpclient.cpp) always moves on
+// to the bridge, and never TLS: over the bridge the host checks certificates.
+bool http_net_transport_get(HttpTransport *) { return false; }
+void http_net_last_detail(char *out, unsigned cap) { if (out && cap) out[0] = 0; }
+void http_net_set_timeout_ms(uint32_t) {}
+void http_net_no_route(void) { feature_missing(FEAT_WIFI); }
+bool http_tls_available(void) { return false; }
+const char *http_tls_why(void) { return "this image has no TLS of its own"; }
 
 // No TLS, so no trusted roots to write at first boot. Not a failure.
 bool stock_install_cacerts(bool) { return true; }
 
-// --- pkg and update: the halves that need a network ----------------------------
-
-static int no_repo(void) {
-    feature_missing(FEAT_WIFI);
-    out_multi("  A package can still be installed from a file: copy the .pkg over with");
-    out_multi("  tools/rpc or the browser tool, then 'pkg install <file>'.");
-    return 1;
+// `pkg certs`: there is no trust store here to show or repair.
+int pkg_fetch_certs(int, char **) {
+    out_info("Trusted roots");
+    out_multi("  This image has no TLS of its own, so it keeps no certificates.");
+    out_multi("  Through the bridge (rpc or the browser tool on the console), the");
+    out_multi("  computer fetches HTTPS and checks it against its own trust store.");
+    return 0;
 }
-
-int pkg_fetch_update(void) { return no_repo(); }
-int pkg_fetch_install(const char *) { return no_repo(); }
-int pkg_fetch_upgrade(void) { return no_repo(); }
-int pkg_fetch_certs(int, char **) { return no_repo(); }
-
-static int no_ota(void) {
-    feature_missing(FEAT_WIFI);
-    out_multi("  'update from-file <image.bin>' applies an image copied onto the device.");
-    return 1;
-}
-
-int update_check(bool) { return no_ota(); }
-int update_online(bool, bool) { return no_ota(); }
 
 // --- the commands --------------------------------------------------------------
 //
@@ -101,8 +100,11 @@ int update_online(bool, bool) { return no_ota(); }
 
 static int no_wifi(int, char **) { return feature_missing(FEAT_WIFI); }
 
+void bridge_start(void);       // bridge.cpp: the console's input door
+
 void net_register(void) {
     radio_register();          // `radio` and `airplane` (radio.cpp, or radio_off.cpp)
+    bridge_start();
 
     static const Command cn{"net", "addressing, DNS and connection detail", no_wifi, nullptr};
     cmd_register(&cn);
@@ -118,14 +120,4 @@ void netapps_register(void) {
     };
     for (const auto &c : cmds) cmd_register(&c);
     cmd_alias("ns", "nslookup");
-}
-
-void http_register(void) {
-    static const Command cr{"runurl", "fetch a script and run it", no_wifi, nullptr,
-                            LEVEL_ADMIN};
-    cmd_register(&cr);
-    static const Command c{"wget", "download a file over HTTP", no_wifi, nullptr};
-    static const Command c2{"curl", "fetch a URL and print it (-I headers, -X, -d, -H)", no_wifi, nullptr};
-    cmd_register(&c);
-    cmd_register(&c2);
 }

@@ -67,10 +67,11 @@ class Feature:
 # In dependency order: a feature comes after everything it requires.
 FEATURES = (
     Feature("wifi", "wifi", "RPC_FEATURE_WIFI", "RPC_HAS_WIFI", "Wi-Fi",
-            "Wi-Fi and everything that needs a network: lwIP, HTTPS (mbedTLS) and its trusted "
-            "roots; wifi, net, ping, nslookup, ntp, wget, curl and runurl; pkg install, update "
-            "and upgrade from the repository; update check and install over the air; and the "
-            "network calls packages make (fw_net_*, fw_http_*, fw_tcp_*).",
+            "Wi-Fi and the network stack: lwIP, HTTPS (mbedTLS) and its trusted roots; wifi, "
+            "net, ping, nslookup and ntp; and the TCP and DNS calls packages make (fw_net_*, "
+            "fw_tcp_*). Without it, wget, curl, runurl, pkg install from the repository and "
+            "update check and install stay, and use the computer's connection when rpc or the "
+            "browser tool is attached (the link bridge).",
             RADIO, aliases=("wi-fi", "network", "net"),
             note="Left out, Bluetooth and SSH go with it, and so do the CYW43 driver and its firmware."),
     Feature("bluetooth", "bt", "RPC_FEATURE_BLUETOOTH", "RPC_HAS_BLUETOOTH", "Bluetooth",

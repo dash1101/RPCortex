@@ -150,6 +150,13 @@ add_executable(rpcortex_v2
     ${OS_ROOT}/shell/help.cpp
     ${OS_ROOT}/shell/imagefeatures.cpp
     ${OS_ROOT}/shell/fetch.cpp
+    # The HTTP client and everything on top of it, in every image: without Wi-Fi
+    # a request goes through the bridge (shell/bridge.cpp) instead of lwIP.
+    ${OS_ROOT}/shell/httpclient.cpp
+    ${OS_ROOT}/shell/pkgfetch.cpp
+    ${OS_ROOT}/shell/update_net.cpp
+    ${OS_ROOT}/core/httpfetch.cpp
+    ${OS_ROOT}/core/httpparse.cpp
     ${OS_ROOT}/shell/ps.cpp
     ${OS_ROOT}/shell/logcmd.cpp
     ${OS_ROOT}/shell/devkey.cpp
@@ -332,7 +339,7 @@ if(RPC_COLD_SIZE AND CMAKE_BUILD_TYPE STREQUAL "Release")
         ${OS_ROOT}/core/rps.cpp ${OS_ROOT}/core/repoindex.cpp ${OS_ROOT}/core/pkgindex.cpp
         ${OS_ROOT}/core/ducky.cpp ${OS_ROOT}/core/users.cpp
         ${OS_ROOT}/core/sudo.cpp ${OS_ROOT}/core/perms.cpp
-        ${OS_ROOT}/core/httpfetch.cpp ${OS_ROOT}/core/httpparse.cpp
+        ${OS_ROOT}/core/httpfetch.cpp ${OS_ROOT}/core/httpparse.cpp ${OS_ROOT}/core/bridge.cpp
         ${OS_ROOT}/usbmsc.cpp ${OS_ROOT}/usbhid.cpp)
     set_source_files_properties(
         ${RPC_COLD_SHELL} ${RPC_COLD_LIBS} ${RPC_COLD_CORE}
@@ -432,7 +439,9 @@ target_link_libraries(rpcortex_v2 pico_stdlib hardware_flash hardware_sync pico_
 #              CYW43 driver and its firmware, and radio.cpp (the chip and the
 #              one-owner rule both radios share)
 #   Bluetooth  RPC_BLUETOOTH_SOURCES and btstack, on top of Wi-Fi
-#   no Wi-Fi   radio_off.cpp, and no CYW43 driver or firmware at all
+#   no Wi-Fi   radio_off.cpp, and no CYW43 driver or firmware at all; the
+#              network bridge (bridge.cpp) in place of lwIP, so the HTTP
+#              client, which every image has, goes through the host instead
 #
 # Bluetooth needs Wi-Fi (tools/features.py): the chip's driver and its
 # firmware come in with Wi-Fi, so an image without Wi-Fi has no radio at all.
@@ -456,10 +465,6 @@ set(RPC_WIFI_SOURCES
     ${OS_ROOT}/shell/netapps.cpp
     ${OS_ROOT}/shell/nettcp.cpp
     ${OS_ROOT}/shell/httptransport.cpp
-    ${OS_ROOT}/shell/pkgfetch.cpp
-    ${OS_ROOT}/shell/update_net.cpp
-    ${OS_ROOT}/core/httpfetch.cpp
-    ${OS_ROOT}/core/httpparse.cpp
     ${OS_ROOT}/core/scanlist.cpp
     ${OS_ROOT}/core/joinguard.cpp)
 set(RPC_BLUETOOTH_SOURCES
@@ -505,7 +510,8 @@ if(RPC_FEATURE_WIFI)
     target_sources(rpcortex_v2 PRIVATE ${CMAKE_BINARY_DIR}/stock_cacerts.cpp)
     add_dependencies(rpcortex_v2 stock_cacerts_src)
 else()
-    target_sources(rpcortex_v2 PRIVATE ${OS_ROOT}/shell/net_off.cpp)
+    target_sources(rpcortex_v2 PRIVATE ${OS_ROOT}/shell/net_off.cpp
+        ${OS_ROOT}/shell/bridge.cpp ${OS_ROOT}/core/bridge.cpp)
 endif()
 
 if(RPC_FEATURE_BLUETOOTH)

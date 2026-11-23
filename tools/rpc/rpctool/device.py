@@ -54,8 +54,12 @@ class Device(object):
     """One connected device. Construct with a Transport, then connect()."""
 
     def __init__(self, transport, user=None, password=None, timing=None,
-                 on_noise=None, sudo_password=None):
+                 on_noise=None, sudo_password=None, bridge=None):
         self.t = transport
+        # The network bridge (link protocol 3): an rpctool.bridge.Bridge that
+        # answers the device's fetches, offered on connecting to firmware that
+        # has no network of its own. None offers nothing.
+        self.bridge = bridge
         self.user = user
         self.password = password          # a string, or a callable that asks
         # For sudo (link protocol 2): the signed-in account's password, a
@@ -127,13 +131,13 @@ class Device(object):
                 self.link = LinkClient(t, FrameReader(t, self.on_noise), timing=self.timing)
                 if self.link.resync():
                     self.mode = "link"
-                    return self
+                    return self._linked()
                 self.link = None
                 continue
             t.write(b"link\r")
             what, rest = self._await_hello()
             if what == "hello":
-                return self
+                return self._linked()
             if what == "old":
                 self.mode = "legacy"
                 self.legacy = LegacyShell(t, self.timing, self.on_noise)
@@ -143,6 +147,21 @@ class Device(object):
             # "link" (a stray frame) or nothing: go round again.
         raise RpcError("The device did not answer. Is the port right, and is the shell "
                        "running? 'rpc term' shows what it is doing.")
+
+    def _linked(self):
+        """In link mode: offer the bridge, where the firmware has it and this
+        host was given one."""
+        if self.bridge is not None:
+            self.link.bridge = self.bridge
+            try:
+                self.link.bridge_on()
+            except RpcError:
+                pass              # the commands still run; they just have no network
+        return self
+
+    @property
+    def bridged(self):
+        return bool(self.link and self.link.bridged)
 
     def _collect(self, seconds):
         buf = bytearray()
@@ -230,6 +249,8 @@ class Device(object):
                 if self.link.busy:
                     kind, self.link.busy = self.link.busy, None
                     self.link.abort(kind)
+                # Nobody here will answer a fetch once the port is closed.
+                self.link.bridge_off()
                 if not self.link.bye():
                     # Not in link mode after all, or not answering: a Ctrl+C
                     # leaves link mode, and at the prompt it is harmless.

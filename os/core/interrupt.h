@@ -75,6 +75,16 @@ void intr_stash_clear(void);
 // "press any key" and ignored most of them; the 'q' turned up as "qls".
 int  intr_getkey(void);
 
+// A filter every console key passes through on its way to whoever reads it:
+// intr_getkey here, and the shell's line editor through intr_filter_key. It
+// returns the byte to pass on, or -1 to keep it. Installed by the network bridge
+// (shell/bridge.cpp) in an image without Wi-Fi, to take a host's offer out of the
+// keys and to drop a stray 0x1E line before anything can read it as typing; none
+// is installed otherwise. Not applied to a remote terminal's keys.
+typedef int (*IntrKeyFilter)(int c);
+void intr_set_key_filter(IntrKeyFilter fn);
+int  intr_filter_key(int c);
+
 // Set by the platform so intr_check can read a byte without blocking. Kept as a
 // seam so the pure core and the host tests do not need the SDK.
 typedef int (*IntrPollFn)(void);      // returns a byte, or -1 if none waiting
