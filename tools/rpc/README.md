@@ -91,6 +91,8 @@ Ctrl+C.
 | `web` | `rpc web` serves the browser tool on http://localhost:8765 and opens it. `--port` picks another port. |
 | `watch` | `rpc watch "meminfo" --every 5` runs a command again and again until Ctrl+C. |
 
+| `tui` | `rpc tui` is a full-screen program for the device. See below. |
+
 Transfers show a progress bar when stderr is a terminal. Every `put` and `get`
 is checked end to end: the device compares the SHA-256 of what it wrote, and
 `rpc` compares the SHA-256 of what it received.
@@ -98,6 +100,71 @@ is checked end to end: the device compares the SHA-256 of what it wrote, and
 Paths with spaces or non-ASCII characters work as they are; quote them for
 your own shell. `rm` refuses a name containing `*`, which the device would
 treat as a wildcard.
+
+## The TUI
+
+`rpc tui` (or `python -m rpctool.tui`, or `rpc-tui`) puts the whole device on one
+screen. It is not a wrapper that types commands into a terminal. It talks to the
+device over the link protocol through the same library as `rpc`, from one
+background thread that owns the port, so the screen never waits on the device.
+It takes `--port` and `--user` like `rpc` does, and `--version` prints its version.
+
+It looks like Orbit: the device and its state along the top, the screens in a
+"nav" box on the left, each with a status square, the screen itself on the
+right, and a "status" box at the bottom with the latest message and the keys
+for the screen in view.
+
+| Screen | What it shows | Keys |
+|---|---|---|
+| 1 device | the version, board, build, features, account and port; memory, storage, uptime and Wi-Fi, read again every 5 seconds (Wi-Fi every 30) | `r` read again, `w` Wi-Fi now, `b` reboot, `f` flash a `.uf2` from this computer, `B` back up, `R` restore |
+| 2 files | the device on the left, this computer's current folder on the right | `←` `→` pick a side, `Enter` open a folder or view a file, `Backspace` the folder above, `c` copy to the other side, `v` view, `m` new folder, `n` rename, `d` delete, `r` list again |
+| 3 packages | what is installed beside what the package repository offers for this board, with `update` where the versions differ | `i` install, `u` upgrade, `U` upgrade everything, `d` remove, `a` install a `.app` from this computer, `r` read again |
+| 4 firmware | the running version against the latest release | `u` update with `sudo update online`, `f` download the `.uf2` for this board and flash it through BOOTSEL, `r` check again |
+| 5 logs + tasks | `ps` and the log, read every 3 seconds, and any lines the device prints by itself | `↑` `↓` pick a task, `x` stop it, `PgUp` `PgDn` scroll the log |
+| 6 terminal | the device's own console | `Enter` opens it, every key then goes to the device, `Ctrl+]` comes back |
+
+Everywhere: `1` to `6` or `Tab` switch screens, `Esc` cancels what is running
+(a copy, a download, an update), `t` changes the theme, `?` shows every key, and
+`q` quits. Copies are checked with SHA-256 both ways, and anything that deletes or
+replaces asks first.
+
+**sudo.** When the device says a request needs sudo, a masked prompt asks for the
+signed-in account's password, sends it with `AUTH`, and repeats the request.
+`$RPC_PASSWORD` is tried first when it is set. The password is never shown,
+written down or logged.
+
+**Terminal.** Opening it leaves link mode with `BYE` and keeps the port open, so
+the prompt is right there. `Ctrl+]` goes back into link mode the way `rpc` always
+does (a Ctrl+C, then `link`), so anything still running at the prompt is
+interrupted.
+
+**Unplugging.** With the cable pulled, the top bar says disconnected. Plugged back
+in, the board is found again on its own, as it is after a reboot, an update or a
+flash.
+
+**Firmware and the version change.** Since 2026-11-21 versions read
+`v2.0.<build>`. A device on v2.01-beta to v2.05-beta compares those numbers as
+older than its own, so the Firmware screen says so, and its one update uses
+`--force`. After that, updates are offered as usual.
+
+**Backup.** `B` on the Device screen backs up to a folder or a `.zip`, with
+switches for the packages and the system files, and says what it left out. `R`
+restores; with system files in the backup it names each one and asks whether to
+put back everything or only the files.
+
+**Themes.** `t` cycles tui (the graphite default), phosphor, amber, ember, frost,
+lilac, mono, ocean and paper, and the choice is remembered in `config.json` in
+`~/.config/rpc-tui` (or `$XDG_CONFIG_HOME`) on Linux, `~/Library/Application
+Support/rpc-tui` on macOS and `%APPDATA%\rpc-tui` on Windows. Colours are the
+exact ones on a terminal with 24-bit colour, the nearest of 256 on most others,
+and the basic eight where that is all there is. Without colour it still reads
+well, in bold, dim and reverse. `--colours 256|8|mono` sets the depth by hand,
+and `--ascii` draws the boxes with plain characters. It needs at least 80 by 24 and
+follows the window when it is resized.
+
+**Windows.** Python on Windows has no curses. `rpc tui` says so and gives the one
+command that adds it: `pip install windows-curses`. It works in Windows Terminal
+and the classic console.
 
 ## Older firmware
 
@@ -170,4 +237,7 @@ in, recovering a device an earlier client left in link mode or mid-transfer,
 cancelling with Ctrl+C, digest errors in both directions, timeouts on both
 sides, and paths with spaces and Unicode. With pyserial installed, one test
 also runs the real serial library against the mock on a pseudo-terminal.
+`tests/test_tui.py` drives the TUI key by key against the mock, drawing on a grid
+of text in place of curses: every screen's actions, the sudo prompt, unplugging
+and plugging back in, cancelling, the terminal and backups with system files.
 `os/host/run_all.sh` runs them too.

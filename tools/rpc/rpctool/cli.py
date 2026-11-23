@@ -657,6 +657,13 @@ def cmd_web(ctx, a):
     return _web.serve(d, a.web_port, open_browser=not a.no_browser)
 
 
+def cmd_tui(ctx, a):
+    # The TUI opens and owns the port itself (a worker thread, reconnecting
+    # after an unplug), so it is handed the options, not ctx's connection.
+    from . import tui as _tui
+    return _tui.run(a)
+
+
 def cmd_watch(ctx, a):
     dev = ctx.device()
     line = " ".join(a.command)
@@ -818,6 +825,11 @@ def build_parser():
                    help="the HTTP port on localhost (default 8765)")
     p.add_argument("--dir", default=None, help="the tools/web directory to serve")
     p.add_argument("--no-browser", action="store_true")
+
+    from . import tui as _tui
+    p = add("tui", cmd_tui, "a full-screen program for the device (files, packages, "
+            "firmware, log, console)")
+    _tui.add_arguments(p, connection=False)
 
     p = add("watch", cmd_watch, "run a command again every few seconds")
     p.add_argument("command", nargs="+")

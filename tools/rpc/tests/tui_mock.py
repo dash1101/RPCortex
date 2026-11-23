@@ -77,6 +77,12 @@ class TuiMock(MockDevice):
                  "GCC 14.2.1   Platform: {} ({})\nFeatures: wifi, bluetooth, ssh, sd, "
                  "peripherals\n".format(self.os_version, self.board, chip))
 
+    def c_sysinfo(self, a):
+        self.out_info("=== RPCortex Vela II - System Info ===")
+        self.out("  OS Version  : {}\n  Codename    : Vela II\n  Device ID   : vela\n"
+                 "  Active User : {}\n  Platform    : {}\n".format(
+                     self.os_version, self.user, self.board))
+
     def c_uptime(self, a):
         self.out("Uptime: 1h 2m 3s\n")
 

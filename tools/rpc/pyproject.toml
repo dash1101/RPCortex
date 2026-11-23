@@ -17,6 +17,7 @@ classifiers = [
 
 [project.scripts]
 rpc = "rpctool.cli:main"
+rpc-tui = "rpctool.tui:main"
 
 [tool.setuptools]
-packages = ["rpctool"]
+packages = ["rpctool", "rpctool.tui"]
