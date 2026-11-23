@@ -550,14 +550,16 @@ static int cmd_bootloader(int, char **) {
     while (1) {}
 }
 
-// A "soft" reboot on bare metal is still a reset — there is no interpreter to
+// A "soft" reboot on bare metal is still a reset; there is no interpreter to
 // drop back into. It is kept as a separate command because muscle memory from v1
-// reaches for it, and doing the sensible thing beats "unknown command".
+// reaches for it, and it is the restart that saves NOTHING first: `reboot` saves
+// the clock, which writes the settings held in memory, and `rpc restore` needs a
+// restart that keeps the files it has just put back. It is still a deliberate
+// restart (sys_reboot marks it so): it used to be a bare watchdog reset, which
+// the next boot reported as the device having hung, with a crash report.
 static int cmd_sreboot(int, char **) {
-    out_info("Performing soft reboot...");
-    sleep_ms(120);
-    multicore_reset_core1();
-    watchdog_reboot(0, 0, 0);
+    out_info("Restarting without saving...");
+    sys_reboot();
     while (1) {}
 }
 

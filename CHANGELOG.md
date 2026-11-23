@@ -26,6 +26,7 @@ Summary:
 
 ### Fixed
 
+- `sreboot` restarted with a bare watchdog reset, so the next start reported a hang and saved a crash report. It is a deliberate restart now, and still the one that saves nothing first, which is what `rpc restore` needs.
 - The browser tool froze when a serial port closed cleanly instead of with an error: its reader asked the finished stream for more, for ever. It treats that as the port going away now.
 ### Security
 
