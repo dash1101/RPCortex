@@ -541,11 +541,16 @@ export function firmwarePane(ctx) {
         `${mine.display} numbered its versions the old way, so it reads ${entry.ver} as older than ${mine.cmp}. Updating once with --force moves it across; after that, updates are offered as usual.`);
     } else note.hidden = true;
 
+    // An image without Wi-Fi offers the network bridge (HELLO bridge=1): the
+    // device still fetches and checks the image itself, through this page.
+    const bridged = !!(h && h.bridge === "1");
     const wifi = RADIO[b] !== false;
     const ota = $("#fw-ota");
-    ota.dataset.off = !h || !entry || !wifi ? "1" : "0";
+    ota.dataset.off = !h || !entry || !(wifi || bridged) ? "1" : "0";
     ota.textContent = v.state === "force" ? "Update over the air (--force)" : v.state === "current" || v.state === "ahead" ? "Reinstall over the air" : "Update over the air";
-    $("#fw-ota-hint").textContent = !wifi
+    $("#fw-ota-hint").textContent = bridged
+      ? "This image has no Wi-Fi, so the device downloads the image through this page, checks it against the release, and writes it. It installs the board's standard image" + (wifi ? ", which has Wi-Fi." : ".")
+      : !wifi
       ? `The ${BOARD_NAMES[b] || b} has no Wi-Fi, so use one of the other two ways.`
       : "The device downloads the image over its own Wi-Fi, checks it against the release, and writes it. It needs to be on a network (wifi connect).";
     $("#fw-send").dataset.off = !h || !entry ? "1" : "0";

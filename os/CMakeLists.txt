@@ -122,6 +122,7 @@ add_executable(rpcortex_v2
     ${OS_ROOT}/core/textcore.cpp
     ${OS_ROOT}/core/history.cpp
     ${OS_ROOT}/core/sha256.cpp
+    ${OS_ROOT}/core/imagecheck.cpp
     ${OS_ROOT}/core/b64.cpp
     ${OS_ROOT}/core/linkreq.cpp
     ${OS_ROOT}/core/registry.cpp

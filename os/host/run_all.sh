@@ -29,6 +29,7 @@ export UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1:${UBSAN_OPTIONS:-}"
 # test name -> extra sources
 declare -A SRC=(
     [path_test]="$CORE/path.cpp"
+    [imagecheck_test]="$CORE/imagecheck.cpp"
     [httpparse_test]="$CORE/httpparse.cpp"
     [repoindex_test]="$CORE/repoindex.cpp"
     [preempt_test]="$CORE/preempt.cpp"

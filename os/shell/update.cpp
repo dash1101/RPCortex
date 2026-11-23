@@ -41,6 +41,7 @@
 #include "logring.h"
 #include "rollback.h"
 #include "update.h"
+#include "imagecheck.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -246,36 +247,24 @@ bool update_apply_file(const char *path, const char *to_version, bool at_boot) {
         out_err("The staged copy does not match the download. Nothing written.");
         return false;
     }
-    // One last sanity check on what is actually in the staging slot, because
-    // the next thing that happens cannot be undone.
-    //
-    // A Cortex-M image begins with an initial stack pointer and a reset vector:
-    // the stack must point into SRAM, the entry point into flash. Anything else
-    // is not firmware for this chip, and writing it leaves a board only BOOTSEL
-    // can recover.
-    //
-    // WHERE that pair sits differs by chip, which is worth stating because
-    // checking only one place rejects half the boards. An RP2040 image begins
-    // with the 256-byte second-stage bootloader and its vector table follows at
-    // 0x100; an RP2350 image starts with the table. Both are accepted, and a
-    // real image for either was checked against this before it shipped.
+    // One last check on what is actually in the staging slot, because the next
+    // thing that happens cannot be undone: is it firmware for THIS chip? An
+    // RP2040 image and an RP2350 image both look like Cortex-M firmware, and the
+    // check here used to accept either layout on either chip. imagecheck.h has
+    // the layouts; host-tested against every board's release image.
     {
         const uint8_t *base = (const uint8_t *)(XIP_BASE + storage_stage_offset());
-        bool sane = false;
+#if PICO_RP2350
+        const ImageChip chip = IMAGE_CHIP_RP2350;
+        const char *chip_name = "RP2350";
+#else
+        const ImageChip chip = IMAGE_CHIP_RP2040;
+        const char *chip_name = "RP2040";
+#endif
         uint32_t sp = 0, entry = 0;
-        for (uint32_t off : {0u, 0x100u}) {
-            const uint32_t *v = (const uint32_t *)(base + off);
-            if (v[0] >= 0x20000000u && v[0] < 0x20090000u &&
-                v[1] >= 0x10000000u && v[1] < 0x10200000u) {
-                sane = true;
-                sp = v[0]; entry = v[1];
-                break;
-            }
-            if (!sp) { sp = v[0]; entry = v[1]; }
-        }
-        if (!sane) {
+        if (!image_fits_chip(base, 4096, chip, &sp, &entry)) {
             free(fbuf);
-            out_err("The staged image does not look like firmware for this board.");
+            out_err("The staged image is not firmware for this board's chip (%s).", chip_name);
             out_multi("  stack %08lx  entry %08lx", (unsigned long)sp, (unsigned long)entry);
             out_multi("  Nothing was written.");
             return false;

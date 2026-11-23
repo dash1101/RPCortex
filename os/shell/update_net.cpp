@@ -32,15 +32,17 @@
 #define MANIFEST_MAX  2048
 
 // Which board this image is for. An image for another one boots into nothing.
-#if defined(RASPBERRYPI_PICO2_W)
-#define MY_BOARD "pico2_w"
-#elif defined(RASPBERRYPI_PICO_W)
-#define MY_BOARD "pico_w"
-#elif defined(RASPBERRYPI_PICO2)
-#define MY_BOARD "pico2"
-#else
-#define MY_BOARD "pico"
+//
+// PICO_BOARD is the SDK's own name for the board, set for every file the build
+// compiles, and the same string fw_board() gives packages. This used to test the
+// board header's RASPBERRYPI_* macros, which this file only ever saw by way of
+// the Wi-Fi headers; once it was built without them, every board fell through
+// to "pico" and asked for the RP2040 image. No default, so that cannot happen
+// quietly again.
+#ifndef PICO_BOARD
+#error "PICO_BOARD is not defined: the updater cannot tell which release image is this board's"
 #endif
+#define MY_BOARD PICO_BOARD
 
 // --- downloading ------------------------------------------------------------
 

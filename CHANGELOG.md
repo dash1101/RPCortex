@@ -22,6 +22,7 @@ Summary:
 
 ### Improved
 
+- The browser tool's Firmware tab offers an over-the-air update on an image without Wi-Fi: the device downloads through the page, over the network bridge.
 - `wget`, `curl`, `runurl`, `pkg install <name>`, `pkg update`, `pkg upgrade` and `update check` and `install` are in every image now, not only those with Wi-Fi. They cost about 18 KB on a Pico (79 KB of slot left before, about 61 KB after) and nothing on the Pico W and Pico 2 W.
 - `pkg install <name>` on a board that has never fetched the package list fetches it first, instead of saying to run `pkg update`.
 - `rpc term` and the browser tool's terminal keep the bridge's traffic off the screen, and hold what is typed while a download runs, sending it once it ends. Ctrl+C still goes straight through and stops the download.
@@ -31,6 +32,8 @@ Summary:
 
 ### Fixed
 
+- Before this release, an image without Wi-Fi (a plain Pico 2, or one built `--without wifi`) asked for the plain Pico's RP2040 image when it checked for an update, because the updater found out which board it was from headers only the Wi-Fi build includes. It uses the board name the build sets for every file now, and an image missing it does not build.
+- The last check before an update overwrites the firmware accepted an image built for either chip on either chip. It knows which layout belongs to which chip now (RP2040: the vector table at 0x100; RP2350: the table at 0 and a picobin block), so an image for the wrong chip is refused before anything is written. Tested on the host against every board's release image.
 - `sreboot` restarted with a bare watchdog reset, so the next start reported a hang and saved a crash report. It is a deliberate restart now, and still the one that saves nothing first, which is what `rpc restore` needs.
 - The browser tool froze when a serial port closed cleanly instead of with an error: its reader asked the finished stream for more, for ever. It treats that as the port going away now.
 
