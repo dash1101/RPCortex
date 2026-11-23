@@ -8,6 +8,22 @@ good notes is in `RELEASING.md`.
 
 ## Unreleased
 
+Summary: 
+
+### New
+
+### Improved
+
+### Fixed
+
+### Security
+
+### Changed
+
+### Known issues
+
+## v2.0.673-beta, 2026-11-23
+
 Summary: files over USB and the network bridge are about 50% faster, finished background jobs give their memory back, a fresh board installs from the package list it shipped with, and every image is 4.5 KB smaller
 
 ### New
