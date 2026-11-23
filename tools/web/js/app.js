@@ -2,7 +2,7 @@
 // else. Switching panes switches the device between the two.
 
 import {
-  enterLink, joinPath, parentPath, quote, LinkError, RpcError,
+  enterLink, joinPath, parentPath, quote, LinkError, RpcError, Bridge, TermBridge,
 } from "./link.js";
 import { linkArch, packagesPane } from "./pkgs.js";
 import { SerialLine, RPI_VID, resetToBootsel, webSerialSupported } from "./serial.js";
@@ -30,6 +30,7 @@ const S = {
   runAbort: null,
   fw: null,           // the Firmware pane (updates.js)
   pk: null,           // the Packages pane (pkgs.js)
+  tb: null,           // the network bridge on this port (link.js TermBridge)
 };
 
 // --- small helpers ----------------------------------------------------------------
@@ -148,6 +149,8 @@ function portName() {
 
 const pending = [];
 function termWrite(bytes) {
+  // The network bridge's frames are answered, not shown (link.js, TermBridge).
+  if (S.tb) { bytes = S.tb.feed(bytes); if (!bytes.length) return; }
   if (S.term) S.term.write(bytes);
   else if (pending.length < 256) pending.push(bytes);
 }
@@ -180,7 +183,7 @@ async function doSwitch(target) {
     try {
       const user = $("#login-user").value.trim() || undefined;
       const r = await enterLink(S.line, {
-        user, onNoise: noise,
+        user, onNoise: noise, bridge: S.tb ? S.tb.bridge : undefined,
         password: async () => $("#login-pass").value || (await ask({ title: `Password for ${user}`, input: "", ok: "Log in", secret: true })),
       });
       if (r.mode === "legacy") {
@@ -246,8 +249,13 @@ async function openPort(port) {
   try { await line.open(); } catch (e) { throw openError(e); }
   S.port = port;
   S.line = line;
+  // The network bridge (LINK.md protocol 3): a board with no network of its
+  // own can fetch through this page. The offer is two control bytes that any
+  // firmware without the bridge ignores.
+  S.tb = new TermBridge(new Bridge({ log: noise }), (b) => line.write(b), { onNote: noise });
   line.setSink(termWrite);
   setMode("terminal");
+  S.tb.offer().catch(() => {});
   $("#btn-reconnect").hidden = true;
   $("#connect-status").textContent = `Connected to ${portName()}.`;
   if (LINK_PANES.has(S.pane)) await showPane(S.pane);
@@ -758,7 +766,7 @@ async function start() {
 
   // Last, because it may wait on the CDN; until it is ready the device's
   // output is held for it (see termWrite).
-  const term = await createTerminal($("#term"), (bytes) => { if (S.line && S.mode !== "link" && S.mode !== "switching") S.line.write(bytes).catch(fail); });
+  const term = await createTerminal($("#term"), (bytes) => { if (S.line && S.mode !== "link" && S.mode !== "switching") (S.tb ? S.tb.key(bytes) : S.line.write(bytes)).catch(fail); });
   if (term.kind === "plain") $("#term-note").textContent = `A plain terminal is in use: xterm.js could not be loaded (${term.reason}).`;
   S.term = term;
   if (pending.length) { for (const b of pending) term.write(b); pending.length = 0; }
