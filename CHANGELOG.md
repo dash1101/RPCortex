@@ -8,7 +8,7 @@ good notes is in `RELEASING.md`.
 
 ## Unreleased
 
-Summary: 
+Summary: browse puts the web on the console (links, forms and search, over Wi-Fi or through RPC Studio), and big packages can load only while they run
 
 ### New
 
