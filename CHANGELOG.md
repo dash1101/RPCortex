@@ -8,7 +8,7 @@ good notes is in `RELEASING.md`.
 
 ## Unreleased
 
-Summary: 
+Summary: a network port, so rpc bridge keeps a board online for everything on it, and browse loads on a board that has been up a while
 
 ### New
 
