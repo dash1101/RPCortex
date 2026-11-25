@@ -17,7 +17,7 @@
 
 #include "httpfetch.h"
 
-enum HttpVia { HTTP_VIA_NONE = 0, HTTP_VIA_NET, HTTP_VIA_BRIDGE };
+enum HttpVia { HTTP_VIA_NONE = 0, HTTP_VIA_NET, HTTP_VIA_BRIDGE, HTTP_VIA_PORT };
 
 // The way a request can go right now, with `t` filled in for it. NONE when there
 // is none; http_no_route then says why.

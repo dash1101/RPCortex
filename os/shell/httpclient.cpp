@@ -22,6 +22,7 @@
 #include "path.h"
 #include "fsguard.h"
 #include "rpc_app.h"
+#include "netport.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -42,7 +43,10 @@ static volatile uint8_t g_last_via;
 
 HttpVia http_route(HttpTransport *t) {
     HttpVia via = HTTP_VIA_NONE;
+    // Wi-Fi when the board has it and is joined; then the network port, which
+    // any task may use; then the console's bridge, for a command typed there.
     if (http_net_transport_get(t))      via = HTTP_VIA_NET;
+    else if (netport_transport_get(t))  via = HTTP_VIA_PORT;
     else if (bridge_transport_get(t))   via = HTTP_VIA_BRIDGE;
     if (via != HTTP_VIA_NONE) g_last_via = (uint8_t)via;
     return via;
@@ -67,15 +71,16 @@ bool http_https_ready(const char *url, HttpVia via) {
 }
 
 void http_last_detail(char *out, unsigned cap) {
-    if (g_last_via == HTTP_VIA_BRIDGE) snprintf(out, cap, "%s", bridge_last_detail());
+    if (g_last_via == HTTP_VIA_PORT)        snprintf(out, cap, "%s", netport_last_detail());
+    else if (g_last_via == HTTP_VIA_BRIDGE) snprintf(out, cap, "%s", bridge_last_detail());
     else                               http_net_last_detail(out, cap);
 }
 
 void http_report_failure(const FetchResult *r) {
     bool transport = r->error == FETCH_ERR_RECV || r->error == FETCH_ERR_CONNECT ||
                      r->error == FETCH_ERR_SEND;
-    if (transport && g_last_via == HTTP_VIA_BRIDGE) {
-        out_err("%s", bridge_last_detail());
+    if (transport && (g_last_via == HTTP_VIA_BRIDGE || g_last_via == HTTP_VIA_PORT)) {
+        out_err("%s", g_last_via == HTTP_VIA_PORT ? netport_last_detail() : bridge_last_detail());
         return;
     }
     out_err("%s%s%s", fetch_error_str(r->error), r->detail[0] ? " - " : "", r->detail);

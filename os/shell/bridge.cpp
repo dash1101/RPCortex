@@ -122,8 +122,9 @@ static void t_close(void *ctx) {
 // The USB host stopped asserting DTR: the port was closed, by the tool that made
 // the offer or by anything else. Whatever opens it next has said nothing yet.
 // TinyUSB calls this from the USB task (usbdev.cpp); the SDK does not define it.
-extern "C" void tud_cdc_line_state_cb(uint8_t itf, bool dtr, bool rts) {
-    (void)itf; (void)rts;
+// The console's half of tud_cdc_line_state_cb, which netport.cpp owns now that
+// there are two serial interfaces.
+void bridge_console_line_state(bool dtr) {
     bridge_offer_dtr(&g_offer, dtr);
 }
 

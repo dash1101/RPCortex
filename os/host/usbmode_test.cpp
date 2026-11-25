@@ -65,8 +65,8 @@ int main(void) {
 
     // The one static composite: five interfaces, and a configuration descriptor
     // that is the sum of every block. A wrong total is a failed enumeration.
-    ck(USBMODE_COMPOSITE_ITFS == 5, "composite has 5 interfaces");
-    ck(USBMODE_COMPOSITE_LEN == 9 + 66 + 9 + 23 + 25, "composite length = 132");
+    ck(USBMODE_COMPOSITE_ITFS == 7, "composite has 7 interfaces (the network port's two last)");
+    ck(USBMODE_COMPOSITE_LEN == 9 + 66 + 9 + 23 + 25 + 66, "composite length = 198");
 
     // Every named mode is valid; the predicate the switch shares agrees.
     for (UsbMode m : modes) ck(usbmode_ok(m), "each named mode is valid");

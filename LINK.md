@@ -449,6 +449,28 @@ On the device, a line that starts with `0x1E` arriving where keys are read (the
 prompt, the login prompt, a program reading keys, a link request) is never taken as
 keys. It is dropped up to the end of its line. Ctrl+C is never dropped.
 
+## The network port
+
+Firmware from v2.0.69x has a second USB serial interface, named "RPCortex
+Network", after every other interface (the console stays interfaces 0 and 1). It
+carries nothing but the bridge's frames, in the same form as above, and no
+console, so a computer can lend the board its connection without the console
+being involved, and **any task on the board may use it**: a background job, a
+service, a package's work. One fetch at a time; another waits its turn.
+
+- The host opens the port (asserting DTR) and sends `0x1E 0x1F`. The board answers
+  `0x1E BRIDGE on chunk=768`. Bytes that are not part of a fetch are ignored.
+- The offer ends when the host closes the port (DTR drops) or stops answering in
+  the middle of a fetch. A host that keeps the port open offers again from time to
+  time while it is quiet, never in the middle of a fetch.
+- Which way a request goes: Wi-Fi when the board has it and is joined, then this
+  port, then the console's bridge (for a command typed there).
+- `rpc bridge` is the host end: it serves every board's network port and refuses
+  the computer's own network (private, loopback and link-local addresses) unless
+  `--lan`, since the requests come from programs rather than a person.
+- Tools looking for the console should leave this port alone: on Linux its
+  `interface` is "RPCortex Network".
+
 ## Older firmware
 
 Firmware without link mode answers `'link' is not a command`. A host can still:

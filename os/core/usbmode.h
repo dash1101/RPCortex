@@ -45,14 +45,15 @@ typedef enum {
 #define USBMODE_HID_LEN    25
 
 // The one static composite carries every interface at once: CDC (two
-// interfaces), reset (one), MSC (one), HID (one) — five in all — and its
+// interfaces), reset (one), MSC (one), HID (one), and the network port's CDC
+// (two) — seven in all — and its
 // configuration descriptor is the sum of every block. These are what the host
 // reads to size the configuration; a wrong total is a device that will not
 // enumerate at all, which is why it is pinned where a host test can reach it.
-#define USBMODE_COMPOSITE_ITFS 5
+#define USBMODE_COMPOSITE_ITFS 7
 #define USBMODE_COMPOSITE_LEN \
     (USBMODE_CONFIG_LEN + USBMODE_CDC_LEN + USBMODE_RESET_LEN + \
-     USBMODE_MSC_LEN + USBMODE_HID_LEN)
+     USBMODE_MSC_LEN + USBMODE_HID_LEN + USBMODE_CDC_LEN)
 
 // Which function a mode switches on. The interfaces are always present; these
 // say whether the drive is offered / the keyboard is typing.

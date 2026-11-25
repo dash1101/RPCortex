@@ -12,6 +12,8 @@ Summary:
 
 ### New
 
+- A network port: a second USB serial interface, "RPCortex Network", that carries only RPC Studio's connection. With `rpc bridge` running on the computer it is plugged into, the board is online all the time, for everything on it (background jobs, services, packages, Nova D1's menus), not only for commands typed at its console, and the console stays free. Every image has it: on a board with Wi-Fi it is used whenever Wi-Fi is not joined. Requests to the computer's own network are refused unless `rpc bridge --lan`.
+
 - `meminfo -v` lists the largest free blocks, not just the largest: a package load needs its code and its data at once, and whether both fit is what decides it.
 
 ### Improved

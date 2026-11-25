@@ -693,7 +693,8 @@ int net_pkg_resolve(const char *host, char *out, unsigned cap) {
 }
 
 void http_net_no_route(void) {
-    out_err("No network. Connect with 'wifi connect <ssid>' first.");
+    out_err("No network. Connect with 'wifi connect <ssid>', or plug the board into a");
+    out_multi("  computer running 'rpc bridge' (RPC Studio), which lends it its connection.");
 }
 
 // --- the bridge, which this image does not have --------------------------------
@@ -707,6 +708,7 @@ bool bridge_available(void) { return false; }
 bool bridge_offered(void) { return false; }
 bool bridge_set_offer(bool) { return false; }
 void bridge_no_route(void) { http_net_no_route(); }
+void bridge_console_line_state(bool) {}
 
 // --- pkg certs ------------------------------------------------------------------
 //

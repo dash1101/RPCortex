@@ -68,9 +68,13 @@
 // keyboard takes the next free one.
 #define USBD_ITF_HID       (3 + (CFG_TUD_MSC ? 1 : 0))
 #endif
-// CDC (interfaces 0,1) + reset (2), plus the drive and the keyboard when each
-// is compiled in.
-#define USBD_ITF_MAX       (3 + (CFG_TUD_MSC ? 1 : 0) + (CFG_TUD_HID ? 1 : 0))
+// The network port: a second CDC (two interfaces), LAST, so every interface
+// number a host has already seen keeps its meaning (the console stays 0 and 1,
+// which is what the Android app and the browser tool open first).
+#define USBD_ITF_NET       (3 + (CFG_TUD_MSC ? 1 : 0) + (CFG_TUD_HID ? 1 : 0))
+// CDC (interfaces 0,1) + reset (2), the drive and the keyboard when each is
+// compiled in, and the network port's two.
+#define USBD_ITF_MAX       (USBD_ITF_NET + 2)
 
 // The SDK asserts this relationship for its own descriptors; it holds here for
 // the same reason, and getting it wrong is silent.
@@ -86,6 +90,10 @@ static_assert(USBD_ITF_RPI_RESET == PICO_USB_RESET_MS_OS_20_DESCRIPTOR_ITF,
 // interface is always present alongside the drive — 0x83 belongs to MSC, so
 // reusing it would be a collision, not a saving.
 #define USBD_HID_EP_IN   0x84
+// The network port's notification, OUT and IN endpoints: the next free numbers.
+#define USBD_NET_EP_CMD  0x85
+#define USBD_NET_EP_OUT  0x06
+#define USBD_NET_EP_IN   0x86
 
 #define USBD_CDC_CMD_MAX_SIZE    8
 #define USBD_CDC_IN_OUT_MAX_SIZE 64
@@ -95,7 +103,8 @@ static_assert(USBD_ITF_RPI_RESET == PICO_USB_RESET_MS_OS_20_DESCRIPTOR_ITF,
 
 #define USBD_DESC_LEN (TUD_CONFIG_DESC_LEN + TUD_CDC_DESC_LEN + TUD_RPI_RESET_DESC_LEN \
                        + (CFG_TUD_MSC ? TUD_MSC_DESC_LEN : 0) \
-                       + (CFG_TUD_HID ? TUD_HID_DESC_LEN : 0))
+                       + (CFG_TUD_HID ? TUD_HID_DESC_LEN : 0) \
+                       + TUD_CDC_DESC_LEN)
 
 // Bus-powered, and honest about it: the CYW43 radio and the flash together draw
 // far more than the 100 mA a device may assume before it is configured.
@@ -109,6 +118,7 @@ static_assert(USBD_ITF_RPI_RESET == PICO_USB_RESET_MS_OS_20_DESCRIPTOR_ITF,
 #define USBD_STR_RPI_RESET 0x05
 #define USBD_STR_MSC       0x06
 #define USBD_STR_HID       0x07
+#define USBD_STR_NET       0x08
 
 static const tusb_desc_device_t usbd_desc_device = {
     .bLength         = sizeof(tusb_desc_device_t),
@@ -198,6 +208,11 @@ static const uint8_t usbd_desc_cfg[USBD_DESC_LEN] = {
                        sizeof(usbd_hid_report), USBD_HID_EP_IN, USBD_HID_EP_SIZE,
                        USBD_HID_POLL_MS),
 #endif
+
+    // The network port (netport.cpp): the bridge's own channel.
+    TUD_CDC_DESCRIPTOR(USBD_ITF_NET, USBD_STR_NET, USBD_NET_EP_CMD,
+                       USBD_CDC_CMD_MAX_SIZE, USBD_NET_EP_OUT, USBD_NET_EP_IN,
+                       USBD_CDC_IN_OUT_MAX_SIZE),
 };
 
 // The pure model in usbmode.h and the bytes TinyUSB builds here must agree, or a
@@ -234,6 +249,7 @@ static const char *const usbd_desc_str[] = {
 #endif
 #if CFG_TUD_HID
     [USBD_STR_HID]       = "RPCortex Keyboard",
+    [USBD_STR_NET]       = "RPCortex Network",
 #endif
 };
 

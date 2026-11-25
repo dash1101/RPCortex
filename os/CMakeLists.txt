@@ -154,6 +154,8 @@ add_executable(rpcortex_v2
     # The HTTP client and everything on top of it, in every image: without Wi-Fi
     # a request goes through the bridge (shell/bridge.cpp) instead of lwIP.
     ${OS_ROOT}/shell/httpclient.cpp
+    ${OS_ROOT}/shell/netport.cpp
+    ${OS_ROOT}/core/bridge.cpp
     ${OS_ROOT}/shell/pkgfetch.cpp
     ${OS_ROOT}/shell/update_net.cpp
     ${OS_ROOT}/core/httpfetch.cpp
@@ -512,7 +514,7 @@ if(RPC_FEATURE_WIFI)
     add_dependencies(rpcortex_v2 stock_cacerts_src)
 else()
     target_sources(rpcortex_v2 PRIVATE ${OS_ROOT}/shell/net_off.cpp
-        ${OS_ROOT}/shell/bridge.cpp ${OS_ROOT}/core/bridge.cpp)
+        ${OS_ROOT}/shell/bridge.cpp)
 endif()
 
 if(RPC_FEATURE_BLUETOOTH)

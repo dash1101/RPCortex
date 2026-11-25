@@ -29,6 +29,7 @@
 // the shell — which is a bug in that code either way, and the watchdog and the
 // stall-killer already exist to find it.
 
+#include "netport.h"
 #include "task.h"
 
 #include <stdio.h>
@@ -80,6 +81,9 @@ static int usb_task(void *) {
         // stack is entered — the reports it submits are sent when stdio_flush
         // runs tud_task just below.
         usbhid_service();
+        // The network port's bytes, between its CDC FIFOs and the rings a fetch
+        // on any task reads (netport.cpp). Here because TinyUSB is this task's.
+        netport_pump();
         // Pushes anything buffered out and, on the way, gives the device stack
         // its turn: enumeration, control transfers, and every mass-storage
         // callback happen inside here, in thread context.
