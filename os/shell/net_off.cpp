@@ -100,6 +100,16 @@ int pkg_fetch_certs(int, char **) {
 
 static int no_wifi(int, char **) { return feature_missing(FEAT_WIFI); }
 
+// ping, nslookup, ntp, lanscan: these need a network of the board's own, which
+// RPC Studio's connection is not (it carries web requests, not packets). Said
+// once here, so nobody goes looking for a setting.
+static int no_radio_tool(int, char **) {
+    feature_missing(FEAT_WIFI);
+    out_multi("  Web requests (pkg, wget, curl, browse, update) still work: they go online");
+    out_multi("  through RPC Studio on the computer this board is plugged into.");
+    return 1;
+}
+
 void bridge_start(void);       // bridge.cpp: the console's input door
 
 void net_register(void) {
@@ -114,10 +124,10 @@ void net_register(void) {
 
 void netapps_register(void) {
     static const Command cmds[] = {
-        {"ping",     "ping <host> [count]",     no_wifi, nullptr},
-        {"nslookup", "nslookup <host>",         no_wifi, nullptr},
-        {"ntp",      "sync the clock over NTP", no_wifi, nullptr},
-        {"lanscan",  "devices on this network", no_wifi, nullptr},
+        {"ping",     "ping <host> [count]",     no_radio_tool, nullptr},
+        {"nslookup", "nslookup <host>",         no_radio_tool, nullptr},
+        {"ntp",      "sync the clock over NTP", no_radio_tool, nullptr},
+        {"lanscan",  "devices on this network", no_radio_tool, nullptr},
     };
     for (const auto &c : cmds) cmd_register(&c);
     cmd_alias("ns", "nslookup");

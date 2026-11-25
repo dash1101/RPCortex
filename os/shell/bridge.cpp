@@ -184,12 +184,14 @@ const char *bridge_last_detail(void) {
 }
 
 void bridge_no_route(void) {
-    feature_missing(FEAT_WIFI);
     if (bridge_offered() && !console_command()) {
-        out_multi("  The computer's connection (the bridge) serves only commands run at the");
-        out_multi("  console, not background jobs, services or remote logins.");
+        out_err("No network for this one.");
+        out_multi("  RPC Studio's connection serves commands run at the console, not");
+        out_multi("  background jobs, services or remote logins.");
     } else {
-        out_multi("  With rpc or the browser tool attached, this goes through the computer's");
-        out_multi("  connection: 'rpc term', 'rpc exec', or the browser tool's terminal.");
+        out_err("No network. This board goes online through RPC Studio.");
+        out_multi("  Plug it into a computer and work from Studio: 'rpc term', 'rpc exec',");
+        out_multi("  the Studio app, or the browser tool. Commands then use the computer's");
+        out_multi("  connection.");
     }
 }

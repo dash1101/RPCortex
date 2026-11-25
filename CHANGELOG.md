@@ -26,6 +26,8 @@ Summary:
 
 ### Changed
 
+- A board without Wi-Fi now says where its network comes from: a web request with no computer attached answers "No network. This board goes online through RPC Studio" and names the ways in (rpc term, rpc exec, the Studio app, the browser tool), first-boot setup says the same, and ping, nslookup, ntp and lanscan, which need a network of the board's own, say that web requests still work. websearch 2.3 says it too.
+
 ### Known issues
 
 ## v2.0.684-beta, 2026-11-25

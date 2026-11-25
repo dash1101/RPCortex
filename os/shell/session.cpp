@@ -297,6 +297,7 @@ static bool setup_wifi(void) {
         // does not. The plain-board wording is what the emulator tests wait for.
         out_ok(feature_board_can(FEAT_WIFI) ? "  This image was built without Wi-Fi - skipping."
                                             : "  No WiFi hardware detected - skipping.");
+        out_multi("  It goes online through RPC Studio on the computer it is plugged into.");
         return false;
     }
     out_multi("  Connect now so the device can reach the package repo.");

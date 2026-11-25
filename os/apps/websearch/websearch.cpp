@@ -21,7 +21,7 @@
 // never holds two.
 #include "rpc_app.h"
 
-RPC_APP_VER("websearch", "2.2");
+RPC_APP_VER("websearch", "2.3");
 
 // One response at a time, and never more than this. Wikipedia summaries run to
 // two or three kilobytes and DuckDuckGo's answers to rather more; anything that
@@ -262,9 +262,9 @@ static bool fetch(const char *url, char *buf, unsigned cap) {
     int n = fw_http_get(url, buf, cap - 1);
     if (n < 0) {
         if (!fw_net_connected()) {
-            fw_printf("No network. Connect with 'wifi connect <ssid>', or, on a board\n");
-            fw_printf("without Wi-Fi, run this from rpc or the browser tool, which lend\n");
-            fw_printf("the computer's connection.\n");
+            fw_printf("No network. Connect with 'wifi connect <ssid>'; a board without\n");
+            fw_printf("Wi-Fi goes online through RPC Studio on the computer it is\n");
+            fw_printf("plugged into (rpc term, rpc exec, or the Studio app).\n");
             return false;
         }
         fw_printf("The request failed. The site may be unreachable, or its\n");

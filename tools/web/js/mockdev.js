@@ -684,7 +684,7 @@ export class MockDevice {
 
   async getUrl(url) {
     if (!this.netless || !this.bridgeOffered) {
-      return { body: null, why: "This board has no wireless hardware. With rpc or the browser tool attached, this goes through the computer's connection." };
+      return { body: null, why: "No network. This board goes online through RPC Studio." };
     }
     const r = await this.bridgeFetch("GET", url);
     if (r.why) return { body: null, why: r.why };
