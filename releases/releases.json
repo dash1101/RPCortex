@@ -2,6 +2,98 @@
   "schema": 1,
   "releases": [
     {
+      "tag": "v2.0.694-beta",
+      "display": "v2.0.694-beta",
+      "version": "2.0",
+      "build": 694,
+      "commit": "b07f1ba6acb11e37f30359e584c158ee950a6b0e",
+      "codename": "Vela II",
+      "date": "2026-11-25",
+      "prerelease": true,
+      "title": "RPCortex v2.0.694-beta",
+      "summary": "a network port, so rpc bridge keeps a board online for everything on it, and browse loads on a board that has been up a while",
+      "notes": {
+        "new": [
+          "A network port: a second USB serial interface, \"RPCortex Network\", that carries only RPC Studio's connection. With `rpc bridge` running on the computer it is plugged into, the board is online all the time, for everything on it (background jobs, services, packages, Nova D1's menus), not only for commands typed at its console, and the console stays free. Every image has it: on a board with Wi-Fi it is used whenever Wi-Fi is not joined. Requests to the computer's own network are refused unless `rpc bridge --lan`.",
+          "`meminfo -v` lists the largest free blocks, not just the largest: a package load needs its code and its data at once, and whether both fit is what decides it."
+        ],
+        "improved": [],
+        "fixed": [
+          "`browse` would not load at times (\"could not be loaded ... not enough memory in one piece\") on a board that had been up a while, with an SSH session open or Nova D1 loaded: it needed 43 KB in one piece and the largest was 31 KB. browse 1.1 keeps a page's text in a file and only what is on screen in memory (30 KB), and pages can be four times longer. The package loader's own working memory is now several small pieces instead of one 21 KB block, so it no longer takes the large hole a package needs."
+        ],
+        "security": [],
+        "changed": [],
+        "issues": []
+      },
+      "assets": [
+        {
+          "board": "pico2_w",
+          "kind": "bin",
+          "file": "rpcortex-v2.0.694-beta-pico2_w.bin",
+          "size": 880484,
+          "sha256": "355ec811a5cabafc170ae99b5c068c2c7a649093216fc1c90abd1ce78d347d5c",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.694-beta/rpcortex-v2.0.694-beta-pico2_w.bin"
+        },
+        {
+          "board": "pico2_w",
+          "kind": "uf2",
+          "file": "rpcortex-v2.0.694-beta-pico2_w.uf2",
+          "size": 1761792,
+          "sha256": "9331c8b9a3f65e79c0266c32c568a1ac5490d1225586a8ae183a6d8788c6d81d",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.694-beta/rpcortex-v2.0.694-beta-pico2_w.uf2"
+        },
+        {
+          "board": "pico_w",
+          "kind": "bin",
+          "file": "rpcortex-v2.0.694-beta-pico_w.bin",
+          "size": 785112,
+          "sha256": "b39204800a4bf154c85e6d2826a36e902fc1eada03086b93b5e4b91ce11b08f1",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.694-beta/rpcortex-v2.0.694-beta-pico_w.bin"
+        },
+        {
+          "board": "pico_w",
+          "kind": "uf2",
+          "file": "rpcortex-v2.0.694-beta-pico_w.uf2",
+          "size": 1570304,
+          "sha256": "141a2397cc72182bb6d53a5d98833b9f503ec8f0aa39e43e912e31194eacba92",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.694-beta/rpcortex-v2.0.694-beta-pico_w.uf2"
+        },
+        {
+          "board": "pico2",
+          "kind": "bin",
+          "file": "rpcortex-v2.0.694-beta-pico2.bin",
+          "size": 397036,
+          "sha256": "693140187dd65ab5759ffa2b0f0d07c782fc5e888ef70c29ed5cd4fa9267ab2b",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.694-beta/rpcortex-v2.0.694-beta-pico2.bin"
+        },
+        {
+          "board": "pico2",
+          "kind": "uf2",
+          "file": "rpcortex-v2.0.694-beta-pico2.uf2",
+          "size": 794624,
+          "sha256": "88ca61314ec1fe910cf90d6ef0ae93a868bb852ffd0c5c31fefd7f345daf667e",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.694-beta/rpcortex-v2.0.694-beta-pico2.uf2"
+        },
+        {
+          "board": "pico",
+          "kind": "bin",
+          "file": "rpcortex-v2.0.694-beta-pico.bin",
+          "size": 333908,
+          "sha256": "b810dd04e9e2ad41896f95c9cda8f71e60e3219f3f378b54cff900f8e636de0d",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.694-beta/rpcortex-v2.0.694-beta-pico.bin"
+        },
+        {
+          "board": "pico",
+          "kind": "uf2",
+          "file": "rpcortex-v2.0.694-beta-pico.uf2",
+          "size": 668160,
+          "sha256": "61791347c4b0b8fea4869b0217ece791e34c9d87f4e4562177914e4ba8498ba0",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.694-beta/rpcortex-v2.0.694-beta-pico.uf2"
+        }
+      ],
+      "url": "https://github.com/dash1101/RPCortex/releases/tag/v2.0.694-beta"
+    },
+    {
       "tag": "v2.0.689-beta",
       "display": "v2.0.689-beta",
       "version": "2.0",

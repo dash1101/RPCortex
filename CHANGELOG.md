@@ -8,6 +8,22 @@ good notes is in `RELEASING.md`.
 
 ## Unreleased
 
+Summary: 
+
+### New
+
+### Improved
+
+### Fixed
+
+### Security
+
+### Changed
+
+### Known issues
+
+## v2.0.694-beta, 2026-11-25
+
 Summary: a network port, so rpc bridge keeps a board online for everything on it, and browse loads on a board that has been up a while
 
 ### New
