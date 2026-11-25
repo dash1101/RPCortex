@@ -8,6 +8,22 @@ good notes is in `RELEASING.md`.
 
 ## Unreleased
 
+Summary: 
+
+### New
+
+### Improved
+
+### Fixed
+
+### Security
+
+### Changed
+
+### Known issues
+
+## v2.0.689-beta, 2026-11-25
+
 Summary: browse puts the web on the console (links, forms and search, over Wi-Fi or through RPC Studio), and big packages can load only while they run
 
 ### New

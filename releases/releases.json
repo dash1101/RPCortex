@@ -2,6 +2,103 @@
   "schema": 1,
   "releases": [
     {
+      "tag": "v2.0.689-beta",
+      "display": "v2.0.689-beta",
+      "version": "2.0",
+      "build": 689,
+      "commit": "ec609127d480e6412f54780270e11cf7f7349fa2",
+      "codename": "Vela II",
+      "date": "2026-11-25",
+      "prerelease": true,
+      "title": "RPCortex v2.0.689-beta",
+      "summary": "browse puts the web on the console (links, forms and search, over Wi-Fi or through RPC Studio), and big packages can load only while they run",
+      "notes": {
+        "new": [
+          "For package authors, API 1.28: `fw_http_request`, one HTTP request as a browser makes them: a method and a body, the page whatever its status, where it ended up after redirects, its content type, and a cap that keeps the start of a page too big to hold.",
+          "`browse`, a package: the web as text on the console. Type an address or a site's name (`google` opens www.google.com) or some words to search, move between the links and boxes with the arrow keys, type into a box, press Enter; Left goes back. It shows what a page's HTML says (text, links, headings, lists, forms) and runs no JavaScript, so Google, which refuses every browser without it, has its searches sent to DuckDuckGo's text version, and the page says so. `browse -d <url>` prints a page and its links for scripts. On a board without Wi-Fi it goes online through RPC Studio. `pkg install browse`."
+        ],
+        "improved": [
+          "A package can load only while its command runs (`RPC_APP_F_ON_DEMAND` in its header): it is loaded once to learn its commands, then unloaded, and loaded again each time one of them is typed. `browse` does, so installing it costs nothing at rest (78 KB otherwise, from boot to power-off); `apps` lists such packages as \"loads when used\".",
+          "The package loader asks for the larger half of a package first. It assumed the code was always larger; a package with a big buffer turned that round, and the code took the one hole the data needed."
+        ],
+        "fixed": [
+          "`fw_http_get` gave a package -1 for any reply bigger than its buffer, instead of the buffer full: the size was passed on as a limit, and the fetch refused the piece that would have filled it."
+        ],
+        "security": [],
+        "changed": [
+          "A board without Wi-Fi now says where its network comes from: a web request with no computer attached answers \"No network. This board goes online through RPC Studio\" and names the ways in (rpc term, rpc exec, the Studio app, the browser tool), first-boot setup says the same, and ping, nslookup, ntp and lanscan, which need a network of the board's own, say that web requests still work. websearch 2.3 says it too."
+        ],
+        "issues": []
+      },
+      "assets": [
+        {
+          "board": "pico2_w",
+          "kind": "bin",
+          "file": "rpcortex-v2.0.689-beta-pico2_w.bin",
+          "size": 873644,
+          "sha256": "c91a766f8c650e976edcfca11ddd849f46501ef056625740e8ee20893a558de6",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.689-beta/rpcortex-v2.0.689-beta-pico2_w.bin"
+        },
+        {
+          "board": "pico2_w",
+          "kind": "uf2",
+          "file": "rpcortex-v2.0.689-beta-pico2_w.uf2",
+          "size": 1747968,
+          "sha256": "a8ede6f3ba2ec321ddb85d04c620fe62a671dfaab990a17ad42bb5d72af4b2a8",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.689-beta/rpcortex-v2.0.689-beta-pico2_w.uf2"
+        },
+        {
+          "board": "pico_w",
+          "kind": "bin",
+          "file": "rpcortex-v2.0.689-beta-pico_w.bin",
+          "size": 778896,
+          "sha256": "abb439925a26dd228d0356d4865234515a53947106e5dab86691e43dc3c1a559",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.689-beta/rpcortex-v2.0.689-beta-pico_w.bin"
+        },
+        {
+          "board": "pico_w",
+          "kind": "uf2",
+          "file": "rpcortex-v2.0.689-beta-pico_w.uf2",
+          "size": 1558016,
+          "sha256": "877d3670bda21572514b7ad6ff64e704907a2254e484a16d96e329fdd24f0380",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.689-beta/rpcortex-v2.0.689-beta-pico_w.uf2"
+        },
+        {
+          "board": "pico2",
+          "kind": "bin",
+          "file": "rpcortex-v2.0.689-beta-pico2.bin",
+          "size": 394020,
+          "sha256": "d104933724ab21822bd4ee253c3fe0a44ae5bfadcc629b96de4c8477f598191c",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.689-beta/rpcortex-v2.0.689-beta-pico2.bin"
+        },
+        {
+          "board": "pico2",
+          "kind": "uf2",
+          "file": "rpcortex-v2.0.689-beta-pico2.uf2",
+          "size": 788992,
+          "sha256": "13574bcdc8d5596c915cd46767d9380e4169e7446f567f88a00dac77a077a3c5",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.689-beta/rpcortex-v2.0.689-beta-pico2.uf2"
+        },
+        {
+          "board": "pico",
+          "kind": "bin",
+          "file": "rpcortex-v2.0.689-beta-pico.bin",
+          "size": 331620,
+          "sha256": "9f6f78d0fd2653e55192c7a367724385facf544faff5209d5595c66f8db87f1c",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.689-beta/rpcortex-v2.0.689-beta-pico.bin"
+        },
+        {
+          "board": "pico",
+          "kind": "uf2",
+          "file": "rpcortex-v2.0.689-beta-pico.uf2",
+          "size": 663552,
+          "sha256": "3875d6459e85085f7dcf94a67f477b5d51eeba89e3990a7cf6af17faf31dafad",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.689-beta/rpcortex-v2.0.689-beta-pico.uf2"
+        }
+      ],
+      "url": "https://github.com/dash1101/RPCortex/releases/tag/v2.0.689-beta"
+    },
+    {
       "tag": "v2.0.684-beta",
       "display": "v2.0.684-beta",
       "version": "2.0",
