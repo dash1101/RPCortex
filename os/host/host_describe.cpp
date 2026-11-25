@@ -27,6 +27,7 @@ uint32_t heap_free(void)  { return 1000; }
 uint32_t heap_total(void) { return 2000; }
 bool storage_open_source(const char *, AppSource *, void **) { return false; }
 void storage_close_source(void *) {}
+bool pkg_load_one(const char *) { return false; }   // pkg.cpp; the demand path is board-tested
 extern "C" void api_set_current_app(void *) {}
 
 extern "C" int fault_report_contained(void) { return 0; }

@@ -856,6 +856,15 @@ static int run_one(char *seg, bool *sudo_ran) {
     // A copy, not a pointer into the table: see cmd_resolve_copy.
     CommandRef ref;
     const Command *c = cmd_resolve_copy(argv[0], &ref) ? &ref.cmd : nullptr;
+    // A command of a package that loads only while it is used: load it for this
+    // run. The guard unloads it again however this returns (a refusal below
+    // included).
+    struct DemandRun {
+        char pkg[24] = "";
+        ~DemandRun() { if (pkg[0]) apps_demand_release(pkg); }
+    } demand;
+    if (!c && apps_demand_load(argv[0], demand.pkg, sizeof(demand.pkg)))
+        c = cmd_resolve_copy(argv[0], &ref) ? &ref.cmd : nullptr;
     if (!c) {
         // A bare path to a script runs it, as it did on v1. Checked before the
         // error so `/os/setup.rps` works the way people already expect.

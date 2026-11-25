@@ -22,11 +22,13 @@
 #include <stdio.h>
 #include <string.h>
 
-RPC_APP_VER("browse", "1.0");
+// On demand: 78 KB while it runs (its code, when Nova D1 has the flash slot, and
+// the page), none the rest of the time.
+RPC_APP_VER_FLAGS("browse", "1.0", RPC_APP_F_ON_DEMAND);
 
 #define BROWSE_FILE  "/tmp/browse.html"
 #define BROWSE_CAP   (96u * 1024u)     // of any one page; the rest is not fetched
-#define HISTORY_N    8
+#define HISTORY_N    6
 #define BROWSE_UA    "RPCortex-browse/1.0 (text-mode; Lynx-compatible)"
 
 #define C_LINK   6        // cyan

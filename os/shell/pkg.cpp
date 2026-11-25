@@ -926,6 +926,13 @@ static void load_cb(void *, const char *name, const char *) {
 
 void pkg_load_installed(void) { index_walk(load_cb, nullptr); }
 
+// One installed package, the way boot loads it (the flash slot, else the file).
+// For apps_demand_load. True when it is resident afterwards.
+bool pkg_load_one(const char *name) {
+    load_cb(nullptr, name, nullptr);
+    return apps_resident(name);
+}
+
 struct VerLookup { const char *want; char *out; unsigned cap; bool hit; };
 
 static void ver_cb(void *ctx, const char *name, const char *version) {

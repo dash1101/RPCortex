@@ -10,6 +10,7 @@
 #include "lock.h"
 #include "logring.h"
 #include "detach.h"
+#include "rpc_app.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -978,6 +979,87 @@ const void *apps_owner_of(const char *name) {
     return a ? a->image : nullptr;
 }
 
+// --- packages that load when used (RPC_APP_F_ON_DEMAND) -----------------------------
+//
+// A big package used now and then (browse is 78 KB loaded: its code in RAM when
+// Nova D1 has the flash slot, and a 48 KB page) would otherwise hold that memory
+// from boot to power-off. Such a package is loaded once to learn what commands it
+// registers, which are noted here with copies of their names and help lines (the
+// originals point into the image being freed), and unloaded. Typing one of them
+// loads it again, runs the command, and unloads it after (apps_demand_*, from
+// shell.cpp's dispatch).
+
+#define DEMAND_MAX 16
+struct DemandCmd { char cmd[24]; char help[56]; char pkg[24]; };
+static DemandCmd g_demand[DEMAND_MAX];
+static uint32_t  g_demand_n;
+// The package a demand load is bringing in: launch_loaded keeps that one.
+static char      g_demand_keep[24];
+
+bool pkg_load_one(const char *name);        // pkg.cpp: the slot, else the file
+
+static void demand_note(const LoadedApp &app) {
+    // Forget what this package registered before (a reinstall may have changed it).
+    uint32_t w = 0;
+    for (uint32_t i = 0; i < g_demand_n; i++)
+        if (strcmp(g_demand[i].pkg, app.header.name)) g_demand[w++] = g_demand[i];
+    g_demand_n = w;
+    for (uint32_t i = 0; i < cmd_count(); i++) {
+        const Command *c = cmd_at(i);
+        if (!c || c->owner != app.image || g_demand_n >= DEMAND_MAX) continue;
+        DemandCmd &d = g_demand[g_demand_n++];
+        snprintf(d.cmd, sizeof(d.cmd), "%s", c->name);
+        snprintf(d.help, sizeof(d.help), "%s", c->help ? c->help : "");
+        snprintf(d.pkg, sizeof(d.pkg), "%s", app.header.name);
+    }
+}
+
+bool apps_demand_load(const char *cmd, char *pkg, uint32_t cap) {
+    if (!cmd) return false;
+    const DemandCmd *hit = nullptr;
+    for (uint32_t i = 0; i < g_demand_n; i++)
+        if (!strcmp(g_demand[i].cmd, cmd)) { hit = &g_demand[i]; break; }
+    if (!hit) return false;
+    snprintf(pkg, cap, "%s", hit->pkg);
+    if (apps_resident(hit->pkg)) return true;        // a run already has it
+    snprintf(g_demand_keep, sizeof(g_demand_keep), "%s", hit->pkg);
+    bool ok = pkg_load_one(hit->pkg);
+    // The load needs its halves (and, for the parse, the loader's 21 KB of
+    // working buffers) at once. Pooled sandbox stacks left by the last run sit in
+    // the middle of the hole the package itself left, so the second run of a
+    // 56 KB-data package failed with 159 KB free. Give them back and try again.
+    if (!ok && apps_pool_reclaim()) ok = pkg_load_one(hit->pkg);
+    g_demand_keep[0] = 0;
+    if (!ok || !apps_resident(pkg)) {
+        out_err("'%s' could not be loaded for '%s'%s.", pkg, cmd,
+                ok ? "" : " (not enough memory in one piece?)");
+        return false;
+    }
+    return true;
+}
+
+void apps_demand_release(const char *pkg) {
+    if (!pkg || !pkg[0]) return;
+    // Only a package this mechanism manages; and not while anything is inside it
+    // (apps_unload refuses that itself).
+    for (uint32_t i = 0; i < g_demand_n; i++)
+        if (!strcmp(g_demand[i].pkg, pkg)) {
+            // And the sandbox stacks its run left pooled: they would otherwise
+            // sit inside the hole the package leaves, which is exactly where its
+            // next load wants to go.
+            if (apps_unload(pkg)) apps_pool_reclaim();
+            return;
+        }
+}
+
+bool apps_demand_at(uint32_t i, const char **cmd, const char **help, const char **pkg) {
+    if (i >= g_demand_n) return false;
+    if (cmd)  *cmd  = g_demand[i].cmd;
+    if (help) *help = g_demand[i].help;
+    if (pkg)  *pkg  = g_demand[i].pkg;
+    return true;
+}
+
 // Everything after the load, which is the same whichever way the package got
 // here: run app_main, keep it resident if it registered a command, and say
 // something useful if it did not.
@@ -1025,6 +1107,16 @@ static int launch_loaded(LoadedApp *appp, int arg, bool quiet, uint32_t before) 
         if (ci && ci->owner == app.image) { resident = true; break; }
     }
 
+    // Loaded only while used: note its commands and give the memory back, unless
+    // this IS the load for a use.
+    if (resident && (app.header.flags & RPC_APP_F_ON_DEMAND) &&
+        strcmp(g_demand_keep, app.header.name) != 0) {
+        demand_note(app);
+        cmd_remove_owner(app.image);
+        unload_image(&app);
+        if (!quiet) out_ok("Package '%s' ready; it loads while its command runs.", app.header.name);
+        return ret;
+    }
     if (resident) {
         if (apps_store(&app)) {
             if (!quiet) out_ok("Package '%s' loaded.", app.header.name);
@@ -1149,6 +1241,19 @@ static int cmd_apps(int, char **) {
         n++;
     }
     if (!n) out_multi("  (no packages loaded)");
+    // Installed, and loaded only while one of their commands runs.
+    for (uint32_t i = 0; i < g_demand_n; i++) {
+        bool first = true;
+        for (uint32_t j = 0; j < i; j++) if (!strcmp(g_demand[j].pkg, g_demand[i].pkg)) first = false;
+        if (!first || apps_resident(g_demand[i].pkg)) continue;
+        char cmds[80] = "";
+        for (uint32_t j = i; j < g_demand_n; j++) {
+            if (strcmp(g_demand[j].pkg, g_demand[i].pkg)) continue;
+            size_t l = strlen(cmds);
+            snprintf(cmds + l, sizeof(cmds) - l, "%s%s", l ? ", " : "", g_demand[j].cmd);
+        }
+        out_multi("  %s%-16s%s %sloads when used: %s%s", C_CYAN, g_demand[i].pkg, C_RESET, C_GRAY, cmds, C_RESET);
+    }
     return 0;
 }
 

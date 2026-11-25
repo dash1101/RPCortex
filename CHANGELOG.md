@@ -18,6 +18,10 @@ Summary:
 
 ### Improved
 
+- A package can load only while its command runs (`RPC_APP_F_ON_DEMAND` in its header): it is loaded once to learn its commands, then unloaded, and loaded again each time one of them is typed. `browse` does, so installing it costs nothing at rest (78 KB otherwise, from boot to power-off); `apps` lists such packages as "loads when used".
+
+- The package loader asks for the larger half of a package first. It assumed the code was always larger; a package with a big buffer turned that round, and the code took the one hole the data needed.
+
 ### Fixed
 
 - `fw_http_get` gave a package -1 for any reply bigger than its buffer, instead of the buffer full: the size was passed on as a limit, and the fetch refused the piece that would have filled it.

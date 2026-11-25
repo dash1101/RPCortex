@@ -53,6 +53,16 @@ LoadedApp *apps_store(const LoadedApp *app);
 // currently executing it — ask apps_busy_pid to tell the two apart.
 bool apps_unload(const char *name);
 
+// Packages that load only while their command runs (RPC_APP_F_ON_DEMAND).
+// `cmd` is one of theirs, not loaded: load its package now (true when the
+// command can now be resolved), writing the package's name to `pkg`.
+bool apps_demand_load(const char *cmd, char *pkg, uint32_t cap);
+// The command has returned: unload the package again (unless something is
+// still inside it).
+void apps_demand_release(const char *pkg);
+// The commands known this way, for `apps`, `help` and completion: i from 0.
+bool apps_demand_at(uint32_t i, const char **cmd, const char **help, const char **pkg);
+
 // Is a package by this name already loaded? pkg_install_file loads what it
 // installs, so the boot walk over the index would otherwise load it a second
 // time — and the second copy cannot register the commands the first already

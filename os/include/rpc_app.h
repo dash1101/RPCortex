@@ -31,8 +31,16 @@ typedef struct {
     uint16_t api_minor;
     char     name[24];
     char     version[12];    // the package's own version, e.g. "1.0.0"
-    uint32_t flags;          // reserved (e.g. "registers commands", "wants core1")
+    uint32_t flags;          // RPC_APP_F_*; other bits reserved, and zero
 } RpcAppHeader;
+
+// Load only while one of its commands runs (firmware from v2.0.687; older
+// firmware ignores the bit and keeps the package loaded as before). For a big
+// package used now and then, whose memory the rest of the board can use in
+// between: it is loaded once at boot to learn its commands, then unloaded, and
+// loaded again each time one of them is typed. A package that starts work that
+// outlives its command (a background task) must not set it.
+#define RPC_APP_F_ON_DEMAND 0x1u
 
 #define RPC_APP_MAGIC 0x52504341u   // 'RPCA'
 
@@ -45,6 +53,11 @@ typedef struct {
         RPC_APP_MAGIC, RPC_API_MAJOR, RPC_API_MINOR, appname, ver, 0           \
     }
 #define RPC_APP(appname) RPC_APP_VER(appname, "1.0")
+#define RPC_APP_VER_FLAGS(appname, ver, fl)                                   \
+    __attribute__((section(".rpc_app_header"), used))                         \
+    const RpcAppHeader rpc_app_header = {                                     \
+        RPC_APP_MAGIC, RPC_API_MAJOR, RPC_API_MINOR, appname, ver, (fl)        \
+    }
 
 // --- the TUI (API 1.4) ------------------------------------------------------
 //

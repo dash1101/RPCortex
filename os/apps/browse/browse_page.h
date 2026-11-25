@@ -11,12 +11,12 @@
 
 #include <stdint.h>
 
-#define PAGE_TEXT      20480   // the laid-out text, every line end to end
-#define PAGE_LINES     1400
-#define PAGE_SPANS     700     // links and fields on the lines, and bold runs
-#define PAGE_POOL      8192    // link targets, form actions, field names
+#define PAGE_TEXT      16384   // the laid-out text, every line end to end
+#define PAGE_LINES     1100
+#define PAGE_SPANS     520     // links and fields on the lines, and bold runs
+#define PAGE_POOL      6144    // link targets, form actions, field names
 #define PAGE_FORMS     10
-#define PAGE_FIELDS    48
+#define PAGE_FIELDS    32
 #define FIELD_VALUE    112
 #define PAGE_TITLE     96
 #define URL_MAX        512

@@ -711,10 +711,12 @@ LoadResult app_load(const AppSource &src, LoadedApp *out) {
     // placed on the first boundary inside. The raw pointers are kept because
     // they, not the aligned ones, are what the allocator will take back.
     //
-    // The read-only half is asked for FIRST and is the larger of the two, so
-    // the request most likely to fail is made while the heap is least picked
-    // over. An app with no writable sections asks for nothing at all rather
-    // than a token block nobody uses.
+    // The LARGER half is asked for first, so the request most likely to fail is
+    // made while the heap is least picked over. That used to be the read-only
+    // half by assumption; a package with a big buffer (browse: 27 KB of code,
+    // 56 KB of data) turns it round, and asking for the code first carved it out
+    // of the one hole big enough for the data. An app with no writable sections
+    // asks for nothing at all rather than a token block nobody uses.
     uint32_t text_bytes = text_end;
     uint32_t data_bytes = total - text_end;
 
@@ -723,22 +725,29 @@ LoadResult app_load(const AppSource &src, LoadedApp *out) {
     // number is a message nobody can act on — the whole point of splitting the
     // image was to make the binding request smaller, and there is no way to
     // tell whether that worked without knowing which one ran out.
-    uint8_t *image_raw = (uint8_t *)g_alloc((text_bytes ? text_bytes : APP_BLOCK_ALIGN) + APP_BLOCK_ALIGN);
-    if (!image_raw) {
-        snprintf(out->detail, sizeof(out->detail), "%u bytes for the code half",
-                 (unsigned)text_bytes);
-        free(names);
-        return LOAD_ERR_OOM;
-    }
-
-    uint8_t *data_raw = nullptr;
-    if (data_bytes) {
-        data_raw = (uint8_t *)g_alloc(data_bytes + APP_BLOCK_ALIGN);
-        if (!data_raw) {
-            snprintf(out->detail, sizeof(out->detail), "%u bytes for the data half",
-                     (unsigned)data_bytes);
-            g_free(image_raw); free(names);
-            return LOAD_ERR_OOM;
+    uint8_t *image_raw = nullptr, *data_raw = nullptr;
+    bool data_first = data_bytes > text_bytes;
+    for (int step = 0; step < 2; step++) {
+        bool want_data = (step == 0) == data_first;
+        if (want_data) {
+            if (!data_bytes) continue;
+            data_raw = (uint8_t *)g_alloc(data_bytes + APP_BLOCK_ALIGN);
+            if (!data_raw) {
+                snprintf(out->detail, sizeof(out->detail), "%u bytes for the data half",
+                         (unsigned)data_bytes);
+                if (image_raw) g_free(image_raw);
+                free(names);
+                return LOAD_ERR_OOM;
+            }
+        } else {
+            image_raw = (uint8_t *)g_alloc((text_bytes ? text_bytes : APP_BLOCK_ALIGN) + APP_BLOCK_ALIGN);
+            if (!image_raw) {
+                snprintf(out->detail, sizeof(out->detail), "%u bytes for the code half",
+                         (unsigned)text_bytes);
+                if (data_raw) g_free(data_raw);
+                free(names);
+                return LOAD_ERR_OOM;
+            }
         }
     }
 
