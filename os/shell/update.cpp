@@ -288,10 +288,31 @@ bool update_apply_file(const char *path, const char *to_version, bool at_boot) {
     // Skipped entirely on the rollback path: that IS a saved image being put
     // back, and capturing the broken firmware over it would trade a copy that
     // works for one that does not.
+    //
+    // OPT-IN since v2.0.680: the copy is the size of the firmware, 848 KB of a
+    // Pico 2 W's 1792 KB filesystem, and it was taken on every update whether
+    // or not anyone would ever roll back. `Update.Keep_Rollback` turns it on;
+    // `update rollback --save` still saves one by hand. With it off, a copy left
+    // by earlier firmware goes too: it no longer describes the version being
+    // replaced, it only holds the space.
     if (!at_boot && strcmp(path, ROLLBACK_IMG) != 0) {
         if (!strcmp(path, IMAGE_PATH)) storage_remove(IMAGE_PATH);
-        rollback_capture(/*announce*/true);
-        out_blank();
+        if (strcmp(reg_get("Update.Keep_Rollback", "false"), "true") == 0) {
+            rollback_capture(/*announce*/true);
+            out_blank();
+        } else {
+            RollbackInfo old{};
+            bool is_dir = false; uint32_t sz = 0;
+            bool had = rollback_read(&old) || (storage_stat(ROLLBACK_IMG, &is_dir, &sz) && sz);
+            if (had) {
+                rollback_forget();
+                out_info("Removed the old firmware copy %s(%s); keeping one is off.%s",
+                         C_GRAY, old.ver[0] ? old.ver : "unrecorded", C_RESET);
+            }
+            out_multi("  %sNo copy of this firmware is kept. 'settings' (Keep rollback) or%s", C_GRAY, C_RESET);
+            out_multi("  %s'sudo update rollback --save' keeps one, if there is room.%s", C_GRAY, C_RESET);
+            out_blank();
+        }
     }
 
     // A note to the NEXT boot, written before anything is erased.

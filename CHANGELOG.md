@@ -20,6 +20,8 @@ Summary:
 
 ### Changed
 
+- A copy of the old firmware is no longer kept on every update. It is as big as the firmware (848 KB of a Pico 2 W's 1792 KB filesystem), and it was taken whether or not anyone would roll back; with it off, an update also clears a copy left by earlier firmware. 'Keep rollback' in `settings` (`Update.Keep_Rollback`) turns it back on, and `sudo update rollback --save` still keeps one by hand.
+
 ### Known issues
 
 ## v2.0.676-beta, 2026-11-23

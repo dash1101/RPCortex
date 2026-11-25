@@ -54,6 +54,9 @@ static const Row kRows[] = {
     {ROW_HEAD, "NETWORK",       nullptr,               nullptr,  nullptr},
     {ROW_BOOL, "WiFi autoconnect", "WiFi.Auto",        "false",  "Rejoin a saved network at boot"},
 
+    {ROW_HEAD, "UPDATES",       nullptr,               nullptr,  nullptr},
+    {ROW_BOOL, "Keep rollback", "Update.Keep_Rollback", "false", "Save the old firmware on update (uses flash)"},
+
     {ROW_HEAD, "SHELL",         nullptr,               nullptr,  nullptr},
     {ROW_BOOL, "Colour",        "Shell.Color",         "true",   "ANSI colour in output"},
     {ROW_INT,  "History size",  "Shell.History",       "50",     "Lines of command history"},

@@ -216,8 +216,9 @@ int update_online(bool force, bool yes) {
         if (storage_stat(ROLLBACK_IMG, &is_dir, &saved) && !is_dir && saved) {
             out_warn("Removing the saved copy of the previous firmware (%lu KB) to make room.",
                      (unsigned long)(saved / 1024));
-            out_multi("  %sThe running firmware is saved again before anything is written.%s",
-                      C_GRAY, C_RESET);
+            if (strcmp(reg_get("Update.Keep_Rollback", "false"), "true") == 0)
+                out_multi("  %sThe running firmware is saved again before anything is written.%s",
+                          C_GRAY, C_RESET);
             rollback_forget();
         }
         if (!storage_would_fit((uint32_t)e.size)) {

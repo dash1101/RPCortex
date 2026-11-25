@@ -376,7 +376,8 @@ static void show(void) {
         if (storage_stat(ROLLBACK_IMG, &d, &orphan) && orphan)
             out_multi("  %sThere is a %lu KB image with no valid record beside it.%s",
                       C_GRAY, (unsigned long)(orphan / 1024), C_RESET);
-        out_multi("  A copy is saved automatically when an update is applied.");
+        out_multi("  A copy is saved when an update is applied only with 'Keep rollback' on");
+        out_multi("  in 'settings' (it uses as much flash as the firmware).");
         out_multi("  'sudo update rollback --save' saves one from what is running now.");
         return;
     }
