@@ -18,7 +18,6 @@
 // Set around app_main so a registered command is tagged with its app (api.cpp)
 // and a fault names the culprit (fault.cpp).
 extern "C" void api_set_current_app(void *owner);
-extern "C" volatile const char *g_current_app;
 
 // A fault inside a package prints nothing from the handler — see the note in
 // fault.cpp — and this reads the report out afterwards, from task context.
@@ -1000,7 +999,8 @@ static int launch_loaded(LoadedApp *appp, int arg, bool quiet, uint32_t before) 
     uint32_t refused_before = cmd_refused();
 
     api_set_current_app(app.image);
-    g_current_app = app.header.name;
+    const char *prev_app = task_shell()->app;
+    task_shell()->app = app.header.name;
     // The first jump into loaded code. If a crash report stops here the loader
     // produced something that does not execute, which is a very different
     // problem from a package with a bug in it.
@@ -1013,7 +1013,7 @@ static int launch_loaded(LoadedApp *appp, int arg, bool quiet, uint32_t before) 
     bb_note_phase("entering app_main");
     int ret = app_run(&app, app.entry, arg);
     bb_note_phase("app_main returned");
-    g_current_app = nullptr;
+    task_shell()->app = prev_app;
     api_set_current_app(nullptr);
 
     // Resident iff it registered a command owned by its image.

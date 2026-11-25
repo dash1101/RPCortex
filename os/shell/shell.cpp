@@ -39,7 +39,6 @@
 // Set by the shell around app_main so a registered command is tagged with its
 // app (api.cpp), and so a fault names the culprit (fault.cpp).
 extern "C" void api_set_current_app(void *owner);
-extern "C" volatile const char *g_current_app;
 
 // The filesystem commands live in fs.cpp and carry the cwd.
 void fs_register(void);
@@ -902,13 +901,14 @@ static int run_one(char *seg, bool *sudo_ran) {
     // code is where it stopped; "calling" without "entered" means it never got
     // there at all.
     char phase[40];
+    const char *prev_app = task_shell()->app;
     if (c->owner) {
         snprintf(phase, sizeof(phase), "calling package '%s'", c->name);
         bb_note_phase(phase);
         // Name the package for the duration of the CALL too. It was only set
         // around app_main, so a fault in a registered command reported
         // "in firmware" — which is exactly backwards.
-        g_current_app = c->name;
+        task_shell()->app = c->name;
         // And protect it for the duration of the call, the same way app_main is
         // protected. A resident package spends nearly all of its life here
         // rather than in app_main, so covering only the load would have been
@@ -928,7 +928,7 @@ static int run_one(char *seg, bool *sudo_ran) {
         out_err("'%s' was unloaded before it could run.", c->name);
         rc = 1;
     }
-    g_current_app = nullptr;
+    task_shell()->app = prev_app;
     if (c->owner) {
         snprintf(phase, sizeof(phase), "'%s' returned", c->name);
         bb_note_phase(phase);

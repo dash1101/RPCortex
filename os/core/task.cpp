@@ -494,6 +494,7 @@ int task_spawn(const char *name, const char *path, TaskFn fn, void *arg,
         t->shell.intr_dom = parent->shell.intr_dom;
         t->shell.intr_detached = parent->shell.intr_detached;
         t->shell.elevated = parent->shell.elevated;
+        t->shell.app = parent->shell.app;          // a package's worker is that package
     }
     t->live  = false;        // slots are reused; the memset above only clears info
     t->crit  = 0;
@@ -1137,6 +1138,11 @@ TaskShell *task_shell(void) {
     static TaskShell boot;
     Task *t = cur();
     return t ? &t->shell : &boot;
+}
+
+extern "C" const char *task_current_app(void) {
+    Task *t = cur();
+    return t ? t->shell.app : nullptr;
 }
 
 bool task_identity(int pid, bool *own, char *user, uint32_t cap) {

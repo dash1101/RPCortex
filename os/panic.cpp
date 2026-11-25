@@ -29,7 +29,6 @@
 #include <stdarg.h>
 
 // The app that was running when things went wrong, if any (apps.cpp sets it).
-extern "C" volatile const char *g_current_app;
 
 extern "C" void __attribute__((noreturn)) rpc_panic_handler(const char *fmt, ...) {
     // Interrupts are already off by the time a panic reaches here. printf still
@@ -52,8 +51,8 @@ extern "C" void __attribute__((noreturn)) rpc_panic_handler(const char *fmt, ...
         printf("%s\n", C_RESET);
     }
 
-    if (g_current_app)
-        out_multi("   while running package '%s'", (const char *)g_current_app);
+    if (const char *app = task_current_app())
+        out_multi("   while running package '%s'", app);
 
     out_multi("   Press any key to reboot, or B for the bootloader.");
     printf("\n");

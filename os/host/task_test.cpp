@@ -332,6 +332,34 @@ int main(void) {
         task_reap(x);
     }
 
+    // --- the package a task is running (crash reports) ----------------------
+    // One global before: a task leaving its package cleared the name another
+    // task's crash report would have shown.
+    {
+        static const char *seen_child, *seen_other;
+        struct P { static int child(void *) {
+            seen_child = task_current_app();
+            task_yield();
+            return 0;
+        } static int other(void *) {
+            task_shell()->app = "other";
+            task_yield();
+            task_shell()->app = nullptr;      // leaving its package
+            seen_other = task_current_app();
+            return 0;
+        } };
+        task_shell()->app = "novad1";
+        int c = task_spawn("pkgworker", nullptr, P::child, nullptr, ST, AFFINITY_ANY);
+        int o = task_spawn("other", nullptr, P::other, nullptr, ST, AFFINITY_ANY);
+        for (int i = 0; i < 6; i++) task_yield();
+        ck(seen_child && !strcmp(seen_child, "novad1"), "a task a package spawns is reported as that package");
+        ck(seen_other == nullptr, "a task's own name clears for it");
+        ck(task_current_app() && !strcmp(task_current_app(), "novad1"),
+           "another task leaving its package does not clear this one's");
+        task_shell()->app = nullptr;
+        task_reap(c); task_reap(o);
+    }
+
     // --- reaping ------------------------------------------------------------
     ck(task_reap(a), "a DONE task can be reaped");
     ck(!task_reap(a), "reaping twice does nothing");

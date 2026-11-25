@@ -133,7 +133,8 @@ bool fault_stack_overflowed(int core) {
 uint32_t fault_stack_size(void) { return FAULT_STACK_WORDS * 4; }
 
 // Set while an app is running, so a fault can say WHOSE fault it was.
-volatile const char *g_current_app = nullptr;
+// task_current_app(): os/core/task.cpp (the package the faulting task runs).
+extern "C" const char *task_current_app(void);
 
 struct FaultFrame {
     uint32_t r0, r1, r2, r3, r12, lr, pc, psr;
@@ -214,7 +215,7 @@ int fault_report(FaultFrame *f, const char *kind) {
     bool in_veneer = false;
     const char *pkg = apps_locate(f->pc, &off, &in_veneer);
     const char *who = pkg ? pkg
-                          : (g_current_app ? (const char *)g_current_app : "firmware");
+                          : (task_current_app() ? task_current_app() : "firmware");
     // Hand-built rather than snprintf: this is a fault handler, and calling into
     // stdio here is exactly the sort of thing that faults again.
     int n = 0;
@@ -389,7 +390,7 @@ int fault_report(FaultFrame *f, const char *kind) {
         printf("    faulting address = 0x%08lx\n", (unsigned long)addr);
     printf("\n");
     printf("*** %s ***\n", kind);
-    if (g_current_app) printf("    in app: %s\n", (const char *)g_current_app);
+    if (const char *app = task_current_app()) printf("    in app: %s\n", app);
     printf("    pc  = 0x%08lx   lr  = 0x%08lx\n",
            (unsigned long)f->pc, (unsigned long)f->lr);
     printf("    r0  = 0x%08lx   r1  = 0x%08lx\n",

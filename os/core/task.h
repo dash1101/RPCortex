@@ -479,6 +479,14 @@ struct TaskShell {
     // whoever ran the line to act on. Cleared by them; not inherited.
     uint8_t     sudo_flags;
 
+    // The package whose code this task is running, for a crash report: set
+    // around app_main and around a package's command, restored (not cleared)
+    // afterwards so a nested call leaves the outer one named. Inherited, so a
+    // task a package spawns is reported as that package. It was one global for
+    // the whole device, so a package call on the other core, or a built-in run
+    // by a package, could blank or replace the name in someone else's report.
+    const char *app;
+
     bool        own_user;
     char        user[TASK_USER_MAX];
     char        cwd[TASK_CWD_MAX];
@@ -492,6 +500,9 @@ struct TaskShell {
     const TaskTerm *term;
 };
 TaskShell *task_shell(void);
+// The package the current task is running (TaskShell.app), or null. Reads only
+// the task table: safe from the fault handler.
+extern "C" const char *task_current_app(void);
 
 // The foreground command on the console has returned: every task still running
 // in the console's domain, other than the caller, is background from now on
