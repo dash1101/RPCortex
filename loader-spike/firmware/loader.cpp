@@ -48,23 +48,21 @@ void loader_set_allocator(LoaderAlloc a, LoaderFree f) {
     g_free  = f ? f : free;
 }
 
-// Windows into the ELF, shared by the two functions that parse one.
+// The parse workspace: the windows into the ELF and the per-section tables.
 //
-// app_load and app_pic_install are never in flight at the same time — the OS
-// holds LoaderGuard (shell/apps.h) around every call that parses an ELF, because
-// a load from a background task can otherwise overlap an install on the shell —
-// and a private copy of each in both
-// would be six kilobytes of bss for nothing. Named here rather than declared
-// static inside each function so the sharing is a decision instead of an
-// accident, and so the consequence is written down once: NOTHING may call one of
-// those two from inside the other.
-static Elf32_Rel g_relbuf[REL_CHUNK];
-static Elf32_Sym g_symwin[REL_CHUNK];
-// The section table, likewise shared. Five kilobytes each, and app_peek,
-// app_load, app_pic_measure and app_pic_install all want one — four private
-// copies would be twenty kilobytes of bss to hold the same table one function at
-// a time. Same rule as above, and it is the same rule for the same reason.
-static Elf32_Shdr g_shdr[LOADER_MAX_SECTIONS];
+// About 21 KB together, and used only while a package is being read: by
+// app_peek, app_load, app_pic_measure and app_pic_install, which the OS runs one
+// at a time under LoaderGuard (shell/apps.h). They were static, and so held 21
+// KB of RAM for the life of the device to be used for a second at a time. Each
+// entry point now allocates the workspace on the way in (WorkGuard) and frees it
+// on the way out, so the heap has those 21 KB whenever nothing is loading. A
+// nested entry reuses the one in place. The names below keep the code that uses
+// them as it was; only where the memory lives has changed.
+struct LoaderWork;
+static LoaderWork *g_work;
+#define g_relbuf (g_work->relbuf)
+#define g_symwin (g_work->symwin)
+#define g_shdr   (g_work->shdr)
 
 // Round an address up to a block boundary.
 //
@@ -426,6 +424,31 @@ struct SectionMap {
     bool     loaded;
 };
 
+
+#define PIC_PAGE 4096u
+
+struct LoaderWork {
+    Elf32_Rel  relbuf[REL_CHUNK];
+    Elf32_Sym  symwin[REL_CHUNK];
+    Elf32_Shdr shdr[LOADER_MAX_SECTIONS];
+    SectionMap map[LOADER_MAX_SECTIONS];          // app_load
+    uint32_t   blob_off[LOADER_MAX_SECTIONS];     // app_pic_install
+    uint32_t   ram_off[LOADER_MAX_SECTIONS];
+    bool       placed[LOADER_MAX_SECTIONS];
+    uint8_t    page[PIC_PAGE];
+};
+
+// Held for the length of one entry point. `ok` false: no memory for it.
+struct WorkGuard {
+    bool mine = false, ok = true;
+    WorkGuard() {
+        if (g_work) return;                       // nested: the caller's
+        g_work = (LoaderWork *)malloc(sizeof(LoaderWork));
+        ok = mine = g_work != nullptr;
+    }
+    ~WorkGuard() { if (mine) { free(g_work); g_work = nullptr; } }
+};
+
 // The header, and nothing else.
 //
 // Reading a package's name and version used to require LOADING it — relocating
@@ -438,6 +461,8 @@ struct SectionMap {
 // This reads the section table and the header section. The only allocation is
 // the section-name strings, a few hundred bytes, freed before returning.
 LoadResult app_peek(const AppSource &src, RpcAppHeader *out) {
+    WorkGuard work;
+    if (!work.ok) return LOAD_ERR_OOM;
     memset(out, 0, sizeof(*out));
 
     Elf32_Ehdr eh;
@@ -477,6 +502,8 @@ LoadResult app_peek(const AppSource &src, RpcAppHeader *out) {
 }
 
 LoadResult app_load(const AppSource &src, LoadedApp *out) {
+    WorkGuard work;
+    if (!work.ok) return LOAD_ERR_OOM;
     memset(out, 0, sizeof(*out));
 
     Elf32_Ehdr eh;
@@ -616,8 +643,8 @@ LoadResult app_load(const AppSource &src, LoadedApp *out) {
     // offsets already include text_end and rebasing is where that is undone.
     // Static for the same reason as `sh` above, and cleared on every entry
     // because a static keeps the last load's answers.
-    static SectionMap map[LOADER_MAX_SECTIONS];
-    memset(map, 0, sizeof(map));
+    SectionMap *const map = g_work->map;
+    memset(map, 0, sizeof(g_work->map));
 
     uint32_t total = 0;
     uint32_t text_end = 0;                 // where the read-only half stops
@@ -1298,7 +1325,6 @@ static int32_t pic_veneer(uint8_t *vbuf, uint32_t cap, uint32_t *used, uint32_t 
 // reads against an install whose flash erase alone takes seconds — and it is
 // measured in realapp_test rather than assumed, so if it ever stops being true
 // the number says so.
-#define PIC_PAGE 4096u
 
 // --- the pre-flight ----------------------------------------------------------
 //
@@ -1314,6 +1340,8 @@ static int32_t pic_veneer(uint8_t *vbuf, uint32_t cap, uint32_t *used, uint32_t 
 // relocation found by the producer is a package destroyed and not replaced,
 // and it costs nothing to see it coming.
 LoadResult app_pic_measure(const AppSource &src, PicMeasure *out) {
+    WorkGuard work;
+    if (!work.ok) return LOAD_ERR_OOM;
     memset(out, 0, sizeof(*out));
 
     Elf32_Ehdr eh;
@@ -1444,6 +1472,8 @@ LoadResult app_pic_measure(const AppSource &src, PicMeasure *out) {
 
 LoadResult app_pic_install(const AppSource &src, SlotWrite sink, void *sink_ctx,
                            PicManifest *m) {
+    WorkGuard work;
+    if (!work.ok) return LOAD_ERR_OOM;
     memset(m, 0, sizeof(*m));
     g_pic_peak = g_pic_biggest = g_pic_cuts = 0;   // this install's cost, not the last one's
 
@@ -1572,9 +1602,9 @@ LoadResult app_pic_install(const AppSource &src, SlotWrite sink, void *sink_ctx,
     // then writable ALLOC sections. Offsets here are region-relative and final —
     // the blob's because it is position-independent, the RAM's because r9 makes
     // them so. Same SHF_WRITE sort app_load uses, so the two agree on the split.
-    static uint32_t blob_off[LOADER_MAX_SECTIONS];
-    static uint32_t ram_off[LOADER_MAX_SECTIONS];
-    static bool     placed[LOADER_MAX_SECTIONS];
+    uint32_t *const blob_off = g_work->blob_off;
+    uint32_t *const ram_off  = g_work->ram_off;
+    bool     *const placed   = g_work->placed;
     for (int i = 0; i < eh.e_shnum; i++) { blob_off[i] = ram_off[i] = 0; placed[i] = false; }
 
     uint32_t bpos = 0, rpos = got_bytes;
@@ -1774,7 +1804,7 @@ LoadResult app_pic_install(const AppSource &src, SlotWrite sink, void *sink_ctx,
         if (rc == LOAD_OK) cur[i].sorted = sorted ? 1 : 0;
     }
 
-    static uint8_t page[PIC_PAGE];
+    uint8_t *const page = g_work->page;
     uint32_t pos = 0;
     while (pos < veneer_off && rc == LOAD_OK) {
         uint32_t end = pos + PIC_PAGE;

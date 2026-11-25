@@ -23,8 +23,13 @@
 #define MEM_SIZE                    16000
 #define MEMP_NUM_TCP_SEG            32
 #define MEMP_NUM_ARP_QUEUE          10
-// Headroom for a large download. Received data is held until the reader takes
-// it, and a firmware image is nearly 700 KB — 24 was sized for ping and NTP.
+// Received data waits here until the reader takes it. Do NOT shrink this on the
+// strength of lwIP's own statistics: on a Pico 2 W (v2.0.677) MEMP_STATS put the
+// pool's high-water mark at 14 of 32 under every load tried (an 848 KB HTTPS
+// download, two at once, a download beside an SSH session streaming 650 KB, a
+// speedtest), yet 20 buffers cut the speedtest from 2.2 to 1.2 Mbit/s and 26
+// to 2.0 (four runs each). 32 stays: 9 KB is not worth 9% of the throughput.
+// MEM_SIZE above is not oversized either: that SSH test took it to 15.5 of 16 KB.
 #define PBUF_POOL_SIZE              32
 
 #define LWIP_ARP                    1

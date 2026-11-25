@@ -14,6 +14,8 @@ Summary:
 
 ### Improved
 
+- 18 KB more memory for packages and everything else: the package loader's working buffers were held for the life of the device to be used for a second while a package loads. They are taken from the heap for the load and given back after.
+
 ### Fixed
 
 ### Security
