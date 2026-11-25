@@ -23,7 +23,7 @@ extern "C" {
 // MINOR: a symbol added — older-minor apps still run (everything they want is
 //        present); newer-minor apps refused (they may want something absent).
 #define RPC_API_MAJOR 1
-#define RPC_API_MINOR 27
+#define RPC_API_MINOR 28
 
 typedef struct {
     uint32_t magic;          // RPC_APP_MAGIC
@@ -712,6 +712,47 @@ int fw_http_download(const char *url, const char *path);
 // handshake are not counted against the rate — and is never zero when anything
 // arrived, so dividing by it is safe.
 int fw_http_measure(const char *url, uint32_t *bytes, uint32_t *ms);
+
+// --- one HTTP request, as a browser makes them (API 1.28) --------------------
+//
+// fw_http_get and fw_http_download are GET only, keep nothing the server said
+// about the answer, and treat anything but 2xx as a failure. A browser needs the
+// rest: a method and a body (forms), the page whatever its status (a 404 page is
+// a page), where it ended up after redirects (relative links are read against
+// that), what kind of thing it is, and a cap that keeps the start of a page too
+// big to hold instead of refusing it.
+//
+// The body goes to `path` (replaced). `size` comes first and is set by the
+// caller to sizeof(FwHttpRequest), so fields can be added later without
+// breaking a package built against this one.
+//
+// Through the bridge (a board without Wi-Fi, run from RPC Studio) the computer
+// makes the request and follows redirects; final_url is what it reports, or
+// the URL asked for when it reports nothing.
+typedef struct FwHttpRequest {
+    unsigned    size;             // sizeof(FwHttpRequest)
+    const char *method;           // null: GET
+    const char *url;
+    const void *body;             // sent after the headers, or null
+    unsigned    body_len;
+    const char *content_type;     // of the body; null: application/x-www-form-urlencoded
+    const char *user_agent;       // null: the firmware's own
+    const char *path;             // where the response body is written
+    unsigned    max_bytes;        // keep at most this much (the rest is not fetched); 0: no cap
+    // --- the answer
+    int         status;           // the HTTP status, after any redirects followed
+    unsigned    bytes;            // written to `path`
+    int         truncated;        // 1: max_bytes was reached
+    char        final_url[256];   // where the answer came from
+    char        location[256];    // a redirect that was NOT followed (a POST's 303), else ""
+    char        content_type_out[64];
+    char        detail[96];       // why, when the return is negative
+} FwHttpRequest;
+
+// Returns the bytes written to `path` (any status), or negative when no answer
+// arrived at all (no network, a refused certificate, a bad URL): `detail` says
+// which, in words.
+int fw_http_request(FwHttpRequest *r);
 
 // --- directories (API 1.15) -------------------------------------------------
 //

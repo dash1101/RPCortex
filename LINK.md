@@ -318,6 +318,13 @@ through the host the board is plugged into. The device asks the host for a URL, 
 host fetches it with its own network and its own trusted certificates, and sends the
 body back over the console.
 
+The device's own `User-Agent` goes to the server unchanged (the host's is used
+when it sends none), so a page answers the bridge as it would answer the board on
+Wi-Fi. When the host followed redirects, the answer carries one more header,
+`X-RPC-Final-URL: <url>`, saying where it ended up; a browser on the device reads
+relative links against that. (The browser tool cannot pass the `User-Agent` on:
+browsers forbid setting it.)
+
 It bridges HTTP, not TCP. An image without Wi-Fi has no TCP/IP stack and no TLS, so
 the device never sees a socket or a certificate: it sends a method, a URL, headers
 and a body, and receives a status, a few headers and the body. Redirects are

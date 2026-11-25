@@ -111,4 +111,8 @@ bool http_is_redirect(const HttpParser *p);
 // an absolute path ("/elsewhere") rather than a full URL still works.
 bool http_resolve_redirect(const HttpUrl *from, const char *location, HttpUrl *out);
 
+// A parsed URL written back out: scheme, host, the port when it is not the
+// scheme's own, the path. Returns false (writing "") when it does not fit.
+bool http_format_url(const HttpUrl *u, char *out, uint32_t cap);
+
 #endif  // RPC_HTTPPARSE_H

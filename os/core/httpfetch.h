@@ -90,6 +90,11 @@ struct FetchOpts {
     // Called with the status line and then each response header line, in order.
     void (*on_header)(void *ctx, const char *line);
     void *on_header_ctx;
+
+    // Optional, out: the URL of the last request made, after any redirects that
+    // were followed. A browser reads relative links against it.
+    char    *final_url;
+    uint32_t final_url_cap;
 };
 
 // The most extra-header text a request may carry.

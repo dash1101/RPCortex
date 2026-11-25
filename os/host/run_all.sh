@@ -38,6 +38,7 @@ declare -A SRC=(
     # The package source is INCLUDED by the test rather than linked: its scanners
     # are static, and they are the part that fails without saying so.
     [websearch_test]=""
+    [browse_test]=""
     [httpd_test]=""
     # Ported from v1: the same three, each with its package source included and
     # a fake underneath it — a filesystem in a map, a screen of cells, a device
@@ -341,6 +342,19 @@ if python3 ../../tools/check-fslock.py > "$OUT/fslock.out" 2>&1; then
     pass=$((pass+1))
 else
     echo "FAILED"; sed 's/^/      /' "$OUT/fslock.out" | tail -12
+    fail=$((fail+1))
+fi
+
+# A package calls the firmware by INDEX into the ABI table, and the flash slot
+# keeps a package across updates only while those indices hold. The table grows
+# at the end and nowhere else; a symbol inserted in the middle cost Nova D1 its
+# slot (and the board most of its memory) before this check existed.
+printf '  %-16s ' "abi_order"
+if python3 ../../tools/check-abi-order.py ../.. > "$OUT/abi_order.out" 2>&1; then
+    echo "ok"
+    pass=$((pass+1))
+else
+    echo "FAILED"; sed 's/^/      /' "$OUT/abi_order.out" | tail -6
     fail=$((fail+1))
 fi
 

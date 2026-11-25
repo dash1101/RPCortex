@@ -1262,6 +1262,7 @@ int net_pkg_ssid(char *out, unsigned cap);
 int net_pkg_ip(char *out, unsigned cap);
 int net_pkg_resolve(const char *host, char *out, unsigned cap);
 int net_pkg_http_get(const char *url, void *buf, unsigned cap);
+int net_pkg_http_request(FwHttpRequest *r);
 int net_pkg_http_download(const char *url, const char *path);
 int net_pkg_http_measure(const char *url, uint32_t *bytes, uint32_t *ms);
 int net_pkg_ping(const char *host, uint32_t timeout_ms);
@@ -1325,6 +1326,23 @@ extern "C" int fw_http_download(const char *url, const char *path) {
     if (!ok_s(url) || !ok_s(path)) return -1;
     task_alive();
     return net_pkg_http_download(url, path);
+}
+extern "C" int fw_http_request(FwHttpRequest *r) {
+    bb_note_phase("entered fw_http_request");
+    // Everything the firmware reads through or writes to is checked first: the
+    // struct (and its size, so an older package's shorter one is refused rather
+    // than written past), then each string and the body.
+    if (!ok_w(r, sizeof(*r)) || r->size < sizeof(*r)) return -1;
+    if (!ok_s(r->url) || !ok_s(r->path)) return -1;
+    if (r->method && !ok_s(r->method)) return -1;
+    if (r->user_agent && !ok_s(r->user_agent)) return -1;
+    if (r->content_type && !ok_s(r->content_type)) return -1;
+    if (r->body && r->body_len && !ok_r(r->body, r->body_len)) return -1;
+    if (r->user_agent && (strchr(r->user_agent, '\r') || strchr(r->user_agent, '\n'))) return -1;
+    if (r->content_type && (strchr(r->content_type, '\r') || strchr(r->content_type, '\n'))) return -1;
+    if (r->method && (strchr(r->method, ' ') || strchr(r->method, '\r') || strchr(r->method, '\n'))) return -1;
+    task_alive();
+    return net_pkg_http_request(r);
 }
 extern "C" int fw_http_measure(const char *url, uint32_t *bytes, uint32_t *ms) {
     bb_note_phase("entered fw_http_measure");
@@ -2075,6 +2093,9 @@ static const ApiSymbol kSymbols[] = {
     // API 1.27 — a contact reader a package can talk to.
     SYM(fw_nfc_select),
     SYM(fw_nfc_exchange),
+
+    // API 1.28 — one HTTP request, as a browser makes them.
+    SYM(fw_http_request),
 };
 static const uint32_t kSymbolCount = sizeof(kSymbols) / sizeof(kSymbols[0]);
 

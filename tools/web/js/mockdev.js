@@ -160,6 +160,7 @@ export class MockDevice {
     this.bridgeQuiet = 10000;
     this.bridgeFrames = [];
     this.bridgeFetches = [];
+    this.bridgeHeaders = [];   // the FHDR lines of the last bridged answer
     this.bridgeStopAfter = null;
     this.repoIndex = null;
     this.rawReading = false;
@@ -734,7 +735,8 @@ export class MockDevice {
         if (l.r === "quiet") { this.bridgeOffered = false; this.bridgeFetches.push([method, url, "quiet", 0]); return { why: "the computer did not answer" }; }
         if (l.r === "stop") { await this.bdrain(id); this.bridgeFetches.push([method, url, "cancelled", data.length]); return { why: "cancelled" }; }
         if (l.id !== id) continue;
-        if (l.type === "FHEAD") status = Number(l.rest.split(" ")[0]);
+        if (l.type === "FHEAD") { status = Number(l.rest.split(" ")[0]); this.bridgeHeaders = []; }
+        else if (l.type === "FHDR") this.bridgeHeaders.push(new TextDecoder().decode(Uint8Array.from(atob(l.rest.trim()), (c) => c.charCodeAt(0))));
         else if (l.type === "FDATA") {
           const s = atob(l.rest);
           const d = new Uint8Array(s.length);

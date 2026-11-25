@@ -299,6 +299,7 @@ bool http_fetch(const HttpTransport *t, const char *url,
 
         HttpParser &p = w->p;
         int err = one_hop(t, &u, opts, &guard, &p, res, w->req, sizeof(w->req));
+        if (opts->final_url) http_format_url(&u, opts->final_url, opts->final_url_cap);
         res->status = p.status;
         res->bytes = guard.seen;
         res->redirects = hop;

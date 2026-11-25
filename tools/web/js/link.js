@@ -907,6 +907,12 @@ export class Bridge {
         if (line.length < 200) await say(`FHDR ${id} ${b64encode(enc.encode(line))}`);
       }
     }
+    // Where the answer came from after redirects the browser followed: the
+    // device saw only the URL it asked for, and a browser on it reads relative
+    // links against this one (LINK.md). A browser cannot pass the device's
+    // User-Agent on (it is a forbidden header), so that part is rpc's alone.
+    if (resp.url && resp.url !== url && !/[\r\n]/.test(resp.url) && resp.url.length < 240)
+      await say(`FHDR ${id} ${b64encode(enc.encode("X-RPC-Final-URL: " + resp.url))}`);
     let got = 0;
     if (method === "HEAD" || !resp.body) { await done(null, null, resp.status, 0); return left; }
     const reader = resp.body.getReader();

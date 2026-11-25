@@ -132,11 +132,14 @@ test("wget and curl mid-EXEC", async () => {
   ok(log.some((l) => l.startsWith(`bridge: GET ${BASE}/big.bin`)), "logged");
   r = await link.exec(`curl ${BASE}/moved`);
   eq([r.rc, r.text], [0, "hello through the bridge\n"], "redirect followed by the browser");
+  ok(dev.bridgeHeaders.includes(`X-RPC-Final-URL: ${BASE}/small.txt`), "the final URL is reported: " + dev.bridgeHeaders.join(" | "));
+  r = await link.exec(`curl ${BASE}/small.txt`);
+  ok(!dev.bridgeHeaders.some((h) => h.startsWith("X-RPC-Final-URL")), "and not when nothing redirected");
   r = await link.exec(`curl ${BASE}/nothing`);
   eq(r.rc, 1);
   ok(r.text.includes("HTTP 404"), r.text);
   eq((await link.exec("echo after")).text, "after\n");
-  eq(bridge.served.length, 3);
+  eq(bridge.served.length, 4);
   await link.bye(); dev.stop();
 });
 

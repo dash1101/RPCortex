@@ -1,6 +1,7 @@
 #include "httpparse.h"
 
 #include <string.h>
+#include <stdio.h>
 #include <stdlib.h>
 
 // --- small helpers ----------------------------------------------------------
@@ -100,6 +101,16 @@ bool http_resolve_redirect(const HttpUrl *from, const char *location, HttpUrl *o
 }
 
 // --- response ---------------------------------------------------------------
+
+bool http_format_url(const HttpUrl *u, char *out, uint32_t cap) {
+    if (!cap) return false;
+    bool plain_port = u->port == (u->tls ? 443 : 80);
+    int n = plain_port
+        ? snprintf(out, cap, "%s://%s%s", u->tls ? "https" : "http", u->host, u->path)
+        : snprintf(out, cap, "%s://%s:%u%s", u->tls ? "https" : "http", u->host, (unsigned)u->port, u->path);
+    if (n < 0 || (uint32_t)n >= cap) { out[0] = 0; return false; }
+    return true;
+}
 
 void http_parser_init(HttpParser *p, HttpSink sink, void *ctx) {
     memset(p, 0, sizeof(*p));

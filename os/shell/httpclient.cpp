@@ -21,6 +21,7 @@
 #include "storage.h"
 #include "path.h"
 #include "fsguard.h"
+#include "rpc_app.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -131,7 +132,11 @@ int net_pkg_http_get(const char *url, void *buf, unsigned cap) {
     MemSink m{ (unsigned char *)buf, cap, 0 };
     FetchOpts o{};
     o.poll = poll_interrupt;
-    o.max_bytes = cap;
+    // No max_bytes: mem_sink stops the transfer itself when the buffer is
+    // full, and that is the answer the caller asked for. Passing the buffer's
+    // size as the limit made the fetch guard refuse the chunk that would have
+    // filled it (and, since the early refusal, any body announced as larger),
+    // so a reply bigger than the buffer came back as -1 instead of its start.
 
     FetchResult r;
     bool good = http_fetch(&t, url, mem_sink, &m, &o, &r);
@@ -139,6 +144,125 @@ int net_pkg_http_get(const char *url, void *buf, unsigned cap) {
     // asked for that much and got it.
     if (!good && m.len < cap) return -1;
     return (int)m.len;
+}
+
+// --- fw_http_request: one request, as a browser makes them --------------------------
+//
+// The body to a file, capped by the CALLER's sink rather than by max_bytes: the
+// fetch guard refuses a body announced as bigger than its limit, and a browser
+// wants the start of a big page, not a refusal. max_bytes stays the filesystem's
+// room, so a page that would fill the disk is still stopped.
+
+struct ReqSink { void *h; uint32_t cap, len; bool full, failed; };
+
+static int req_sink(void *ctx, const uint8_t *d, uint32_t n) {
+    ReqSink *s = (ReqSink *)ctx;
+    uint32_t room = s->cap ? (s->cap > s->len ? s->cap - s->len : 0) : n;
+    uint32_t take = n < room ? n : room;
+    if (take && !storage_sink_write(s->h, d, take)) { s->failed = true; return -1; }
+    s->len += take;
+    if (take < n) { s->full = true; return -1; }
+    return 0;
+}
+
+struct ReqHead { FwHttpRequest *r; };
+
+static bool header_is(const char *line, const char *name, const char **value) {
+    size_t n = strlen(name);
+    for (size_t i = 0; i < n; i++) {
+        char a = line[i], b = name[i];
+        if (a >= 'A' && a <= 'Z') a = (char)(a + 32);
+        if (a != b) return false;
+    }
+    if (line[n] != ':') return false;
+    const char *v = line + n + 1;
+    while (*v == ' ' || *v == '\t') v++;
+    *value = v;
+    return true;
+}
+
+static void req_header(void *ctx, const char *line) {
+    FwHttpRequest *r = ((ReqHead *)ctx)->r;
+    const char *v;
+    if (header_is(line, "content-type", &v))
+        snprintf(r->content_type_out, sizeof(r->content_type_out), "%s", v);
+    else if (header_is(line, "location", &v))
+        snprintf(r->location, sizeof(r->location), "%s", v);
+    else if (header_is(line, "x-rpc-final-url", &v))
+        // The bridge's host followed the redirects; this is where it ended up.
+        snprintf(r->final_url, sizeof(r->final_url), "%s", v);
+}
+
+int net_pkg_http_request(FwHttpRequest *r) {
+    r->status = 0; r->bytes = 0; r->truncated = 0;
+    r->final_url[0] = r->location[0] = r->content_type_out[0] = r->detail[0] = 0;
+
+    HttpTransport t;
+    HttpVia via = http_route(&t);
+    if (via == HTTP_VIA_NONE) {
+        snprintf(r->detail, sizeof(r->detail), "%s",
+                 bridge_available()
+                     ? "No network: connect this board to RPC Studio (rpc term, or rpc bridge)."
+                     : "No network: 'wifi connect <ssid>' first.");
+        return -1;
+    }
+    char headers[HTTP_EXTRA_MAX] = "";
+    if (r->body && r->body_len) {
+        char ct[96];
+        snprintf(ct, sizeof(ct), "Content-Type: %s",
+                 r->content_type ? r->content_type : "application/x-www-form-urlencoded");
+        if (!http_add_header(headers, sizeof(headers), ct)) {
+            snprintf(r->detail, sizeof(r->detail), "That content type cannot be sent.");
+            return -1;
+        }
+    }
+
+    ReqSink s{nullptr, r->max_bytes, 0, false, false};
+    s.h = storage_open_sink(r->path);
+    if (!s.h) { snprintf(r->detail, sizeof(r->detail), "Could not write %s.", r->path); return -1; }
+
+    ReqHead hc{r};
+    char final_url[256] = "";
+    FetchOpts o{};
+    o.poll = poll_interrupt;
+    uint32_t room = storage_free_bytes();
+    uint32_t disk = room > 8192 ? room - 8192 : 1;
+    // The caller's cap stops the transfer itself (req_sink), so the fetch is
+    // given no limit when that cap fits on the disk: the guard would refuse a
+    // page ANNOUNCED as larger than its limit before its first byte, and the
+    // start of a big page is exactly what was asked for.
+    o.max_bytes = (r->max_bytes && r->max_bytes < disk) ? 0 : disk;
+    o.method = r->method;
+    o.headers = headers[0] ? headers : nullptr;
+    o.body = (const uint8_t *)r->body;
+    o.body_len = r->body ? r->body_len : 0;
+    o.user_agent = r->user_agent;
+    o.on_header = req_header;
+    o.on_header_ctx = &hc;
+    o.final_url = final_url;
+    o.final_url_cap = sizeof(final_url);
+
+    FetchResult res;
+    bool good = http_fetch(&t, r->url, req_sink, &s, &o, &res);
+    bool closed = storage_close_sink(s.h);
+    r->status = res.status;
+    r->bytes = s.len;
+    r->truncated = s.full ? 1 : 0;
+    // The bridge's own header wins: through it, the device only ever saw the URL
+    // it asked for.
+    if (!r->final_url[0]) snprintf(r->final_url, sizeof(r->final_url), "%s", final_url[0] ? final_url : r->url);
+
+    // An answer, whatever its status, is a page; so is the start of one that was
+    // cut at the cap. No answer at all is the failure.
+    bool answered = good || s.full || (res.error == FETCH_ERR_STATUS && res.status > 0);
+    if (!answered || s.failed || !closed) {
+        storage_remove(r->path);
+        if (s.failed || !closed) snprintf(r->detail, sizeof(r->detail), "The filesystem refused the page (full?).");
+        else if (res.detail[0]) snprintf(r->detail, sizeof(r->detail), "%s: %s", fetch_error_str(res.error), res.detail);
+        else snprintf(r->detail, sizeof(r->detail), "%s", fetch_error_str(res.error));
+        return -1;
+    }
+    return (int)s.len;
 }
 
 // Fetch and THROW AWAY, counting and timing.

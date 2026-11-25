@@ -12,9 +12,15 @@ Summary:
 
 ### New
 
+- For package authors, API 1.28: `fw_http_request`, one HTTP request as a browser makes them: a method and a body, the page whatever its status, where it ended up after redirects, its content type, and a cap that keeps the start of a page too big to hold.
+
+- `browse`, a package: the web as text on the console. Type an address or a site's name (`google` opens www.google.com) or some words to search, move between the links and boxes with the arrow keys, type into a box, press Enter; Left goes back. It shows what a page's HTML says (text, links, headings, lists, forms) and runs no JavaScript, so Google, which refuses every browser without it, has its searches sent to DuckDuckGo's text version, and the page says so. `browse -d <url>` prints a page and its links for scripts. On a board without Wi-Fi it goes online through RPC Studio. `pkg install browse`.
+
 ### Improved
 
 ### Fixed
+
+- `fw_http_get` gave a package -1 for any reply bigger than its buffer, instead of the buffer full: the size was passed on as a limit, and the fetch refused the piece that would have filled it.
 
 ### Security
 
