@@ -731,7 +731,7 @@ async function enterLinkMode(stream, { user, password, timing, onNoise } = {}) {
     if (r.what === "old") return { mode: "legacy" };
     if (r.what === "login") await login(stream, user, password, t);
   }
-  throw new RpcError("The device did not answer. Check it is running and that nothing else has the port open.");
+  throw new RpcError("The device did not answer. Check it is running and that nothing else has the port open. A board with firmware v2.0.69x or later shows two ports: choose the console (the first, \"RPCortex Console\"), not \"RPCortex Network\", which only rpc bridge uses.");
 }
 
 // Copy a package to /tmp, `pkg install` it (with sudo where the firmware has
