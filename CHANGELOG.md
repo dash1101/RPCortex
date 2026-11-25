@@ -14,6 +14,8 @@ Summary:
 
 ### Improved
 
+- Sending files from a computer is about 45% faster (35 to 51 KB/s over USB on a Pico 2 W) and reading them back about twice as fast (75 to 167 KB/s). The USB console takes 512 bytes at a time instead of 64, and a `PUT` lets the computer send the next piece while the device writes the last (`READY ... window=2`, LINK.md). Studio 1.2 and later use it; older tools keep working one piece at a time.
+
 - Writing files is about 9% faster: the filesystem programs flash a kilobyte at a time instead of 256 bytes, so it stops to park the other core a quarter as often. Copying a 380 KB file on a Pico 2 W went from 4.96 to 4.51 s, and most of what is left is the flash chip erasing (36 ms for every 4 KB), which no setting changes.
 
 - 18 KB more memory for packages and everything else: the package loader's working buffers were held for the life of the device to be used for a second while a package loads. They are taken from the heap for the load and given back after.

@@ -318,7 +318,12 @@ static void do_put(LinkState *st, const char *rest) {
 
     Sha256Ctx sha;
     sha256_init(&sha);
-    frame(st, "READY chunk=%d", LINK_CHUNK);
+    // window: how many D lines the host may send before the first is
+    // acknowledged. Two keeps the next line already waiting in the USB buffer
+    // while this one is written, so the round trip stops adding to every
+    // chunk. Nothing overflows: USB holds the host off (NAK) until there is
+    // room, and read_line puts back what it read past a line.
+    frame(st, "READY chunk=%d window=%d", LINK_CHUNK, LINK_PUT_WINDOW);
 
     uint32_t got = 0;
     const char *fail_code = nullptr, *fail_msg = nullptr;
@@ -478,6 +483,10 @@ static int cmd_link(int, char **) {
         else if (!strcmp(q.verb, "AUTH"))  do_auth(st, q.rest);
         else if (!strcmp(q.verb, "BRIDGE")) do_bridge(st, q.rest);
         else if (!strcmp(q.verb, "BYE"))   { frame(st, "OK"); break; }
+        // A D line the host had already sent when a PUT failed (window above).
+        // The PUT's ERR has told it; answering this too would be read as the
+        // reply to its next request.
+        else if (!strcmp(q.verb, "D"))     continue;
         else ERR(st, "badreq", "unknown verb %s", q.verb);
     }
 

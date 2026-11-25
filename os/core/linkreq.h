@@ -11,6 +11,7 @@
 #define LINK_PROTO      3        // 2: AUTH, and ERR sudo; 3: BRIDGE and the fetch frames
 #define LINK_LINE_MAX   1100     // request line, newline included
 #define LINK_CHUNK      768      // bytes per D line or frame (1024 base64 chars)
+#define LINK_PUT_WINDOW 2        // D lines a host may have unacknowledged (READY window=)
 
 struct LinkReq {
     char        verb[8];         // upper-case as sent; "" for an empty line

@@ -175,19 +175,24 @@ Writes a file. `sha256` is 64 hex characters of the whole file's digest.
 
 ```
 > PUT 1436 9f0e...c2 /tmp/greet.app
-< 0x1E READY chunk=768
+< 0x1E READY chunk=768 window=2
 > D <base64 of bytes 0..767>
-< 0x1E ACK 768
 > D <base64 of bytes 768..1435>
+< 0x1E ACK 768
 < 0x1E ACK 1436
 < 0x1E OK sha=9f0e...c2
 ```
 
 - The device checks the path, the permission and the free space before `READY`,
   and answers `ERR` instead if any of them fails.
-- After each `D` line it writes the bytes and answers `ACK <bytes so far>`. The
-  host waits for that `ACK` before sending the next `D`. Flash writes are slow
-  and stall the other core, so this is what keeps the console from overflowing.
+- After each `D` line it writes the bytes and answers `ACK <bytes so far>`.
+- `window` (firmware that sends it) is how many `D` lines may be sent before the
+  first is acknowledged. With 2, the next line is already waiting while the device
+  writes this one, so the round trip stops adding to every chunk (380 KB: 10.2 s
+  at one at a time, 7.4 s at two). Without `window`, send one and wait for its
+  `ACK`. Nothing overflows either way: USB holds the host off until there is room.
+- A `D` line that arrives after the `PUT` has ended (it was sent ahead and the
+  transfer then failed) is dropped without an answer.
 - When `size` bytes have arrived it compares the digest. On a mismatch it removes
   the file and answers `ERR digest`.
 - A path in `/os` or `/etc` needs sudo. An admin with a grace (from `AUTH`) may

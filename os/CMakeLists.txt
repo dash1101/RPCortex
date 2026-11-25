@@ -785,7 +785,12 @@ add_dependencies(rpcortex_v2 stock_index_src)
 # paste of a whole screenful.
 target_compile_definitions(rpcortex_v2 PRIVATE
     CFG_TUD_CDC_RX_BUFSIZE=1024
-    CFG_TUD_CDC_TX_BUFSIZE=1024)
+    CFG_TUD_CDC_TX_BUFSIZE=1024
+    # The endpoint buffer: how much the USB interrupt takes in, packet after
+    # packet, before the device stack (the `usb` task) has to run. At the
+    # default 64 that was every packet, and a 1 KB PUT line took 8 ms to arrive;
+    # at 512 it takes about half that. Costs under 1 KB of RAM.
+    CFG_TUD_CDC_EP_BUFSIZE=512)
 
 # --- the composite USB device -----------------------------------------------
 #
