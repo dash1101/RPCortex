@@ -95,6 +95,7 @@ static const char *kNetwork[] = {
     "  ntp [sync]              Set the clock from an NTP server",
     "  ntp show                Read the time without setting the clock",
     "  ntp server [host]       Show or change the server (default pool.ntp.org)",
+    "  lanscan [-p port] [-n]  Devices on this network, and which answer on SSH",
     "",
     "  An SSID with spaces needs no quoting: wifi connect my home network",
 };
@@ -220,7 +221,7 @@ static const Category kCategories[] = {
     CAT(kSystem, "system", "System Commands",
         "sysinfo  meminfo  uptime  date  ver  reboot  sreboot  bootloader  sleep  which  clear  pulse  freeup  env  reg"),
     CAT(kNetwork, "network", "Network Commands",
-        "wifi  ping  nslookup  ntp"),
+        "wifi  ping  nslookup  ntp  lanscan"),
     CAT(kPackages, "packages", "Packages",
         "pkg install|remove|list   apps  unload  run"),
     CAT(kUsers, "users", "User Accounts",

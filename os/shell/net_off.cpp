@@ -117,6 +117,7 @@ void netapps_register(void) {
         {"ping",     "ping <host> [count]",     no_wifi, nullptr},
         {"nslookup", "nslookup <host>",         no_wifi, nullptr},
         {"ntp",      "sync the clock over NTP", no_wifi, nullptr},
+        {"lanscan",  "devices on this network", no_wifi, nullptr},
     };
     for (const auto &c : cmds) cmd_register(&c);
     cmd_alias("ns", "nslookup");

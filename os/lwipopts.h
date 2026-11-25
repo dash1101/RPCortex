@@ -33,6 +33,10 @@
 #define PBUF_POOL_SIZE              32
 
 #define LWIP_ARP                    1
+// 32, not lwIP's 10: `lanscan` asks a whole batch of addresses at once and reads
+// the answers back from this table, and a request for the eleventh pushed the
+// first out before it could be read. About 20 bytes an entry.
+#define ARP_TABLE_SIZE              32
 #define LWIP_ETHERNET               1
 #define LWIP_ICMP                   1
 #define LWIP_RAW                    1

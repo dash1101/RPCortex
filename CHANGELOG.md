@@ -12,6 +12,8 @@ Summary:
 
 ### New
 
+- `lanscan` lists the devices on the Wi-Fi network the board is on: each one's address and hardware address, which one is the router, and whether it answers on port 22, so a computer running SSH stands out (`-p` checks another port, `-n` none). It asks with ARP, which every device on a local network has to answer, and asks twice so phones asleep on power saving are not missed. A /24 takes about 12 seconds.
+
 ### Improved
 
 - Sending files from a computer is about 45% faster (35 to 51 KB/s over USB on a Pico 2 W) and reading them back about twice as fast (75 to 167 KB/s). The USB console takes 512 bytes at a time instead of 64, and a `PUT` lets the computer send the next piece while the device writes the last (`READY ... window=2`, LINK.md). Studio 1.2 and later use it; older tools keep working one piece at a time.

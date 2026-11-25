@@ -40,6 +40,8 @@
 #include "lwip/inet_chksum.h"
 #include "lwip/ip4_addr.h"
 #include "lwip/netif.h"
+#include "lwip/etharp.h"
+#include "lwip/tcp.h"
 
 #include <time.h>
 
@@ -485,11 +487,259 @@ static int cmd_ntp(int argc, char **argv) {
     return ntp_sync(server, /*set*/true);
 }
 
+
+// --- lanscan: who else is on this network -------------------------------------
+//
+// An ARP sweep: ask every address in the subnet "who has this?" and list the
+// ones that answer, with their hardware address, then try one TCP port on each
+// (22 unless told otherwise) so a computer running SSH stands out. ARP is what
+// finds them, not ping: plenty of computers drop ICMP and still answer ARP,
+// because nothing on a local network works without it.
+//
+// In batches, because lwIP's ARP table holds ARP_TABLE_SIZE (32, lwipopts.h)
+// entries and a request past that pushes the oldest out: 24 at a time, read back
+// before the next 24 are asked. Twice: a phone asleep on Wi-Fi power saving can
+// take longer than one wait to answer, so the second pass asks again only the
+// addresses that were silent. NetOwn per batch, not for the whole sweep, so a
+// download on the other core waits half a second at most, not the whole scan.
+
+#define LAN_BATCH       24
+#define LAN_WAIT_MS     500
+#define LAN_PASSES      2
+#define LAN_MAX_FOUND   64
+#define LAN_MAX_HOSTS   1022        // a /22; anything wider is not "this network"
+#define LAN_PROBE_MS    400
+
+struct LanHost { uint32_t ip; uint8_t mac[6]; int8_t port_open; };   // -1 not tried
+
+struct LanProbe {
+    struct tcp_pcb *pcb;
+    volatile bool done;
+    volatile bool open;
+};
+
+static err_t lan_connected(void *arg, struct tcp_pcb *pcb, err_t) {
+    LanProbe *p = (LanProbe *)arg;
+    p->open = true;
+    p->done = true;
+    p->pcb = nullptr;
+    tcp_arg(pcb, nullptr);
+    tcp_err(pcb, nullptr);
+    tcp_abort(pcb);              // a reset: nothing is sent to the service
+    return ERR_ABRT;
+}
+
+static void lan_err(void *arg, err_t) {
+    LanProbe *p = (LanProbe *)arg;
+    if (!p) return;
+    p->pcb = nullptr;            // lwIP has freed it
+    p->done = true;              // refused (RST) or unreachable
+}
+
+// 1 open, 0 closed or silent, -1 could not try.
+static int lan_probe(uint32_t ip_be, uint16_t port) {
+    LanProbe pr{nullptr, false, false};
+    {
+        NetOwn own;
+        if (!own.ok) return -1;
+        LwipLock lk;
+        struct tcp_pcb *pcb = tcp_new_ip_type(IPADDR_TYPE_V4);
+        if (!pcb) return -1;
+        pr.pcb = pcb;
+        tcp_arg(pcb, &pr);
+        tcp_err(pcb, lan_err);
+        ip_addr_t a;
+        ip_addr_set_ip4_u32(&a, ip_be);
+        if (tcp_connect(pcb, &a, port, lan_connected) != ERR_OK) {
+            tcp_arg(pcb, nullptr);
+            tcp_err(pcb, nullptr);
+            tcp_abort(pcb);
+            return -1;
+        }
+    }
+    absolute_time_t deadline = make_timeout_time_ms(LAN_PROBE_MS);
+    while (!pr.done && absolute_time_diff_us(get_absolute_time(), deadline) > 0) {
+        if (intr_check()) break;
+        task_sleep_ms(5);
+    }
+    // Still waiting: nobody answered. Withdraw the attempt so no callback can
+    // reach `pr` once this returns.
+    {
+        NetOwn own;
+        LwipLock lk;
+        if (!pr.done && pr.pcb) {
+            tcp_arg(pr.pcb, nullptr);
+            tcp_err(pr.pcb, nullptr);
+            tcp_abort(pr.pcb);
+            pr.pcb = nullptr;
+        }
+    }
+    return pr.open ? 1 : 0;
+}
+
+static void lan_ip_str(uint32_t ip_be, char *out, size_t cap) {
+    ip4_addr_t a;
+    ip4_addr_set_u32(&a, ip_be);
+    snprintf(out, cap, "%s", ip4addr_ntoa(&a));
+}
+
+static int cmd_lanscan(int argc, char **argv) {
+    uint16_t port = 22;
+    bool probe = true;
+    for (int i = 1; i < argc; i++) {
+        if (!strcmp(argv[i], "-p") && i + 1 < argc) {
+            int v = atoi(argv[++i]);
+            if (v < 1 || v > 65535) { out_err("Port must be 1 to 65535."); return 1; }
+            port = (uint16_t)v;
+        } else if (!strcmp(argv[i], "-n")) {
+            probe = false;
+        } else {
+            out_multi("Usage: lanscan [-p port] [-n]");
+            out_multi("  Lists the devices on this Wi-Fi network: address, hardware address,");
+            out_multi("  and whether port 22 (SSH) answers. -p checks another port, -n none.");
+            return 1;
+        }
+    }
+    if (!net_is_connected()) { out_err("Not connected. 'wifi connect <ssid>' first."); return 1; }
+
+    uint32_t self = 0, mask = 0, gw = 0;
+    uint8_t self_mac[6] = {0};
+    {
+        NetOwn own;
+        if (!own.ok) { out_err("The network is not up."); return 1; }
+        LwipLock lk;
+        struct netif *n = netif_default;
+        if (!n) { out_err("No network interface."); return 1; }
+        self = ip4_addr_get_u32(netif_ip4_addr(n));
+        mask = ip4_addr_get_u32(netif_ip4_netmask(n));
+        gw   = ip4_addr_get_u32(netif_ip4_gw(n));
+        memcpy(self_mac, n->hwaddr, 6);
+    }
+    uint32_t hmask = lwip_ntohl(mask), hself = lwip_ntohl(self);
+    uint32_t net = hself & hmask, hosts = ~hmask;          // host part, all ones = broadcast
+    if (hosts < 2 || hosts - 1 > LAN_MAX_HOSTS) {
+        out_err("This network has %lu addresses; lanscan sweeps up to %d.",
+                (unsigned long)(hosts > 0 ? hosts - 1 : 0), LAN_MAX_HOSTS);
+        return 1;
+    }
+
+    LanHost *list = (LanHost *)malloc(sizeof(LanHost) * LAN_MAX_FOUND);
+    if (!list) { out_err("Not enough memory (heap fragmented)."); return 1; }
+    int nfound = 0;
+    bool stopped = false;
+
+    char me[16];
+    lan_ip_str(self, me, sizeof(me));
+    out_info("Looking for devices on %s/%d (%lu addresses)...", me,
+             __builtin_popcount(hmask), (unsigned long)(hosts - 1));
+
+    // One bit per address: answered already, so the second pass skips it.
+    uint8_t *seen = (uint8_t *)calloc((hosts + 7) / 8, 1);
+    if (!seen) { free(list); out_err("Not enough memory (heap fragmented)."); return 1; }
+    for (int pass = 0; pass < LAN_PASSES && !stopped; pass++) {
+        uint32_t h = 1;
+        while (h < hosts && !stopped) {
+            // The next batch of addresses still to ask about.
+            uint32_t batch[LAN_BATCH];
+            int nb = 0;
+            while (h < hosts && nb < LAN_BATCH) {
+                uint32_t ip = lwip_htonl(net | h);
+                if (ip != self && !(seen[h / 8] & (1u << (h % 8)))) batch[nb++] = h;
+                h++;
+            }
+            if (!nb) break;
+            {
+                NetOwn own;
+                if (!own.ok) { stopped = true; break; }
+                LwipLock lk;
+                for (int k = 0; k < nb; k++) {
+                    ip4_addr_t a; ip4_addr_set_u32(&a, lwip_htonl(net | batch[k]));
+                    etharp_request(netif_default, &a);
+                }
+            }
+            for (uint32_t waited = 0; waited < LAN_WAIT_MS; waited += 20) {
+                if (intr_check()) { stopped = true; break; }
+                task_sleep_ms(20);
+            }
+            NetOwn own;
+            if (!own.ok) { stopped = true; break; }
+            LwipLock lk;
+            for (int k = 0; k < nb && nfound < LAN_MAX_FOUND; k++) {
+                ip4_addr_t a; ip4_addr_set_u32(&a, lwip_htonl(net | batch[k]));
+                struct eth_addr *eth = nullptr;
+                const ip4_addr_t *got = nullptr;
+                if (etharp_find_addr(netif_default, &a, &eth, &got) >= 0 && eth) {
+                    seen[batch[k] / 8] |= (uint8_t)(1u << (batch[k] % 8));
+                    list[nfound].ip = ip4_addr_get_u32(&a);
+                    memcpy(list[nfound].mac, eth->addr, 6);
+                    list[nfound].port_open = -1;
+                    nfound++;
+                }
+            }
+        }
+    }
+    free(seen);
+    // Found in two passes, so out of order: by address.
+    for (int i = 1; i < nfound; i++) {
+        LanHost t = list[i];
+        int j = i - 1;
+        while (j >= 0 && lwip_ntohl(list[j].ip) > lwip_ntohl(t.ip)) { list[j + 1] = list[j]; j--; }
+        list[j + 1] = t;
+    }
+    // This device last, so the count above is of the others.
+    if (nfound < LAN_MAX_FOUND) {
+        list[nfound].ip = self;
+        memcpy(list[nfound].mac, self_mac, 6);
+        list[nfound].port_open = -1;
+        nfound++;
+    }
+
+    if (probe && !stopped) {
+        for (int i = 0; i < nfound - 1; i++) {          // not this device
+            if (intr_check()) { stopped = true; break; }
+            list[i].port_open = (int8_t)lan_probe(list[i].ip, port);
+        }
+    }
+
+    out_blank();
+    out_multi("  %s%-16s %-18s%s", C_GRAY, "ADDRESS", "HARDWARE", C_RESET);
+    for (int i = 0; i < nfound; i++) {
+        char ip[16];
+        lan_ip_str(list[i].ip, ip, sizeof(ip));
+        char note[48] = "";
+        bool is_self = (i == nfound - 1);
+        if (is_self)               snprintf(note, sizeof(note), "this device");
+        else if (list[i].ip == gw) snprintf(note, sizeof(note), "router");
+        char portw[24] = "";
+        if (!is_self && list[i].port_open == 1)
+            snprintf(portw, sizeof(portw), "%s%s%s", C_GREEN, port == 22 ? "ssh" : "open", C_RESET);
+        else if (!is_self && list[i].port_open == 0 && probe)
+            snprintf(portw, sizeof(portw), "%s-%s", C_GRAY, C_RESET);
+        const uint8_t *m = list[i].mac;
+        out_multi("  %-16s %02x:%02x:%02x:%02x:%02x:%02x  %s%s%s",
+                  ip, m[0], m[1], m[2], m[3], m[4], m[5],
+                  portw, (portw[0] && note[0]) ? "  " : "", note);
+    }
+    out_blank();
+    int open = 0;
+    for (int i = 0; i < nfound - 1; i++) if (list[i].port_open == 1) open++;
+    if (stopped) out_warn("Stopped; the list is what had answered so far.");
+    if (nfound - 1 >= LAN_MAX_FOUND - 1) out_warn("Showing the first %d devices.", LAN_MAX_FOUND - 1);
+    if (probe)
+        out_info("%d other device%s; %d answer%s on port %u.", nfound - 1, nfound - 1 == 1 ? "" : "s",
+                 open, open == 1 ? "s" : "", (unsigned)port);
+    else
+        out_info("%d other device%s.", nfound - 1, nfound - 1 == 1 ? "" : "s");
+    free(list);
+    return 0;
+}
+
 void netapps_register(void) {
     static const Command cmds[] = {
         {"ping",     "ping <host> [count]",     cmd_ping,     nullptr},
         {"nslookup", "nslookup <host>",         cmd_nslookup, nullptr},
         {"ntp",      "sync the clock over NTP", cmd_ntp,      nullptr},
+        {"lanscan",  "devices on this network", cmd_lanscan,  nullptr},
     };
     for (const auto &c : cmds) cmd_register(&c);
     cmd_alias("ns", "nslookup");
