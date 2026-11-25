@@ -8,7 +8,7 @@ good notes is in `RELEASING.md`.
 
 ## Unreleased
 
-Summary: 
+Summary: lanscan finds the devices on your network, files move to and from a computer faster, and updates no longer keep a copy of the old firmware unless asked
 
 ### New
 
@@ -23,6 +23,8 @@ Summary:
 - 18 KB more memory for packages and everything else: the package loader's working buffers were held for the life of the device to be used for a second while a package loads. They are taken from the heap for the load and given back after.
 
 ### Fixed
+
+- A crash report could name the wrong package, or none: the package being run was one setting for the whole device, so a package working on the other core, or a built-in command a package ran, changed or cleared it. Each task keeps its own now, and a task a package starts is reported as that package.
 
 ### Security
 
