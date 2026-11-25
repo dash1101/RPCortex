@@ -5,42 +5,42 @@
   "packages": [
     {
       "name": "pico2_w",
-      "ver": "2.0.676",
-      "desc": "RPCortex v2.0.676-beta Vela II for pico2_w",
+      "ver": "2.0.684",
+      "desc": "RPCortex v2.0.684-beta Vela II for pico2_w",
       "author": "dash1101",
       "arch": "armv8m",
-      "size": 866228,
-      "sha256": "5f83a2bcdfe2c5e323679475cb4f916d2e433ea0f510ece0782be8218c0e3988",
+      "size": 870636,
+      "sha256": "2165356055358af9c5f15617276c1e0f0018e713dbe1f54263371cea74cbdb53",
       "url": "https://raw.githubusercontent.com/dash1101/RPCortex/main/releases/rpcortex-v2-pico2_w.bin"
     },
     {
       "name": "pico_w",
-      "ver": "2.0.676",
-      "desc": "RPCortex v2.0.676-beta Vela II for pico_w",
+      "ver": "2.0.684",
+      "desc": "RPCortex v2.0.684-beta Vela II for pico_w",
       "author": "dash1101",
       "arch": "armv6m",
-      "size": 772248,
-      "sha256": "839d07971494a6c4f9a2c0729af23acdbe51d7359dbcc3eb059abc7a823a494a",
+      "size": 775928,
+      "sha256": "43588d315ef5a837b229026ba2853c44551b588e267b17c1ec22b8abdf700d0e",
       "url": "https://raw.githubusercontent.com/dash1101/RPCortex/main/releases/rpcortex-v2-pico_w.bin"
     },
     {
       "name": "pico2",
-      "ver": "2.0.676",
-      "desc": "RPCortex v2.0.676-beta Vela II for pico2",
+      "ver": "2.0.684",
+      "desc": "RPCortex v2.0.684-beta Vela II for pico2",
       "author": "dash1101",
       "arch": "armv8m",
-      "size": 388964,
-      "sha256": "a1bacd18d4850d947225cfb951eec716917f95b2620a78c61ac49c6b98b24c95",
+      "size": 390764,
+      "sha256": "64babc08419fe9cace4b98c9773059c940b71a7e8115476522fd4cfd831bfbde",
       "url": "https://raw.githubusercontent.com/dash1101/RPCortex/main/releases/rpcortex-v2-pico2.bin"
     },
     {
       "name": "pico",
-      "ver": "2.0.676",
-      "desc": "RPCortex v2.0.676-beta Vela II for pico",
+      "ver": "2.0.684",
+      "desc": "RPCortex v2.0.684-beta Vela II for pico",
       "author": "dash1101",
       "arch": "armv6m",
-      "size": 327308,
-      "sha256": "9b6bd6f474741ca56f4f9a0eebdb2b4eaf7fafa0b2507b57c9a007b48d89e00d",
+      "size": 328388,
+      "sha256": "7ea7c70730f913d276261ffa940b7950b618577bce5616696d4031a3a97995c5",
       "url": "https://raw.githubusercontent.com/dash1101/RPCortex/main/releases/rpcortex-v2-pico.bin"
     }
   ]

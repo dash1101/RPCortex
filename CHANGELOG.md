@@ -8,6 +8,22 @@ good notes is in `RELEASING.md`.
 
 ## Unreleased
 
+Summary: 
+
+### New
+
+### Improved
+
+### Fixed
+
+### Security
+
+### Changed
+
+### Known issues
+
+## v2.0.684-beta, 2026-11-25
+
 Summary: lanscan finds the devices on your network, files move to and from a computer faster, and updates no longer keep a copy of the old firmware unless asked
 
 ### New

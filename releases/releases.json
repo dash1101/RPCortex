@@ -2,6 +2,103 @@
   "schema": 1,
   "releases": [
     {
+      "tag": "v2.0.684-beta",
+      "display": "v2.0.684-beta",
+      "version": "2.0",
+      "build": 684,
+      "commit": "8f685dd2665bb29f12a451ae65514b393ba2afdb",
+      "codename": "Vela II",
+      "date": "2026-11-25",
+      "prerelease": true,
+      "title": "RPCortex v2.0.684-beta",
+      "summary": "lanscan finds the devices on your network, files move to and from a computer faster, and updates no longer keep a copy of the old firmware unless asked",
+      "notes": {
+        "new": [
+          "`lanscan` lists the devices on the Wi-Fi network the board is on: each one's address and hardware address, which one is the router, and whether it answers on port 22, so a computer running SSH stands out (`-p` checks another port, `-n` none). It asks with ARP, which every device on a local network has to answer, and asks twice so phones asleep on power saving are not missed. A /24 takes about 12 seconds."
+        ],
+        "improved": [
+          "Sending files from a computer is about 45% faster (35 to 51 KB/s over USB on a Pico 2 W) and reading them back about twice as fast (75 to 167 KB/s). The USB console takes 512 bytes at a time instead of 64, and a `PUT` lets the computer send the next piece while the device writes the last (`READY ... window=2`, LINK.md). Studio 1.2 and later use it; older tools keep working one piece at a time.",
+          "Writing files is about 9% faster: the filesystem programs flash a kilobyte at a time instead of 256 bytes, so it stops to park the other core a quarter as often. Copying a 380 KB file on a Pico 2 W went from 4.96 to 4.51 s, and most of what is left is the flash chip erasing (36 ms for every 4 KB), which no setting changes.",
+          "18 KB more memory for packages and everything else: the package loader's working buffers were held for the life of the device to be used for a second while a package loads. They are taken from the heap for the load and given back after."
+        ],
+        "fixed": [
+          "A crash report could name the wrong package, or none: the package being run was one setting for the whole device, so a package working on the other core, or a built-in command a package ran, changed or cleared it. Each task keeps its own now, and a task a package starts is reported as that package."
+        ],
+        "security": [],
+        "changed": [
+          "A copy of the old firmware is no longer kept on every update. It is as big as the firmware (848 KB of a Pico 2 W's 1792 KB filesystem), and it was taken whether or not anyone would roll back; with it off, an update also clears a copy left by earlier firmware. 'Keep rollback' in `settings` (`Update.Keep_Rollback`) turns it back on, and `sudo update rollback --save` still keeps one by hand."
+        ],
+        "issues": []
+      },
+      "assets": [
+        {
+          "board": "pico2_w",
+          "kind": "bin",
+          "file": "rpcortex-v2.0.684-beta-pico2_w.bin",
+          "size": 870636,
+          "sha256": "2165356055358af9c5f15617276c1e0f0018e713dbe1f54263371cea74cbdb53",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.684-beta/rpcortex-v2.0.684-beta-pico2_w.bin"
+        },
+        {
+          "board": "pico2_w",
+          "kind": "uf2",
+          "file": "rpcortex-v2.0.684-beta-pico2_w.uf2",
+          "size": 1741824,
+          "sha256": "4e2631fd117d1ec4c62aae073da203cfda2a135562ef8edc7fb436ec18865d53",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.684-beta/rpcortex-v2.0.684-beta-pico2_w.uf2"
+        },
+        {
+          "board": "pico_w",
+          "kind": "bin",
+          "file": "rpcortex-v2.0.684-beta-pico_w.bin",
+          "size": 775928,
+          "sha256": "43588d315ef5a837b229026ba2853c44551b588e267b17c1ec22b8abdf700d0e",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.684-beta/rpcortex-v2.0.684-beta-pico_w.bin"
+        },
+        {
+          "board": "pico_w",
+          "kind": "uf2",
+          "file": "rpcortex-v2.0.684-beta-pico_w.uf2",
+          "size": 1551872,
+          "sha256": "fad572bac78752cb9b4cf16a01dec39c428810f6bd60d26f31695d5d910b572d",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.684-beta/rpcortex-v2.0.684-beta-pico_w.uf2"
+        },
+        {
+          "board": "pico2",
+          "kind": "bin",
+          "file": "rpcortex-v2.0.684-beta-pico2.bin",
+          "size": 390764,
+          "sha256": "64babc08419fe9cace4b98c9773059c940b71a7e8115476522fd4cfd831bfbde",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.684-beta/rpcortex-v2.0.684-beta-pico2.bin"
+        },
+        {
+          "board": "pico2",
+          "kind": "uf2",
+          "file": "rpcortex-v2.0.684-beta-pico2.uf2",
+          "size": 782336,
+          "sha256": "ac010625c56bca5b423e0b2c0b101e187e4e228befc1828fb16f4734bda1a15a",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.684-beta/rpcortex-v2.0.684-beta-pico2.uf2"
+        },
+        {
+          "board": "pico",
+          "kind": "bin",
+          "file": "rpcortex-v2.0.684-beta-pico.bin",
+          "size": 328388,
+          "sha256": "7ea7c70730f913d276261ffa940b7950b618577bce5616696d4031a3a97995c5",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.684-beta/rpcortex-v2.0.684-beta-pico.bin"
+        },
+        {
+          "board": "pico",
+          "kind": "uf2",
+          "file": "rpcortex-v2.0.684-beta-pico.uf2",
+          "size": 656896,
+          "sha256": "bcb691ca3625cc96a8c6a3075c1a53168b581876b23fd3bc3b17f9739c41f082",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.684-beta/rpcortex-v2.0.684-beta-pico.uf2"
+        }
+      ],
+      "url": "https://github.com/dash1101/RPCortex/releases/tag/v2.0.684-beta"
+    },
+    {
       "tag": "v2.0.676-beta",
       "display": "v2.0.676-beta",
       "version": "2.0",
