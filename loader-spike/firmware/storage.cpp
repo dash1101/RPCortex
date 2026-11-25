@@ -260,8 +260,18 @@ static int fs_erase(const struct lfs_config *c, lfs_block_t block) {
 
 static int fs_sync(const struct lfs_config *c) { (void)c; return 0; }
 
-static uint8_t g_read_buf[FS_PROG_SIZE];
-static uint8_t g_prog_buf[FS_PROG_SIZE];
+// The cache is four pages, not one. Every program call parks the other core
+// and leaves XIP (guarded() above), and at one page per call that overhead was
+// a quarter of the time spent programming. Measured on a Pico 2 W copying a 380
+// KB file: 1526 program calls took 1.09 s, 384 calls of 1 KB took 0.80 s, and
+// the copy went from 4.96 to 4.51 s. The other 3.47 s is 96 sector erases at
+// 36 ms each, which is the flash chip's own speed and no setting here changes.
+// The cost is 1.5 KB here plus 768 bytes more for each open file (littlefs
+// gives every open file a cache this size). Not on disk: a filesystem made
+// with the old size mounts unchanged.
+#define FS_CACHE_SIZE  1024
+static uint8_t g_read_buf[FS_CACHE_SIZE];
+static uint8_t g_prog_buf[FS_CACHE_SIZE];
 static uint8_t g_lookahead[16] __attribute__((aligned(8)));
 
 static struct lfs_config g_cfg_live;
@@ -280,7 +290,7 @@ bool storage_init(bool format_if_needed) {
     g_cfg_live.block_size     = FS_BLOCK_SIZE;
     g_cfg_live.block_count    = FS_SIZE / FS_BLOCK_SIZE;
     g_cfg_live.block_cycles   = 500;
-    g_cfg_live.cache_size     = FS_PROG_SIZE;
+    g_cfg_live.cache_size     = FS_CACHE_SIZE;
     g_cfg_live.lookahead_size = sizeof(g_lookahead);
     g_cfg_live.read_buffer = g_read_buf;
     g_cfg_live.prog_buffer = g_prog_buf;
