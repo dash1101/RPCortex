@@ -12,9 +12,13 @@ Summary:
 
 ### New
 
+- `meminfo -v` lists the largest free blocks, not just the largest: a package load needs its code and its data at once, and whether both fit is what decides it.
+
 ### Improved
 
 ### Fixed
+
+- `browse` would not load at times ("could not be loaded ... not enough memory in one piece") on a board that had been up a while, with an SSH session open or Nova D1 loaded: it needed 43 KB in one piece and the largest was 31 KB. browse 1.1 keeps a page's text in a file and only what is on screen in memory (30 KB), and pages can be four times longer. The package loader's own working memory is now several small pieces instead of one 21 KB block, so it no longer takes the large hole a package needs.
 
 ### Security
 

@@ -427,26 +427,47 @@ struct SectionMap {
 
 #define PIC_PAGE 4096u
 
+// Separate pieces, not one 21 KB block: a load needs the package's own two
+// halves at the same moment, and on a board that has been up a while the heap
+// has a few large holes and many small ones. One 21 KB workspace was carved out
+// of the hole the package's data needed; pieces of 1 to 5 KB fit in the small
+// ones and leave the large holes to the image.
 struct LoaderWork {
-    Elf32_Rel  relbuf[REL_CHUNK];
-    Elf32_Sym  symwin[REL_CHUNK];
-    Elf32_Shdr shdr[LOADER_MAX_SECTIONS];
-    SectionMap map[LOADER_MAX_SECTIONS];          // app_load
-    uint32_t   blob_off[LOADER_MAX_SECTIONS];     // app_pic_install
-    uint32_t   ram_off[LOADER_MAX_SECTIONS];
-    bool       placed[LOADER_MAX_SECTIONS];
-    uint8_t    page[PIC_PAGE];
+    Elf32_Rel  *relbuf;      // REL_CHUNK
+    Elf32_Sym  *symwin;      // REL_CHUNK
+    Elf32_Shdr *shdr;        // LOADER_MAX_SECTIONS
+    SectionMap *map;         // app_load
+    uint32_t   *blob_off;    // app_pic_install
+    uint32_t   *ram_off;
+    bool       *placed;
+    uint8_t    *page;        // PIC_PAGE
 };
 
 // Held for the length of one entry point. `ok` false: no memory for it.
 struct WorkGuard {
     bool mine = false, ok = true;
+    LoaderWork w{};
     WorkGuard() {
         if (g_work) return;                       // nested: the caller's
-        g_work = (LoaderWork *)malloc(sizeof(LoaderWork));
-        ok = mine = g_work != nullptr;
+        w.relbuf   = (Elf32_Rel *)malloc(sizeof(Elf32_Rel) * REL_CHUNK);
+        w.symwin   = (Elf32_Sym *)malloc(sizeof(Elf32_Sym) * REL_CHUNK);
+        w.shdr     = (Elf32_Shdr *)malloc(sizeof(Elf32_Shdr) * LOADER_MAX_SECTIONS);
+        w.map      = (SectionMap *)malloc(sizeof(SectionMap) * LOADER_MAX_SECTIONS);
+        w.blob_off = (uint32_t *)malloc(sizeof(uint32_t) * LOADER_MAX_SECTIONS);
+        w.ram_off  = (uint32_t *)malloc(sizeof(uint32_t) * LOADER_MAX_SECTIONS);
+        w.placed   = (bool *)malloc(sizeof(bool) * LOADER_MAX_SECTIONS);
+        w.page     = (uint8_t *)malloc(PIC_PAGE);
+        ok = w.relbuf && w.symwin && w.shdr && w.map && w.blob_off && w.ram_off && w.placed && w.page;
+        if (!ok) { release(); return; }
+        g_work = &w;
+        mine = true;
     }
-    ~WorkGuard() { if (mine) { free(g_work); g_work = nullptr; } }
+    void release() {
+        free(w.relbuf); free(w.symwin); free(w.shdr); free(w.map);
+        free(w.blob_off); free(w.ram_off); free(w.placed); free(w.page);
+        w = LoaderWork{};
+    }
+    ~WorkGuard() { if (mine) { release(); g_work = nullptr; } }
 };
 
 // The header, and nothing else.
@@ -644,7 +665,7 @@ LoadResult app_load(const AppSource &src, LoadedApp *out) {
     // Static for the same reason as `sh` above, and cleared on every entry
     // because a static keeps the last load's answers.
     SectionMap *const map = g_work->map;
-    memset(map, 0, sizeof(g_work->map));
+    memset(map, 0, sizeof(SectionMap) * LOADER_MAX_SECTIONS);
 
     uint32_t total = 0;
     uint32_t text_end = 0;                 // where the read-only half stops

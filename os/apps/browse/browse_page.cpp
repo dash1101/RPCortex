@@ -190,10 +190,33 @@ const char *page_str(const Page *p, uint16_t off) {
     return off == 0xFFFF || off >= p->pool_len ? "" : p->pool + off;
 }
 
+static PageStoreWrite g_sw;
+static PageStoreRead  g_sr;
+static void          *g_sctx;
+
+void page_store(PageStoreWrite w, PageStoreRead r, void *ctx) { g_sw = w; g_sr = r; g_sctx = ctx; }
+
+// What is buffered goes to the store. False once the store has refused.
+static bool flush_text(Page *p) {
+    if (!p->wbuf_len) return true;
+    uint32_t at = p->text_len - p->wbuf_len;
+    bool ok = g_sw && g_sw(g_sctx, at, p->wbuf, p->wbuf_len);
+    p->wbuf_len = 0;
+    if (!ok) p->truncated = true;
+    return ok;
+}
+
 const char *page_line(const Page *p, uint32_t i, uint32_t *len) {
-    if (i >= p->nlines) { *len = 0; return ""; }
-    *len = p->lines[i].len;
-    return p->text + p->lines[i].off;
+    static char line[PAGE_WIDTH_MAX + 1];
+    *len = 0;
+    line[0] = 0;
+    if (i >= p->nlines || !g_sr) return line;
+    uint32_t want = p->lines[i].len;
+    if (want > PAGE_WIDTH_MAX) want = PAGE_WIDTH_MAX;
+    uint32_t got = g_sr(g_sctx, p->lines[i].off, line, want);
+    line[got] = 0;
+    *len = got;
+    return line;
 }
 
 // --- layout -------------------------------------------------------------------
@@ -225,8 +248,12 @@ static bool last_line_blank(const Page *p) {
 
 static bool text_put(Page *p, const char *s, uint32_t n) {
     if (p->text_len + n > PAGE_TEXT) { p->truncated = true; return false; }
-    memcpy(p->text + p->text_len, s, n);
-    p->text_len += n;
+    while (n) {
+        if (p->wbuf_len == PAGE_WBUF && !flush_text(p)) return false;
+        uint32_t room = PAGE_WBUF - p->wbuf_len, take = n < room ? n : room;
+        memcpy(p->wbuf + p->wbuf_len, s, take);
+        p->wbuf_len += take; p->text_len += take; s += take; n -= take;
+    }
     return true;
 }
 
@@ -881,6 +908,7 @@ void page_end(Page *p) {
     if (p->col > 0 || !p->at_line_start) finish_line(p);
     // Trailing blank lines say nothing.
     while (p->nlines && p->lines[p->nlines - 1].len == 0) p->nlines--;
+    flush_text(p);
     // Title: trim the end.
     while (p->title_len && p->title[p->title_len - 1] == ' ') p->title[--p->title_len] = 0;
 }

@@ -185,7 +185,28 @@ static uint32_t static_ram(void) {
     return bss > data ? bss : data;    // __end__ covers bss on this layout
 }
 
-static int cmd_meminfo(int, char **) {
+// The largest free blocks, biggest first: each one found is held while the next
+// is looked for, then all are given back. What a package load needs is two
+// pieces at once (its code and its data), so "largest block" alone does not say
+// whether it will fit.
+static void free_blocks(void) {
+    void *held[6]; uint32_t size[6]; int n = 0;
+    while (n < 6) {
+        uint32_t b = largest_block();
+        if (b < 1024) break;
+        held[n] = malloc(b);
+        if (!held[n]) break;
+        size[n++] = b;
+    }
+    for (int i = n - 1; i >= 0; i--) free(held[i]);
+    char line[96]; int o = snprintf(line, sizeof(line), "  Free blocks   :");
+    for (int i = 0; i < n && o < (int)sizeof(line) - 10; i++)
+        o += snprintf(line + o, sizeof(line) - (size_t)o, " %u", (unsigned)(size[i] / 1024));
+    out_multi("%s KB%s", line, n == 6 ? " ..." : "");
+}
+
+static int cmd_meminfo(int argc, char **argv) {
+    bool verbose = argc > 1 && (!strcmp(argv[1], "-v") || !strcmp(argv[1], "--blocks"));
     uint32_t free  = heap_free();
     uint32_t total = heap_total();
     uint32_t alloc = total - free;
@@ -214,6 +235,7 @@ static int cmd_meminfo(int, char **) {
     // that is the number, and the warning fires on an absolute floor rather
     // than on a ratio that is alarming by construction.
     out_multi("  Largest block : %u KB", (unsigned)(big / 1024));
+    if (verbose) free_blocks();
     if (big < 32 * 1024)
         out_warn("The largest single block is under 32 KB. A large allocation "
                  "will fail even though there is free memory.");
@@ -568,7 +590,7 @@ void sys_register(void) {
         {"uptime",  "time since boot",              cmd_uptime,  nullptr},
         {"date",    "date [set YYYY-MM-DD ..]",     cmd_date,    nullptr, LEVEL_ADMIN},
         {"sysinfo", "system overview",              cmd_sysinfo, nullptr},
-        {"meminfo", "RAM usage and fragmentation",  cmd_meminfo, nullptr},
+        {"meminfo", "RAM usage (-v: the largest free blocks)", cmd_meminfo, nullptr},
         {"ver",     "version and board",            cmd_ver,     nullptr},
         {"clear",   "clear the screen",             cmd_clear,   nullptr},
         {"freeup",  "report reclaimable memory",    cmd_freeup,  nullptr},

@@ -24,9 +24,10 @@
 
 // On demand: 78 KB while it runs (its code, when Nova D1 has the flash slot, and
 // the page), none the rest of the time.
-RPC_APP_VER_FLAGS("browse", "1.0", RPC_APP_F_ON_DEMAND);
+RPC_APP_VER_FLAGS("browse", "1.1", RPC_APP_F_ON_DEMAND);
 
 #define BROWSE_FILE  "/tmp/browse.html"
+#define TEXT_FILE    "/tmp/browse.txt"    // the laid-out page (page_store)
 #define BROWSE_CAP   (96u * 1024u)     // of any one page; the rest is not fetched
 #define HISTORY_N    6
 #define BROWSE_UA    "RPCortex-browse/1.0 (text-mode; Lynx-compatible)"
@@ -43,7 +44,7 @@ static void append(char *dst, uint32_t cap, const char *s) {
     dst[n] = 0;
 }
 
-static Page g_pg;                         // the page on screen (~45 KB, not on any stack)
+static Page g_pg;                         // the page on screen (~26 KB; its text is in a file)
 static FwHttpRequest g_req;               // a request and its answer
 
 struct Hist { char url[URL_MAX]; int top, focus; };
@@ -138,6 +139,42 @@ static void field_text(const Field &f, int width, char *out, uint32_t cap) {
     snprintf(out, cap, "[%s]", body);
 }
 
+// --- the page's text, in a file ---------------------------------------------------
+
+static bool store_write(void *, uint32_t off, const char *data, uint32_t n) {
+    return off == 0 ? fw_file_write(TEXT_FILE, data, n) == 1
+                    : fw_file_append(TEXT_FILE, data, n) == 1;
+}
+
+// Reads are served from the screenful read last, when they fall inside it: a
+// redraw asks for every visible line and then again for each link on them, and
+// each of those was a trip to the filesystem. The screenful is held in the
+// page's own write buffer, which is empty once a page is laid out.
+#define g_vis (g_pg.wbuf)
+static uint32_t g_vis_off, g_vis_len;
+static bool     g_vis_ok;
+
+static uint32_t store_read(void *, uint32_t off, char *buf, uint32_t n) {
+    if (g_vis_ok && off >= g_vis_off && off + n <= g_vis_off + g_vis_len) {
+        memcpy(buf, g_vis + (off - g_vis_off), n);
+        return n;
+    }
+    return fw_file_read_at(TEXT_FILE, off, buf, n);
+}
+
+// The lines from `top` for `rows`, in one read when they fit.
+static void cache_visible(int top, int rows) {
+    g_vis_ok = false;
+    if (top < 0 || (uint32_t)top >= g_pg.nlines) return;
+    uint32_t last = (uint32_t)(top + rows - 1);
+    if (last >= g_pg.nlines) last = g_pg.nlines - 1;
+    uint32_t a = g_pg.lines[top].off, b = g_pg.lines[last].off + g_pg.lines[last].len;
+    if (b <= a || b - a > sizeof(g_pg.wbuf) || g_pg.wbuf_len) return;
+    g_vis_len = fw_file_read_at(TEXT_FILE, a, g_vis, b - a);
+    g_vis_off = a;
+    g_vis_ok = g_vis_len == b - a;
+}
+
 static void draw() {
     fw_tui_clear();
     char bar[PAGE_WIDTH_MAX + 1];
@@ -148,6 +185,7 @@ static void draw() {
     if (g_note[0]) fw_tui_text(1, 1, g_note, FW_ATTR_BOLD, C_WARN);
 
     int y0 = view_y0(), rows = view_rows();
+    cache_visible(g_top, rows);
     for (int r = 0; r < rows; r++) {
         uint32_t li = (uint32_t)(g_top + r);
         if (li >= g_pg.nlines) break;
@@ -214,6 +252,7 @@ static void status(const char *s) {
 // --- loading ---------------------------------------------------------------------
 
 static void error_page(const char *url, const char *why) {
+    g_vis_ok = false;
     page_begin(&g_pg, g_w);
     char html[700];
     snprintf(html, sizeof(html),
@@ -227,6 +266,7 @@ static void error_page(const char *url, const char *why) {
 
 // Lay the file out. HTML unless the server said otherwise.
 static void layout(const char *type) {
+    g_vis_ok = false;
     page_begin(&g_pg, g_w);
     bool plain = !strncmp(type, "text/plain", 10);
     bool html = !type[0] || strstr(type, "html") || strstr(type, "xml");
@@ -493,12 +533,15 @@ static int dump(int argc, char **argv) {
     }
     if (g_status[0]) fw_printf("\n(%s)\n", g_status);
     fw_file_remove(BROWSE_FILE);
+    fw_file_remove(TEXT_FILE);
     return ok ? 0 : 1;
 }
 
 // --- the loop ----------------------------------------------------------------------
 
 static int browse_cmd(int argc, char **argv) {
+    page_store(store_write, store_read, nullptr);
+    g_vis_ok = false;
     if (argc > 1 && !strcmp(argv[1], "-d")) return dump(argc, argv);
     g_tui = true;
     fw_tui_begin();
@@ -610,6 +653,7 @@ static int browse_cmd(int argc, char **argv) {
     }
     fw_tui_end();
     fw_file_remove(BROWSE_FILE);
+    fw_file_remove(TEXT_FILE);
     return 0;
 }
 

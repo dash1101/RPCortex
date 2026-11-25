@@ -16,7 +16,25 @@ static int g_fail, g_checks;
 
 static Page g_page;
 
+// The page's text, in memory here (the package keeps it in a file).
+static char     g_store[PAGE_TEXT + 16];
+static uint32_t g_store_len;
+static bool store_w(void *, uint32_t off, const char *d, uint32_t n) {
+    if (off + n > sizeof(g_store)) return false;
+    if (off == 0) g_store_len = 0;
+    if (off != g_store_len) return false;           // appends only, in order
+    memcpy(g_store + off, d, n); g_store_len = off + n;
+    return true;
+}
+static uint32_t store_r(void *, uint32_t off, char *b, uint32_t n) {
+    if (off >= g_store_len) return 0;
+    if (off + n > g_store_len) n = g_store_len - off;
+    memcpy(b, g_store + off, n);
+    return n;
+}
+
 static void load(const char *html, int width, uint32_t piece = 0) {
+    page_store(store_w, store_r, nullptr);
     page_begin(&g_page, width);
     uint32_t n = (uint32_t)strlen(html);
     if (!piece) page_feed(&g_page, html, n);
@@ -217,10 +235,10 @@ int main() {
     {
         // Far more text than the page holds: it stops cleanly and says so.
         std::string big = "<p>";
-        for (int i = 0; i < 6000; i++) big += "word" + std::to_string(i) + " ";
+        for (int i = 0; i < 9000; i++) big += "word" + std::to_string(i) + " ";
         load(big.c_str(), 80);
         CK(g_page.truncated, "an oversized page is marked truncated");
-        CK(g_page.text_len <= PAGE_TEXT, "and stays inside its buffer");
+        CK(g_page.text_len <= PAGE_TEXT && g_store_len == g_page.text_len, "and stays inside its store, all of it written");
         check_lines_fit(80, "lines still fit");
         // Malformed: an unclosed tag, a stray '<', an unterminated entity.
         load("a < b and c <3 d &amp e &notreal; <b>bold <i>x", 40);
@@ -234,7 +252,7 @@ int main() {
         load("caf\xC3\xA9 \xE2\x80\x9Cquoted\xE2\x80\x9D \xE2\x80\x94 5\xE2\x82\xAC \xE4\xB8\xAD &eacute;&#8217;", 60);
         CK(has("cafe \"quoted\" - 5EUR ? e'"), "UTF-8 and entities folded to ASCII");
         bool ascii = true;
-        for (uint32_t i = 0; i < g_page.text_len; i++) if ((unsigned char)g_page.text[i] >= 0x80) ascii = false;
+        for (uint32_t i = 0; i < g_store_len; i++) if ((unsigned char)g_store[i] >= 0x80) ascii = false;
         CK(ascii, "the page holds ASCII only");
         load("\xC3 broken \xA9 \xE2\x82", 60);
         CK(has("? broken ? ?"), "broken UTF-8 shows as '?'");
@@ -262,6 +280,7 @@ int main() {
                 }
             }
             int width = 20 + (int)(rnd() % 120);
+            page_store(store_w, store_r, nullptr);
             page_begin(&g_page, width);
             size_t i = 0;
             while (i < h.size()) { size_t n = 1 + rnd() % 64; if (i + n > h.size()) n = h.size() - i; page_feed(&g_page, h.data() + i, (uint32_t)n); i += n; }

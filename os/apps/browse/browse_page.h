@@ -11,10 +11,11 @@
 
 #include <stdint.h>
 
-#define PAGE_TEXT      16384   // the laid-out text, every line end to end
-#define PAGE_LINES     1100
-#define PAGE_SPANS     520     // links and fields on the lines, and bold runs
-#define PAGE_POOL      6144    // link targets, form actions, field names
+#define PAGE_TEXT      65535   // the laid-out text, every line end to end (in the store)
+#define PAGE_WBUF      2048    // what is held in RAM before it goes to the store
+#define PAGE_LINES     1600
+#define PAGE_SPANS     450     // links and fields on the lines, and bold runs
+#define PAGE_POOL      5120    // link targets, form actions, field names
 #define PAGE_FORMS     10
 #define PAGE_FIELDS    32
 #define FIELD_VALUE    112
@@ -56,8 +57,9 @@ struct Field {
 
 struct Page {
     // --- the result
-    char     text[PAGE_TEXT];
-    uint32_t text_len;
+    char     wbuf[PAGE_WBUF];      // text not yet handed to the store
+    uint32_t wbuf_len;
+    uint32_t text_len;             // all of it, stored and not
     Line     lines[PAGE_LINES];
     uint32_t nlines;
     Span     spans[PAGE_SPANS];
@@ -110,6 +112,15 @@ struct Page {
     uint32_t utf8_cp;              // the character they belong to
 };
 
+// Where the laid-out text lives. It is not kept in RAM: a page of text is
+// tens of kilobytes, and a package's data has to fit in one piece of a heap
+// that a long-running board has broken up. The package keeps it in a file; the
+// host tests in a buffer. `write` appends `n` bytes at `off` (0 starts afresh);
+// `read` returns how many of `n` bytes at `off` it gave.
+typedef bool     (*PageStoreWrite)(void *ctx, uint32_t off, const char *data, uint32_t n);
+typedef uint32_t (*PageStoreRead)(void *ctx, uint32_t off, char *buf, uint32_t n);
+void page_store(PageStoreWrite w, PageStoreRead r, void *ctx);
+
 // Start a page `width` columns wide.
 void page_begin(Page *p, int width);
 // Hand over the next `n` bytes of HTML. Any split is fine, mid-tag included.
@@ -119,7 +130,8 @@ void page_end(Page *p);
 // Plain text (not HTML), laid out the same way: for text/plain responses.
 void page_feed_text(Page *p, const char *data, uint32_t n);
 
-// A line's text, `len` bytes long. Not terminated.
+// A line's text, `len` bytes long, terminated. Read from the store into one
+// buffer, so it is good until the next call.
 const char *page_line(const Page *p, uint32_t i, uint32_t *len);
 // A pool string (link target, form action, field name).
 const char *page_str(const Page *p, uint16_t off);
