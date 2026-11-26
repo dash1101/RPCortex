@@ -180,6 +180,62 @@ RpcLock g_fs_lock;
 
 #define FS_OFFSET      (RPC_FW_RESERVE + RPC_PKG_REGION)
 #define FS_SIZE        (PICO_FLASH_SIZE_BYTES - FS_OFFSET)
+
+// --- A/B partitions, and reading flash by its offset --------------------------
+//
+// On RP2350 the firmware lives in one of two partitions (core/ablayout.h), and
+// the boot ROM maps the one it booted at 0x10000000 with everything else
+// faulting. storage_map_flash, first thing at start-up, maps the rest of the
+// chip after it, and every read of flash by offset (the filesystem, the
+// package slot, the staging area) goes through storage_flash_ptr. On RP2040,
+// and on an RP2350 still on the old layout (no partition table, image at 0),
+// the map is the identity and this is XIP_BASE + offset, as it always was.
+static uint32_t g_map_base;                    // flash offset at 0x10000000
+static uint32_t g_map_bytes = PICO_FLASH_SIZE_BYTES;
+static int      g_ab_part = -1;                // 0 A, 1 B, -1 no partitions
+
+#if RPC_AB
+#include "ablayout.h"
+#include "hardware/structs/qmi.h"
+#include "hardware/regs/qmi.h"
+
+void storage_map_flash(void) {
+    uint32_t a0 = qmi_hw->atrans[0];
+    uint32_t base = ((a0 & QMI_ATRANS0_BASE_BITS) >> QMI_ATRANS0_BASE_LSB) * 4096u;
+    g_ab_part = ab_which(RPC_FW_RESERVE, base);
+    if (g_ab_part < 0) return;                 // the old layout: identity, leave it
+    // Four 4 MB panes, each mapping the next 4 MB after the partition's start, to
+    // the end of the chip. Pane 0's base is unchanged (the code running now is
+    // fetched through it); it only grows.
+    uint32_t left = PICO_FLASH_SIZE_BYTES - base;
+    for (int i = 0; i < 4; i++) {
+        uint32_t pane = left > 0x400000u ? 0x400000u : left;
+        uint32_t pbase = base + (uint32_t)i * 0x400000u;
+        qmi_hw->atrans[i] = ((pane / 4096u) << QMI_ATRANS0_SIZE_LSB) |
+                            ((pbase / 4096u) << QMI_ATRANS0_BASE_LSB);
+        left -= pane;
+    }
+    g_map_base = base;
+    g_map_bytes = PICO_FLASH_SIZE_BYTES - base;
+}
+
+const void *storage_flash_ptr(uint32_t off) {
+    return (const void *)(uintptr_t)ab_xip_addr(g_map_base, g_map_bytes, off);
+}
+#else
+void storage_map_flash(void) {}
+const void *storage_flash_ptr(uint32_t off) { return (const void *)(XIP_BASE + off); }
+#endif
+
+int storage_ab_part(void) { return g_ab_part; }
+
+#if RPC_AB
+uint32_t storage_ab_part_offset(int part) { return ab_part_off(RPC_FW_RESERVE, part); }
+uint32_t storage_ab_part_bytes(void)      { return ab_part_bytes(RPC_FW_RESERVE); }
+#else
+uint32_t storage_ab_part_offset(int)      { return 0; }
+uint32_t storage_ab_part_bytes(void)      { return 0; }
+#endif
 #define FS_BLOCK_SIZE  FLASH_SECTOR_SIZE          // 4096 — the erase unit
 #define FS_PROG_SIZE   FLASH_PAGE_SIZE            // 256  — the program unit
 
@@ -205,8 +261,8 @@ static int fs_read(const struct lfs_config *c, lfs_block_t block,
                    lfs_off_t off, void *buffer, lfs_size_t size) {
     (void)c;
     // XIP: flash is memory-mapped for reading, so this is a memcpy.
-    const uint8_t *src = (const uint8_t *)(XIP_BASE + FS_OFFSET +
-                                           block * FS_BLOCK_SIZE + off);
+    const uint8_t *src = (const uint8_t *)storage_flash_ptr(FS_OFFSET +
+                                                            block * FS_BLOCK_SIZE + off);
     memcpy(buffer, src, size);
     return 0;
 }
@@ -835,8 +891,24 @@ extern "C" char __flash_binary_end;
 uint32_t storage_firmware_bytes(void) {
     return (uint32_t)((uintptr_t)&__flash_binary_end - XIP_BASE);
 }
-uint32_t storage_fw_slot_bytes(void) { return RPC_FW_SLOT; }
-uint32_t storage_stage_offset(void)   { return RPC_STAGE_OFF; }
+// The most an image may be: a partition on RP2350 (also before the board is on
+// partitions, so the next update can move it there), the slot elsewhere.
+uint32_t storage_fw_slot_bytes(void) {
+#if RPC_AB
+    return storage_ab_part_bytes();
+#else
+    return RPC_FW_SLOT;
+#endif
+}
+
+// Where an update is assembled: the partition that is NOT running, on a board
+// with partitions; the old staging slot otherwise.
+uint32_t storage_stage_offset(void) {
+#if RPC_AB
+    if (g_ab_part >= 0) return storage_ab_part_offset(1 - g_ab_part);
+#endif
+    return RPC_STAGE_OFF;
+}
 
 // Copy a file into the staging slot.
 //
@@ -845,13 +917,30 @@ uint32_t storage_stage_offset(void)   { return RPC_STAGE_OFF; }
 // slot holds nothing the device needs, so a failure or an interruption costs
 // the copy and nothing else.
 uint32_t storage_stage_file(const char *path, StorageProgressFn cb, void *ctx) {
+    return storage_stage_file_ex(path, nullptr, 0, cb, ctx);
+}
+
+// `prefix` (a whole number of sectors) goes first and the file after it. On a
+// board with partitions the target is the partition being replaced, and its
+// first sector is ERASED before anything else and WRITTEN LAST: until the very
+// end it holds no IMAGE_DEF, so a write cut short leaves a partition the boot
+// ROM will not boot, never half an image it would.
+uint32_t storage_stage_file_ex(const char *path, const uint8_t *prefix, uint32_t prefix_len,
+                               StorageProgressFn cb, void *ctx) {
     LockGuard _fs(&g_fs_lock);
     if (!g_mounted) return 0;
+    if (prefix_len % FLASH_SECTOR_SIZE) return 0;
+    uint32_t stage = storage_stage_offset();
 
     struct lfs_info info;
     if (lfs_stat(&g_lfs, path, &info) < 0 || info.type != LFS_TYPE_REG) return 0;
     uint32_t size = info.size;
-    if (size == 0 || size > RPC_FW_SLOT) return 0;
+    uint32_t total = prefix_len + size;
+    // What is staged must fit the area it is staged INTO: a partition, or the old
+    // staging slot (a board being moved onto partitions stages the table and the
+    // image together there, and the next thing after it is the package slot).
+    uint32_t room = g_ab_part >= 0 ? storage_ab_part_bytes() : (uint32_t)RPC_FW_SLOT;
+    if (size == 0 || size > storage_fw_slot_bytes() || total > room) return 0;
 
     lfs_file_t f;
     if (lfs_file_open(&g_lfs, &f, path, LFS_O_RDONLY) < 0) return 0;
@@ -862,30 +951,53 @@ uint32_t storage_stage_file(const char *path, StorageProgressFn cb, void *ctx) {
     uint8_t *buf = (uint8_t *)malloc(FLASH_SECTOR_SIZE);
     if (!buf) { lfs_file_close(&g_lfs, &f); return 0; }
 
-    uint32_t done = 0;
+    bool last_first = g_ab_part >= 0 && !prefix_len;
     bool ok = true;
-    while (done < size && ok) {
-        uint32_t want = size - done;
-        if (want > FLASH_SECTOR_SIZE) want = FLASH_SECTOR_SIZE;
+    if (last_first) {
+        EraseArgs ea{stage, FLASH_SECTOR_SIZE};
+        ok = guarded(do_erase, &ea) == 0;
+    }
+    // Sector `s` of the staged data: the prefix, then the file.
+    auto fill = [&](uint32_t s) -> bool {
+        uint32_t at = s * FLASH_SECTOR_SIZE;
         memset(buf, 0xff, FLASH_SECTOR_SIZE);          // erased state for the tail
-        if (lfs_file_read(&g_lfs, &f, buf, want) != (lfs_ssize_t)want) { ok = false; break; }
-
-        EraseArgs ea{RPC_STAGE_OFF + done, FLASH_SECTOR_SIZE};
-        if (guarded(do_erase, &ea) != 0) { ok = false; break; }
-        ProgArgs pa{RPC_STAGE_OFF + done, buf, FLASH_SECTOR_SIZE};
-        if (guarded(do_prog, &pa) != 0) { ok = false; break; }
-        done += want;
+        if (at < prefix_len) { memcpy(buf, prefix + at, FLASH_SECTOR_SIZE); return true; }
+        uint32_t foff = at - prefix_len;
+        uint32_t want = size - foff > FLASH_SECTOR_SIZE ? FLASH_SECTOR_SIZE : size - foff;
+        if (lfs_file_seek(&g_lfs, &f, (lfs_soff_t)foff, LFS_SEEK_SET) < 0) return false;
+        return lfs_file_read(&g_lfs, &f, buf, want) == (lfs_ssize_t)want;
+    };
+    auto put = [&](uint32_t s) -> bool {
+        EraseArgs ea{stage + s * FLASH_SECTOR_SIZE, FLASH_SECTOR_SIZE};
+        if (guarded(do_erase, &ea) != 0) return false;
+        ProgArgs pa{stage + s * FLASH_SECTOR_SIZE, buf, FLASH_SECTOR_SIZE};
+        return guarded(do_prog, &pa) == 0;
+    };
+    uint32_t sectors = (total + FLASH_SECTOR_SIZE - 1) / FLASH_SECTOR_SIZE;
+    uint32_t done = 0;
+    for (uint32_t s = last_first ? 1 : 0; s < sectors && ok; s++) {
+        ok = fill(s) && put(s);
+        done = (s + 1) * FLASH_SECTOR_SIZE;
+        if (done > total) done = total;
         // Every sector, not every so often: this is what feeds the watchdog
         // through a copy that takes longer than its timeout.
-        if (cb) cb(ctx, done, size);
+        if (cb) cb(ctx, done, total);
     }
+    if (ok && last_first) ok = fill(0) && put(0);
 
     free(buf);
     lfs_file_close(&g_lfs, &f);
-    return ok ? done : 0;
+    return ok ? total : 0;
 }
 
 uint32_t storage_reserve_bytes(void) { return RPC_FW_RESERVE; }
+
+// Make the partition that is not running unbootable: its first sector erased.
+bool storage_ab_invalidate_idle(void) {
+    if (g_ab_part < 0) return false;
+    EraseArgs ea{storage_ab_part_offset(1 - g_ab_part), FLASH_SECTOR_SIZE};
+    return guarded(do_erase, &ea) == 0;
+}
 
 // --- the USB transfer area --------------------------------------------------
 //
@@ -898,15 +1010,15 @@ uint32_t storage_reserve_bytes(void) { return RPC_FW_RESERVE; }
 // firmware image over whatever the host left here. `update` clears the area
 // first rather than letting the two interleave, since an image half-overwritten
 // by a file drop is the one failure that does not end with a working board.
-uint32_t storage_usb_offset(void) { return RPC_STAGE_OFF; }
-uint32_t storage_usb_bytes(void)  { return RPC_FW_SLOT; }
+uint32_t storage_usb_offset(void) { return storage_stage_offset(); }
+uint32_t storage_usb_bytes(void)  { return storage_fw_slot_bytes(); }
 
 bool storage_usb_read(uint32_t off, void *buf, uint32_t len) {
     if (off + len > storage_usb_bytes()) return false;
     // XIP: flash is memory-mapped for reading, so this is a memcpy and costs
     // nothing worth avoiding. No lock either — nothing else writes this region
     // except the block writer below, which runs on the same task.
-    memcpy(buf, (const uint8_t *)(XIP_BASE + RPC_STAGE_OFF + off), len);
+    memcpy(buf, (const uint8_t *)storage_flash_ptr(storage_usb_offset() + off), len);
     return true;
 }
 
@@ -918,9 +1030,9 @@ bool storage_usb_write_block(uint32_t off, const uint8_t *block4k) {
     // stack's — the inversion that livelocked the device when writes went
     // through littlefs. Nothing shares this region, so there is nothing to
     // serialise against.
-    EraseArgs ea{RPC_STAGE_OFF + off, STORAGE_USB_BLOCK};
+    EraseArgs ea{storage_usb_offset() + off, STORAGE_USB_BLOCK};
     if (guarded(do_erase, &ea) != 0) return false;
-    ProgArgs pa{RPC_STAGE_OFF + off, block4k, STORAGE_USB_BLOCK};
+    ProgArgs pa{storage_usb_offset() + off, block4k, STORAGE_USB_BLOCK};
     return guarded(do_prog, &pa) == 0;
 }
 
@@ -940,7 +1052,7 @@ const void *storage_pkg_slot_map(uint32_t i) {
     if (i >= RPC_PKG_SLOT_COUNT) return nullptr;
     // Reading a slot costs nothing: it is memory-mapped, which is the whole
     // premise — the package's code is fetched from here by the CPU itself.
-    return (const void *)(XIP_BASE + RPC_PKG_OFF + storage_pkg_slot_offset(i));
+    return storage_flash_ptr(RPC_PKG_OFF + storage_pkg_slot_offset(i));
 }
 
 // Offsets arriving here are relative to the REGION, so a caller cannot address

@@ -57,6 +57,17 @@
 #include "hardware/regs/addressmap.h"
 #include "pico/multicore.h"
 
+#if RPC_AB
+#include "ablayout.h"
+#include "pico/bootrom.h"
+#include "boot/picoboot_constants.h"
+
+// The partition table, compiled in from the build (os/CMakeLists.txt), for
+// moving a board on the old layout onto partitions.
+extern "C" const unsigned char ab_pt_data[];
+extern "C" const unsigned int  ab_pt_len;
+#endif
+
 // --- writing the firmware ---------------------------------------------------
 
 // Copy the staged image over the firmware, one sector at a time.
@@ -178,6 +189,101 @@ static void stage_progress(void *, uint32_t done, uint32_t total) {
 // Two steps because source and destination share a flash chip. Staging is safe
 // and interruptible — it touches nothing the device needs — and it puts the
 // image at a fixed offset the final copy can read without a filesystem.
+#if RPC_AB
+// --- A/B: the firmware kept in the other partition ------------------------------
+//
+// The record says which partition holds the firmware an update replaced, how
+// long it is and its SHA-256: "part,len,sha,version". Going back to it is only
+// done once the bytes there are checked against that, so a record that no
+// longer describes the partition (the USB drive wrote over it, an update was
+// cut short) refuses rather than switching to something that will not start.
+#define AB_PREV_KEY "Update.AB_Prev"
+
+void update_ab_forget(void) {
+    if (reg_get(AB_PREV_KEY, "")[0]) { reg_set(AB_PREV_KEY, ""); persist_save_registry(); }
+}
+
+static void sha_hex(const uint8_t *p, uint32_t len, char out[65]) {
+    Sha256Ctx c; sha256_init(&c);
+    // In pieces, feeding the watchdog: a megabyte through the uncached window
+    // takes a few seconds.
+    for (uint32_t at = 0; at < len; at += 32768) {
+        uint32_t n = len - at > 32768 ? 32768 : len - at;
+        sha256_update(&c, p + at, n);
+        task_alive();
+    }
+    uint8_t d[32]; sha256_final(&c, d);
+    for (int i = 0; i < 32; i++) snprintf(out + i * 2, 3, "%02x", d[i]);
+}
+
+// Note the RUNNING firmware as the one to go back to; called just before the
+// board restarts into the new one.
+static void ab_record_current(void) {
+    uint32_t len = storage_firmware_bytes();
+    char sha[65];
+    sha_hex((const uint8_t *)XIP_BASE, len, sha);
+    char rec[160];
+    snprintf(rec, sizeof(rec), "%d,%lu,%s,%s", storage_ab_part(), (unsigned long)len, sha, RPC_OS_VERSION);
+    reg_set(AB_PREV_KEY, rec);
+}
+
+bool update_ab_prev(int *part, char *ver, uint32_t vcap, bool verify) {
+    char rec[160];
+    snprintf(rec, sizeof(rec), "%s", reg_get(AB_PREV_KEY, ""));
+    int p = -1; unsigned long len = 0; char sha[65] = "", v[48] = "";
+    if (sscanf(rec, "%d,%lu,%64[0-9a-f],%47s", &p, &len, sha, v) != 4) return false;
+    if (p != 1 - storage_ab_part() || !len || len > storage_ab_part_bytes()) return false;
+    if (part) *part = p;
+    if (ver) snprintf(ver, vcap, "%s", v);
+    if (!verify) return true;
+    char now[65];
+    sha_hex((const uint8_t *)storage_flash_ptr(storage_ab_part_offset(p)), (uint32_t)len, now);
+    return strcmp(now, sha) == 0;
+}
+
+// Erase the first sector of the RUNNING partition and restart. The boot ROM then
+// finds one valid image, the other one, and boots it. From RAM: the sector
+// being erased is part of the code that would otherwise be running.
+static void __no_inline_not_in_flash_func(ab_leave)(uint32_t part_off) {
+    save_and_disable_interrupts();
+    flash_range_erase(part_off, FLASH_SECTOR_SIZE);
+    watchdog_hw->ctrl = WATCHDOG_CTRL_TRIGGER_BITS;
+    while (true) __asm volatile ("nop");
+}
+
+bool update_ab_switch_back(bool at_boot) {
+    int part = -1; char ver[48] = "";
+    if (!update_ab_prev(&part, ver, sizeof(ver), false)) {
+        if (!at_boot) out_err("No previous firmware is kept in the other partition.");
+        return false;
+    }
+    if (!at_boot) out_info("Checking %s in partition %c...", ver, 'A' + part);
+    if (!update_ab_prev(&part, ver, sizeof(ver), true)) {
+        update_ab_forget();
+        if (!at_boot) out_err("Partition %c no longer holds %s (it was written over). Not switching.", 'A' + part, ver);
+        return false;
+    }
+    log_addf(LOG_K_WARN, "rollback: back to %s in partition %c", ver, 'A' + part);
+    // The record goes: once the board is running that firmware, there is
+    // nothing kept in the other partition any more.
+    reg_set(AB_PREV_KEY, "");
+    reg_set("System.Update_From", RPC_OS_LONG);
+    reg_set("System.Update_To", ver);
+    persist_save_registry();
+    if (!at_boot) {
+        out_ok("Restarting into %s.", ver);
+        out_flush();
+        sleep_ms(300);
+        multicore_reset_core1();
+    }
+    bb_note_clean_exit();
+    kboot_expect_reboot();
+    kboot_clear_strikes();
+    ab_leave(storage_ab_part_offset(storage_ab_part()));
+    return true;                                        // unreachable
+}
+#endif
+
 bool update_apply_file(const char *path, const char *to_version, bool at_boot) {
     bool is_dir = false; uint32_t size = 0;
     if (!storage_stat(path, &is_dir, &size) || size == 0) {
@@ -205,9 +311,35 @@ bool update_apply_file(const char *path, const char *to_version, bool at_boot) {
                   C_GRAY, C_RESET);
     }
 
+    // What goes in front of the image: nothing, except on an RP2350 still on the
+    // old layout, which is moved onto partitions now. The table and a blank
+    // slot 1 are staged before the image and the whole of it copied to the
+    // start of flash below, so the board comes back up running from A.
+    uint32_t prefix = 0;
+    uint8_t *pfx = nullptr;
+#if RPC_AB
+    bool ab = storage_ab_part() >= 0;
+    if (ab) {
+        // The other partition is about to be written: whatever was kept there
+        // is gone from this moment.
+        update_ab_forget();
+    } else if (!at_boot) {
+        pfx = (uint8_t *)malloc(AB_TABLE_BYTES);
+        if (!pfx) { out_err("Not enough memory to stage the partition table."); return false; }
+        memset(pfx, 0xff, AB_TABLE_BYTES);
+        memcpy(pfx, ab_pt_data, ab_pt_len < 4096 ? ab_pt_len : 4096);
+        prefix = AB_TABLE_BYTES;
+        out_info("This update also moves the board onto two firmware partitions (A/B).");
+    }
+    out_info(ab ? "Writing %lu KB into partition %c..." : "Staging %lu KB...",
+             (unsigned long)(size / 1024), ab ? 'A' + (1 - storage_ab_part()) : 0);
+#else
     out_info("Staging %lu KB...", (unsigned long)(size / 1024));
-    uint32_t staged = storage_stage_file(path, stage_progress, nullptr);
+#endif
+    uint32_t staged = storage_stage_file_ex(path, pfx, prefix, stage_progress, nullptr);
+    free(pfx);
     out_progress_done();
+    if (staged == size + prefix) staged = size;
     if (staged != size) {
         out_err("Could not stage the image (%lu of %lu bytes).",
                 (unsigned long)staged, (unsigned long)size);
@@ -218,7 +350,7 @@ bool update_apply_file(const char *path, const char *to_version, bool at_boot) {
     // same way the copier will. Everything up to here could still be undone;
     // after this nothing can, so this is the last chance to find a problem.
     Sha256Ctx c; sha256_init(&c);
-    sha256_update(&c, (const uint8_t *)(XIP_BASE + storage_stage_offset()), staged);
+    sha256_update(&c, (const uint8_t *)storage_flash_ptr(storage_stage_offset() + prefix), staged);
     uint8_t d1[32]; sha256_final(&c, d1);
 
     // Stream the source file through the loader's positional reader rather
@@ -253,7 +385,7 @@ bool update_apply_file(const char *path, const char *to_version, bool at_boot) {
     // check here used to accept either layout on either chip. imagecheck.h has
     // the layouts; host-tested against every board's release image.
     {
-        const uint8_t *base = (const uint8_t *)(XIP_BASE + storage_stage_offset());
+        const uint8_t *base = (const uint8_t *)storage_flash_ptr(storage_stage_offset() + prefix);
 #if PICO_RP2350
         const ImageChip chip = IMAGE_CHIP_RP2350;
         const char *chip_name = "RP2350";
@@ -272,6 +404,51 @@ bool update_apply_file(const char *path, const char *to_version, bool at_boot) {
     }
 
     out_ok("Staged and verified.");
+
+#if RPC_AB
+    if (ab) {
+        uint16_t maj = 0, min = 0;
+        const uint8_t *img = (const uint8_t *)storage_flash_ptr(storage_stage_offset());
+        if (!ab_image_version(img, 4096, &maj, &min)) {
+            storage_ab_invalidate_idle();
+            out_err("That image is from before A/B partitions and cannot run from one.");
+            out_multi("  Flash it with its .uf2 instead (rpc flash, or the BOOTSEL drive).");
+            return false;
+        }
+        bool newer = maj > PICO_CRT0_VERSION_MAJOR ||
+                     (maj == PICO_CRT0_VERSION_MAJOR && min > PICO_CRT0_VERSION_MINOR);
+        if (strcmp(path, ROLLBACK_IMG) != 0) {
+            reg_set("System.Update_From", RPC_OS_LONG);
+            reg_set("System.Update_To", to_version ? to_version : "a local image");
+            if (to_version && !strcmp(reg_get("System.Rollback_Refused", ""), to_version))
+                reg_set("System.Rollback_Refused", "");
+        }
+        if (!strcmp(path, IMAGE_PATH)) storage_remove(IMAGE_PATH);
+        if (newer) {
+            // A normal restart: the boot ROM takes the higher version, and this
+            // firmware stays where it is, as the rollback.
+            out_info("Keeping %s in partition %c to go back to.", RPC_OS_VERSION, 'A' + storage_ab_part());
+            ab_record_current();
+        } else {
+            out_warn("Not newer than what is running (%u.%u), so it is started by force;",
+                     (unsigned)maj, (unsigned)min);
+            out_multi("  the boot ROM then clears the other partition, and no copy is kept.");
+        }
+        persist_save_registry();
+        log_addf(LOG_K_WARN, "update: partition %c written (%lu bytes), restarting",
+                 'A' + (1 - storage_ab_part()), (unsigned long)size);
+        out_ok("Restarting into the new firmware.");
+        out_flush();
+        sleep_ms(300);
+        bb_note_clean_exit();
+        kboot_expect_reboot();
+        if (!at_boot) multicore_reset_core1();
+        if (newer) watchdog_reboot(0, 0, 50);
+        else rom_reboot(REBOOT2_FLAG_REBOOT_TYPE_FLASH_UPDATE | REBOOT2_FLAG_NO_RETURN_ON_SUCCESS,
+                        50, XIP_BASE + storage_stage_offset(), 0);
+        while (true) tight_loop_contents();
+    }
+#endif
 
     // Keep a copy of what is running, so this update can be undone.
     //
@@ -408,7 +585,7 @@ bool update_apply_file(const char *path, const char *to_version, bool at_boot) {
     // may allocate once the erase has begun.
     // Does not return: it reboots from inside, because the code that called it
     // no longer exists by the time it finishes.
-    apply_staged(storage_stage_offset(), size, fbuf);
+    apply_staged(storage_stage_offset(), size + prefix, fbuf);
     return true;                       // unreachable
 }
 

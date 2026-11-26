@@ -117,6 +117,19 @@ bool     storage_usb_write_block(uint32_t off, const uint8_t *block4k);
 // the new image while erasing the old, and erasing the firmware takes littlefs
 // with it. Staging puts the image at a fixed offset the final copy can read
 // with no filesystem involved.
+// --- A/B firmware partitions (RP2350; storage.cpp) ----------------------------
+// Map the flash after the running partition. Call first thing at start-up.
+void storage_map_flash(void);
+// Where flash offset `off` can be read (XIP_BASE + off where nothing is remapped).
+const void *storage_flash_ptr(uint32_t off);
+// The running partition: 0 (A), 1 (B), or -1 (no partitions: RP2040, or an
+// RP2350 on the old layout).
+int      storage_ab_part(void);
+uint32_t storage_ab_part_offset(int part);
+uint32_t storage_ab_part_bytes(void);
+// Erase the first sector of the partition that is not running.
+bool     storage_ab_invalidate_idle(void);
+
 uint32_t storage_fw_slot_bytes(void);      // the most a firmware image may be
 uint32_t storage_stage_offset(void);       // flash offset of the staging slot
 
@@ -128,6 +141,9 @@ uint32_t storage_stage_offset(void);       // flash offset of the staging slot
 // the device has stopped and reboots mid-copy.
 typedef void (*StorageProgressFn)(void *ctx, uint32_t done, uint32_t total);
 uint32_t storage_stage_file(const char *path, StorageProgressFn cb, void *ctx);
+// The same with `prefix_len` bytes (whole sectors) staged before the file.
+uint32_t storage_stage_file_ex(const char *path, const uint8_t *prefix, uint32_t prefix_len,
+                               StorageProgressFn cb, void *ctx);
 
 // --- the slots packages RUN from ---------------------------------------------
 //

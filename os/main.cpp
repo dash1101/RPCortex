@@ -1,3 +1,5 @@
+#include "storage.h"
+#include "hardware/watchdog.h"
 #include "tusb.h"
 // RPCortex v2 — entry point.
 //
@@ -69,6 +71,13 @@ static int shell_task(void *) {
     // Clearing it after login instead meant a device left sitting at a login
     // prompt and power-cycled three times — which is a completely ordinary
     // thing to do to a board on a desk — rebuilt its own filesystem.
+#if defined(RPC_TEST_BOOTLOOP)
+    // A test build only (RPC_TEST_BOOTLOOP=1): firmware that never comes up,
+    // for proving the recovery ladder puts the previous firmware back. Never set
+    // in a release.
+    watchdog_reboot(0, 0, 10);
+    while (true) tight_loop_contents();
+#endif
     kboot_succeeded();
 
     // This task owns the console from here on, the login prompt included. It used
@@ -143,6 +152,10 @@ int main(void) {
     // overflow here corrupts the other processor rather than landing in spare
     // memory. `mpu` prints the number.
     task_main_stack_paint();
+    // Before anything reads flash by its offset: on an RP2350 booted from a
+    // partition, only that partition is mapped, and the package slot and the
+    // filesystem fault until this maps the rest (storage.cpp).
+    storage_map_flash();
     stdio_init_all();
     // stdio_flush() inside the wait, not just sleep.
     //

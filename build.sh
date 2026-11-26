@@ -235,6 +235,9 @@ for board in "${BOARDS[@]}"; do
         # failure this check exists to catch.
         reserve=$(cat "$dir/fw_reserve.txt")
         slot=$((reserve / 2))
+        # On RP2350 the image goes into an A/B partition, 4 KB smaller than half
+        # the reserve (os/CMakeLists.txt writes it out).
+        [ -f "$dir/fw_slot.txt" ] && slot=$(cat "$dir/fw_slot.txt")
         # The region packages RUN from sits between the reserve and the
         # filesystem, so it comes out of the filesystem and the filesystem figure
         # has to know. Read from the build for the same reason the reserve is: a

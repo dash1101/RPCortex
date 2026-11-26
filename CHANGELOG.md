@@ -12,6 +12,8 @@ Summary:
 
 ### New
 
+- Two firmware partitions on RP2350 boards (Pico 2, Pico 2 W), on by default. An update is written into the partition that is not running, while the board keeps working, and the board restarts into it; the firmware it replaced stays in the other partition, so `update rollback --now` goes back to it, at no cost to the filesystem. If new firmware fails to start four times, the board switches back to the previous one by itself. A board is moved onto the partitions by its next update, and the `.uf2` sets them up when flashed (any board, whatever it held). The flash after the firmware does not move: files, packages and settings stay. `update rollback` says which partition is running and what is kept. RP2040 boards are unchanged.
+
 ### Improved
 
 ### Fixed

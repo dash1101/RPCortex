@@ -386,7 +386,18 @@ execute_process(COMMAND git -C ${OS_ROOT}/.. rev-list --count HEAD
 if(NOT RPC_COUNT_RC EQUAL 0 OR RPC_GIT_COUNT STREQUAL "")
     set(RPC_GIT_COUNT "0")
 endif()
+# RPC_BUILD_NUMBER in the environment overrides it, for testing what happens
+# between two builds (an A/B update chooses by this number) without commits.
+if(DEFINED ENV{RPC_BUILD_NUMBER})
+    set(RPC_GIT_COUNT "$ENV{RPC_BUILD_NUMBER}")
+endif()
 message(STATUS "build number: ${RPC_GIT_COUNT}")
+# RPC_TEST_BOOTLOOP in the environment builds firmware that restarts before it
+# counts as started, every time (main.cpp): for proving the recovery ladder.
+if(DEFINED ENV{RPC_TEST_BOOTLOOP})
+    target_compile_definitions(rpcortex_v2 PRIVATE RPC_TEST_BOOTLOOP=1)
+    message(WARNING "RPC_TEST_BOOTLOOP: this image never finishes booting (a test build)")
+endif()
 
 target_compile_definitions(rpcortex_v2 PRIVATE
     RPC_BUILD_ID="${RPC_GIT_SHA}"
@@ -953,6 +964,86 @@ endif()
 pico_add_extra_outputs(rpcortex_v2)
 # The raw image, which is what an OTA writes to flash.
 pico_add_bin_output(rpcortex_v2)
+
+# --- A/B firmware partitions (RP2350) ----------------------------------------
+#
+# The boot ROM keeps two copies of the firmware and boots the newer one (RP2350
+# datasheet 5.1.7). The reserve that held the firmware and its staging area is
+# split into:
+#
+#   0          the partition table (slot 0, 4 KB)
+#   4 KB       slot 1, left blank (the ROM looks here too, 5.1.15)
+#   8 KB       partition A
+#   8 KB + P   partition B, P = half the reserve less 4 KB
+#
+# so nothing after the reserve moves. An update is written into whichever
+# partition is not running and the board restarts into it; the one it replaced
+# stays where it was, which is the rollback, at no cost to the filesystem.
+# Images carry a version (the commit count), so the ROM can tell which is newer.
+# No hash (picotool's seal is not in every build of it): instead an update
+# erases the target's first sector before anything else and writes it last, so
+# a partition left half-written holds no IMAGE_DEF and is never booted.
+#
+# Nothing here changes how the firmware is built or flashed: the .uf2 build.sh
+# copies out is rewritten into one that installs the table and the image
+# together (tools_ab_uf2.py), and the .bin is still the image an update writes.
+if(PICO_RP2350)
+    math(EXPR RPC_AB_PART "${RPC_FW_RESERVE} / 2 - 4096")
+    math(EXPR RPC_AB_A "8192")
+    math(EXPR RPC_AB_B "8192 + ${RPC_AB_PART}")
+    math(EXPR RPC_AB_PART_K "${RPC_AB_PART} / 1024")
+    math(EXPR RPC_AB_A_K "${RPC_AB_A} / 1024")
+    math(EXPR RPC_AB_B_K "${RPC_AB_B} / 1024")
+    target_compile_definitions(rpcortex_v2 PRIVATE
+        RPC_AB=1 RPC_AB_PART=${RPC_AB_PART}
+        PICO_CRT0_VERSION_MAJOR=2 PICO_CRT0_VERSION_MINOR=${RPC_GIT_COUNT})
+    file(WRITE ${CMAKE_BINARY_DIR}/fw_slot.txt "${RPC_AB_PART}")
+
+    # Singleton: one table, so the ROM never weighs slot 1 against it, and never
+    # erases slot 1 after a flash-update boot of slot 0 (5.1.15, 5.1.16).
+    set(RPC_PT_JSON ${CMAKE_BINARY_DIR}/ab_pt.json)
+    file(WRITE ${RPC_PT_JSON} "{
+  \"version\": [1, 0],
+  \"unpartitioned\": {
+    \"families\": [\"absolute\"],
+    \"permissions\": {\"secure\": \"rw\", \"nonsecure\": \"rw\", \"bootloader\": \"rw\"}
+  },
+  \"partitions\": [
+    {
+      \"name\": \"A\", \"id\": 0,
+      \"start\": \"${RPC_AB_A_K}K\", \"size\": \"${RPC_AB_PART_K}K\",
+      \"families\": [\"rp2350-arm-s\"],
+      \"permissions\": {\"secure\": \"rw\", \"nonsecure\": \"rw\", \"bootloader\": \"rw\"}
+    },
+    {
+      \"name\": \"B\", \"id\": 1,
+      \"start\": \"${RPC_AB_B_K}K\", \"size\": \"${RPC_AB_PART_K}K\",
+      \"families\": [\"rp2350-arm-s\"],
+      \"permissions\": {\"secure\": \"rw\", \"nonsecure\": \"rw\", \"bootloader\": \"rw\"},
+      \"link\": [\"a\", 0]
+    }
+  ]
+}
+")
+    # The table as bytes: for the .uf2, and compiled in, so a board on the old
+    # layout can be moved onto partitions by its next update (update.cpp).
+    add_custom_command(
+        OUTPUT ${CMAKE_BINARY_DIR}/ab_pt.bin ${CMAKE_BINARY_DIR}/ab_pt_blob.cpp
+        COMMAND picotool partition create --quiet --singleton ${RPC_PT_JSON} ${CMAKE_BINARY_DIR}/ab_pt.bin -t bin
+        COMMAND ${CMAKE_COMMAND} -E env python3 ${OS_ROOT}/tools_bin2c.py
+                ${CMAKE_BINARY_DIR}/ab_pt.bin ${CMAKE_BINARY_DIR}/ab_pt_blob.cpp ab_pt
+        DEPENDS ${RPC_PT_JSON} ${OS_ROOT}/tools_bin2c.py
+    )
+    add_custom_target(ab_pt_src DEPENDS ${CMAKE_BINARY_DIR}/ab_pt_blob.cpp)
+    target_sources(rpcortex_v2 PRIVATE ${CMAKE_BINARY_DIR}/ab_pt_blob.cpp)
+    add_dependencies(rpcortex_v2 ab_pt_src)
+
+    add_custom_command(TARGET rpcortex_v2 POST_BUILD
+        COMMAND python3 ${OS_ROOT}/tools_ab_uf2.py ${CMAKE_BINARY_DIR}/ab_pt.bin
+                $<TARGET_FILE_DIR:rpcortex_v2>/rpcortex_v2.bin ${RPC_AB_A} ${RPC_AB_B}
+                $<TARGET_FILE_DIR:rpcortex_v2>/rpcortex_v2.uf2
+        VERBATIM)
+endif()
 
 # --- apps (relocatable objects, never linked) ------------------------------
 # Packages are built for cortex-m0plus REGARDLESS of the board being built.

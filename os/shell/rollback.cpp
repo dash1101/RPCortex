@@ -20,6 +20,7 @@
 #include "command.h"
 #include "out.h"
 #include "storage.h"
+#include "update.h"
 #include "sha256.h"
 #include "registry.h"
 #include "persist.h"
@@ -241,6 +242,11 @@ static bool image_matches(const RollbackInfo *info) {
 }
 
 bool rollback_apply(bool at_boot) {
+#if RPC_AB
+    // On a board with two firmware partitions the previous firmware is the
+    // other partition, not a file: going back is a restart into it.
+    if (storage_ab_part() >= 0) return update_ab_switch_back(at_boot);
+#endif
     RollbackInfo info;
     if (!rollback_read(&info)) {
         out_err("There is no saved firmware to go back to.");
@@ -336,6 +342,18 @@ bool rollback_apply(bool at_boot) {
 // point in a boot the caller has a filesystem rebuild lined up behind it, and
 // two competing explanations of the same failure help nobody.
 bool rollback_try_at_boot(void) {
+#if RPC_AB
+    if (storage_ab_part() >= 0) {
+        char ver[48] = "";
+        if (!update_ab_prev(nullptr, ver, sizeof(ver), false)) return false;
+        out_blank();
+        out_warn("This device has failed to start three times.");
+        out_multi("  %s, which it ran before the last update, is in the other partition.", ver);
+        out_multi("  Switching back to it.");
+        out_blank();
+        return update_ab_switch_back(/*at_boot*/true);
+    }
+#endif
     RollbackInfo info;
     if (!rollback_read(&info)) return false;
 
@@ -390,9 +408,63 @@ static void show(void) {
               (unsigned long)(info.size / 1024));
 }
 
+#if RPC_AB
+// `update rollback` on a board with two firmware partitions: the previous
+// firmware is whatever the last update left in the other one.
+static int ab_command(const char *opt) {
+    int part = -1; char ver[48] = "";
+    bool have = update_ab_prev(&part, ver, sizeof(ver), false);
+    if (!opt[0]) {
+        out_info("=== Firmware rollback ===");
+        out_blank();
+        out_multi("  Running    %s %s, from partition %c", RPC_OS_LONG, RPC_OS_CODENAME,
+                  'A' + storage_ab_part());
+        if (!have) {
+            out_multi("  Kept       %snothing%s", C_WARN, C_RESET);
+            out_blank();
+            out_multi("  The next update keeps this firmware in the other partition, at no");
+            out_multi("  cost to the filesystem, and 'sudo update rollback --now' goes back.");
+            return 0;
+        }
+        bool ok = update_ab_prev(&part, ver, sizeof(ver), true);
+        out_multi("  Kept       %s, in partition %c%s", ver, 'A' + part,
+                  ok ? "" : "  (written over since: cannot go back)");
+        out_blank();
+        if (ok) out_multi("  'sudo update rollback --now' restarts into it.");
+        return 0;
+    }
+    if (!users_is_admin(session_user())) {
+        out_err("Only an admin can change the firmware.");
+        return 1;
+    }
+    if (!strcmp(opt, "--now") || !strcmp(opt, "now"))
+        return update_ab_switch_back(/*at_boot*/false) ? 0 : 1;
+    if (!strcmp(opt, "--save") || !strcmp(opt, "save")) {
+        out_info("Nothing to save: on this board an update keeps the firmware it replaces");
+        out_multi("  in the other partition by itself.");
+        return 0;
+    }
+    if (!strcmp(opt, "--forget") || !strcmp(opt, "forget")) {
+        if (!have) { out_info("Nothing is kept."); return 0; }
+        update_ab_forget();
+        storage_ab_invalidate_idle();
+        out_ok("Forgot %s in partition %c.", ver, 'A' + part);
+        return 0;
+    }
+    out_multi("Usage:");
+    out_multi("  update rollback             what is kept");
+    out_multi("  update rollback --now       go back to it");
+    out_multi("  update rollback --forget    let it go");
+    return 1;
+}
+#endif
+
 int rollback_command(int argc, char **argv) {
     // argv[0] is "update", argv[1] is "rollback"
     const char *opt = argc >= 3 ? argv[2] : "";
+#if RPC_AB
+    if (storage_ab_part() >= 0) return ab_command(opt);
+#endif
 
     if (!opt[0]) { show(); return 0; }
 

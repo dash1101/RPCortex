@@ -55,7 +55,7 @@ static const Row kRows[] = {
     {ROW_BOOL, "WiFi autoconnect", "WiFi.Auto",        "false",  "Rejoin a saved network at boot"},
 
     {ROW_HEAD, "UPDATES",       nullptr,               nullptr,  nullptr},
-    {ROW_BOOL, "Keep rollback", "Update.Keep_Rollback", "false", "Save the old firmware on update (uses flash)"},
+    {ROW_BOOL, "Keep rollback", "Update.Keep_Rollback", "false", "Save the old firmware on update (uses flash; RP2350 keeps it anyway)"},
 
     {ROW_HEAD, "SHELL",         nullptr,               nullptr,  nullptr},
     {ROW_BOOL, "Colour",        "Shell.Color",         "true",   "ANSI colour in output"},

@@ -39,6 +39,7 @@ declare -A SRC=(
     # are static, and they are the part that fails without saying so.
     [websearch_test]=""
     [browse_test]=""
+    [ablayout_test]=""
     [httpd_test]=""
     # Ported from v1: the same three, each with its package source included and
     # a fake underneath it — a filesystem in a map, a screen of cells, a device
