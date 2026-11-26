@@ -2,6 +2,95 @@
   "schema": 1,
   "releases": [
     {
+      "tag": "v2.0.697-beta",
+      "display": "v2.0.697-beta",
+      "version": "2.0",
+      "build": 697,
+      "commit": "e3a3d2d37d85172ea495b6c17e75753e2d9526b0",
+      "codename": "Vela II",
+      "date": "2026-11-26",
+      "prerelease": true,
+      "title": "RPCortex v2.0.697-beta",
+      "summary": "RP2350 boards keep two firmware partitions: updates go into the idle one, the old firmware stays to go back to, and a firmware that will not start is undone by itself",
+      "notes": {
+        "new": [
+          "Two firmware partitions on RP2350 boards (Pico 2, Pico 2 W), on by default. An update is written into the partition that is not running, while the board keeps working, and the board restarts into it; the firmware it replaced stays in the other partition, so `update rollback --now` goes back to it, at no cost to the filesystem. If new firmware fails to start four times, the board switches back to the previous one by itself. A board is moved onto the partitions by its next update, and the `.uf2` sets them up when flashed (any board, whatever it held). The flash after the firmware does not move: files, packages and settings stay. `update rollback` says which partition is running and what is kept. RP2040 boards are unchanged."
+        ],
+        "improved": [],
+        "fixed": [],
+        "security": [],
+        "changed": [],
+        "issues": []
+      },
+      "assets": [
+        {
+          "board": "pico2_w",
+          "kind": "bin",
+          "file": "rpcortex-v2.0.697-beta-pico2_w.bin",
+          "size": 899760,
+          "sha256": "7f94e6a1672f82399fbb594d2a05965dde8ceed36a91ed7d505e2de35af76b9f",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.697-beta/rpcortex-v2.0.697-beta-pico2_w.bin"
+        },
+        {
+          "board": "pico2_w",
+          "kind": "uf2",
+          "file": "rpcortex-v2.0.697-beta-pico2_w.uf2",
+          "size": 1824256,
+          "sha256": "0e63c4c0eaf17543e3b9575c9c45c51cde742aa2ac9de699771606bfc09be025",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.697-beta/rpcortex-v2.0.697-beta-pico2_w.uf2"
+        },
+        {
+          "board": "pico_w",
+          "kind": "bin",
+          "file": "rpcortex-v2.0.697-beta-pico_w.bin",
+          "size": 785368,
+          "sha256": "fd14ea95c06678d3d214ec196ed4fadcab41ea5016cd6e06663e5ae127d4f2a5",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.697-beta/rpcortex-v2.0.697-beta-pico_w.bin"
+        },
+        {
+          "board": "pico_w",
+          "kind": "uf2",
+          "file": "rpcortex-v2.0.697-beta-pico_w.uf2",
+          "size": 1570816,
+          "sha256": "cd3f764b51fd6f68393d7799697641d79aa6e842633aff41d777f3ef257ad807",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.697-beta/rpcortex-v2.0.697-beta-pico_w.uf2"
+        },
+        {
+          "board": "pico2",
+          "kind": "bin",
+          "file": "rpcortex-v2.0.697-beta-pico2.bin",
+          "size": 416312,
+          "sha256": "a48661a01fdf31b0c6df8df90925907bae940ac77e8590154f332c4b27ab99b0",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.697-beta/rpcortex-v2.0.697-beta-pico2.bin"
+        },
+        {
+          "board": "pico2",
+          "kind": "uf2",
+          "file": "rpcortex-v2.0.697-beta-pico2.uf2",
+          "size": 857600,
+          "sha256": "87e2091af7d7414056280fd16618135e21867ccbf5b0d1c8172aa1143bf38555",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.697-beta/rpcortex-v2.0.697-beta-pico2.uf2"
+        },
+        {
+          "board": "pico",
+          "kind": "bin",
+          "file": "rpcortex-v2.0.697-beta-pico.bin",
+          "size": 334156,
+          "sha256": "d7bf437b996bb2c0560cbc65125b0fec588e40a43a0aa27cca3108d6cb921457",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.697-beta/rpcortex-v2.0.697-beta-pico.bin"
+        },
+        {
+          "board": "pico",
+          "kind": "uf2",
+          "file": "rpcortex-v2.0.697-beta-pico.uf2",
+          "size": 668672,
+          "sha256": "aae219be3ef72b5991ab79857d31a5614557c1f067ff721eac0ed8a627969c72",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.697-beta/rpcortex-v2.0.697-beta-pico.uf2"
+        }
+      ],
+      "url": "https://github.com/dash1101/RPCortex/releases/tag/v2.0.697-beta"
+    },
+    {
       "tag": "v2.0.694-beta",
       "display": "v2.0.694-beta",
       "version": "2.0",

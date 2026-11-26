@@ -8,6 +8,22 @@ good notes is in `RELEASING.md`.
 
 ## Unreleased
 
+Summary: 
+
+### New
+
+### Improved
+
+### Fixed
+
+### Security
+
+### Changed
+
+### Known issues
+
+## v2.0.697-beta, 2026-11-26
+
 Summary: RP2350 boards keep two firmware partitions: updates go into the idle one, the old firmware stays to go back to, and a firmware that will not start is undone by itself
 
 ### New
