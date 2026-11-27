@@ -129,7 +129,8 @@ static void fake_read(const char *prompt, char *buf, unsigned cap) {
     snprintf(g_last_prompt, sizeof(g_last_prompt), "%s", prompt);
     snprintf(buf, cap, "%s", g_next < g_nanswers ? g_answers[g_next++] : "");
 }
-static void fake_pause(uint32_t) { g_pauses++; }
+static uint32_t g_last_pause;
+static void fake_pause(uint32_t ms) { g_pauses++; g_last_pause = ms; }
 
 // --- the gate, as run_one uses it ------------------------------------------------------
 
@@ -537,6 +538,14 @@ int main(void) {
         ts->noprompt--;
         for (int i = 0; i < 3; i++) sudo_check_password("bad");
         ck(logged("auth: 3 wrong passwords in a row for 'root' from a host tool"), "repeated wrong AUTHs are logged");
+        ck(g_last_pause == 1000, "the third in a row still waits a second");
+        sudo_check_password("bad");
+        ck(g_last_pause == 2000, "the fourth waits two");
+        for (int i = 0; i < 20; i++) sudo_check_password("bad");
+        ck(g_last_pause == 30000, "a run of them waits 30 s each, and no longer");
+        ck(sudo_check_password("rootpw") == SUDO_OK, "the right one still works");
+        sudo_check_password("bad");
+        ck(g_last_pause == 1000, "and starts the count again");
         ident_console_set("guest");
         ck(sudo_check_password("") == SUDO_NOT_ADMIN, "a guest's AUTH is refused");
         ident_console_set("");

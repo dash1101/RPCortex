@@ -224,7 +224,12 @@ SudoCheck sudo_check_password(const char *pw) {
         if (n % 3 == 0)
             log_addf(LOG_K_WARN, "auth: %u wrong passwords in a row for '%s' from a host tool",
                      (unsigned)n, who);
-        if (g_pause) g_pause(1000);
+        // Longer with every three in a row (1, 2, 4, 8, 16, then 30 s each):
+        // a typo costs a second, a guesser a day per few thousand tries. Over
+        // SSH, link's AUTH reaches this from the network, two sessions at once.
+        uint32_t step = (n - 1) / 3;
+        uint32_t ms = step >= 5 ? 30000u : (1000u << step);
+        if (g_pause) g_pause(ms);
         return SUDO_WRONG;
     }
     {

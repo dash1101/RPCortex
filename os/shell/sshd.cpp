@@ -76,6 +76,19 @@ bool net_is_connected(void);
 #define SSHD_FAIL_LIMIT      10       // refusals, from anywhere, within the window...
 #define SSHD_COOLDOWN_MS     60000    // ...and then nobody gets in for this long
 #define SSHD_SPILL_MAX       8192
+// Every connection costs a key exchange on this core before anyone has logged
+// in, so how often they may start is limited, per address and in all, and the
+// refusal happens before any cryptography: closing a socket costs nothing.
+#define SSHD_RATE_WINDOW_MS  30000
+#ifndef SSHD_RATE_PER_IP              // (the host interop suite connects dozens of times)
+#define SSHD_RATE_PER_IP     6        // new connections from one address, per window
+#define SSHD_RATE_ALL        12       // from everyone together, per window
+#endif
+#define SSHD_RATE_IPS        8        // addresses remembered
+// A client that has not finished the key exchange in this long is not a real
+// one (real clients take a second or two): it gives its slot back, rather than
+// sitting in one of the two for the whole login grace.
+#define SSHD_KEX_GRACE_MS    15000
 #define HOSTKEY_PATH         "/os/ssh/hostkey"
 
 struct SshdSession {
@@ -118,6 +131,30 @@ static uint16_t      g_port;
 static uint32_t      g_fail_at[SSHD_FAIL_LIMIT];
 static uint32_t      g_fail_n;
 static uint32_t      g_cool_until;
+
+struct RateIp { char ip[24]; uint32_t since; uint8_t n; bool told; };
+static RateIp   g_rate[SSHD_RATE_IPS];
+static uint32_t g_rate_all_since, g_rate_all_n, g_rate_refused;
+
+// May a connection from `ip` start now? Counts it if so.
+static bool rate_ok(const char *ip, uint32_t now, bool *first_refusal) {
+    *first_refusal = false;
+    if ((uint32_t)(now - g_rate_all_since) > SSHD_RATE_WINDOW_MS) { g_rate_all_since = now; g_rate_all_n = 0; }
+    RateIp *r = nullptr, *oldest = &g_rate[0];
+    for (auto &e : g_rate) {
+        if (e.ip[0] && !strcmp(e.ip, ip)) { r = &e; break; }
+        if (!e.ip[0] || (uint32_t)(now - e.since) > (uint32_t)(now - oldest->since)) oldest = &e;
+    }
+    if (!r) { r = oldest; snprintf(r->ip, sizeof(r->ip), "%s", ip); r->since = now; r->n = 0; r->told = false; }
+    if ((uint32_t)(now - r->since) > SSHD_RATE_WINDOW_MS) { r->since = now; r->n = 0; r->told = false; }
+    if (r->n >= SSHD_RATE_PER_IP || g_rate_all_n >= SSHD_RATE_ALL) {
+        g_rate_refused++;
+        if (!r->told) { r->told = true; *first_refusal = true; }
+        return false;
+    }
+    r->n++; g_rate_all_n++;
+    return true;
+}
 static bool          g_listen_noted;
 
 static const char *peer_of(const SshdSession *s) { return s->peer[0] ? s->peer : "?"; }
@@ -524,6 +561,8 @@ static bool pump(SshdSession *s, uint32_t now) {
     }
 
     bool busy = false;
+    if (!s->srv.c.first_kex_done && (uint32_t)(now - s->t_open) > SSHD_KEX_GRACE_MS)
+        ssh_disconnect(&s->srv.c, SSH_DISC_BY_APPLICATION, "no key exchange");
     if (!s->srv.authed && (uint32_t)(now - s->t_open) > SSHD_LOGIN_GRACE_MS)
         ssh_disconnect(&s->srv.c, SSH_DISC_BY_APPLICATION, "login took too long");
     // Logged in and never asked for a shell or a command: a slot held for
@@ -603,6 +642,14 @@ static void accept_one(int h, uint32_t now) {
     for (int i = 0; i < SSHD_SESSIONS; i++) if (!g_slot[i]) { slot = i; break; }
     char ip[24];
     net_tcp_peer(h, ip, sizeof(ip));
+    bool tell = false;
+    if (!rate_ok(ip[0] ? ip : "?", now, &tell)) {
+        net_pkg_tcp_close(h);
+        // Once per address per window: a flood must not also flood the log.
+        if (tell) log_addf(LOG_K_WARN, "ssh: turned away %s (too many connections; more than %u in %u s)",
+                           ip[0] ? ip : "?", (unsigned)SSHD_RATE_PER_IP, (unsigned)(SSHD_RATE_WINDOW_MS / 1000));
+        return;
+    }
     if (slot < 0 || (int32_t)(g_cool_until - now) > 0) {
         // Closing at once is the only answer before a version line: SSH has
         // no way to say "busy" until the transport is up.
@@ -792,6 +839,9 @@ int sshd_command(int argc, char **argv) {
             }
             out_okp("ssh", "Server on, port %u, %d of %d sessions in use.", (unsigned)g_port, n, SSHD_SESSIONS);
             for (int i = 0; i < n; i++) out_multi("  %-12s from %s", who[i], from[i]);
+            if (g_rate_refused)
+                out_multi("  %lu connection%s turned away for coming too fast (see 'log')",
+                          (unsigned long)g_rate_refused, g_rate_refused == 1 ? "" : "s");
         }
         char fp[64];
         if (fingerprint_now(fp, sizeof(fp))) out_multi("  host key  ECDSA %s", fp);

@@ -312,7 +312,9 @@ fi
 # into the right session, and every way a connection ends — including the
 # identity rule end to end, with root signed in at the "console" throughout.
 kill "$(cat server.pid)" 2>/dev/null; rm -f server.pid
-g++ "${CXXF[@]}" -DRPC_HAS_WIFI=1 -I"$OS/../loader-spike/firmware" "$HERE/sshd_host.cpp" "$OS/shell/sshd.cpp" \
+# Its rate limit lifted: this suite opens dozens of connections from one address
+# in seconds. The limit itself is proven on a board.
+g++ "${CXXF[@]}" -DRPC_HAS_WIFI=1 -DSSHD_RATE_PER_IP=100000 -DSSHD_RATE_ALL=100000 -I"$OS/../loader-spike/firmware" "$HERE/sshd_host.cpp" "$OS/shell/sshd.cpp" \
     "$OS/shell/fsguard.cpp" "$CORE/sshserver.cpp" "$CORE/sshsess.cpp" "$CORE/lineedit.cpp" "$CORE/history.cpp" \
     "$CORE/interrupt.cpp" "$CORE/ident.cpp" "$CORE/users.cpp" "$CORE/sha256.cpp" "$CORE/perms.cpp" \
     "$CORE/sudo.cpp" "$CORE/protect.cpp" "$CORE/path.cpp" "$CORE/out.cpp" "$CORE/logring.cpp" "$CORE/registry.cpp" \

@@ -26,6 +26,9 @@
 #include "cmdline.h"
 #include "lineedit.h"
 #include "clockcfg.h"
+#include "linkreq.h"
+#include "b64.h"
+#include "path.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -638,6 +641,51 @@ static void fuzz_small(uint32_t iters) {
     }
 }
 
+// --- link mode (over USB, and over SSH from the network) ---------------------------------------
+
+static void fuzz_link(uint32_t iters) {
+    std::vector<Bytes> corpus = {
+        S("HELLO"), S("PING"), S("EXEC ls -l /home"), S("LS /os"), S("STAT /etc/x.cfg"),
+        S("GET ../../os/users.cfg"), S("AUTH cm9vdHB3"), S("BRIDGE on"), S("BYE"),
+        S("PUT 1234 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 /home/dash/a b.bin"),
+        S("PUT 99999999999999999999 zz /x"), S("D QUJDRA=="), S("D ===="), S("x"), S(""),
+    };
+    // Full-size D lines: exactly one chunk of base64 (1024 characters, 768
+    // bytes), and a little more, so the decoder's limit is actually reached.
+    corpus.push_back(S(("D " + std::string(1024, 'Q')).c_str()));
+    corpus.push_back(S(("D " + std::string(1092, 'A')).c_str()));
+    for (uint32_t it = 0; it < iters; it++) {
+        Bytes in = pick(corpus);
+        mutate(in, LINK_LINE_MAX + 64);
+        std::string line(in.begin(), in.end());
+        line = line.substr(0, strnlen(line.c_str(), line.size()));
+        LinkReq q;
+        if (link_parse(line.c_str(), &q)) {
+            ck(strlen(q.verb) < sizeof(q.verb), "verb not terminated", it);
+            ck(q.rest >= line.c_str() && q.rest <= line.c_str() + line.size(), "rest outside the line", it);
+            uint32_t size = 0; char hex[65]; const char *path = nullptr;
+            if (link_parse_put(q.rest, &size, hex, &path)) {
+                ck(strlen(hex) <= 64, "sha not terminated", it);
+                ck(path >= q.rest && path <= line.c_str() + line.size(), "PUT path outside the line", it);
+            }
+            // A D line's payload, and AUTH's, are base64 from the host.
+            uint8_t out[LINK_CHUNK + 8];
+            int32_t n = b64_decode(q.rest, (uint32_t)strlen(q.rest), out, LINK_CHUNK);
+            ck(n <= (int32_t)LINK_CHUNK, "base64 decoded past its cap", it);
+            char hx[80];
+            snprintf(hx, sizeof(hx), "%.70s", q.rest);
+            link_norm_hex(hx);
+            // Every path a request names is resolved against the session's cwd.
+            char abs[200];
+            if (path_resolve("/home/dash", q.rest, abs, sizeof(abs))) {
+                ck(abs[0] == '/', "a resolved path is not absolute", it);
+                ck(!strstr(abs, "/../") && strcmp(abs + (strlen(abs) >= 3 ? strlen(abs) - 3 : 0), "/.."),
+                   "a resolved path still climbs with ..", it);
+            }
+        }
+    }
+}
+
 // A parser that can be sent round a loop forever must fail the run, not stall it.
 static const char *g_target = "";
 static void on_alarm(int) {
@@ -664,6 +712,7 @@ int main(void) {
         {"pkgindex", fuzz_pkgindex, 1},
         {"fat",      fuzz_fat,      1},
         {"small",    fuzz_small,    1},
+        {"link",     fuzz_link,     1},
     };
     for (auto &t : targets) {
         int before = fails;

@@ -85,7 +85,7 @@ declare -A SRC=(
     # The same for the package loader, which reads ELF objects somebody else built.
     # Needs the packages build.sh produces as its seeds, like realapp_test.
     [fuzz_loader_test]="$SPIKE/loader.cpp $SPIKE/pkgslot.cpp"
-    [fuzz_test]="$CORE/httpparse.cpp $CORE/repoindex.cpp $CORE/pkgindex.cpp $CORE/fatro.cpp $CORE/cmdline.cpp $CORE/lineedit.cpp $CORE/clockcfg.cpp $CORE/interrupt.cpp $CORE/task.cpp $CORE/blackbox.cpp host_task_stub.cpp"
+    [fuzz_test]="$CORE/httpparse.cpp $CORE/repoindex.cpp $CORE/pkgindex.cpp $CORE/fatro.cpp $CORE/cmdline.cpp $CORE/lineedit.cpp $CORE/clockcfg.cpp $CORE/linkreq.cpp $CORE/b64.cpp $CORE/path.cpp $CORE/interrupt.cpp $CORE/task.cpp $CORE/blackbox.cpp host_task_stub.cpp"
     [secret_test]="$CORE/secret.cpp $CORE/sha256.cpp"
     [protect_test]="$CORE/protect.cpp $CORE/path.cpp"
     [fsguard_test]="$SHELL_DIR/fsguard.cpp $CORE/ident.cpp $CORE/protect.cpp $CORE/path.cpp $CORE/out.cpp $CORE/lock.cpp $CORE/task.cpp $CORE/blackbox.cpp $CORE/logring.cpp host_task_stub.cpp"
