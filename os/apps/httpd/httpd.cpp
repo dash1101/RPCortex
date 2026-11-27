@@ -31,7 +31,7 @@
 // not get. This package keeps essentially nothing there.
 #include "rpc_app.h"
 
-RPC_APP_VER("httpd", "2.1");
+RPC_APP_VER("httpd", "2.2");
 
 #define DEF_PORT      8080
 // A request line plus the headers a browser sends. Anything longer is a request
@@ -415,11 +415,22 @@ static bool page_file(int c, const char *path, const char *ctype) {
         return send_str(c, "no such file\r\n");
     }
     uint32_t size = fw_file_size(path);
+    // The first piece before any header: a file this account may not read
+    // (the account file, the device key, the SSH host key) reads as nothing,
+    // and announcing its size then sending nothing left the browser with a
+    // broken download. It is refused in words instead, and its size not given.
+    uint32_t n0 = size ? fw_file_read_at(path, 0, g_req, CHUNK) : 0;
+    if (size && !n0) {
+        if (!head(c, "403 Forbidden", "text/plain")) return false;
+        return send_str(c, "this file is protected: only sudo may read it\r\n");
+    }
     if (!head_len(c, "200 OK", ctype, size)) return false;
 
     uint32_t off = 0;
+    bool first = true;
     while (off < size) {
-        uint32_t n = fw_file_read_at(path, off, g_req, CHUNK);
+        uint32_t n = first ? n0 : fw_file_read_at(path, off, g_req, CHUNK);
+        first = false;
         if (!n) break;                      // truncated or vanished mid-send
         if (!send_all(c, g_req, n)) return false;
         off += n;

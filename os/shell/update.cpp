@@ -43,6 +43,8 @@
 #include "update.h"
 #include "imagecheck.h"
 
+extern "C" const char rpc_image_id[];   // main.cpp: this image's board marker
+
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -399,6 +401,24 @@ bool update_apply_file(const char *path, const char *to_version, bool at_boot) {
             out_err("The staged image is not firmware for this board's chip (%s).", chip_name);
             out_multi("  stack %08lx  entry %08lx", (unsigned long)sp, (unsigned long)entry);
             out_multi("  Nothing was written.");
+            return false;
+        }
+    }
+
+    // And for THIS BOARD: a Pico 2 W image runs on a Pico 2's chip, and then
+    // waits for a radio that is not there. Images from v2.0.706 on say which
+    // board they are for; one that does not (older) is let through as before.
+    {
+        char mine[32] = "", theirs[32] = "";
+        const uint8_t *img = (const uint8_t *)storage_flash_ptr(storage_stage_offset() + prefix);
+        image_board((const uint8_t *)rpc_image_id, strlen(rpc_image_id) + 1, mine, sizeof(mine));
+        if (image_board(img, size, theirs, sizeof(theirs)) && mine[0] && strcmp(mine, theirs) != 0) {
+            free(fbuf);
+#if RPC_AB
+            if (ab) storage_ab_invalidate_idle();
+#endif
+            out_err("That image is for a %s; this board is a %s. Nothing was changed.", theirs, mine);
+            out_multi("  'update online' picks the right one by itself.");
             return false;
         }
     }

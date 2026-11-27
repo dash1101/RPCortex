@@ -92,6 +92,40 @@ int main(void) {
     ck(!image_fits_chip(fake.data(), fake.size(), IMAGE_CHIP_RP2040, nullptr, nullptr),
        "an even entry point is refused");
 
+    // The board marker (v2.0.706 on). Synthetic first, so the parser is proven
+    // whatever images are on hand.
+    {
+        char b[32];
+        std::vector<uint8_t> v(5000, 0xEE);
+        const char *m = "RPCORTEX-IMAGE board=pico2_w build=706";
+        memcpy(&v[3000], m, strlen(m) + 1);
+        ck(image_board(v.data(), v.size(), b, sizeof(b)) && !strcmp(b, "pico2_w"), "the marker's board is read");
+        std::vector<uint8_t> none(5000, 0xEE);
+        ck(!image_board(none.data(), none.size(), b, sizeof(b)), "no marker: no board");
+        const char *cut = "RPCORTEX-IMAGE board=pico2";        // the image ends mid-name
+        std::vector<uint8_t> tail(v.begin(), v.begin() + 100);
+        tail.insert(tail.end(), cut, cut + strlen(cut));
+        ck(!image_board(tail.data(), tail.size(), b, sizeof(b)), "a name cut off by the end is not trusted");
+        const char *bad = "RPCORTEX-IMAGE board=../x build=1";
+        std::vector<uint8_t> w(200, 0); memcpy(&w[10], bad, strlen(bad) + 1);
+        ck(!image_board(w.data(), w.size(), b, sizeof(b)), "a name with other characters is refused");
+        std::vector<uint8_t> self(m, m + strlen(m) + 1);
+        ck(image_board(self.data(), self.size(), b, sizeof(b)) && !strcmp(b, "pico2_w"), "the firmware's own copy reads");
+    }
+    // A freshly built image carries its own board (when one has been built).
+    for (const char *bd : {"pico", "pico_w", "pico2", "pico2_w"}) {
+        char path[256], b[32];
+        snprintf(path, sizeof(path), "../../out/rpcortex-v2-%s.bin", bd);
+        FILE *f = fopen(path, "rb");
+        if (!f) continue;
+        std::vector<uint8_t> img(4 << 20);
+        img.resize(fread(img.data(), 1, img.size(), f));
+        fclose(f);
+        if (!image_board(img.data(), img.size(), b, sizeof(b))) continue;   // built before the marker
+        snprintf(what, sizeof(what), "out/%s says it is for %s", bd, bd);
+        ck(!strcmp(b, bd), what);
+    }
+
     printf("  %d checks, %d failed\n", checks, fails);
     return fails ? 1 : 0;
 }

@@ -23,6 +23,15 @@
 #include "session.h"
 #include "pkg.h"
 #include "banner.h"
+
+// Which board this image is for, in a form a tool can find in the .bin or the
+// .uf2 (core/imagecheck.h, IMAGE_MARKER): the updater and `rpc flash` read it
+// to refuse a Pico 2 W image on a Pico 2, which the chip alone cannot tell
+// apart. The updater reads this copy for "this board", which also keeps it
+// from being dropped as unused.
+extern "C" const char rpc_image_id[];
+extern "C" __attribute__((used)) const char rpc_image_id[] =
+    "RPCORTEX-IMAGE board=" PICO_BOARD " build=" RPC_OS_BUILD;
 #include "logring.h"
 #include "blackbox.h"
 #include "out.h"

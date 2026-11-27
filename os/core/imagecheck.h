@@ -26,3 +26,11 @@ enum ImageChip { IMAGE_CHIP_RP2040, IMAGE_CHIP_RP2350 };
 // error message.
 bool image_fits_chip(const uint8_t *img, size_t len, ImageChip chip,
                      uint32_t *sp, uint32_t *entry);
+
+// The board an image was built for, from the marker every image carries from
+// v2.0.706 on: "RPCORTEX-IMAGE board=<name> build=<n>" (main.cpp). `out` gets
+// the name (letters, digits and '_', at most cap - 1 of them). False when the
+// image has no marker: one from before it, or not RPCortex at all. Two chips
+// cannot tell a Pico 2 from a Pico 2 W, so this is what does.
+#define IMAGE_MARKER "RPCORTEX-IMAGE board="
+bool image_board(const uint8_t *img, size_t len, char *out, size_t cap);

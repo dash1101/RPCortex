@@ -36,3 +36,24 @@ bool image_fits_chip(const uint8_t *img, size_t len, ImageChip chip,
     }
     return true;
 }
+
+bool image_board(const uint8_t *img, size_t len, char *out, size_t cap) {
+    if (!img || !out || cap < 2) return false;
+    static const char m[] = IMAGE_MARKER;
+    const size_t ml = sizeof(m) - 1;
+    for (size_t i = 0; i + ml < len; i++) {
+        if (img[i] != (uint8_t)m[0] || memcmp(img + i, m, ml) != 0) continue;
+        size_t at = i + ml, n = 0;
+        while (at + n < len && n + 1 < cap) {
+            uint8_t c = img[at + n];
+            if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_')) break;
+            out[n] = (char)c;
+            n++;
+        }
+        // A name, ended by the space before "build=" (or the end of the string).
+        if (n == 0 || at + n >= len || (img[at + n] != ' ' && img[at + n] != 0)) continue;
+        out[n] = 0;
+        return true;
+    }
+    return false;
+}
