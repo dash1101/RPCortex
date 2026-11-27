@@ -11,6 +11,37 @@ is what explains the shape of the code — and because the post-mortems at the e
 are the only record of bugs that cost days each. **The Order** near the bottom is
 the quickest way to see what is left.
 
+## The shape now (v2.0.709)
+
+What a reader new to the code needs first; the sections after it are the history
+of how it got here.
+
+- **Two cores, preemptive tasks, one owner per shared resource.** The scheduler,
+  the filesystem lock, the registry lock, the network owner (`NetOwn`), the loader
+  lock and the account table's lock are the places two cores meet. Every new
+  shared table gets a lock or a documented reason it needs none (AGENTS.md,
+  "Concurrency").
+- **Firmware on RP2350 lives in two partitions** (A/B, `core/ablayout.h`). An
+  update is written into the idle one while the board runs, the old one is kept,
+  and a firmware that never finishes starting is switched back by the boot strike
+  ladder. Every image names its board, and the updater refuses another board's.
+  RP2040 boards keep the single image and an opt-in rollback copy.
+- **Packages are relocatable ELF objects** loaded into a sandbox (MPU regions on
+  RP2350), calling the firmware only through the append-only ABI (`os/api.cpp`,
+  PACKAGES.md). Large ones run from a flash slot.
+- **Every way in is authenticated or physical.** The USB console needs a login;
+  link mode (LINK.md) runs as that login over USB or SSH; SSH takes passwords or
+  keys, rate-limits connections, and runs link mode for RPC Studio on a phone;
+  sudo asks for the account's password and slows repeated guesses.
+- **Every way out is verified.** HTTPS checks certificates against roots in flash
+  (26 on RP2350, a core 11 on RP2040) and the host's name; package and firmware
+  downloads are checked by SHA-256 against an index fetched that way. Boards
+  without Wi-Fi go online through the computer (the bridge), which checks them
+  itself.
+- **Proof comes in three layers:** 104 host suites (`os/host/run_all.sh`), the
+  `selftest` package and `tools/pretest.py` on every attached board before a
+  release, and the soak (`tools/soak.py`) for what only shows over days.
+
 ## What the last five bugs actually were
 
 Worth listing, because the pattern matters more than any one of them.
