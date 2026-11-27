@@ -647,7 +647,7 @@ static void fuzz_link(uint32_t iters) {
     std::vector<Bytes> corpus = {
         S("HELLO"), S("PING"), S("EXEC ls -l /home"), S("LS /os"), S("STAT /etc/x.cfg"),
         S("GET ../../os/users.cfg"), S("AUTH cm9vdHB3"), S("BRIDGE on"), S("BYE"),
-        S("PUT 1234 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 /home/dash/a b.bin"),
+        S("PUT 1234 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 /home/alice/a b.bin"),
         S("PUT 99999999999999999999 zz /x"), S("D QUJDRA=="), S("D ===="), S("x"), S(""),
     };
     // Full-size D lines: exactly one chunk of base64 (1024 characters, 768
@@ -677,7 +677,7 @@ static void fuzz_link(uint32_t iters) {
             link_norm_hex(hx);
             // Every path a request names is resolved against the session's cwd.
             char abs[200];
-            if (path_resolve("/home/dash", q.rest, abs, sizeof(abs))) {
+            if (path_resolve("/home/alice", q.rest, abs, sizeof(abs))) {
                 ck(abs[0] == '/', "a resolved path is not absolute", it);
                 ck(!strstr(abs, "/../") && strcmp(abs + (strlen(abs) >= 3 ? strlen(abs) - 3 : 0), "/.."),
                    "a resolved path still climbs with ..", it);

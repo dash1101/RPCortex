@@ -8,7 +8,7 @@ good notes is in `RELEASING.md`.
 
 ## Unreleased
 
-Summary: 
+Summary: Security release: HTTPS certificates are now checked, SSH is harder to flood, and sudo is slower to guess. Update every board that uses Wi-Fi
 
 ### New
 
@@ -16,9 +16,20 @@ Summary:
 
 ### Fixed
 
+- Two package installs at once (an SSH session and the console) shared one download file, and each could overwrite or delete the other's.
+- Two packages loading at the same time could use the same working memory for relocating; loads now take turns.
+- A log line written by both processor cores at once could come out as one garbled line.
+
 ### Security
 
+- **HTTPS certificates were not checked.** The board accepted any certificate, so someone on the same network as a Wi-Fi board (a rogue access point, or a spoofed router) could have served it a firmware update or a package, with a checksum to match. Every HTTPS connection is now checked against the board's trusted roots and the host's name, and a server that fails is refused before anything is sent, with the reason ("for another name", "not a root this board trusts"). Boards that go online through RPC Studio were not affected: the computer checks those. Dates are still not checked, since the board's clock is often unset.
+- The trusted roots grew from 3 to 26, enough for GitHub, Google, Wikipedia, DuckDuckGo, Cloudflare, Amazon and Microsoft sites, and they cost flash, not memory: the board reads the one a connection needs when it needs it. `/os/ca.pem` now holds only roots you add (PEM, sudo to change); `pkg certs` lists what is trusted.
+- SSH limits how often connections may start: 6 per 30 seconds from one address and 12 in all, refused before any cryptography and logged once, so a flood of connections can no longer keep the board busy. A client that has not finished connecting after 15 seconds gives its place back.
+- A wrong sudo password pauses longer each time it happens in a row (up to 30 seconds), which matters now that link mode's sign-in for sudo can come over SSH.
+
 ### Changed
+
+- An HTTPS site whose certificate does not lead to one of the 26 trusted roots is refused rather than fetched. If one you need is refused, add its root to `/os/ca.pem` with sudo.
 
 ### Known issues
 

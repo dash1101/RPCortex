@@ -140,6 +140,12 @@ keys (its host key and the key `ssh keygen` makes are ECDSA).
   a minute to finish logging in, and after ten refusals in a minute from anywhere,
   nobody gets in for a minute. Two sessions at most. Every login and every refusal
   is in `logdump`.
+- **Connection limits.** A key exchange costs the board real time before anyone has
+  logged in, so new connections are limited to 6 per 30 seconds from one address and
+  12 from everyone, refused before any cryptography (`ssh server status` counts them).
+  A client that has not finished the key exchange 15 seconds after connecting is
+  dropped. sudo's pause after a wrong password grows with each one in a row, to 30
+  seconds.
 - **Files that decide who gets in, or what runs as root, are protected.** The host
   key lives in `/os/ssh`, which only an admin can read. An ordinary account cannot
   change anything in `/os` or `/etc` (startup items, services, installed packages,
