@@ -154,6 +154,12 @@ typedef void *(*LoaderAlloc)(size_t);
 typedef void  (*LoaderFree)(void *);
 void loader_set_allocator(LoaderAlloc a, LoaderFree f);
 
+// One load at a time across every task and both cores: the loader's workspace
+// is one set of buffers. The firmware passes a recursive lock's take and give
+// (apps.cpp); without them (the host tests) nothing is locked.
+typedef void (*LoaderLockFn)(void);
+void loader_set_lock(LoaderLockFn take, LoaderLockFn give);
+
 // Load, relocate and resolve. Does not run anything.
 // The header alone: name, version and ABI, with no image loaded and nothing
 // relocated. The only allocation is the section-name strings, freed before it

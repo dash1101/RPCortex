@@ -48,6 +48,9 @@ void loader_set_allocator(LoaderAlloc a, LoaderFree f) {
     g_free  = f ? f : free;
 }
 
+static LoaderLockFn g_lock_take, g_lock_give;
+void loader_set_lock(LoaderLockFn take, LoaderLockFn give) { g_lock_take = take; g_lock_give = give; }
+
 // The parse workspace: the windows into the ELF and the per-section tables.
 //
 // About 21 KB together, and used only while a package is being read: by
@@ -448,6 +451,11 @@ struct WorkGuard {
     bool mine = false, ok = true;
     LoaderWork w{};
     WorkGuard() {
+        // The lock first: it is what makes "g_work is set" mean "set by this
+        // task, further up". Without it a second task loading at the same time
+        // (two installs, an on-demand load beside one) took the first task's
+        // workspace for its own, and both relocated through the same buffers.
+        if (g_lock_take) g_lock_take();
         if (g_work) return;                       // nested: the caller's
         w.relbuf   = (Elf32_Rel *)malloc(sizeof(Elf32_Rel) * REL_CHUNK);
         w.symwin   = (Elf32_Sym *)malloc(sizeof(Elf32_Sym) * REL_CHUNK);
@@ -467,7 +475,10 @@ struct WorkGuard {
         free(w.blob_off); free(w.ram_off); free(w.placed); free(w.page);
         w = LoaderWork{};
     }
-    ~WorkGuard() { if (mine) { release(); g_work = nullptr; } }
+    ~WorkGuard() {
+        if (mine) { release(); g_work = nullptr; }
+        if (g_lock_give) g_lock_give();
+    }
 };
 
 // The header, and nothing else.

@@ -20,6 +20,7 @@
 #include "registry.h"
 #include "persist.h"
 #include "pkgrepo.h"
+#include "task.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -27,7 +28,39 @@
 
 #include "httproute.h"
 
-#define TMP_PKG    "/os/pkg/.download"
+// Each install downloads into its own file, named for its task: two installs
+// running at once (two SSH sessions, a session and the console) used to share
+// one, and each overwrote, then deleted, the other's download (PAR-74).
+#define TMP_PKG_DIR    "/os/pkg"
+#define TMP_PKG_PREFIX ".download."
+
+static void tmp_pkg_path(char *out, uint32_t cap) {
+    snprintf(out, cap, TMP_PKG_DIR "/" TMP_PKG_PREFIX "%d", task_self());
+}
+
+// A download left by a task that is gone (faulted, killed, the board lost
+// power mid-way) is nobody's: removed before the next install starts. One
+// whose task is still running is another install in progress, and kept.
+struct StaleCtx { char names[4][32]; int n; };
+static void sweep_stale_downloads(void) {
+    StaleCtx c{};
+    storage_walk(TMP_PKG_DIR, [](void *ctx, const char *name, bool d, uint32_t) {
+        StaleCtx *x = (StaleCtx *)ctx;
+        const size_t pl = sizeof(TMP_PKG_PREFIX) - 1;
+        if (d || strncmp(name, TMP_PKG_PREFIX, pl) != 0 || x->n >= 4) return;
+        int pid = atoi(name + pl);
+        const TaskInfo *t = pid > 0 ? task_find(pid) : nullptr;
+        if (t && t->state != TASK_DONE) return;
+        snprintf(x->names[x->n++], sizeof(x->names[0]), "%s", name);
+    }, &c);
+    // The old shared name, from firmware before this one.
+    storage_remove(TMP_PKG_DIR "/.download");
+    for (int i = 0; i < c.n; i++) {
+        char p[64];
+        snprintf(p, sizeof(p), TMP_PKG_DIR "/%s", c.names[i]);
+        storage_remove(p);
+    }
+}
 
 struct DlSink { void *fh; Sha256Ctx sha; };
 
@@ -161,8 +194,11 @@ static int fetch_install_once(const char *name, bool last_try) {
     }
 
     out_info("Installing %s %s", e.name, e.ver);
+    sweep_stale_downloads();
+    char TMP_PKG[40];
+    tmp_pkg_path(TMP_PKG, sizeof(TMP_PKG));
     char hex[65]; uint64_t got = 0;
-    if (!download(e.url, TMP_PKG, hex, &got)) return 1;
+    if (!download(e.url, TMP_PKG, hex, &got)) { storage_remove(TMP_PKG); return 1; }
 
     // The hash is what makes this an install rather than a hope. TLS proved who
     // served the bytes; this proves they are the bytes the index describes.

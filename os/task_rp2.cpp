@@ -559,6 +559,22 @@ extern "C" void lock_hw_init(void) {
     if (!g_hw) g_hw = spin_lock_instance(spin_lock_claim_unused(true));
 }
 
+// The log ring's claim (logring.cpp): its own spinlock, one the SDK sets aside
+// for an OS (so nothing claims it at run time and it needs no init), held with
+// interrupts off for a handful of instructions that call nothing. A fault or a
+// scheduler path that logs while holding lock_hw is fine here; one that logs
+// while holding THIS cannot exist, since nothing runs inside it.
+uint32_t log_slot_claim(uint32_t *head, uint32_t *count, uint32_t *dropped, uint32_t lines) {
+    spin_lock_t *l = spin_lock_instance(PICO_SPINLOCK_ID_OS2);
+    uint32_t irq = spin_lock_blocking(l);
+    uint32_t at = *head;
+    *head = (at + 1) % lines;
+    if (*count < lines) (*count)++;
+    else                (*dropped)++;
+    spin_unlock(l, irq);
+    return at;
+}
+
 // Whether THIS core is already inside. Only ever read and written by its own
 // core, so it needs no protection of its own.
 static volatile bool g_hw_held[2];

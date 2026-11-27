@@ -51,15 +51,26 @@ bool log_init(void) {
 
 uint32_t log_boot_count(void) { return g_ring.boot; }
 
+// Which line to write: the head moves on, and the count (or the dropped count)
+// with it, as one step. Both cores log, so on the device this is done under a
+// spinlock of its own (task_rp2.cpp), held for these few instructions and
+// nothing else: never lock_hw, which is not recursive, and is held by the very
+// scheduler and fault paths that log. Two cores used to write the same line.
+// This default, for the host, is the same step without the lock.
+__attribute__((weak)) uint32_t log_slot_claim(uint32_t *head, uint32_t *count, uint32_t *dropped, uint32_t lines) {
+    uint32_t at = *head;
+    *head = (at + 1) % lines;
+    if (*count < lines) (*count)++;
+    else                (*dropped)++;
+    return at;
+}
+
 void log_add(LogKind kind, const char *text) {
     if (g_ring.magic != LOG_MAGIC) log_init();     // usable before log_init runs
-    LogLine &l = g_ring.line[g_ring.head];
+    LogLine &l = g_ring.line[log_slot_claim(&g_ring.head, &g_ring.count, &g_ring.dropped, LOG_LINES)];
     l.at_ms = task_now_ms();
     l.kind  = (uint8_t)kind;
     snprintf(l.text, sizeof(l.text), "%s", text ? text : "");
-    g_ring.head = (g_ring.head + 1) % LOG_LINES;
-    if (g_ring.count < LOG_LINES) g_ring.count++;
-    else                          g_ring.dropped++;
 }
 
 void log_addf(LogKind kind, const char *fmt, ...) {

@@ -1274,7 +1274,14 @@ static int cmd_unload(int argc, char **argv) {
     return 0;
 }
 
+// One package load at a time, across tasks and cores (loader.h). Recursive, so
+// a load that peeks first, or an install that measures then writes, nests.
+static RpcLock g_load_lock;
+static void load_take(void) { lock_acquire(&g_load_lock); }
+static void load_give(void) { lock_release(&g_load_lock); }
+
 void apps_register(void) {
+    loader_set_lock(load_take, load_give);
     static const Command cmds[] = {
         {"apps",   "list resident packages", cmd_apps,   nullptr},
         {"unload", "unload a package",        cmd_unload, nullptr, LEVEL_ADMIN},
