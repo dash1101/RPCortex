@@ -31,3 +31,11 @@ BootClockPlan clock_boot_plan(const char *value, bool enabled, bool last_start_f
     if (want == current_mhz) return BOOTCLK_SAME;
     return BOOTCLK_APPLY;
 }
+
+unsigned clockcfg_bus_div(unsigned long sys_hz, unsigned long bus_max_hz) {
+    if (!bus_max_hz) return 1;
+    unsigned long d = (sys_hz + bus_max_hz - 1) / bus_max_hz;
+    if (d < 1) d = 1;
+    if (d > 65535) d = 65535;
+    return (unsigned)d;
+}

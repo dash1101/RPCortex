@@ -34,4 +34,11 @@ enum BootClockPlan {
 BootClockPlan clock_boot_plan(const char *value, bool enabled, bool last_start_failed,
                               unsigned current_mhz, unsigned *mhz);
 
+// The divider for the wireless chip's PIO bus at system clock `sys_hz`: the
+// smallest whole divider that keeps the bus at or below `bus_max_hz`, the speed
+// the SDK's bus program was built for (the default clock over the default
+// divider). Whole, because a fractional divider makes uneven clock edges on a
+// bus whose sampling is counted in PIO cycles. At least 1.
+unsigned clockcfg_bus_div(unsigned long sys_hz, unsigned long bus_max_hz);
+
 #endif  // RPC_CLOCKCFG_H

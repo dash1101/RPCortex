@@ -79,9 +79,33 @@ static void t_plan(void) {
     ck(clock_boot_plan("250", true, false, 150, nullptr) == BOOTCLK_APPLY, "the output may be null");
 }
 
+// The wireless chip's bus divider. 75 MHz is the RP2350's bus at its default
+// 150 MHz over the SDK's default divider of 2; 62.5 MHz the RP2040's.
+static void t_bus_div(void) {
+    const unsigned long B = 75000000, B40 = 62500000;
+    ck(clockcfg_bus_div(150000000, B) == 2, "150 MHz keeps the default divider");
+    ck(clockcfg_bus_div(75000000, B) == 1, "75 MHz: divider 1, the same bus speed");
+    ck(clockcfg_bus_div(48000000, B) == 1, "48 MHz: divider 1 (a 48 MHz bus, not 24)");
+    ck(clockcfg_bus_div(100000000, B) == 2, "100 MHz: 2, a 50 MHz bus, never faster than 75");
+    ck(clockcfg_bus_div(200000000, B) == 3, "200 MHz: 3, a 66.7 MHz bus");
+    ck(clockcfg_bus_div(250000000, B) == 4, "250 MHz: 4, 62.5 MHz");
+    ck(clockcfg_bus_div(150000001, B) == 3, "a hair over 150 rounds up, never down");
+    ck(clockcfg_bus_div(125000000, B40) == 2, "RP2040 at its 125 MHz default: 2");
+    ck(clockcfg_bus_div(48000000, B40) == 1, "RP2040 at 48 MHz: 1");
+    ck(clockcfg_bus_div(48000000, 0) == 1, "no bus speed given: 1, not a division by zero");
+    for (unsigned long mhz = 24; mhz <= 400; mhz++) {
+        unsigned d = clockcfg_bus_div(mhz * 1000000, B);
+        if (mhz * 1000000 / d > B || (d > 1 && mhz * 1000000 / (d - 1) <= B)) {
+            ck(false, "every clock 24..400 MHz: the smallest divider that stays at or under 75");
+            break;
+        }
+    }
+}
+
 int main(void) {
     t_parse();
     t_plan();
+    t_bus_div();
     printf("  clockcfg: %d checks, %d failed\n", checks, fails);
     return fails ? 1 : 0;
 }

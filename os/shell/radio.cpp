@@ -23,6 +23,10 @@
 #include <stdlib.h>
 
 #include "pico/cyw43_arch.h"
+#include "pico/cyw43_driver.h"
+#include "hardware/pio.h"
+#include "hardware/clocks.h"
+#include "clockcfg.h"
 
 // --- one owner at a time ----------------------------------------------------
 //
@@ -223,6 +227,59 @@ uint32_t net_radio_gen(void) { return g_radio_gen; }
 // for what the driver does to a caller on the wrong core.
 bool net_core_ok(void) {
     return !g_radio_up || task_this_core() == g_radio_core;
+}
+
+int radio_quiesce_begin(void) {
+    net_op_acquire();
+    if (!g_radio_up) return 1;          // the chip is off: nothing on the bus
+    if (!net_core_ok()) { net_op_release(); return 0; }
+    cyw43_arch_lwip_begin();             // the driver's lock: background work waits
+    return 2;
+}
+
+// The bus's state machine is the SDK's own (cyw43_bus_pio_spi.c) and not
+// exported, so it is found by what it drives: the one claimed state machine
+// whose side-set pin is the chip's clock line.
+static bool bus_sm(PIO *pio_out, uint *sm_out) {
+    for (uint p = 0; p < NUM_PIOS; p++) {
+        PIO pio = PIO_INSTANCE(p);
+        for (uint sm = 0; sm < NUM_PIO_STATE_MACHINES; sm++) {
+            if (!pio_sm_is_claimed(pio, sm)) continue;
+            uint32_t pc = pio->sm[sm].pinctrl;
+            uint base = (pc & PIO_SM0_PINCTRL_SIDESET_BASE_BITS) >> PIO_SM0_PINCTRL_SIDESET_BASE_LSB;
+            uint count = (pc & PIO_SM0_PINCTRL_SIDESET_COUNT_BITS) >> PIO_SM0_PINCTRL_SIDESET_COUNT_LSB;
+#if PICO_PIO_VERSION > 0
+            base += pio_get_gpio_base(pio);
+#endif
+            if (count && base == CYW43_PIN_WL_CLOCK) { *pio_out = pio; *sm_out = sm; return true; }
+        }
+    }
+    return false;
+}
+
+static uint32_t g_bus_div = CYW43_PIO_CLOCK_DIV_INT;
+
+uint32_t radio_bus_hz(void) { return clock_get_hz(clk_sys) / g_bus_div; }
+
+uint32_t radio_clock_changed(void) {
+    uint32_t sys = clock_get_hz(clk_sys);
+    uint32_t div = clockcfg_bus_div(sys, SYS_CLK_HZ / CYW43_PIO_CLOCK_DIV_INT);
+    g_bus_div = div;
+    cyw43_set_pio_clkdiv_int_frac8(div, 0);    // for the next time the chip starts
+    if (!g_radio_up) return sys / div;
+    PIO pio; uint sm;
+    if (!bus_sm(&pio, &sm)) {
+        log_addf(LOG_K_WARN, "radio: bus state machine not found; divider left as it was");
+        return 0;
+    }
+    pio_sm_set_clkdiv_int_frac8(pio, sm, (uint16_t)div, 0);
+    pio_sm_clkdiv_restart(pio, sm);
+    return sys / div;
+}
+
+void radio_quiesce_end(int token) {
+    if (token == 2) cyw43_arch_lwip_end();
+    if (token) net_op_release();
 }
 
 void radio_down(void) {

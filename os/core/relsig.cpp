@@ -25,6 +25,20 @@ static void key_id(const uint8_t pk[32], char out[9]) {
     for (int i = 0; i < 4; i++) snprintf(out + i * 2, 3, "%02x", d[i]);
 }
 
+// The next space-separated word of *p into out (cap bytes with its 0). False
+// when there is none, or it does not fit: a word that long is not ours.
+static bool next_word(const char **p, char *out, size_t cap) {
+    const char *s = *p;
+    while (*s == ' ' || *s == '\t') s++;
+    size_t n = 0;
+    while (s[n] && s[n] != ' ' && s[n] != '\t') n++;
+    if (!n || n >= cap) return false;
+    memcpy(out, s, n);
+    out[n] = 0;
+    *p = s + n;
+    return true;
+}
+
 RelSig relsig_check(const uint8_t *manifest, size_t n, const char *sig_text, char which[9]) {
     if (which) which[0] = 0;
     if (!manifest || !sig_text) return RELSIG_MISSING;
@@ -38,8 +52,14 @@ RelSig relsig_check(const uint8_t *manifest, size_t n, const char *sig_text, cha
             memcpy(line, p, len);
             line[len] = 0;
             if (len && line[len - 1] == '\r') line[len - 1] = 0;
+            // Split by hand, not sscanf: sscanf links newlib's float scanf, about
+            // 12 KB (kernel.cpp and sys.cpp say the same), and this image has
+            // never needed it.
             char kind[16], id[16], b64[128];
-            if (sscanf(line, "%15s %15s %127s", kind, id, b64) == 3 && !strcmp(kind, "ed25519")) {
+            const char *f = line;
+            bool three = next_word(&f, kind, sizeof(kind)) && next_word(&f, id, sizeof(id)) &&
+                         next_word(&f, b64, sizeof(b64));
+            if (three && !strcmp(kind, "ed25519")) {
                 any_line = true;
                 uint8_t sig[66];
                 int32_t sl = b64_decode(b64, (uint32_t)strlen(b64), sig, sizeof(sig));

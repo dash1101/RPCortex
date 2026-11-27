@@ -21,6 +21,9 @@ Summary: Releases are signed, and a board checks the signature before it updates
 
 ### Improved
 
+- More room on the RP2350 boards: 11 KB on the Pico 2 W and 7 KB on the Pico 2. The A/B update
+  record was read with `sscanf`, which brings in about 12 KB of floating-point number parsing that
+  nothing uses. A build check now refuses an image that links it.
 - The Pico W and Pico carry the eleven root certificates that cover the sites the firmware and its
   packages use, and most large sites (GitHub, Google, DuckDuckGo, Wikipedia, Cloudflare, Amazon,
   Microsoft), instead of all 26: 13 KB back on the board with the least room. The RP2350 boards keep
@@ -28,6 +31,13 @@ Summary: Releases are signed, and a board checks the signature before it updates
 
 ### Fixed
 
+- `pulse set` below the default clock on a Pico 2 W made the Wi-Fi chip stop answering ("F2 not
+  ready"), and the watchdog reset the board 16 seconds later. The chip's bus runs from the CPU clock
+  through a fixed divider, and the bus program samples correctly only near the speed it was built
+  for. The divider now follows the clock, keeping the bus at or under its usual speed, and the clock
+  is changed with the bus held still. Tested on a Pico 2 W from 48 to 250 MHz with pings and a
+  download at each, and with a boot clock. `pulse status` shows the bus speed. Not yet tried on a
+  Pico W.
 - `httpd stop` and then `httpd` on the same port was refused for two minutes ("may already be in
   use"): the connections it had served were still waiting out TCP's TIME_WAIT. A listener can take
   the port back at once now; a port another server is listening on is still refused.
@@ -45,6 +55,8 @@ Summary: Releases are signed, and a board checks the signature before it updates
 
 ### Changed
 
+- Checking release signatures adds about 6 KB to the RP2040 images: the Pico and Pico W have 48 KB
+  left in their firmware slot, the Pico 2 W 128 KB and the Pico 2 106 KB.
 - `update install` takes `--unsigned`.
 
 ### Known issues

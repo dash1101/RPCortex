@@ -22,6 +22,26 @@
 // it directly in the few places where the migration NetOwn does is not wanted.
 extern RpcLock g_net_op;
 
+// Hold the chip's bus still, for a change of the system clock (sys.cpp,
+// clock_set_mhz). The bus to the CYW43 is a PIO program clocked from clk_sys:
+// changing the clock in the middle of a transfer left a Pico 2 W stuck for 16 s
+// and reset by the watchdog, where a Pico 2 took the same changes cleanly.
+// Takes the operation lock and, with the radio up, the driver's own lock, so no
+// transfer is in flight and none can start. 0 when that cannot be done (the
+// caller is on the wrong core and could not be moved): do not change the clock.
+// Otherwise pass what it returned to radio_quiesce_end.
+int  radio_quiesce_begin(void);
+void radio_quiesce_end(int token);
+
+// Inside a quiesce, after clk_sys changed: set the bus's PIO divider so the bus
+// runs as close as it can to the speed it was built for, never faster. The
+// SDK picks the bus program for one speed (spi_gap01_sample0, "for high cpu
+// speed"), and at 48 MHz with the default divider the chip stopped answering
+// ("F2 not ready"). Returns the bus clock now, in Hz (0 without a radio).
+uint32_t radio_clock_changed(void);
+// The bus clock now, in Hz, for `pulse status` (0 without a radio).
+uint32_t radio_bus_hz(void);
+
 // Whether the chip has been powered up. Written only by radio_up and radio_down.
 extern bool g_radio_up;
 

@@ -180,6 +180,11 @@ add_executable(rpcortex_v2
     ${LFS_DIR}/lfs.c
     ${LFS_DIR}/lfs_util.c
 )
+# Release signatures are checked once per update: small beats fast. ed25519.cpp
+# had -Os as part of the SSH sources; it is in every image now.
+set_source_files_properties(
+    ${OS_ROOT}/core/ed25519.cpp ${OS_ROOT}/core/sha512.cpp ${OS_ROOT}/core/relsig.cpp
+    PROPERTIES COMPILE_OPTIONS -Os)
 
 target_include_directories(rpcortex_v2 PRIVATE
     ${OS_ROOT} ${OS_ROOT}/include ${OS_ROOT}/kernel ${OS_ROOT}/shell ${OS_ROOT}/core
@@ -500,6 +505,10 @@ endif()
 if(RPC_FEATURE_WIFI)
     target_sources(rpcortex_v2 PRIVATE ${RPC_WIFI_SOURCES})
     target_link_libraries(rpcortex_v2 pico_cyw43_arch_lwip_threadsafe_background)
+    # The bus divider follows the system clock (radio.cpp, radio_clock_changed):
+    # with it fixed, a lower clock slowed the bus past what its program samples
+    # correctly and the chip stopped answering.
+    target_compile_definitions(rpcortex_v2 PRIVATE CYW43_PIO_CLOCK_DIV_DYNAMIC=1)
 
     # TLS, for the package repo. GitHub serves over HTTPS only, so without this
     # `pkg install <name>` cannot exist — plain HTTP is a testing path, not a

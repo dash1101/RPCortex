@@ -22,6 +22,7 @@
 #include "clockcfg.h"
 #include "logring.h"
 #include "imagefeatures.h"
+#include "radio.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -416,12 +417,19 @@ static int cmd_env(int argc, char **argv) {
 }
 
 // Set the system clock. stdio's UART divisors were computed for the old clock, so
-// it is brought up again afterwards.
-static bool apply_clock_mhz(unsigned mhz) {
-    if (!set_sys_clock_khz(mhz * 1000, /*required*/false)) return false;
-    stdio_init_all();
-    return true;
+// it is brought up again afterwards (USB has its own clock; re-running its init
+// is harmless). On the wireless boards the radio's bus is held still across the
+// change (radio.h, radio_quiesce_begin): its PIO runs from this clock.
+bool clock_set_mhz(unsigned mhz) {
+    int q = radio_quiesce_begin();
+    if (!q) return false;
+    bool ok = set_sys_clock_khz(mhz * 1000, /*required*/false);
+    if (ok) radio_clock_changed();
+    radio_quiesce_end(q);
+    if (ok) stdio_init_all();
+    return ok;
 }
+static bool apply_clock_mhz(unsigned mhz) { return clock_set_mhz(mhz); }
 
 static bool boot_clock_enabled(void) {
     return strcmp(reg_get("Hardware.Boot_Clock_On", "true"), "false") != 0;
@@ -434,6 +442,9 @@ static int cmd_pulse(int argc, char **argv) {
     if (argc < 2 || !strcmp(argv[1], "status")) {
         if (argc < 2) out_info("=== pulse — CPU clock management ===");
         out_multi("  Current    : %u MHz", cpu_mhz());
+        uint32_t bus = radio_bus_hz();
+        if (bus) out_multi("  Radio bus  : %lu.%lu MHz", (unsigned long)(bus / 1000000),
+                           (unsigned long)(bus % 1000000 / 100000));
         const char *bc = reg_get("Hardware.Boot_Clock", "");
         if (bc[0]) out_multi("  Boot Clock : %s MHz  (%s)", bc, boot_clock_enabled() ? "on" : "off");
         else       out_multi("  Boot Clock : not set");

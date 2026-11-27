@@ -202,6 +202,15 @@ for board in "${BOARDS[@]}"; do
     python3 "$(dirname "$0")/tools/check-stackswitch.py" \
         "$dir/rpcortex_v2.elf" || exit 1
 
+    # And no float scanf. Plain sscanf links newlib's float scanf and strtod
+    # (about 12 KB); it has crept back in three times, once on the boards with
+    # the least room. siscanf is the integer-only one, and parsing by hand is
+    # usually shorter still.
+    if arm-none-eabi-nm "$dir/rpcortex_v2.elf" | grep -qE ' (__ssvfscanf_r|_strtod_r)$'; then
+        echo "    [!] the image links newlib's float scanf (sscanf or strtod somewhere): use siscanf" >&2
+        exit 1
+    fi
+
     # The raw image too, for OTA. A .uf2 wraps every 256 bytes in a 512-byte
     # block with a header, which is right for the boot ROM's drag-and-drop and
     # pure overhead for an update that writes flash directly.

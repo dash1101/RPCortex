@@ -233,7 +233,9 @@ bool update_ab_prev(int *part, char *ver, uint32_t vcap, bool verify) {
     char rec[160];
     snprintf(rec, sizeof(rec), "%s", reg_get(AB_PREV_KEY, ""));
     int p = -1; unsigned long len = 0; char sha[65] = "", v[48] = "";
-    if (sscanf(rec, "%d,%lu,%64[0-9a-f],%47s", &p, &len, sha, v) != 4) return false;
+    // siscanf, the integer-only scanf: plain sscanf links newlib's float scanf
+    // (about 12 KB; kernel.cpp has the story).
+    if (siscanf(rec, "%d,%lu,%64[0-9a-f],%47s", &p, &len, sha, v) != 4) return false;
     if (p != 1 - storage_ab_part() || !len || len > storage_ab_part_bytes()) return false;
     if (part) *part = p;
     if (ver) snprintf(ver, vcap, "%s", v);
