@@ -35,6 +35,7 @@
 #include "task.h"
 #include "kernel.h"
 #include "logring.h"
+#include "stockca.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -61,6 +62,7 @@ bool net_core_ok(void);
 #include "lwip/altcp_tcp.h"
 #include "lwip/altcp_tls.h"
 #include "mbedtls/ssl.h"
+#include "mbedtls/platform.h"
 #include "lwip/dns.h"
 #include "lwip/ip_addr.h"
 
@@ -146,6 +148,9 @@ struct TcpConn {
     uint32_t free_at_open;       // heap free when it was opened, for a failure message
     volatile uint32_t sent;      // request bytes handed to the stack
     volatile uint32_t got;       // payload bytes received
+    // Why the server's certificate was refused (MBEDTLS_X509_BADCERT_*), from
+    // the handshake's verify callback; 0 when it verified or was never checked.
+    volatile uint32_t verify_flags;
 };
 
 static uint16_t rx_available(const TcpConn *c) {
@@ -180,12 +185,29 @@ static void on_err(void *arg, err_t e) {
     c->failed = true;
 }
 
-static err_t on_connected(void *arg, struct altcp_pcb *, err_t err) {
+static err_t on_connected(void *arg, struct altcp_pcb *pcb, err_t err) {
     TcpConn *c = (TcpConn *)arg;
     if (err != ERR_OK) { c->failed = true; return ERR_OK; }
+    // The second lock on the door: verification is REQUIRED, so a handshake
+    // with a certificate that did not verify should never get here. If it does
+    // (a configuration that lost that setting), nothing is sent: the request
+    // is written only once `connected` is set, and it is not.
+    if (c->tls) {
+        uint32_t r = mbedtls_ssl_get_verify_result((mbedtls_ssl_context *)altcp_tls_context(pcb));
+        if (r != 0) { c->verify_flags |= r; c->failed = true; return ERR_OK; }
+    }
     c->connected = true;
     c->handshook = true;         // for TLS this means the handshake finished
     return ERR_OK;
+}
+
+// Called for each certificate in the server's chain as it is checked; what it
+// keeps is the reason a refusal gives (an untrusted root, another host's name).
+// It changes nothing: the verdict is mbedtls's.
+static int on_verify(void *arg, mbedtls_x509_crt *, int, uint32_t *flags) {
+    TcpConn *c = (TcpConn *)arg;
+    if (*flags) c->verify_flags |= *flags;
+    return 0;
 }
 
 static err_t on_sent(void *arg, struct altcp_pcb *, u16_t len) {
@@ -216,27 +238,11 @@ static bool resolve(const char *host, ip_addr_t *out) {
 //
 // Written only when absent, so a hand-updated bundle survives a firmware update
 // that would otherwise put the shipped one back.
-extern "C" const unsigned char stock_cacerts_data[];
-extern "C" const unsigned int  stock_cacerts_len;
-
-bool stock_install_cacerts(bool force) {
-    bool is_dir = false; uint32_t size = 0;
-    // Only when absent or empty, so a hand-updated bundle survives a firmware
-    // update that would otherwise put the shipped one back.
-    if (!force && storage_stat("/os/ca.pem", &is_dir, &size) && size > 0) return true;
-
-    if (!storage_write_file("/os/ca.pem", stock_cacerts_data, stock_cacerts_len)) {
-        // Saying nothing here is how a device ends up unable to install
-        // packages with no clue why: pkg update reports "no trusted
-        // certificates" and nothing ever explains that the write failed.
-        out_errp("certs", "Could not write /os/ca.pem — HTTPS will not verify.");
-        log_add(LOG_K_ERR, "certs: /os/ca.pem could not be written");
-        return false;
-    }
-    log_addf(LOG_K_OK, "certs: installed %u bytes of trusted roots",
-             (unsigned)stock_cacerts_len);
-    return true;
-}
+// The built-in roots are no longer copied into /os/ca.pem: they are read from
+// the image itself (stockca.h), so a firmware update brings its new roots with
+// it, and /os/ca.pem holds only roots someone added. A board that has the old
+// copy keeps it harmlessly: roots in it that are built in are skipped.
+bool stock_install_cacerts(bool) { return true; }
 
 // --- the HttpTransport implementation ---------------------------------------
 
@@ -254,87 +260,99 @@ bool stock_install_cacerts(bool force) {
 
 static struct altcp_tls_config *g_tls_cfg;
 static bool g_tls_tried;
-// WHY it failed, so the answer is a step rather than a shrug. "It does not
-// work" and "the file is 0 bytes" need very different next actions.
 static char g_tls_why[80];
-
-// Returns null when there are no trusted roots. The caller REFUSES the
-// connection in that case; it does not fall back to an unverified one.
-//
-// Turning verification off would make https:// appear to work while providing
-// none of what it promises — anything on the path could serve a package and the
-// device would install it. A package manager is precisely the wrong place to be
-// relaxed about who is on the other end, so this fails closed and says why.
-// The roots are BUILT INTO the image, and /os/ca.pem is an override rather than
-// the source of truth.
-//
-// It used to be the other way round, and that made a working HTTPS stack depend
-// on a file surviving on littlefs. Delete it, corrupt it, run out of space
-// during the first-boot write, and the device silently loses the ability to
-// verify anything — which is to say it loses the ability to install a package or
-// take an update, the two things that would let you fix it. factoryreset had to
-// grow a special case just to avoid erasing it.
-//
-// So the file is tried first, because someone adding a private root should be
-// able to, and the compiled-in bundle catches every case where it is missing or
-// unusable. The failure mode goes from "HTTPS is broken and the fix needs a
-// reflash" to "your custom roots did not load, the built-in ones did".
-extern "C" const unsigned char stock_cacerts_data[];
-extern "C" const unsigned int  stock_cacerts_len;
+static mbedtls_x509_crt *g_extra;      // roots from /os/ca.pem not already built in
+static unsigned g_extra_n;
 
 bool net_radio_is_up(void);
 
+static bool is_stock(const mbedtls_x509_crt *c) {
+    for (unsigned i = 0; i < stock_ca_count; i++)
+        if (stock_ca[i].len == c->raw.len && !memcmp(stock_ca[i].der, c->raw.p, c->raw.len)) return true;
+    return false;
+}
+
+// The issuer the handshake is looking for, among the trusted roots: the
+// built-in ones, parsed from flash as needed (nocopy: nothing but the parsed
+// fields is allocated), and any added in /os/ca.pem. mbedtls frees the chain.
+static int ca_lookup(void *, mbedtls_x509_crt const *child, mbedtls_x509_crt **out) {
+    mbedtls_x509_crt *chain = nullptr;
+    const uint8_t *want = child->issuer_raw.p;
+    size_t want_n = child->issuer_raw.len;
+    auto take = [&](void) -> bool {
+        if (chain) return true;
+        chain = (mbedtls_x509_crt *)mbedtls_calloc(1, sizeof(mbedtls_x509_crt));
+        if (!chain) return false;
+        mbedtls_x509_crt_init(chain);
+        return true;
+    };
+    for (unsigned i = 0; i < stock_ca_count; i++) {
+        const StockCa &r = stock_ca[i];
+        if (r.subj_len != want_n || memcmp(r.der + r.subj_off, want, want_n)) continue;
+        if (!take()) break;
+        mbedtls_x509_crt_parse_der_nocopy(chain, r.der, r.len);
+    }
+    for (const mbedtls_x509_crt *e = g_extra; e && e->raw.p; e = e->next) {
+        if (e->subject_raw.len != want_n || memcmp(e->subject_raw.p, want, want_n)) continue;
+        if (!take()) break;
+        mbedtls_x509_crt_parse_der(chain, e->raw.p, e->raw.len);
+    }
+    // A chain whose parses all failed is no candidate at all.
+    if (chain && !chain->raw.p) { mbedtls_x509_crt_free(chain); mbedtls_free(chain); chain = nullptr; }
+    *out = chain;
+    return 0;
+}
+
+// Roots someone added: /os/ca.pem, PEM, read once. Ones that are built in are
+// dropped (every board before this firmware has a copy of the old three).
+static void load_extra_roots(void) {
+    bool is_dir = false; uint32_t fsize = 0;
+    if (!storage_stat(CA_PATH, &is_dir, &fsize) || is_dir || fsize == 0 || fsize >= CA_MAX) return;
+    uint8_t *pem = (uint8_t *)malloc(fsize + 1);
+    if (!pem) return;
+    uint32_t n = storage_read_file(CA_PATH, pem, fsize);
+    pem[n] = 0;
+    mbedtls_x509_crt all;
+    mbedtls_x509_crt_init(&all);
+    if (n) mbedtls_x509_crt_parse(&all, pem, n + 1);     // keeps what parses
+    free(pem);
+    for (mbedtls_x509_crt *c = &all; c && c->raw.p; c = c->next) {
+        if (is_stock(c)) continue;
+        if (!g_extra) {
+            g_extra = (mbedtls_x509_crt *)mbedtls_calloc(1, sizeof(mbedtls_x509_crt));
+            if (!g_extra) break;
+            mbedtls_x509_crt_init(g_extra);
+        }
+        if (mbedtls_x509_crt_parse_der(g_extra, c->raw.p, c->raw.len) == 0) g_extra_n++;
+    }
+    mbedtls_x509_crt_free(&all);
+}
+
 static struct altcp_tls_config *tls_config(void) {
     if (g_tls_tried) return g_tls_cfg;
-    // Not before the radio has been started. The parsed roots live on lwIP's
-    // heap (altcp_tls allocates through mem_calloc), and lwIP is initialised
-    // with the radio, so with the radio still off mem_malloc walks a free list
-    // that was never built and does not come back. `compat` and `pkg certs`
-    // both asked from a board whose radio had not been switched on, and the
-    // watchdog restarted it 16 s later (seen on a Pico 2 W). Not cached: the
-    // answer is different once the radio is up.
     if (!net_radio_is_up()) {
         snprintf(g_tls_why, sizeof(g_tls_why),
                  "the radio is off, so the certificates have not been loaded yet");
         return nullptr;
     }
     g_tls_tried = true;
-
-    uint8_t *pem = nullptr;
-    uint32_t n   = 0;
-
-    bool is_dir = false; uint32_t fsize = 0;
-    if (storage_stat(CA_PATH, &is_dir, &fsize) && !is_dir && fsize > 0 && fsize < CA_MAX) {
-        pem = (uint8_t *)malloc(CA_MAX);
-        if (pem) {
-            n = storage_read_file(CA_PATH, pem, CA_MAX - 1);
-            if (n == 0) { free(pem); pem = nullptr; }
-            else        { pem[n] = 0; }     // mbedtls counts the terminator for PEM
-        }
+    if (stock_ca_count == 0) {
+        snprintf(g_tls_why, sizeof(g_tls_why), "this image carries no trusted roots");
+        return nullptr;
     }
-
-    if (!pem) {
-        // The built-in bundle. Already NUL-terminated by the generator, and in
-        // flash, so it is used in place rather than copied to the heap — which
-        // also means this path works when there is no room for a copy.
-        g_tls_cfg = altcp_tls_create_config_client(stock_cacerts_data, stock_cacerts_len);
-        if (!g_tls_cfg)
-            snprintf(g_tls_why, sizeof(g_tls_why),
-                     "the built-in certificates would not parse");
-        return g_tls_cfg;
+    // No CA chain in the config: the roots come from ca_lookup instead.
+    g_tls_cfg = altcp_tls_create_config_client(nullptr, 0);
+    if (!g_tls_cfg) {
+        snprintf(g_tls_why, sizeof(g_tls_why), "the TLS configuration could not be made");
+        return nullptr;
     }
-
-    g_tls_cfg = altcp_tls_create_config_client(pem, n + 1);
-    free(pem);
-    if (g_tls_cfg) return g_tls_cfg;
-
-    // The file was there and unusable. Say so — a private root that silently
-    // did nothing is worth knowing about — but carry on with the built-ins
-    // rather than leaving the device unable to verify anything.
-    out_warnp("certs", "%s did not parse; using the built-in certificates.", CA_PATH);
-    g_tls_cfg = altcp_tls_create_config_client(stock_cacerts_data, stock_cacerts_len);
-    if (!g_tls_cfg)
-        snprintf(g_tls_why, sizeof(g_tls_why), "no certificates could be parsed at all");
+    // lwIP's struct altcp_tls_config begins with its mbedtls_ssl_config (lwIP
+    // 2.2, altcp_tls_mbedtls.c), which is what this reaches. Verification is
+    // REQUIRED (lwipopts.h), and on_connected checks the result as well.
+    mbedtls_ssl_config *conf = (mbedtls_ssl_config *)g_tls_cfg;
+    mbedtls_ssl_conf_authmode(conf, MBEDTLS_SSL_VERIFY_REQUIRED);
+    mbedtls_ssl_conf_ca_cb(conf, ca_lookup, nullptr);
+    load_extra_roots();
     return g_tls_cfg;
 }
 
@@ -449,8 +467,11 @@ static int lw_open(void *ctx, const char *host, uint16_t port, bool tls) {
         // SNI. Without it a shared host answers with the wrong certificate and
         // the handshake fails for a reason that looks nothing like the cause:
         // raw.githubusercontent.com is exactly such a host.
-        if (c->pcb && tls)
-            mbedtls_ssl_set_hostname((mbedtls_ssl_context *)altcp_tls_context(c->pcb), host);
+        if (c->pcb && tls) {
+            mbedtls_ssl_context *ssl = (mbedtls_ssl_context *)altcp_tls_context(c->pcb);
+            mbedtls_ssl_set_hostname(ssl, host);
+            mbedtls_ssl_set_verify(ssl, on_verify, c);      // for the reason, if it fails
+        }
         if (c->pcb) {
             altcp_arg(c->pcb, c);
             altcp_recv(c->pcb, on_recv);
@@ -652,6 +673,17 @@ void http_net_last_detail(char *out, unsigned cap) {
         case -1:   why = "out of memory in the network stack"; break;
         default:   why = "lwIP error"; break;
     }
+    if (g_conn.tls && g_conn.verify_flags) {
+        uint32_t f = g_conn.verify_flags;
+        const char *what =
+            (f & MBEDTLS_X509_BADCERT_CN_MISMATCH) ? "its certificate is for another name (someone else's server, or a misconfigured one)" :
+            (f & MBEDTLS_X509_BADCERT_NOT_TRUSTED) ? "its certificate does not lead to a root this board trusts" :
+            (f & MBEDTLS_X509_BADCERT_REVOKED)     ? "its certificate is revoked" :
+                                                     "its certificate did not verify";
+        snprintf(out, cap, "refused the server: %s (flags 0x%lx). Nothing was sent. A root can be added in /os/ca.pem (sudo); see 'pkg certs'",
+                 what, (unsigned long)f);
+        return;
+    }
     snprintf(out, cap, "%s; handshake %s, sent %lu, received %lu",
              why, g_conn.handshook ? "ok" : "NOT DONE",
              (unsigned long)g_conn.sent, (unsigned long)g_conn.got);
@@ -662,6 +694,14 @@ void http_net_last_detail(char *out, unsigned cap) {
     // failed allocation only as "the handshake did not finish". Measured on a
     // Pico 2 W: 41 KB free failed, 47 KB free worked. Say so, with the number,
     // rather than leave "no error reported" as the whole explanation.
+    // A handshake that ended with no network error, no memory shortage and no
+    // reason from the certificate check: in practice a server this board
+    // would not trust, refused before the check could say more. Nothing was sent.
+    if (g_conn.tls && !g_conn.handshook && g_conn.last_err == 0 && g_conn.free_at_open >= TLS_HEAP_NEEDED) {
+        size_t n = strlen(out);
+        if (n + 1 < cap)
+            snprintf(out + n, cap - n, " - the server's certificate may not be one this board trusts ('pkg certs')");
+    }
     if (g_conn.tls && !g_conn.handshook && g_conn.free_at_open < TLS_HEAP_NEEDED) {
         size_t n = strlen(out);
         if (n + 1 < cap)
@@ -721,24 +761,19 @@ void bridge_console_line_state(bool) {}
 // is `pkg update` refusing to verify. This turns that into a readable answer
 // and a one-word repair, without a reflash.
 int pkg_fetch_certs(int argc, char **argv) {
-    if (argc >= 3 && !strcmp(argv[2], "install")) {
-        if (!stock_install_cacerts(/*force*/true)) return 1;
-        http_tls_reset();          // so the repair takes effect immediately
-        out_ok("Trusted roots reinstalled.");
-    }
-
+    (void)argc; (void)argv;
+    tls_config();
     bool is_dir = false; uint32_t size = 0;
-    bool present = storage_stat("/os/ca.pem", &is_dir, &size);
+    bool present = storage_stat(CA_PATH, &is_dir, &size) && !is_dir && size > 0;
     out_info("Trusted roots");
-    out_multi("  Built in   always available; the image carries its own copy");
-    out_multi("  Override   /os/ca.pem  %s", present ? "present" : "not set");
-    if (present) out_multi("  Size       %lu bytes", (unsigned long)size);
-
-    if (http_tls_available()) {
-        out_ok("HTTPS can be verified.");
-    } else {
-        out_warn("HTTPS cannot be verified: %s", http_tls_why());
-        out_multi("  'pkg certs install' writes the bundle that ships in firmware.");
-    }
+    out_multi("  Built in   %u, from the firmware (updated with it)", stock_ca_count);
+    if (present)
+        out_multi("  Added      %u in %s%s", g_extra_n, CA_PATH,
+                  g_tls_tried ? "" : " (read at the first HTTPS request)");
+    else
+        out_multi("  Added      none (%s, PEM, sudo to change)", CA_PATH);
+    out_multi("  Every HTTPS connection is checked against these, and to the host's name;");
+    out_multi("  a server whose certificate does not verify is refused before anything is sent.");
+    if (!http_tls_available()) out_warn("HTTPS is not available: %s", http_tls_why());
     return 0;
 }

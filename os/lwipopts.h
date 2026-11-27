@@ -107,6 +107,10 @@
 #define LWIP_ALTCP                  1
 #define LWIP_ALTCP_TLS              1
 #define LWIP_ALTCP_TLS_MBEDTLS      1
+// A server certificate that does not verify ends the handshake (lwIP's default
+// is OPTIONAL, which lets it through). httptransport.cpp sets the same on its
+// config and checks the result again before sending anything.
+#define ALTCP_MBEDTLS_AUTHMODE      MBEDTLS_SSL_VERIFY_REQUIRED
 
 // Packets to the device's own address (and 127.0.0.1) are looped back instead
 // of going nowhere, so `ping <own address>` answers as it does on a computer.

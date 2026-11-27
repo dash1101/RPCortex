@@ -97,6 +97,9 @@
 #define MBEDTLS_SSL_SRV_C
 #define MBEDTLS_SSL_TLS_C
 #define MBEDTLS_X509_CRT_PARSE_C
+// Roots looked up by subject when a handshake needs one (httptransport.cpp,
+// ca_lookup), parsed from flash then, instead of all held in RAM.
+#define MBEDTLS_X509_TRUSTED_CERTIFICATE_CALLBACK
 #define MBEDTLS_X509_USE_C
 #define MBEDTLS_AES_FEWER_TABLES
 
