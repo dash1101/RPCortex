@@ -8,6 +8,22 @@ good notes is in `RELEASING.md`.
 
 ## Unreleased
 
+Summary: 
+
+### New
+
+### Improved
+
+### Fixed
+
+### Security
+
+### Changed
+
+### Known issues
+
+## v2.0.715-beta, 2026-11-27
+
 Summary: Releases are signed, and a board checks the signature before it updates; a web server stopped and started again gets its port back at once
 
 ### New

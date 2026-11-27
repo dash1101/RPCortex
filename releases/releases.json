@@ -2,6 +2,109 @@
   "schema": 1,
   "releases": [
     {
+      "tag": "v2.0.715-beta",
+      "display": "v2.0.715-beta",
+      "version": "2.0",
+      "build": 715,
+      "commit": "29b4bc8da8d25ed38bcd9cc8de148f100a958d4e",
+      "codename": "Vela II",
+      "date": "2026-11-27",
+      "prerelease": true,
+      "title": "RPCortex v2.0.715-beta",
+      "summary": "Releases are signed, and a board checks the signature before it updates; a web server stopped and started again gets its port back at once",
+      "notes": {
+        "new": [
+          "**Signed releases.** Every release list is signed with an RPCortex release key (Ed25519), and `update check` and `update install` refuse a list that is unsigned, altered, or signed by a key the firmware does not know, whether the board fetches it over its own Wi-Fi or through the computer. The list carries each image's SHA-256, so the images are covered too. `sudo update install --unsigned` takes an unsigned list anyway (a fork, a mirror). Installing a file with `update from-file`, a `.uf2` or BOOTSEL is unchanged."
+        ],
+        "improved": [
+          "More room on the RP2350 boards: 11 KB on the Pico 2 W and 7 KB on the Pico 2. The A/B update record was read with `sscanf`, which brings in about 12 KB of floating-point number parsing that nothing uses. A build check now refuses an image that links it.",
+          "The Pico W and Pico carry the eleven root certificates that cover the sites the firmware and its packages use, and most large sites (GitHub, Google, DuckDuckGo, Wikipedia, Cloudflare, Amazon, Microsoft), instead of all 26: 13 KB back on the board with the least room. The RP2350 boards keep all 26. More can still be added in `/os/ca.pem`."
+        ],
+        "fixed": [
+          "`pulse set` below the default clock on a Pico 2 W made the Wi-Fi chip stop answering (\"F2 not ready\"), and the watchdog reset the board 16 seconds later. The chip's bus runs from the CPU clock through a fixed divider, and the bus program samples correctly only near the speed it was built for. The divider now follows the clock, keeping the bus at or under its usual speed, and the clock is changed with the bus held still. Tested on a Pico 2 W from 48 to 250 MHz with pings and a download at each, and with a boot clock. `pulse status` shows the bus speed. Not yet tried on a Pico W.",
+          "`httpd stop` and then `httpd` on the same port was refused for two minutes (\"may already be in use\"): the connections it had served were still waiting out TCP's TIME_WAIT. A listener can take the port back at once now; a port another server is listening on is still refused.",
+          "The account table had no lock while SSH and sudo checked passwords on one task and `mkacct`, `passwd` or `rmuser` changed it on another. It has one now, and readers get a copy of a name rather than a pointer into a table that a removal shifts.",
+          "The table of detached runs is locked, since a package's task and the line it runs on can change it from both cores.",
+          "Two packages loading at once on two tasks could tag each other's commands with the wrong owner. The owner is kept per task now."
+        ],
+        "security": [
+          "Release lists are signed and checked (above)."
+        ],
+        "changed": [
+          "Checking release signatures adds about 6 KB to the RP2040 images: the Pico and Pico W have 48 KB left in their firmware slot, the Pico 2 W 128 KB and the Pico 2 106 KB.",
+          "`update install` takes `--unsigned`."
+        ],
+        "issues": []
+      },
+      "assets": [
+        {
+          "board": "pico2_w",
+          "kind": "bin",
+          "file": "rpcortex-v2.0.715-beta-pico2_w.bin",
+          "size": 913300,
+          "sha256": "6a0f4656c4a8022e75eb33280409f409390680ec2477d31f7086923e1bf04d1f",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.715-beta/rpcortex-v2.0.715-beta-pico2_w.bin"
+        },
+        {
+          "board": "pico2_w",
+          "kind": "uf2",
+          "file": "rpcortex-v2.0.715-beta-pico2_w.uf2",
+          "size": 1851392,
+          "sha256": "eca70f65fde31ea78e3ee1b75e2e9047260de67b8ef5a6cb96341d271ebd69bd",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.715-beta/rpcortex-v2.0.715-beta-pico2_w.uf2"
+        },
+        {
+          "board": "pico_w",
+          "kind": "bin",
+          "file": "rpcortex-v2.0.715-beta-pico_w.bin",
+          "size": 802528,
+          "sha256": "e9c737e41fa895ac8d49065c1690fb07973edbe200f4375d7ffd6f2cadd8036b",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.715-beta/rpcortex-v2.0.715-beta-pico_w.bin"
+        },
+        {
+          "board": "pico_w",
+          "kind": "uf2",
+          "file": "rpcortex-v2.0.715-beta-pico_w.uf2",
+          "size": 1605120,
+          "sha256": "6914491b7d444afac526e6e48d3dde11df08795f14026a24293e940a7611731e",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.715-beta/rpcortex-v2.0.715-beta-pico_w.uf2"
+        },
+        {
+          "board": "pico2",
+          "kind": "bin",
+          "file": "rpcortex-v2.0.715-beta-pico2.bin",
+          "size": 410972,
+          "sha256": "c72ef1e45f589182dbc8adb66258ca1ad8c390444f58bedb9a20bb5f06ae773f",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.715-beta/rpcortex-v2.0.715-beta-pico2.bin"
+        },
+        {
+          "board": "pico2",
+          "kind": "uf2",
+          "file": "rpcortex-v2.0.715-beta-pico2.uf2",
+          "size": 846848,
+          "sha256": "e6392d23c1f9c41ea2d6cd9eb4d225b1c9def3e769a78d714cd96e0788905802",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.715-beta/rpcortex-v2.0.715-beta-pico2.uf2"
+        },
+        {
+          "board": "pico",
+          "kind": "bin",
+          "file": "rpcortex-v2.0.715-beta-pico.bin",
+          "size": 343516,
+          "sha256": "a9d9c745b40822a74635bc0ff5dd438edca2919ccdf8631754a7ad6b511ee09a",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.715-beta/rpcortex-v2.0.715-beta-pico.bin"
+        },
+        {
+          "board": "pico",
+          "kind": "uf2",
+          "file": "rpcortex-v2.0.715-beta-pico.uf2",
+          "size": 687104,
+          "sha256": "2d055f89733233bf9c5d94e5a01249a16b2d418bd905f4a534cbdf40dc95a8ec",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.715-beta/rpcortex-v2.0.715-beta-pico.uf2"
+        }
+      ],
+      "url": "https://github.com/dash1101/RPCortex/releases/tag/v2.0.715-beta"
+    },
+    {
       "tag": "v2.0.709-beta",
       "display": "v2.0.709-beta",
       "version": "2.0",
