@@ -56,7 +56,7 @@ ar rcs "$W/libmbed.a" "$W"/mbed/*.o
 
 CXXF=(-std=c++17 -Wall -Wextra -Wno-unused-parameter -g $SAN -pthread -DRPC_HAS_SSH=1 "$CFG"
       -I"$OS" -I"$CORE" -I"$OS/shell" -I"$OS/include" -I"$OS/kernel" -I"$SDK/lib/mbedtls/include")
-COMMON=("$CORE/sshwire.cpp" "$CORE/sshcrypto.cpp" "$CORE/ed25519.cpp" "$CORE/sshtrans.cpp" "$CORE/sshkeys.cpp"
+COMMON=("$CORE/sshwire.cpp" "$CORE/sshcrypto.cpp" "$CORE/ed25519.cpp" "$CORE/sha512.cpp" "$CORE/sshtrans.cpp" "$CORE/sshkeys.cpp"
         "$CORE/lock.cpp" "$CORE/task.cpp" "$CORE/blackbox.cpp" "$HERE/host_task_stub.cpp" "$W/libmbed.a")
 g++ "${CXXF[@]}" "$HERE/ssh_host_server.cpp" "$CORE/sshserver.cpp" "$CORE/sshsess.cpp" \
     "$CORE/lineedit.cpp" "$CORE/interrupt.cpp" "${COMMON[@]}" -o "$W/server" || exit 1
@@ -318,7 +318,7 @@ g++ "${CXXF[@]}" -DRPC_HAS_WIFI=1 -DSSHD_RATE_PER_IP=100000 -DSSHD_RATE_ALL=1000
     "$OS/shell/fsguard.cpp" "$CORE/sshserver.cpp" "$CORE/sshsess.cpp" "$CORE/lineedit.cpp" "$CORE/history.cpp" \
     "$CORE/interrupt.cpp" "$CORE/ident.cpp" "$CORE/users.cpp" "$CORE/sha256.cpp" "$CORE/perms.cpp" \
     "$CORE/sudo.cpp" "$CORE/protect.cpp" "$CORE/path.cpp" "$CORE/out.cpp" "$CORE/logring.cpp" "$CORE/registry.cpp" \
-    "$CORE/sshwire.cpp" "$CORE/sshcrypto.cpp" "$CORE/ed25519.cpp" "$CORE/sshtrans.cpp" "$CORE/sshkeys.cpp" \
+    "$CORE/sshwire.cpp" "$CORE/sshcrypto.cpp" "$CORE/ed25519.cpp" "$CORE/sha512.cpp" "$CORE/sshtrans.cpp" "$CORE/sshkeys.cpp" \
     "$CORE/lock.cpp" "$CORE/task.cpp" "$CORE/blackbox.cpp" "$W/libmbed.a" -o "$W/sshd_host" || exit 1
 mkdir -p droot
 DPORT=""

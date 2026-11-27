@@ -122,6 +122,9 @@ add_executable(rpcortex_v2
     ${OS_ROOT}/core/textcore.cpp
     ${OS_ROOT}/core/history.cpp
     ${OS_ROOT}/core/sha256.cpp
+    ${OS_ROOT}/core/sha512.cpp
+    ${OS_ROOT}/core/ed25519.cpp
+    ${OS_ROOT}/core/relsig.cpp
     ${OS_ROOT}/core/imagecheck.cpp
     ${OS_ROOT}/core/b64.cpp
     ${OS_ROOT}/core/linkreq.cpp
@@ -696,7 +699,6 @@ if(RPC_SSH)
         ${OS_ROOT}/core/sshclient.cpp
         ${OS_ROOT}/core/sshsess.cpp
         ${OS_ROOT}/core/sshkeys.cpp
-        ${OS_ROOT}/core/ed25519.cpp
         ${OS_ROOT}/shell/sshd.cpp
         ${OS_ROOT}/shell/sshc.cpp)
     target_sources(rpcortex_v2 PRIVATE ${RPC_SSH_SOURCES})
@@ -737,6 +739,16 @@ if(RPC_CONSOLE_UART)
     else()
         set(_rpc_variant "emu")
     endif()
+endif()
+# A test image reading its release list from elsewhere (build.sh,
+# RPC_TEST_MANIFEST_URL): its own variant, so it is never published.
+if(RPC_TEST_MANIFEST_URL)
+    if(_rpc_variant)
+        set(_rpc_variant "${_rpc_variant}-testlist")
+    else()
+        set(_rpc_variant "testlist")
+    endif()
+    target_compile_definitions(rpcortex_v2 PRIVATE RPC_MANIFEST_URL="${RPC_TEST_MANIFEST_URL}")
 endif()
 if(NOT _rpc_variant)
     set(_rpc_variant "standard")

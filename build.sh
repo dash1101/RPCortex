@@ -12,6 +12,9 @@
 #   ./build.sh --fast              -O3 on every board, for comparison
 #   ./build.sh --small             -Os on every board, for comparison
 #   ./build.sh pico --emu          the emulator image (console on UART0)
+#   RPC_TEST_MANIFEST_URL=http://host:port/latest.json ./build.sh pico2_w
+#                                  reads its release list from there instead of
+#                                  GitHub, to test signed releases; never published
 #
 # tools/buildconf.py asks which board and which features and runs the command.
 #
@@ -71,7 +74,13 @@ CONSOLE_UART=OFF
 SUFFIX=""
 want=""                   # the option whose value is the next argument
 for arg in "$@"; do
-    if [ -n "$want" ]; then
+    # A test image that reads its release list from somewhere else (signed-release
+# tests). Named and marked as its own variant, so release.py refuses it.
+if [ -n "${RPC_TEST_MANIFEST_URL:-}" ]; then
+    [ "$RELEASE" -eq 1 ] && { echo "RPC_TEST_MANIFEST_URL cannot be set for --release" >&2; exit 1; }
+    SUFFIX="${SUFFIX}-testlist"
+fi
+if [ -n "$want" ]; then
         case "$want" in
             with)    WITH="$WITH,$arg" ;;
             without) WITHOUT="$WITHOUT,$arg" ;;
@@ -134,7 +143,8 @@ for board in "${BOARDS[@]}"; do
     dir="os/build_${board}${VARIANT}${SUFFIX}"
     # What the image must say it is: the marker check below compares.
     expect="${FEAT_TAG}"
-    [ -n "$SUFFIX" ] && expect="${expect:+$expect-}emu"
+    [ "$CONSOLE_UART" = ON ] && expect="${expect:+$expect-}emu"
+    [ -n "${RPC_TEST_MANIFEST_URL:-}" ] && expect="${expect:+$expect-}testlist"
     [ -n "$expect" ] || expect="standard"
     case "$board" in
         pico|pico_w) board_flash_kb=2048 ;;
@@ -164,11 +174,11 @@ for board in "${BOARDS[@]}"; do
     # shellcheck disable=SC2086
     if [ -n "$PT" ]; then
         cmake -S os -B "$dir" -DPICO_BOARD="$board" $FEAT_CMAKE \
-            -DRPC_CONSOLE_UART="$CONSOLE_UART" \
+            -DRPC_CONSOLE_UART="$CONSOLE_UART" -DRPC_TEST_MANIFEST_URL="${RPC_TEST_MANIFEST_URL:-}" \
               ${BUILDTYPE:+-DCMAKE_BUILD_TYPE="$BUILDTYPE"} -Dpicotool_DIR="$PT" >/dev/null
     else
         cmake -S os -B "$dir" -DPICO_BOARD="$board" $FEAT_CMAKE \
-            -DRPC_CONSOLE_UART="$CONSOLE_UART" \
+            -DRPC_CONSOLE_UART="$CONSOLE_UART" -DRPC_TEST_MANIFEST_URL="${RPC_TEST_MANIFEST_URL:-}" \
               ${BUILDTYPE:+-DCMAKE_BUILD_TYPE="$BUILDTYPE"} >/dev/null
     fi
     cmake --build "$dir" -j"$(nproc)" >/dev/null

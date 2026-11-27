@@ -6,6 +6,7 @@ edited by hand except `boards.json`.
 | File | Read by | What it is |
 |---|---|---|
 | `latest.json` | a device, for `update check` | One entry per board with the size and SHA-256 of the raw image. The entries share their shape with a package index entry on purpose, so the same scanner reads both. |
+| `latest.json.sig` | a device, before it trusts `latest.json` | Its Ed25519 signature by an RPCortex release key (RELEASING.md, Signing). |
 | `rpcortex-v2-<board>.bin` | a device, for `update install` | The raw image, copied into flash directly. |
 | `rpcortex-v2-<board>.uf2` | the boot ROM | The same image wrapped so drag and drop works: every 256 bytes in a 512-byte block with a header. Pure overhead for an update, which is why both exist. |
 | `releases.json` | the websites | The history, newest first: version, build, date, summary, notes by section, and the assets with sizes and checksums. |

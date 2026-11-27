@@ -59,7 +59,7 @@
 // deepest path the server has.
 #include "ed25519.h"
 
-#include "mbedtls/sha512.h"
+#include "sha512.h"   // its own: images without Wi-Fi have no mbedTLS
 
 // Three of TweetNaCl's functions kept out of line, by declaration only (their
 // definitions below are untouched). Each is called once, so the compiler
@@ -419,14 +419,13 @@ NOINLINE bool ed25519_point_ok(const uint8_t enc[32]) {
 
 // SHA-512(R || A || M), section 5.1.7 step 2, before reduction mod L.
 static NOINLINE bool hash_k(u8 h[64], const u8 *r, const u8 *a, const u8 *m, size_t n) {
-    mbedtls_sha512_context c;
-    mbedtls_sha512_init(&c);
-    bool ok = mbedtls_sha512_starts(&c, 0) == 0 &&
-              mbedtls_sha512_update(&c, r, 32) == 0 &&
-              mbedtls_sha512_update(&c, a, 32) == 0 &&
-              (n == 0 || mbedtls_sha512_update(&c, m, n) == 0) &&
-              mbedtls_sha512_finish(&c, h) == 0;
-    mbedtls_sha512_free(&c);
+    Sha512Ctx c;
+    sha512_init(&c);
+    sha512_update(&c, r, 32);
+    sha512_update(&c, a, 32);
+    if (n) sha512_update(&c, m, n);
+    sha512_final(&c, h);
+    bool ok = true;
     return ok;
 }
 

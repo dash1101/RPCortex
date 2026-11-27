@@ -21,6 +21,7 @@
 #include "rollback.h"
 #include "imagefeatures.h"
 #include "update.h"
+#include "relsig.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -28,8 +29,16 @@
 
 #include "httproute.h"
 
+#ifdef RPC_MANIFEST_URL            // a test image (build.sh, RPC_TEST_MANIFEST_URL)
+#define MANIFEST_URL  RPC_MANIFEST_URL
+#else
 #define MANIFEST_URL  "https://raw.githubusercontent.com/dash1101/RPCortex/main/releases/latest.json"
-#define MANIFEST_MAX  2048
+#endif
+#define MANIFEST_MAX  4096
+// The release list's signature, published beside it in the same commit by
+// tools/release.py (core/relsig.h has the format).
+#define SIG_URL       MANIFEST_URL ".sig"
+#define SIG_MAX       1024
 
 // Which board this image is for. An image for another one boots into nothing.
 //
@@ -112,15 +121,63 @@ static bool download(const char *url, const char *dest, char *hex, uint64_t *byt
 // "packages" array whose entries are per board. That is deliberate — a second
 // format would be a second parser to get wrong.
 
-static bool fetch_manifest(RepoEntry *out) {
+// Signed releases. The list names each image's SHA-256, so a list that is
+// really the maintainer's means images that are too: checking the signature
+// here covers the image as well. It runs on every path that reads the list,
+// over the board's own Wi-Fi or through the computer (the bridge), because the
+// check is on the bytes, not on where they came from.
+//
+// `unsigned_ok` is `update install --unsigned`: an admin who has decided to
+// take a list nobody signed (their own fork's, or a mirror). Everything else
+// that installs firmware (update from-file, a .uf2, BOOTSEL) never reads this
+// list and is not affected.
+static RelSig check_signature(const char *manifest, uint32_t len) {
+    char hex[65]; uint64_t n = 0;
+    if (!download(SIG_URL, SIG_PATH, hex, &n)) return RELSIG_MISSING;
+    char *sig = (char *)malloc(SIG_MAX);
+    if (!sig) { storage_remove(SIG_PATH); return RELSIG_MISSING; }
+    uint32_t sl = storage_read_file(SIG_PATH, (uint8_t *)sig, SIG_MAX - 1);
+    sig[sl] = 0;
+    storage_remove(SIG_PATH);
+    char which[9];
+    RelSig r = relsig_check((const uint8_t *)manifest, len, sig, which);
+    free(sig);
+    return r;
+}
+
+static bool fetch_manifest(RepoEntry *out, bool unsigned_ok, bool *was_signed) {
     out_info("Checking for an update...");
     char hex[65]; uint64_t n = 0;
     if (!download(MANIFEST_URL, MANIFEST_PATH, hex, &n)) return false;
+    if (n >= MANIFEST_MAX) {
+        out_err("The release list is %lu bytes, more than this firmware reads (%u).",
+                (unsigned long)n, (unsigned)MANIFEST_MAX - 1);
+        out_multi("  'update from-file' or a .uf2 still installs a newer version.");
+        return false;
+    }
 
     char *buf = (char *)malloc(MANIFEST_MAX);
     if (!buf) { out_err("Not enough memory."); return false; }
     uint32_t len = storage_read_file(MANIFEST_PATH, (uint8_t *)buf, MANIFEST_MAX - 1);
     buf[len] = 0;
+
+    RelSig sig = check_signature(buf, len);
+    if (was_signed) *was_signed = sig == RELSIG_OK;
+    if (sig != RELSIG_OK) {
+        if (unsigned_ok) {
+            out_warn("The release list is %s. Going on: --unsigned.", relsig_str(sig));
+        } else {
+            out_err("The release list is %s.", relsig_str(sig));
+            if (sig == RELSIG_BAD)
+                out_multi("  If a release was published in the last few minutes, the two files");
+            if (sig == RELSIG_BAD)
+                out_multi("  may have been caught mid-update: try again shortly.");
+            out_multi("  'sudo update install --unsigned' installs from it anyway.");
+            free(buf);
+            return false;
+        }
+    }
+
     bool hit = repo_find(buf, len, MY_BOARD, out);
     free(buf);
 
@@ -135,7 +192,7 @@ static bool fetch_manifest(RepoEntry *out) {
 
 int update_check(bool quiet) {
     RepoEntry e;
-    if (!fetch_manifest(&e)) return 1;
+    if (!fetch_manifest(&e, false, nullptr)) return 1;
 
     // Compared against version-plus-build, not the version alone. During a beta
     // the version is frozen, so comparing only that would report "up to date"
@@ -161,14 +218,16 @@ int update_check(bool quiet) {
     return 0;
 }
 
-int update_online(bool force, bool yes) {
+int update_online(bool force, bool yes, bool unsigned_ok) {
     if (!users_is_admin(session_user())) {
         out_err("Only an admin can update the firmware.");
         return 1;
     }
 
     RepoEntry e;
-    if (!fetch_manifest(&e)) return 1;
+    bool was_signed = false;
+    if (!fetch_manifest(&e, unsigned_ok, &was_signed)) return 1;
+    if (was_signed) out_ok("Release list signed by an RPCortex release key.");
 
     if (!force && repo_version_cmp(e.ver, RPC_OS_BUILDVER) <= 0) {
         out_ok("Already running %s. 'sudo update install --force' to reinstall.", RPC_OS_VERSION);

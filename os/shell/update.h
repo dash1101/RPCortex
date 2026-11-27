@@ -9,6 +9,7 @@
 // kept. update_report_boot removes both once the new firmware has started.
 #define IMAGE_PATH    "/os/update.bin"
 #define MANIFEST_PATH "/os/update.json"
+#define SIG_PATH      "/os/update.sig"
 
 // Stage `path` and copy it over the firmware. Does not return when it works.
 bool update_apply_file(const char *path, const char *to_version, bool at_boot);
@@ -24,8 +25,8 @@ bool update_ab_prev(int *part, char *ver, uint32_t vcap, bool verify);
 bool update_ab_switch_back(bool at_boot);
 #endif
 
-// update check, and update install [--force] [--yes].
+// update check, and update install [--force] [--yes] [--unsigned].
 int update_check(bool quiet);
-int update_online(bool force, bool yes);
+int update_online(bool force, bool yes, bool unsigned_ok);
 
 #endif  // RPC_UPDATE_H

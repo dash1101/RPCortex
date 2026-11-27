@@ -615,13 +615,14 @@ static int cmd_update(int argc, char **argv) {
     if (!strcmp(sub, "check"))  return update_check(false);
     if (!strcmp(sub, "install") || !strcmp(sub, "online")) {
         // v1's spellings: --force/-f and --yes/-y, in either order.
-        bool force = false, yes = false;
+        bool force = false, yes = false, unsigned_ok = false;
         for (int i = 2; i < argc; i++) {
             if (!strcmp(argv[i], "--force") || !strcmp(argv[i], "-f")) force = true;
             else if (!strcmp(argv[i], "--yes") || !strcmp(argv[i], "-y")) yes = true;
+            else if (!strcmp(argv[i], "--unsigned")) unsigned_ok = true;
             else { out_err("Unknown option: %s", argv[i]); return 1; }
         }
-        return update_online(force, yes);
+        return update_online(force, yes, unsigned_ok);
     }
     if (!strcmp(sub, "rollback") || !strcmp(sub, "revert"))
         return rollback_command(argc, argv);
@@ -649,6 +650,7 @@ static int cmd_update(int argc, char **argv) {
     out_multi("  update check              is there a newer release");
     out_multi("  update install            fetch, verify and apply it");
     out_multi("  update install --force    reinstall the current version");
+    out_multi("  update install --unsigned take a release list that is not signed");
     out_multi("  update from-file <path> [--yes]   apply an image already on the device");
     out_multi("  update rollback           go back to the previous firmware");
     return 1;

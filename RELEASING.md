@@ -110,6 +110,7 @@ Guidelines for an entry:
    - builds all four boards (image checks and the host suites run as part of each),
    - checks each image was built as this version and build,
    - writes `releases/latest.json` and the images it points at, which is what `update install` reads,
+   - signs `latest.json` and writes `releases/latest.json.sig` beside it (Signing, below),
    - writes versioned copies and `SHA256SUMS` for the GitHub release,
    - turns Unreleased into a dated section of `CHANGELOG.md` and adds a fresh one,
    - adds the release to `releases/releases.json`, which the websites read,
@@ -117,6 +118,27 @@ Guidelines for an entry:
    - then steps `kernel.h` to the next number and commits that (an rc becomes the next rc).
 
 A tag is never moved or deleted by the tool. A mistake in a release is fixed by the next one.
+
+## Signing
+
+Firmware checks that `latest.json` is signed by an RPCortex release key before `update check` or
+`update install` uses it, over the board's own Wi-Fi or through the bridge. The list names each
+image's SHA-256, so a signed list covers the images as well.
+
+- **Two keys**, Ed25519. The primary signs every release. The backup stays offline and signs only if
+  the primary is lost; firmware accepts either, so losing one key never strands a board. The public
+  halves are in `os/core/relsig.cpp`. Replacing a key means a release, signed by a key the boards
+  already trust, whose firmware lists the new one.
+- **The private keys are never in a repository.** `release.py` reads `$RPC_SIGNING_KEY`, or
+  `~/.config/rpcortex/release-signing/primary.pem`, and signs with the `openssl` command. A dry run
+  signs a scratch copy, so a missing key shows up before `--publish`. Without a key nothing is
+  published, because every board that checks would refuse the list.
+- **`latest.json.sig`** is one line per signature, `ed25519 <key id> <base64>`, the key id being the
+  first 8 hex digits of SHA-256 of the public key. Committed with `latest.json`, in the same commit.
+- **The override** is `sudo update install --unsigned`: for someone running their own fork or a mirror.
+  `update from-file`, a `.uf2` and BOOTSEL never read the list and are unchanged.
+- **A test image** that reads its list from elsewhere: `RPC_TEST_MANIFEST_URL=<url> ./build.sh <board>`.
+  It is named `-testlist` and `release.py` refuses it.
 
 ## Where a release shows up
 

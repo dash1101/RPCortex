@@ -8,17 +8,44 @@ good notes is in `RELEASING.md`.
 
 ## Unreleased
 
-Summary: 
+Summary: Releases are signed, and a board checks the signature before it updates; a web server stopped and started again gets its port back at once
 
 ### New
 
+- **Signed releases.** Every release list is signed with an RPCortex release key (Ed25519), and
+  `update check` and `update install` refuse a list that is unsigned, altered, or signed by a key the
+  firmware does not know, whether the board fetches it over its own Wi-Fi or through the computer.
+  The list carries each image's SHA-256, so the images are covered too.
+  `sudo update install --unsigned` takes an unsigned list anyway (a fork, a mirror). Installing a
+  file with `update from-file`, a `.uf2` or BOOTSEL is unchanged.
+
 ### Improved
+
+- The Pico W and Pico carry the eleven root certificates that cover the sites the firmware and its
+  packages use, and most large sites (GitHub, Google, DuckDuckGo, Wikipedia, Cloudflare, Amazon,
+  Microsoft), instead of all 26: 13 KB back on the board with the least room. The RP2350 boards keep
+  all 26. More can still be added in `/os/ca.pem`.
 
 ### Fixed
 
+- `httpd stop` and then `httpd` on the same port was refused for two minutes ("may already be in
+  use"): the connections it had served were still waiting out TCP's TIME_WAIT. A listener can take
+  the port back at once now; a port another server is listening on is still refused.
+- The account table had no lock while SSH and sudo checked passwords on one task and `mkacct`,
+  `passwd` or `rmuser` changed it on another. It has one now, and readers get a copy of a name
+  rather than a pointer into a table that a removal shifts.
+- The table of detached runs is locked, since a package's task and the line it runs on can change
+  it from both cores.
+- Two packages loading at once on two tasks could tag each other's commands with the wrong owner.
+  The owner is kept per task now.
+
 ### Security
 
+- Release lists are signed and checked (above).
+
 ### Changed
+
+- `update install` takes `--unsigned`.
 
 ### Known issues
 

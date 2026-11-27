@@ -20,6 +20,7 @@ WHERE THINGS COME FROM
 WHAT IT WRITES
 --------------
   releases/latest.json     the manifest a device reads for `update check`
+  releases/latest.json.sig its Ed25519 signature (SIGNING, below), in the same commit
   releases/*.bin, *.uf2    the images that manifest points at
   releases/releases.json   the history the websites read (one entry per release)
   CHANGELOG.md             `## Unreleased` becomes a dated section; a new empty one is added
@@ -33,7 +34,18 @@ label on (-rc, -rc2, ...) and that is committed; otherwise nothing changes after
 never moved or deleted by this tool. Releases v2.01-beta to v2.05-beta used the older vMAJOR.ITER
 form and keep their tags.
 
-Only the standard library is needed, so it runs on a fresh checkout.
+SIGNING
+-------
+Firmware checks latest.json's signature before it installs anything from it
+(os/core/relsig.cpp holds the public keys). The private key is never in a
+repository: it is read from $RPC_SIGNING_KEY, or ~/.config/rpcortex/release-signing/primary.pem,
+an Ed25519 key in PEM form (`openssl genpkey -algorithm ed25519`). Signing uses
+the openssl command. A release without a key is refused, since every board that
+checks would refuse it too. A dry run signs a scratch copy, so a missing or
+wrong key shows up before --publish.
+
+Only the standard library is needed, so it runs on a fresh checkout (plus the
+openssl command, to sign).
 """
 
 import argparse
@@ -280,6 +292,43 @@ def last_label(hist=None):
     return (m.group(1) or "") if m else ""
 
 
+SIGNING_KEY = os.environ.get("RPC_SIGNING_KEY") or os.path.expanduser(
+    "~/.config/rpcortex/release-signing/primary.pem")
+
+
+def sign_file(path):
+    """The signature file's text for `path`: 'ed25519 <key id> <base64>'.
+
+    The key id is the first 8 hex digits of SHA-256 over the 32-byte public
+    key, as os/core/relsig.cpp computes it. The signature is checked with the
+    public key before it is returned, so a bad one is never published."""
+    import base64
+    import tempfile
+    if not os.path.exists(SIGNING_KEY):
+        raise SystemExit("no release signing key at %s (set RPC_SIGNING_KEY). Boards refuse "
+                         "an unsigned release list, so nothing is published without one." % SIGNING_KEY)
+    der = subprocess.run(["openssl", "pkey", "-in", SIGNING_KEY, "-pubout", "-outform", "DER"],
+                         capture_output=True, check=True).stdout
+    pub = der[-32:]
+    if len(der) != 44 or not der.startswith(bytes.fromhex("302a300506032b6570032100")):
+        raise SystemExit("%s is not an Ed25519 key" % SIGNING_KEY)
+    kid = hashlib.sha256(pub).hexdigest()[:8]
+    with tempfile.TemporaryDirectory() as tmp:
+        sig = os.path.join(tmp, "sig")
+        pubp = os.path.join(tmp, "pub.pem")
+        subprocess.run(["openssl", "pkeyutl", "-sign", "-rawin", "-inkey", SIGNING_KEY,
+                        "-in", path, "-out", sig], check=True)
+        subprocess.run(["openssl", "pkey", "-in", SIGNING_KEY, "-pubout", "-out", pubp], check=True)
+        ok = subprocess.run(["openssl", "pkeyutl", "-verify", "-rawin", "-pubin", "-inkey", pubp,
+                             "-in", path, "-sigfile", sig], capture_output=True)
+        if ok.returncode != 0:
+            raise SystemExit("the signature over %s did not verify; nothing published" % path)
+        raw = open(sig, "rb").read()
+    if len(raw) != 64:
+        raise SystemExit("openssl gave a %d-byte signature, not 64" % len(raw))
+    return "ed25519 %s %s\n" % (kid, base64.b64encode(raw).decode())
+
+
 def plan(msg, dry):
     print(("  would: " if dry else "  doing: ") + msg)
 
@@ -411,6 +460,7 @@ def cmd_cut(a):
                     "size": len(data), "sha256": hashlib.sha256(data).hexdigest(),
                     "url": RAW + "rpcortex-v2-%s.bin" % b})
     plan("write releases/latest.json and the images it points at (%d boards)" % len(ota), dry)
+    plan("sign releases/latest.json (key %s)" % SIGNING_KEY, dry)
     plan("write out/release-%s/ with versioned names and SHA256SUMS" % tag, dry)
 
     entry = {"tag": tag, "display": display(v, build), "version": "%s.%s" % (v["major"], v["minor"]),
@@ -432,6 +482,16 @@ def cmd_cut(a):
     plan("releases/releases.json: add %s (the sites read this)" % tag, dry)
 
     if dry:
+        # Sign a scratch copy now, so a missing or wrong key is found here
+        # rather than half way through a publish.
+        import tempfile
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as t:
+            json.dump({"packages": ota}, t, indent=2)
+        try:
+            line = sign_file(t.name)
+            print("  signing works: %s" % line.split()[1])
+        finally:
+            os.remove(t.name)
         print("\n--- release notes ---\n" + body)
         print("dry run: nothing was changed. Add --publish to do it.")
         return
@@ -448,8 +508,11 @@ def cmd_cut(a):
             src = os.path.join(ROOT, "out", "rpcortex-v2-%s.%s" % (b, kind))
             if os.path.exists(src):
                 open(os.path.join(RELEASES, "rpcortex-v2-%s.%s" % (b, kind)), "wb").write(open(src, "rb").read())
+    latest = os.path.join(RELEASES, "latest.json")
     json.dump({"name": "RPCortex releases", "format": 2, "maintainer": "dash1101", "packages": ota},
-              open(os.path.join(RELEASES, "latest.json"), "w"), indent=2)
+              open(latest, "w"), indent=2)
+    # The exact bytes just written are what is signed, and what a board fetches.
+    open(latest + ".sig", "w").write(sign_file(latest))
     json.dump(hist, open(hist_path, "w"), indent=2, ensure_ascii=False)
     open(os.path.join(outdir, "NOTES.md"), "w").write(body)
     open(CHANGELOG, "w").write(roll_changelog(text, heading))
