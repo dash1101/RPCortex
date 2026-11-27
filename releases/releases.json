@@ -2,6 +2,97 @@
   "schema": 1,
   "releases": [
     {
+      "tag": "v2.0.700-beta",
+      "display": "v2.0.700-beta",
+      "version": "2.0",
+      "build": 700,
+      "commit": "b4a89f5101fed39f81c24c8f01a75f69a25d83b7",
+      "codename": "Vela II",
+      "date": "2026-11-26",
+      "prerelease": true,
+      "title": "RPCortex v2.0.700-beta",
+      "summary": "RPCortex Studio on a phone can pair with a board and reach it over Wi-Fi: link mode runs over SSH",
+      "notes": {
+        "new": [
+          "Link mode runs over SSH (`ssh user@board link`), so a host tool on the same network can do everything it does over the USB cable: files, packages, commands, updates. RPCortex Studio for Android uses it to reach a paired board over Wi-Fi. On SSH it ends when the connection closes, or after 90 seconds with no request (hosts send `PING` to stay), so a phone that leaves the network does not hold a session; one host tool at a time, across the console and SSH. LINK.md, \"Over SSH\"."
+        ],
+        "improved": [],
+        "fixed": [],
+        "security": [],
+        "changed": [
+          "A command run directly over SSH (`ssh user@board command`) now gets what the client sends as its input, as a shell session does; before, it was thrown away."
+        ],
+        "issues": []
+      },
+      "assets": [
+        {
+          "board": "pico2_w",
+          "kind": "bin",
+          "file": "rpcortex-v2.0.700-beta-pico2_w.bin",
+          "size": 899912,
+          "sha256": "3bce0d9d673201d4dcbe710c9932609c365723190722a3d220a9f17cc37e5337",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.700-beta/rpcortex-v2.0.700-beta-pico2_w.bin"
+        },
+        {
+          "board": "pico2_w",
+          "kind": "uf2",
+          "file": "rpcortex-v2.0.700-beta-pico2_w.uf2",
+          "size": 1824768,
+          "sha256": "df71020c2ba2503378da8bd73a66bbd12c76e5f99aea22e30f0a92ebb34f4b9a",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.700-beta/rpcortex-v2.0.700-beta-pico2_w.uf2"
+        },
+        {
+          "board": "pico_w",
+          "kind": "bin",
+          "file": "rpcortex-v2.0.700-beta-pico_w.bin",
+          "size": 785520,
+          "sha256": "9f30f47d1d327fd79a7bb9aeb40d7f595bbe759801099e2a17caed1f03ba0e40",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.700-beta/rpcortex-v2.0.700-beta-pico_w.bin"
+        },
+        {
+          "board": "pico_w",
+          "kind": "uf2",
+          "file": "rpcortex-v2.0.700-beta-pico_w.uf2",
+          "size": 1571328,
+          "sha256": "fa4f8d616e7a4875ddced6a56556ca20b5cd02e2c5679c67ab5c5e87deab43ca",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.700-beta/rpcortex-v2.0.700-beta-pico_w.uf2"
+        },
+        {
+          "board": "pico2",
+          "kind": "bin",
+          "file": "rpcortex-v2.0.700-beta-pico2.bin",
+          "size": 416480,
+          "sha256": "50596d6b2a038bd5fc6bfb0d1735cd92496813956fa5a792cc8b2000cba18bfd",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.700-beta/rpcortex-v2.0.700-beta-pico2.bin"
+        },
+        {
+          "board": "pico2",
+          "kind": "uf2",
+          "file": "rpcortex-v2.0.700-beta-pico2.uf2",
+          "size": 857600,
+          "sha256": "918c269bee2b0e45526ee0b4eaf2166aa84bf0e5e65a649583854d5e8ba4418a",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.700-beta/rpcortex-v2.0.700-beta-pico2.uf2"
+        },
+        {
+          "board": "pico",
+          "kind": "bin",
+          "file": "rpcortex-v2.0.700-beta-pico.bin",
+          "size": 334324,
+          "sha256": "ea55eb0bde4a1a5d15954dfe384384b0174e9576c5a74844544f3d3c84ebeab9",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.700-beta/rpcortex-v2.0.700-beta-pico.bin"
+        },
+        {
+          "board": "pico",
+          "kind": "uf2",
+          "file": "rpcortex-v2.0.700-beta-pico.uf2",
+          "size": 668672,
+          "sha256": "2ebfaaab1128ca2437dbfb41ea953c176f181b612c69893f85dd2fc5472e890f",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.700-beta/rpcortex-v2.0.700-beta-pico.uf2"
+        }
+      ],
+      "url": "https://github.com/dash1101/RPCortex/releases/tag/v2.0.700-beta"
+    },
+    {
       "tag": "v2.0.697-beta",
       "display": "v2.0.697-beta",
       "version": "2.0",

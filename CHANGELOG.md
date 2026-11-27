@@ -8,6 +8,22 @@ good notes is in `RELEASING.md`.
 
 ## Unreleased
 
+Summary: 
+
+### New
+
+### Improved
+
+### Fixed
+
+### Security
+
+### Changed
+
+### Known issues
+
+## v2.0.700-beta, 2026-11-26
+
 Summary: RPCortex Studio on a phone can pair with a board and reach it over Wi-Fi: link mode runs over SSH
 
 ### New
