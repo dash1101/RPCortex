@@ -45,6 +45,30 @@ comes back, when:
   `link` by accident gets out with Ctrl+C);
 - the USB host stops asserting DTR (the port was closed) for 3 seconds.
 
+## Over SSH
+
+From v2.0.698, link mode also runs on an SSH session, for a host on the same
+network: the session's command is `link` (an `exec` request, as `ssh
+user@board link` sends), and the requests and frames go over that channel
+instead of the console. Everything above applies, with these differences:
+
+- There is no prompt to get to. The session runs `link` straight away: read until
+  the `HELLO` frame, and send nothing first. **Never send `0x03`**: on SSH it is
+  the session's interrupt, which ends link mode (as closing the channel does).
+- It runs as the account the session signed in as. AUTH and sudo work as on the
+  console, for that session.
+- It ends when the channel or the connection closes, and after **90 seconds with
+  no request**: a phone that leaves the network closes nothing, and that is how
+  the board finds out. A host that stays connected while idle sends `PING` (every
+  30 seconds is plenty).
+- One host tool at a time, across the console and SSH. A second one gets
+  `Link mode is already running (one host tool at a time).` and no `HELLO`.
+- The board's SSH server offers one host key (ECDSA P-256). A host pins it when
+  pairing over a trusted link (`ssh server fingerprint` gives it as
+  `SHA256:...`), and signs in with its own key, added to the account's
+  `~/.ssh/authorized_keys`. Firmware before v2.0.698 answers `'link' talks to a
+  host tool over the console, so it runs only at the prompt.`
+
 ## Framing
 
 **Host to device:** one request per line, ending `\n` (a `\r` before it is

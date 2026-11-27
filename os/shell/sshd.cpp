@@ -421,7 +421,10 @@ static void op_start(void *ctx) {
 
 static void op_data(void *ctx, const uint8_t *d, uint32_t n) {
     SshdSession *s = of_ctx(ctx);
-    if (!s->shell_started || s->exec_mode || s->sess.done) { ssh_srv_consumed(&s->srv, n); return; }
+    // A command run directly (`ssh board link`) gets its input as a shell does:
+    // link mode reads its requests from it. One that reads nothing leaves it in
+    // the ring, and the window stops the client sending more than fits.
+    if (!s->shell_started || s->sess.done) { ssh_srv_consumed(&s->srv, n); return; }
     uint32_t dropped = ssh_sess_input(&s->sess, d, n);
     if (dropped) ssh_srv_consumed(&s->srv, dropped);
     // A Ctrl+C while a command runs: that session's interrupt, and only its.

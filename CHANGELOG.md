@@ -8,9 +8,11 @@ good notes is in `RELEASING.md`.
 
 ## Unreleased
 
-Summary: 
+Summary: RPCortex Studio on a phone can pair with a board and reach it over Wi-Fi: link mode runs over SSH
 
 ### New
+
+- Link mode runs over SSH (`ssh user@board link`), so a host tool on the same network can do everything it does over the USB cable: files, packages, commands, updates. RPCortex Studio for Android uses it to reach a paired board over Wi-Fi. On SSH it ends when the connection closes, or after 90 seconds with no request (hosts send `PING` to stay), so a phone that leaves the network does not hold a session; one host tool at a time, across the console and SSH. LINK.md, "Over SSH".
 
 ### Improved
 
@@ -19,6 +21,8 @@ Summary:
 ### Security
 
 ### Changed
+
+- A command run directly over SSH (`ssh user@board command`) now gets what the client sends as its input, as a shell session does; before, it was thrown away.
 
 ### Known issues
 

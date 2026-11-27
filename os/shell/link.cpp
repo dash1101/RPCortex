@@ -42,6 +42,10 @@ int shell_run_line_now(char *line);
 #define LINK_XFER_MS   10000
 // The USB host not asserting DTR for this long means the port was closed.
 #define LINK_GONE_MS   3000
+// On SSH, link mode ends after this long with no request at all (hosts PING
+// to stay): a phone that walks out of Wi-Fi range closes nothing, and the
+// server has no other way to learn that the other end has gone.
+#define LINK_REMOTE_IDLE_MS 90000
 
 // Everything link mode needs that is bigger than a few words, in one block on
 // the heap for as long as it runs. It sits on the shell's own stack otherwise,
@@ -54,6 +58,11 @@ struct LinkState {
 };
 
 static bool g_in_link;
+// Link mode on an SSH session (`ssh dev@board link`): its bytes come from that
+// session's terminal, and the session ending (closed, dropped, stopped) has to
+// end link mode too, or a phone walking out of Wi-Fi range would hold one of
+// the server's sessions, and link mode, until a restart.
+static bool g_link_remote;
 // AUTH was used in this link session. Its grace is the console's, so it is
 // forgotten when link mode ends: a host tool that has finished must not leave
 // the serial console able to sudo for five more minutes without a password.
@@ -63,6 +72,9 @@ static bool g_link_authed;
 
 static void send_frame(LinkState *st, uint32_t n) {
     st->frame[n++] = '\n';
+    // To whoever is linked: the console, or the SSH session's terminal (out_write
+    // goes to the task's own terminal; out_console always to the serial port).
+    if (g_link_remote) { out_write(st->frame, n); return; }
     out_console(st->frame, n);
     stdio_flush();
 }
@@ -129,6 +141,9 @@ static ReadResult read_line_inner(char *buf, uint32_t cap, uint32_t timeout_ms,
         if (*rx_at < *rx_n) c = (unsigned char)rx[(*rx_at)++];
         if (c < 0) {
             uint32_t now = task_now_ms();
+            // A remote session's Ctrl+C, and its connection going, both raise
+            // this task's interrupt (sshd.cpp); the bytes never carry a 0x03.
+            if (g_link_remote && (intr_pending() || task_should_stop())) return RL_INTR;
             if (timeout_ms && now - last >= timeout_ms) return RL_TIMEOUT;
             if (watch_usb) {
                 if (stdio_usb_connected()) gone_since = 0;
@@ -438,37 +453,47 @@ static void do_stat(LinkState *st, const char *rest) {
 // --- the command ------------------------------------------------------------
 
 static int cmd_link(int, char **) {
-    // On the console only: the requests arrive there, and only the shell's task
-    // reads keys.
-    if (task_shell_pid() && task_self() != task_shell_pid()) {
-        out_err("'link' talks to a host tool over the console, so it runs only at the prompt.");
+    // At the console's prompt, or on an SSH session: those are the two places
+    // that read keys. An SSH session reads its own connection's, through its
+    // terminal, and never the console's.
+    bool remote = task_shell()->term != nullptr;
+    if (!remote && task_shell_pid() && task_self() != task_shell_pid()) {
+        out_err("'link' talks to a host tool over the console or SSH, so it runs only at a prompt.");
         return 1;
     }
-    if (g_in_link) { out_err("Link mode is already running."); return 1; }
+    if (g_in_link) { out_err("Link mode is already running (one host tool at a time)."); return 1; }
 
     LinkState *st = (LinkState *)malloc(sizeof(LinkState));
     if (!st) { out_err("Not enough memory for link mode."); return 1; }
-    InputClaim console;
-    if (!console.ok) {
-        free(st);
-        out_err("Another transfer has the console.");
-        return 1;
+    // The console's bytes are claimed for the length of link mode; an SSH
+    // session's are its own already.
+    bool claimed = false;
+    if (!remote) {
+        if (!intr_input_claim()) {
+            free(st);
+            out_err("Another transfer has the console.");
+            return 1;
+        }
+        claimed = true;
     }
 
     out_multi("Link mode, for host tools (LINK.md). Ctrl+C returns to the prompt.");
     out_flush();
     g_in_link = true;
+    g_link_remote = remote;
     // Watch for the port closing only if it was open to begin with: on a UART
-    // console (the emulator) there is no DTR to watch.
-    bool watch = stdio_usb_connected();
+    // console (the emulator) there is no DTR to watch. A remote session has
+    // its own way of ending (above, in the line reader).
+    bool watch = !remote && stdio_usb_connected();
     intr_clear();
     intr_stash_clear();
     hello(st);
 
     for (;;) {
         uint32_t n = 0;
-        ReadResult r = read_line(st->req, sizeof(st->req), 0, watch, &n);
+        ReadResult r = read_line(st->req, sizeof(st->req), remote ? LINK_REMOTE_IDLE_MS : 0, watch, &n);
         if (r == RL_INTR || r == RL_GONE) break;
+        if (r == RL_TIMEOUT) break;                // remote only: nobody there any more
         if (r == RL_LONG) { ERR(st, "badreq", "line too long"); continue; }
         if (r != RL_OK || n == 0) continue;
         LinkReq q;
@@ -496,9 +521,11 @@ static int cmd_link(int, char **) {
     frame(st, "BYE");
     if (g_link_authed) { sudo_grace_forget(task_shell()->intr_dom); g_link_authed = false; }
     g_in_link = false;
+    g_link_remote = false;
     intr_clear();
     intr_stash_clear();
     free(st);
+    if (claimed) intr_input_release();
     out_multi("Left link mode.");
     return 0;
 }
