@@ -2,6 +2,97 @@
   "schema": 1,
   "releases": [
     {
+      "tag": "v2.0.709-beta",
+      "display": "v2.0.709-beta",
+      "version": "2.0",
+      "build": 709,
+      "commit": "d512c5ea25a0d0b5a1a3a60c5f0d2183d6b77679",
+      "codename": "Vela II",
+      "date": "2026-11-27",
+      "prerelease": true,
+      "title": "RPCortex v2.0.709-beta",
+      "summary": "Each firmware image now says which board it is for, and the updater refuses one for another board; a selftest package checks a board in one command",
+      "notes": {
+        "new": [
+          "`selftest` (in the package repository): checks a board in one command and prints a reading for each part: memory, a file written and read back by checksum, timers, tasks, the shell, the registry, random numbers, and the network, including that a certificate nobody should trust is refused. `selftest quick` leaves the network out."
+        ],
+        "improved": [],
+        "fixed": [
+          "The updater refuses firmware built for a different board. A Pico 2 and a Pico 2 W have the same chip, so the image for one went onto the other without complaint, then started, stopped answering, and stayed that way: it got far enough each time to count as started, so the board never switched back by itself. Every image now names its board, and `update online`, `update from-file` and RPC Studio's `rpc flash` (1.5.2 and later) refuse a mismatch with the reason. Images from before this release carry no name and are let through as before."
+        ],
+        "security": [],
+        "changed": [],
+        "issues": []
+      },
+      "assets": [
+        {
+          "board": "pico2_w",
+          "kind": "bin",
+          "file": "rpcortex-v2.0.709-beta-pico2_w.bin",
+          "size": 922952,
+          "sha256": "2e9e8bb26f39fa27e9bda316b1ad87bc466c61839515b4cf6c15650002950c0a",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.709-beta/rpcortex-v2.0.709-beta-pico2_w.bin"
+        },
+        {
+          "board": "pico2_w",
+          "kind": "uf2",
+          "file": "rpcortex-v2.0.709-beta-pico2_w.uf2",
+          "size": 1870848,
+          "sha256": "88046d96f315ae84b4e7ce82e9fb735bde78599440c73d5d570690b158303d7f",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.709-beta/rpcortex-v2.0.709-beta-pico2_w.uf2"
+        },
+        {
+          "board": "pico_w",
+          "kind": "bin",
+          "file": "rpcortex-v2.0.709-beta-pico_w.bin",
+          "size": 807952,
+          "sha256": "46d2c30eaca7de43f37038bf2855e4dc8b698fc365a1a02e08b6ff9a36d53afb",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.709-beta/rpcortex-v2.0.709-beta-pico_w.bin"
+        },
+        {
+          "board": "pico_w",
+          "kind": "uf2",
+          "file": "rpcortex-v2.0.709-beta-pico_w.uf2",
+          "size": 1616384,
+          "sha256": "ed0856e6141bc3613347bf80d7c77977c2ab22ac33a50097c86c68d80b3daf5e",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.709-beta/rpcortex-v2.0.709-beta-pico_w.uf2"
+        },
+        {
+          "board": "pico2",
+          "kind": "bin",
+          "file": "rpcortex-v2.0.709-beta-pico2.bin",
+          "size": 417864,
+          "sha256": "1d0b3e4ad2bb8ccee443770609065aa8f2971a930734515a6c74243176ec8b93",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.709-beta/rpcortex-v2.0.709-beta-pico2.bin"
+        },
+        {
+          "board": "pico2",
+          "kind": "uf2",
+          "file": "rpcortex-v2.0.709-beta-pico2.uf2",
+          "size": 860672,
+          "sha256": "f4b109853152030e2985ebaeab9db277323f86e973a13795a1e71b806f3e3e2a",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.709-beta/rpcortex-v2.0.709-beta-pico2.uf2"
+        },
+        {
+          "board": "pico",
+          "kind": "bin",
+          "file": "rpcortex-v2.0.709-beta-pico.bin",
+          "size": 335596,
+          "sha256": "71f6e92ac10f89a357cd6a9dec94d256c6515b72144468188375052001968aa4",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.709-beta/rpcortex-v2.0.709-beta-pico.bin"
+        },
+        {
+          "board": "pico",
+          "kind": "uf2",
+          "file": "rpcortex-v2.0.709-beta-pico.uf2",
+          "size": 671232,
+          "sha256": "88275f2b4922c0a44acb46d884e2f0c15b35140fc4ee2fa7f463abdeb33e5a1a",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.709-beta/rpcortex-v2.0.709-beta-pico.uf2"
+        }
+      ],
+      "url": "https://github.com/dash1101/RPCortex/releases/tag/v2.0.709-beta"
+    },
+    {
       "tag": "v2.0.705-beta",
       "display": "v2.0.705-beta",
       "version": "2.0",

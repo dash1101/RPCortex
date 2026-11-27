@@ -8,6 +8,22 @@ good notes is in `RELEASING.md`.
 
 ## Unreleased
 
+Summary: 
+
+### New
+
+### Improved
+
+### Fixed
+
+### Security
+
+### Changed
+
+### Known issues
+
+## v2.0.709-beta, 2026-11-27
+
 Summary: Each firmware image now says which board it is for, and the updater refuses one for another board; a selftest package checks a board in one command
 
 ### New
