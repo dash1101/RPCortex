@@ -2,6 +2,104 @@
   "schema": 1,
   "releases": [
     {
+      "tag": "v2.0.705-beta",
+      "display": "v2.0.705-beta",
+      "version": "2.0",
+      "build": 705,
+      "commit": "4402bd9c6589b3e07cbec2ff07141bee9920aad5",
+      "codename": "Vela II",
+      "date": "2026-11-27",
+      "prerelease": true,
+      "title": "RPCortex v2.0.705-beta",
+      "summary": "Security release: HTTPS certificates are now checked, SSH is harder to flood, and sudo is slower to guess. Update every board that uses Wi-Fi",
+      "notes": {
+        "new": [],
+        "improved": [],
+        "fixed": [
+          "Two package installs at once (an SSH session and the console) shared one download file, and each could overwrite or delete the other's.",
+          "Two packages loading at the same time could use the same working memory for relocating; loads now take turns.",
+          "A log line written by both processor cores at once could come out as one garbled line."
+        ],
+        "security": [
+          "**HTTPS certificates were not checked.** The board accepted any certificate, so someone on the same network as a Wi-Fi board (a rogue access point, or a spoofed router) could have served it a firmware update or a package, with a checksum to match. Every HTTPS connection is now checked against the board's trusted roots and the host's name, and a server that fails is refused before anything is sent, with the reason (\"for another name\", \"not a root this board trusts\"). Boards that go online through RPC Studio were not affected: the computer checks those. Dates are still not checked, since the board's clock is often unset.",
+          "The trusted roots grew from 3 to 26, enough for GitHub, Google, Wikipedia, DuckDuckGo, Cloudflare, Amazon and Microsoft sites, and they cost flash, not memory: the board reads the one a connection needs when it needs it. `/os/ca.pem` now holds only roots you add (PEM, sudo to change); `pkg certs` lists what is trusted.",
+          "SSH limits how often connections may start: 6 per 30 seconds from one address and 12 in all, refused before any cryptography and logged once, so a flood of connections can no longer keep the board busy. A client that has not finished connecting after 15 seconds gives its place back.",
+          "A wrong sudo password pauses longer each time it happens in a row (up to 30 seconds), which matters now that link mode's sign-in for sudo can come over SSH."
+        ],
+        "changed": [
+          "An HTTPS site whose certificate does not lead to one of the 26 trusted roots is refused rather than fetched. If one you need is refused, add its root to `/os/ca.pem` with sudo."
+        ],
+        "issues": []
+      },
+      "assets": [
+        {
+          "board": "pico2_w",
+          "kind": "bin",
+          "file": "rpcortex-v2.0.705-beta-pico2_w.bin",
+          "size": 921984,
+          "sha256": "ef364269651d54aed5c1ef87a63babcaad5796ece91c654893ac86d49575bce2",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.705-beta/rpcortex-v2.0.705-beta-pico2_w.bin"
+        },
+        {
+          "board": "pico2_w",
+          "kind": "uf2",
+          "file": "rpcortex-v2.0.705-beta-pico2_w.uf2",
+          "size": 1868800,
+          "sha256": "6fd02f728bb6a4dd9e6d430aa2eb28583f4693d93b9cef28acfdfe2dc8e0c970",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.705-beta/rpcortex-v2.0.705-beta-pico2_w.uf2"
+        },
+        {
+          "board": "pico_w",
+          "kind": "bin",
+          "file": "rpcortex-v2.0.705-beta-pico_w.bin",
+          "size": 807120,
+          "sha256": "b8f4377900ea9f338b9bcfc34b655ef313593308ce62af575a655b2afc9aedda",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.705-beta/rpcortex-v2.0.705-beta-pico_w.bin"
+        },
+        {
+          "board": "pico_w",
+          "kind": "uf2",
+          "file": "rpcortex-v2.0.705-beta-pico_w.uf2",
+          "size": 1614336,
+          "sha256": "62f600cd827eed9954661cbc7c3bd50de16d87a3720e0dcfb1fc7fa4282a091a",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.705-beta/rpcortex-v2.0.705-beta-pico_w.uf2"
+        },
+        {
+          "board": "pico2",
+          "kind": "bin",
+          "file": "rpcortex-v2.0.705-beta-pico2.bin",
+          "size": 416912,
+          "sha256": "59fb2a10521b924199bd539420eb658cfca2f52c8ab4b689d31c8d0ba2a8e912",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.705-beta/rpcortex-v2.0.705-beta-pico2.bin"
+        },
+        {
+          "board": "pico2",
+          "kind": "uf2",
+          "file": "rpcortex-v2.0.705-beta-pico2.uf2",
+          "size": 858624,
+          "sha256": "afac63012dfde1739294508684f990ae6d9e615ec3b6299482a02e7dad7ff747",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.705-beta/rpcortex-v2.0.705-beta-pico2.uf2"
+        },
+        {
+          "board": "pico",
+          "kind": "bin",
+          "file": "rpcortex-v2.0.705-beta-pico.bin",
+          "size": 334772,
+          "sha256": "72e03dd88740a132d733ab61148195e669c7f18af21da32102479f4c9c4b88cc",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.705-beta/rpcortex-v2.0.705-beta-pico.bin"
+        },
+        {
+          "board": "pico",
+          "kind": "uf2",
+          "file": "rpcortex-v2.0.705-beta-pico.uf2",
+          "size": 669696,
+          "sha256": "08b04cf9a44e04b693386daff2f46bcc1e380f75bb0f851a370a004f7aecefe1",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.705-beta/rpcortex-v2.0.705-beta-pico.uf2"
+        }
+      ],
+      "url": "https://github.com/dash1101/RPCortex/releases/tag/v2.0.705-beta"
+    },
+    {
       "tag": "v2.0.700-beta",
       "display": "v2.0.700-beta",
       "version": "2.0",

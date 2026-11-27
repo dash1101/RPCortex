@@ -8,6 +8,22 @@ good notes is in `RELEASING.md`.
 
 ## Unreleased
 
+Summary: 
+
+### New
+
+### Improved
+
+### Fixed
+
+### Security
+
+### Changed
+
+### Known issues
+
+## v2.0.705-beta, 2026-11-27
+
 Summary: Security release: HTTPS certificates are now checked, SSH is harder to flood, and sudo is slower to guess. Update every board that uses Wi-Fi
 
 ### New
