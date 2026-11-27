@@ -348,8 +348,15 @@ D1's workers do this, on either core), and `link`'s `EXEC`. So:
   else to run.
 - **Status reads must never enter the radio driver.** A battery icon that did
   froze the GUI and hung one cold boot in three.
-- TLS needs about 45 KB of free heap. The clock must be set (`ntp sync`) or every
-  certificate check fails with "handshake NOT DONE".
+- TLS needs about 45 KB of free heap. **Certificates are verified** (REQUIRED, set
+  on the config in `httptransport.cpp` and checked again in `on_connected` before
+  anything is sent) against the roots in `os/ca_certs.pem`, built into a DER table
+  indexed by subject (`tools_cacerts.py`, `core/stockca.h`) that a trusted-CA
+  callback reads from flash per handshake, plus any a person adds in `/os/ca.pem`.
+  Dates are not checked (`MBEDTLS_HAVE_TIME_DATE` off), so an unset clock is fine.
+  A site that fails to verify needs its root in `ca_certs.pem`; check a candidate
+  bundle with `openssl s_client -CAfile <bundle> -no-CApath -no-CAstore`.
+  Before v2.0.705 nothing was verified at all; never set the mode back to OPTIONAL.
 
 ### The network bridge (no Wi-Fi)
 
@@ -393,6 +400,10 @@ D1's workers do this, on either core), and `link`'s `EXEC`. So:
   the build number is the commit count and changes by itself.
 - Releases are cut only with `tools/release.py` (a dry run unless `--publish`).
   Never publish, tag or push without being asked.
+- **Every image names its board** (`RPCORTEX-IMAGE board=<b> build=<n>`, main.cpp).
+  The updater and `rpc flash` refuse another board's image: a Pico 2 and a Pico 2 W
+  are the same chip, and the wrong one boots, counts as started, then dies, which
+  the recovery ladder never sees.
 - **The package ABI is append-only.** A new `fw_*` call goes at the end of the
   table with an ABI minor bump; changing an existing one breaks every installed
   package (that is a new MAJOR). See PACKAGES.md.
@@ -408,8 +419,11 @@ D1's workers do this, on either core), and `link`'s `EXEC`. So:
 
 ## 5. Working with a board
 
-A Pico 2 W is sometimes attached over USB as `/dev/ttyACM*` (Linux),
-`/dev/cu.usbmodem*` (macOS) or `COMn` (Windows), 115200 baud.
+A board (sometimes two: a Pico 2 W and a Pico 2) is attached over USB as
+`/dev/ttyACM*` (Linux), `/dev/cu.usbmodem*` (macOS) or `COMn` (Windows), 115200 baud.
+With more than one, address each by its `/dev/serial/by-id/...-if00` path: the
+`ttyACM` numbers move on every reset. The `-if05` port is the network bridge, not
+a console.
 
 - **Use `rpc`** from RPCortex Studio (or LINK.md directly) to run commands and move files. It
   gives exact output, an exit status and SHA-256-checked transfers. Scraping the
@@ -421,8 +435,10 @@ A Pico 2 W is sometimes attached over USB as `/dev/ttyACM*` (Linux),
 - **Flashing:** open the port at 1200 baud to reset into BOOTSEL, then
   `picotool load out/rpcortex-v2-<board>.uf2 && picotool reboot` (a picotool built
   with USB support), or copy the UF2 onto the BOOTSEL drive. Files on the device
-  are kept. `rpc flash` does this. `update from-file` is the over-the-air
-  path, from a `.bin` on the device.
+  are kept. `rpc flash` does this (and passes picotool `--ser`, so only the named
+  board is written). `update from-file` is the over-the-air path, from a `.bin` on
+  the device. On RP2350 an update goes into the idle A/B partition; `update
+  rollback` shows what is running and what is kept.
 - **Wiping:** erasing the filesystem region (it starts at the firmware reserve
   plus the package slot; see `RPC_FW_RESERVE` in `os/CMakeLists.txt`) makes the
   next boot run first-run setup. Never wipe a board without explicit permission:
@@ -437,7 +453,10 @@ A Pico 2 W is sometimes attached over USB as `/dev/ttyACM*` (Linux),
   asks, taking it from `$RPC_PASSWORD` or a prompt; `tools/benchmark.py` and
   `tools/devsmoke.py` take `--password-file`. Never store a password in a file in
   the repository.
-- `tools/devsmoke.py` is a few-second health check; `tools/soak.py` runs for days.
+- `tools/pretest.py` runs the `selftest` package and a transfer check on every
+  attached board (run it on new images before publishing; see RELEASING.md);
+  `tools/devsmoke.py` is a few-second console health check; `tools/soak.py` runs
+  for days.
 
 ---
 

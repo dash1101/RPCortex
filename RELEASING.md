@@ -100,6 +100,12 @@ Guidelines for an entry:
    board status.
 3. `tools/release.py cut` is a dry run. It prints every step and the release notes exactly as GitHub
    will show them, and changes nothing.
+   Before publishing, flash the new images onto every board on hand and run `tools/pretest.py`
+   (`--out` keeps a report per board). It installs and runs the `selftest` package on each board
+   (memory, filesystem, timers, tasks, the shell, the registry, and the network: DNS, HTTPS, and a
+   certificate that must be refused) and times a 128 KB transfer each way. Any FAIL stops the
+   release; compare the readings with the last report, since a check can pass and still be slower.
+   Do not edit the source while `release.py` builds: it builds the working tree.
 4. `tools/release.py cut --publish` then:
    - builds all four boards (image checks and the host suites run as part of each),
    - checks each image was built as this version and build,

@@ -8,13 +8,17 @@ good notes is in `RELEASING.md`.
 
 ## Unreleased
 
-Summary: 
+Summary: Each firmware image now says which board it is for, and the updater refuses one for another board; a selftest package checks a board in one command
 
 ### New
+
+- `selftest` (in the package repository): checks a board in one command and prints a reading for each part: memory, a file written and read back by checksum, timers, tasks, the shell, the registry, random numbers, and the network, including that a certificate nobody should trust is refused. `selftest quick` leaves the network out.
 
 ### Improved
 
 ### Fixed
+
+- The updater refuses firmware built for a different board. A Pico 2 and a Pico 2 W have the same chip, so the image for one went onto the other without complaint, then started, stopped answering, and stayed that way: it got far enough each time to count as started, so the board never switched back by itself. Every image now names its board, and `update online`, `update from-file` and RPC Studio's `rpc flash` (1.5.2 and later) refuse a mismatch with the reason. Images from before this release carry no name and are let through as before.
 
 ### Security
 
