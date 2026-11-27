@@ -511,12 +511,19 @@ if(RPC_FEATURE_WIFI)
         RPC_HAS_TLS=1
         MBEDTLS_CONFIG_FILE="${OS_ROOT}/mbedtls_config.h")
 
+    # RP2040 boards (the Pico W) have the least room: they carry the core
+    # eleven roots (tools_cacerts.py, CORE), the RP2350 boards all of them.
+    if(PICO_RP2350)
+        set(RPC_CA_CORE "")
+    else()
+        set(RPC_CA_CORE "--core")
+    endif()
     # The trusted roots, a table in flash searched by subject at handshake time
     # (tools_cacerts.py, core/stockca.h). Roots a person adds go in /os/ca.pem.
     add_custom_command(
         OUTPUT ${CMAKE_BINARY_DIR}/stock_cacerts.cpp
         COMMAND ${CMAKE_COMMAND} -E env python3 ${OS_ROOT}/tools_cacerts.py
-                ${OS_ROOT}/ca_certs.pem ${CMAKE_BINARY_DIR}/stock_cacerts.cpp
+                ${OS_ROOT}/ca_certs.pem ${CMAKE_BINARY_DIR}/stock_cacerts.cpp ${RPC_CA_CORE}
         DEPENDS ${OS_ROOT}/ca_certs.pem ${OS_ROOT}/tools_cacerts.py
     )
     add_custom_target(stock_cacerts_src DEPENDS ${CMAKE_BINARY_DIR}/stock_cacerts.cpp)

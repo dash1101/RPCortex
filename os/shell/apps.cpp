@@ -1274,6 +1274,12 @@ static int cmd_unload(int argc, char **argv) {
     return 0;
 }
 
+// detach.cpp's table, changed from a package's task and from the task its line
+// runs on (either core): its weak no-op lock is replaced by this one.
+static RpcLock g_detach_lock;
+void detach_lock(void)   { lock_acquire(&g_detach_lock); }
+void detach_unlock(void) { lock_release(&g_detach_lock); }
+
 // One package load at a time, across tasks and cores (loader.h). Recursive, so
 // a load that peeks first, or an install that measures then writes, nests.
 static RpcLock g_load_lock;

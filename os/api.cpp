@@ -55,8 +55,7 @@
 // The app currently being run, so a command it registers can be tagged with an
 // owner and swept when the app unloads. Set by the shell around app_main. Same
 // pattern as the fault handler's task_current_app().
-static void *g_current_owner = nullptr;
-extern "C" void api_set_current_app(void *owner) { g_current_owner = owner; }
+extern "C" void api_set_current_app(void *owner) { task_shell()->app_owner = owner; }
 
 // --- implementations -------------------------------------------------------
 
@@ -190,7 +189,7 @@ extern "C" void fw_log(int level, const char *msg) {
 
 extern "C" int rpc_register_command(const char *name, const char *help,
                                     RpcCommandFn fn) {
-    Command c{name, help ? help : "", (CommandFn)fn, g_current_owner};
+    Command c{name, help ? help : "", (CommandFn)fn, task_shell()->app_owner};
     return cmd_register(&c) ? 1 : 0;
 }
 

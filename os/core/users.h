@@ -65,7 +65,8 @@ bool users_set_nopass(const char *name);
 bool users_remove(const char *name);
 
 uint32_t    users_count(void);
-const char *users_name_at(uint32_t i);
+// The i-th account's name, copied (the table can change under a pointer).
+bool users_name_copy(uint32_t i, char *out, uint32_t cap);
 
 void reg_note_home(const char *name, char *out, uint32_t cap);  // "/home/<name>/"
 

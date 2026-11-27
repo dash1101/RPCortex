@@ -50,7 +50,8 @@ static int cmd_users(int, char **) {
     if (!n) { out_warn("No user accounts found."); return 1; }
     out_info("User accounts (%u):", (unsigned)n);
     for (uint32_t i = 0; i < n; i++) {
-        const char *name = users_name_at(i);
+        char name[USR_NAME_MAX];
+        if (!users_name_copy(i, name, sizeof(name))) break;
         char home[USR_HOME_MAX];
         reg_note_home(name, home, sizeof(home));
         out_multi("  %-16s %-18s%s%s%s", name, home,
@@ -183,8 +184,9 @@ static int cmd_usermod(int argc, char **argv) {
         // way back short of a factory reset.
         if (!on) {
             uint32_t admins = 0;
-            for (uint32_t i = 0; i < users_count(); i++)
-                if (users_is_admin(users_name_at(i))) admins++;
+            char who[USR_NAME_MAX];
+            for (uint32_t i = 0; users_name_copy(i, who, sizeof(who)); i++)
+                if (users_is_admin(who)) admins++;
             if (admins <= 1 && users_is_admin(user)) {
                 out_err("'%s' is the only admin — promote another account first.", user);
                 return 1;

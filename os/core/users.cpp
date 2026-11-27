@@ -1,5 +1,6 @@
 #include "users.h"
 #include "sha256.h"
+#include "lock.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -15,6 +16,14 @@ struct User {
 static User    g_users[USR_MAX];
 static uint32_t g_count;
 static bool     g_dirty;
+
+// The table is read from more than one core: sshd and sudo check passwords
+// and roles on the tasks that serve a login, while `mkacct`, `passwd` or
+// `rmuser` change it at the prompt. Every entry point holds this (recursive,
+// so one that calls another is fine) and nothing hands out a pointer into the
+// table: users_name_copy copies, because a removal shifts the entries after it.
+static RpcLock g_users_lock;
+#define USERS_LOCKED LockGuard _users_guard(&g_users_lock)
 
 static const char *NOPASS = "NOPASS";
 #define SALT_BYTES 16
@@ -67,6 +76,7 @@ void reg_note_home(const char *name, char *out, uint32_t cap) {
 }
 
 bool users_add(const char *name, const char *password, bool admin, bool nopass) {
+    USERS_LOCKED;
     if (!name || strlen(name) >= USR_NAME_MAX) return false;
     if (find(name) >= 0 || g_count >= USR_MAX) return false;
     if (!nopass && (!password || strlen(password) == 0)) return false;
@@ -82,6 +92,7 @@ bool users_add(const char *name, const char *password, bool admin, bool nopass) 
 }
 
 bool users_verify(const char *name, const char *password) {
+    USERS_LOCKED;
     int i = find(name);
     if (i < 0) return false;
     if (strcmp(g_users[i].cred, NOPASS) == 0) return true;   // guest: any password
@@ -108,11 +119,12 @@ bool users_verify(const char *name, const char *password) {
     return diff == 0;
 }
 
-bool users_exists(const char *name)  { return find(name) >= 0; }
-bool users_is_admin(const char *name){ int i=find(name); return i>=0 && g_users[i].role==ROLE_ADMIN; }
-bool users_is_nopass(const char *name){int i=find(name); return i>=0 && strcmp(g_users[i].cred,NOPASS)==0;}
+bool users_exists(const char *name)   { USERS_LOCKED; return find(name) >= 0; }
+bool users_is_admin(const char *name) { USERS_LOCKED; int i = find(name); return i >= 0 && g_users[i].role == ROLE_ADMIN; }
+bool users_is_nopass(const char *name){ USERS_LOCKED; int i = find(name); return i >= 0 && strcmp(g_users[i].cred, NOPASS) == 0; }
 
 bool users_set_password(const char *name, const char *password) {
+    USERS_LOCKED;
     int i = find(name);
     if (i < 0 || !password || strlen(password) == 0) return false;
     make_cred(password, g_users[i].cred);
@@ -121,6 +133,7 @@ bool users_set_password(const char *name, const char *password) {
 }
 
 bool users_set_admin(const char *name, bool admin) {
+    USERS_LOCKED;
     int i = find(name);
     if (i < 0) return false;
     // root's role is not negotiable: an account named root that is not an admin
@@ -132,6 +145,7 @@ bool users_set_admin(const char *name, bool admin) {
 }
 
 bool users_set_nopass(const char *name) {
+    USERS_LOCKED;
     int i = find(name);
     if (i < 0) return false;
     // An admin that signs in with any password is not an account, it is an open
@@ -145,6 +159,7 @@ bool users_set_nopass(const char *name) {
 }
 
 bool users_remove(const char *name) {
+    USERS_LOCKED;
     if (!name) return false;
     if (strcmp(name, "root") == 0 || strcmp(name, "guest") == 0) return false;  // protected
     int i = find(name);
@@ -155,12 +170,20 @@ bool users_remove(const char *name) {
     return true;
 }
 
-uint32_t users_count(void) { return g_count; }
-const char *users_name_at(uint32_t i) { return i < g_count ? g_users[i].name : nullptr; }
+uint32_t users_count(void) { USERS_LOCKED; return g_count; }
 
-void users_clear(void) { g_count = 0; g_dirty = true; }
+bool users_name_copy(uint32_t i, char *out, uint32_t cap) {
+    USERS_LOCKED;
+    if (!out || !cap) return false;
+    if (i >= g_count) { out[0] = 0; return false; }
+    snprintf(out, cap, "%s", g_users[i].name);
+    return true;
+}
+
+void users_clear(void) { USERS_LOCKED; g_count = 0; g_dirty = true; }
 
 void users_load(const char *text, uint32_t len) {
+    USERS_LOCKED;
     g_count = 0;
     if (!text) { g_dirty = false; return; }
     uint32_t i = 0;
@@ -188,6 +211,7 @@ void users_load(const char *text, uint32_t len) {
 }
 
 uint32_t users_serialize(char *buf, uint32_t cap) {
+    USERS_LOCKED;
     uint32_t need = 0;
     for (uint32_t i = 0; i < g_count; i++) {
         const char *role = g_users[i].role == ROLE_ADMIN ? "admin" : "user";
@@ -203,5 +227,5 @@ uint32_t users_serialize(char *buf, uint32_t cap) {
     return need;
 }
 
-bool users_dirty(void) { return g_dirty; }
-void users_mark_clean(void) { g_dirty = false; }
+bool users_dirty(void) { USERS_LOCKED; return g_dirty; }
+void users_mark_clean(void) { USERS_LOCKED; g_dirty = false; }

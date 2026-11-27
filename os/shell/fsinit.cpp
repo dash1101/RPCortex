@@ -74,7 +74,8 @@ static bool ensure_dir(const char *path) {
 static bool ensure_homes(bool report) {
     bool made = false;
     for (uint32_t i = 0; i < users_count(); i++) {
-        const char *name = users_name_at(i);
+        char name[USR_NAME_MAX];
+        if (!users_name_copy(i, name, sizeof(name))) break;
         char path[USR_HOME_MAX + 8];
         snprintf(path, sizeof(path), "/home/%s", name);
         if (ensure_dir(path)) {
@@ -289,8 +290,9 @@ static int cmd_fscheck(int argc, char **argv) {
             bad += fs_scan_dir(kDirs[i], /*repair*/false, /*verbose*/true, /*no limit*/0);
         }
         for (uint32_t i = 0; i < users_count(); i++) {
-            char path[USR_HOME_MAX + 8];
-            snprintf(path, sizeof(path), "/home/%s", users_name_at(i));
+            char path[USR_HOME_MAX + 8], who[USR_NAME_MAX];
+            if (!users_name_copy(i, who, sizeof(who))) break;
+            snprintf(path, sizeof(path), "/home/%s", who);
             out_infop("scan", "%s", path);
             bad += fs_scan_dir(path, /*repair*/false, /*verbose*/true, /*no limit*/0);
         }
@@ -314,8 +316,9 @@ static int cmd_fscheck(int argc, char **argv) {
         if (!ok) missing++;
     }
     for (uint32_t i = 0; i < users_count(); i++) {
-        char path[USR_HOME_MAX + 8];
-        snprintf(path, sizeof(path), "/home/%s", users_name_at(i));
+        char path[USR_HOME_MAX + 8], who[USR_NAME_MAX];
+        if (!users_name_copy(i, who, sizeof(who))) break;
+        snprintf(path, sizeof(path), "/home/%s", who);
         bool is_dir = false;
         bool ok = storage_stat(path, &is_dir, nullptr) && is_dir;
         out_multi("  %-12s %s%s%s", path,

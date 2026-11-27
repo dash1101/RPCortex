@@ -69,6 +69,11 @@ bool net_is_connected(void);
 #include "pico/cyw43_arch.h"
 #include "lwip/tcp.h"
 #include "lwip/pbuf.h"
+#include "lwip/priv/tcp_priv.h"
+#if !SO_REUSE
+#error "SO_REUSE must reach this file (lwipopts.h): listeners set SOF_REUSEADDR"
+#endif
+#include "logring.h"
 
 // Scoped lwIP lock. Every function here has more than one exit.
 //
@@ -266,19 +271,48 @@ static TcpSlot *pending_take(TcpSlot *lsn) {
 
 // --- the ABI -----------------------------------------------------------------
 
+// Who holds a local port, written to the log when a listen is refused. Each
+// pcb on it: which list, its state, its socket options.
+static void log_port_holders(unsigned port, const char *what) {
+    struct { const char *name; struct tcp_pcb *head; } lists[] = {
+        {"listen", (struct tcp_pcb *)tcp_listen_pcbs.listen_pcbs},
+        {"bound", tcp_bound_pcbs}, {"active", tcp_active_pcbs}, {"time-wait", tcp_tw_pcbs},
+    };
+    int n = 0;
+    for (auto &l : lists)
+        for (struct tcp_pcb *p = l.head; p; p = p->next)
+            if (p->local_port == port) {
+                log_addf(LOG_K_WARN, "tcp: %s refused on %u: %s pcb, state %d, options 0x%02x",
+                         what, port, l.name, (int)p->state, (unsigned)p->so_options);
+                n++;
+            }
+    if (!n) log_addf(LOG_K_WARN, "tcp: %s refused on %u, and no pcb holds it", what, port);
+}
+
 int net_pkg_tcp_listen(unsigned port) {
     if (!net_is_connected() || port == 0 || port > 65535) return -1;
 
     TcpOwn own;
-    if (!own.ok) return -1;
+    if (!own.ok) { log_addf(LOG_K_WARN, "tcp: listen on %u refused: the network is not this core's", port); return -1; }
     LwipLock lk;
     TcpSlot *s = slot_claim();
-    if (!s) return -1;
+    if (!s) {
+        int lst = 0, con = 0;
+        for (int i = 0; i < TCP_SLOTS; i++) if (g_slots[i].used) { if (g_slots[i].listening) lst++; else con++; }
+        log_addf(LOG_K_WARN, "tcp: listen on %u refused: all %d slots in use (%d listening, %d connections)",
+                 port, TCP_SLOTS, lst, con);
+        return -1;
+    }
     s->listening = true;
 
     struct tcp_pcb *pcb = tcp_new();
     if (!pcb) { s->used = false; return -1; }
+    // Connections this port served, now in TIME_WAIT, do not keep a new
+    // listener off it (lwipopts.h SO_REUSE). Another LISTENING socket on the
+    // same port still does.
+    ip_set_option(pcb, SOF_REUSEADDR);
     if (tcp_bind(pcb, IP_ANY_TYPE, (u16_t)port) != ERR_OK) {
+        log_port_holders(port, "bind");
         tcp_abort(pcb);
         s->used = false;
         return -1;                                  // the port is already taken
@@ -286,7 +320,7 @@ int net_pkg_tcp_listen(unsigned port) {
     // tcp_listen REPLACES the pcb and frees the old one. Using the original
     // afterwards is a use-after-free that works right up until it does not.
     struct tcp_pcb *lp = tcp_listen(pcb);
-    if (!lp) { tcp_abort(pcb); s->used = false; return -1; }
+    if (!lp) { log_port_holders(port, "listen"); tcp_abort(pcb); s->used = false; return -1; }
 
     s->pcb = lp;
     tcp_arg(lp, s);

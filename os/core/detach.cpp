@@ -2,6 +2,14 @@
 
 #include <string.h>
 
+// The table is changed from the package's task (claim, poll, release) and from
+// the task the line runs on (finish), which can be on the other core. Every
+// change happens under detach_lock: weak no-ops here for the host test that
+// links this file alone, the real recursive lock in apps.cpp.
+__attribute__((weak)) void detach_lock(void) {}
+__attribute__((weak)) void detach_unlock(void) {}
+struct DetachGuard { DetachGuard() { detach_lock(); } ~DetachGuard() { detach_unlock(); } };
+
 static DetachRun g_runs[DETACH_MAX];
 static uint32_t  g_seq;
 
@@ -67,6 +75,7 @@ static DetachRun *free_or_reclaimed(void) {
 
 int detach_claim(const void *owner, const char *line,
                  char *pkg_out, uint32_t pkg_cap) {
+    DetachGuard _g;
     if (!owner || !line || !line[0]) return -1;
 
     // Refused rather than truncated. A shell line cut in half is a different
@@ -135,6 +144,7 @@ DetachRun *detach_find(int handle, const void *owner) {
 DetachRun *detach_of(int handle) { return lookup(handle); }
 
 char *detach_capture_buffer(int handle) {
+    DetachGuard _g;
     DetachRun *r = lookup(handle);
     if (!r || !r->capturing) return nullptr;
     if (g_capture_slot != (int)slot_index(r)) return nullptr;
@@ -144,6 +154,7 @@ char *detach_capture_buffer(int handle) {
 // --- finishing ----------------------------------------------------------------
 
 void detach_finish(int handle, int status) {
+    DetachGuard _g;
     DetachRun *r = lookup(handle);
     if (!r || r->done) return;
     r->status = status;
@@ -154,11 +165,13 @@ void detach_finish(int handle, int status) {
 }
 
 void detach_release(int handle) {
+    DetachGuard _g;
     DetachRun *r = lookup(handle);
     if (r) free_slot(r);
 }
 
 void detach_forget_owner(const void *owner) {
+    DetachGuard _g;
     if (!owner) return;
     for (uint32_t i = 0; i < DETACH_MAX; i++) {
         if (!g_runs[i].used || g_runs[i].owner != owner) continue;
@@ -175,12 +188,14 @@ void detach_forget_owner(const void *owner) {
 }
 
 uint32_t detach_active(void) {
+    DetachGuard _g;
     uint32_t n = 0;
     for (uint32_t i = 0; i < DETACH_MAX; i++) if (g_runs[i].used) n++;
     return n;
 }
 
 void detach_reset(void) {
+    DetachGuard _g;
     memset(g_runs, 0, sizeof(g_runs));
     g_capture_slot = -1;
     g_seq = 0;

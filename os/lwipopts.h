@@ -107,6 +107,10 @@
 #define LWIP_ALTCP                  1
 #define LWIP_ALTCP_TLS              1
 #define LWIP_ALTCP_TLS_MBEDTLS      1
+// A listener may bind a port that connections it served still hold in
+// TIME_WAIT (two minutes in lwIP): without it, `httpd stop` then `httpd` again
+// was refused for those two minutes. nettcp.cpp sets it on listeners only.
+#define SO_REUSE                    1
 // A server certificate that does not verify ends the handshake (lwIP's default
 // is OPTIONAL, which lets it through). httptransport.cpp sets the same on its
 // config and checks the result again before sending anything.

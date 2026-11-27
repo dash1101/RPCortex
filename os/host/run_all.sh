@@ -232,7 +232,7 @@ SRC[identity_test]="$SHELL_DIR/fsguard.cpp $CORE/ident.cpp $CORE/users.cpp $CORE
 # What each command needs (user, admin, or sudo), the commands whose level
 # depends on their arguments, the settings that decide who gets in, and that
 # each rule is attached to its command in the shell's own sources.
-SRC[perms_test]="$CORE/perms.cpp $CORE/users.cpp $CORE/sha256.cpp"
+SRC[perms_test]="$CORE/perms.cpp $CORE/users.cpp $CORE/sha256.cpp $CORE/lock.cpp $CORE/task.cpp $CORE/blackbox.cpp host_task_stub.cpp"
 # sudo end to end: the gate, the password, the grace, who can be asked (the
 # console, a background job, a service, SSH with and without a pty, link's
 # AUTH), the maintenance boot, and the file guard's line between a user's

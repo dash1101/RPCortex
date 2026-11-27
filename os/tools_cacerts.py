@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 """The trusted roots, as a table the board searches by subject.
 
-    tools_cacerts.py <roots .pem> <out .cpp>
+    tools_cacerts.py <roots .pem> <out .cpp> [--core]
+
+--core keeps only CORE below: the RP2040 boards have the least room for firmware
+(the Pico W), and these eleven still verify the hosts the firmware and its
+packages fetch from, and most large sites (checked with openssl against that set
+alone).
 
 Each root goes into flash as DER, with where its subject Name sits in it. When a
 TLS handshake needs the issuer of a certificate, the board compares the issuer's
@@ -51,11 +56,41 @@ def subject_span(der):
     return off, length
 
 
+CORE = {
+    "ISRG Root X1", "ISRG Root X2", "DigiCert Global Root G2", "DigiCert Global Root CA",
+    "USERTrust ECC Certification Authority", "USERTrust RSA Certification Authority",
+    "GlobalSign Root CA", "GlobalSign", "GTS Root R1", "GTS Root R4", "Amazon Root CA 1",
+}
+
+
+def common_name(der):
+    """The subject's CN (or, for GlobalSign R3/R6, the CN they share), for --core."""
+    off, length = subject_span(der)
+    sub = der[off:off + length]
+    at = sub.find(b"\x06\x03\x55\x04\x03")          # OID 2.5.4.3, commonName
+    if at < 0:
+        return ""
+    tag, h, n = tlv(sub, at + 5)
+    return sub[at + 5 + h:at + 5 + h + n].decode("utf-8", "replace")
+
+
 def main():
     src, out = sys.argv[1], sys.argv[2]
+    core = "--core" in sys.argv[3:]
     pem = open(src).read()
     ders = [base64.b64decode("".join(b.split()))
             for b in re.findall(r"-----BEGIN CERTIFICATE-----(.*?)-----END CERTIFICATE-----", pem, re.S)]
+    if core:
+        # GlobalSign R3 and R6 share the CN "GlobalSign"; R3 is the one kept.
+        keep = []
+        for d in ders:
+            cn = common_name(d)
+            if cn not in CORE:
+                continue
+            if cn == "GlobalSign" and b"Root CA - R3" not in d:
+                continue
+            keep.append(d)
+        ders = keep
     if not ders:
         sys.exit("no certificates in " + src)
     blob = bytearray()

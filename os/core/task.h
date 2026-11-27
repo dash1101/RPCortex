@@ -486,6 +486,10 @@ struct TaskShell {
     // the whole device, so a package call on the other core, or a built-in run
     // by a package, could blank or replace the name in someone else's report.
     const char *app;
+    // The image of the package whose app_main this task is running, for tagging
+    // the commands it registers (api.cpp). Per task: two packages loading at
+    // once on different tasks each tag their own.
+    void       *app_owner;
 
     bool        own_user;
     char        user[TASK_USER_MAX];
