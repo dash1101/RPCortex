@@ -47,7 +47,7 @@ comes back, when:
 
 ## Over SSH
 
-From v2.0.698, link mode also runs on an SSH session, for a host on the same
+From v2.0.700, link mode also runs on an SSH session, for a host on the same
 network: the session's command is `link` (an `exec` request, as `ssh
 user@board link` sends), and the requests and frames go over that channel
 instead of the console. Everything above applies, with these differences:
@@ -66,7 +66,7 @@ instead of the console. Everything above applies, with these differences:
 - The board's SSH server offers one host key (ECDSA P-256). A host pins it when
   pairing over a trusted link (`ssh server fingerprint` gives it as
   `SHA256:...`), and signs in with its own key, added to the account's
-  `~/.ssh/authorized_keys`. Firmware before v2.0.698 answers `'link' talks to a
+  `~/.ssh/authorized_keys`. Firmware before v2.0.700 answers `'link' talks to a
   host tool over the console, so it runs only at the prompt.`
 
 ## Framing
