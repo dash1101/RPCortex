@@ -8,7 +8,7 @@ good notes is in `RELEASING.md`.
 
 ## Unreleased
 
-Summary: 
+Summary: Ask Claude from the console, and packages can send headers of their own (API 1.30)
 
 ### New
 
