@@ -815,8 +815,15 @@ add_custom_command(
     DEPENDS ${CMAKE_BINARY_DIR}/stock_index.json ${OS_ROOT}/tools_bin2c.py
 )
 add_custom_target(stock_index_src DEPENDS ${CMAKE_BINARY_DIR}/stock_index.cpp)
-target_sources(rpcortex_v2 PRIVATE ${CMAKE_BINARY_DIR}/stock_index.cpp)
-add_dependencies(rpcortex_v2 stock_index_src)
+# Not on the Pico, whose slot is the smallest (7 KB): `pkg update` fetches the
+# list through the bridge the first time it is wanted.
+if(PICO_BOARD STREQUAL "pico")
+    target_compile_definitions(rpcortex_v2 PRIVATE RPC_STOCK_INDEX=0)
+else()
+    target_sources(rpcortex_v2 PRIVATE ${CMAKE_BINARY_DIR}/stock_index.cpp)
+    add_dependencies(rpcortex_v2 stock_index_src)
+    target_compile_definitions(rpcortex_v2 PRIVATE RPC_STOCK_INDEX=1)
+endif()
 
 # The USB serial buffers, raised from the SDK's 64 bytes.
 #

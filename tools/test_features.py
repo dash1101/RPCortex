@@ -19,7 +19,10 @@ class Standard(unittest.TestCase):
         self.assertEqual(F.standard("pico2_w"), ["wifi", "bluetooth", "ssh", "sd", "peripherals"])
         self.assertEqual(F.standard("pico_w"), ["wifi", "bluetooth", "peripherals"])
         self.assertEqual(F.standard("pico2"), ["sd", "peripherals"])
-        self.assertEqual(F.standard("pico"), ["peripherals"])
+        # The Pico leaves the add-on drivers out (the smallest slot; Nova D1 is RP2350).
+        self.assertEqual(F.standard("pico"), [])
+        chosen, _ = F.resolve("pico", with_="peripherals")
+        self.assertEqual(chosen, ["peripherals"])
 
     def test_the_standard_image_has_no_name_of_its_own(self):
         for b in F.BOARDS:
@@ -241,9 +244,10 @@ class BuildConf(unittest.TestCase):
         self.assertEqual(cmd, "./build.sh pico2_w --without wifi")
         self.assertNotIn("Keep SSH?", out)
 
-    def test_adding_and_removing_on_a_pico(self):
+    def test_adding_on_a_pico(self):
+        # Peripherals are off on the Pico by default, so declining them adds nothing.
         cmd, _ = self.answers("4\nn\ny\nn\n")
-        self.assertEqual(cmd, "./build.sh pico --with devpkgs --without peripherals")
+        self.assertEqual(cmd, "./build.sh pico --with devpkgs")
 
 
 if __name__ == "__main__":

@@ -51,6 +51,12 @@ Summary:
 
 ### Changed
 
+- The Pico (RP2040, no radio) standard image leaves out the add-on drivers (NFC, iButton, sub-GHz,
+  LoRa) and the built-in package list, for 63 KB free in its firmware slot instead of 42. The
+  drivers are for Nova D1, which runs on the Pico 2 W; `./build.sh pico --with peripherals` puts
+  them back, and `pkg update` fetches the package list through the bridge the first time it is
+  wanted. The other boards are unchanged.
+
 ### Known issues
 
 - A Pico 2 W can answer pings slowly (about 150 ms) for the first one to two minutes after starting,

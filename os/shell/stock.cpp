@@ -128,8 +128,10 @@ static void stock_record(const StockPkg &p) {
 // net_off.cpp's version has nothing to write.
 bool stock_install_cacerts(bool force);
 
+#if RPC_STOCK_INDEX
 extern "C" const unsigned char stock_index_data[];
 extern "C" const unsigned int  stock_index_len;
+#endif
 
 // The package catalogue this image shipped with, written out on a first boot
 // so `pkg available` answers before the device has ever been online. v1 shipped
@@ -139,6 +141,11 @@ extern "C" const unsigned int  stock_index_len;
 // newer than the one compiled in, and putting the shipped copy back after a
 // firmware update would silently undo it.
 bool stock_install_index(void) {
+#if !RPC_STOCK_INDEX
+    // This image carries no catalogue (CMakeLists.txt: the Pico); `pkg update`
+    // fetches one the first time it is wanted.
+    return true;
+#else
     // The shipped CATALOGUE — what `pkg search` can offer before the device has
     // ever reached the network — belongs in the repository cache, next to
     // anything `pkg update` downloads later.
@@ -160,6 +167,7 @@ bool stock_install_index(void) {
     log_addf(LOG_K_OK, "pkg: installed the shipped catalogue (%u bytes)",
              (unsigned)stock_index_len);
     return true;
+#endif
 }
 
 static void install_cacerts(void) { stock_install_cacerts(false); }

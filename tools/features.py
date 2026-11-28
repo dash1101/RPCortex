@@ -95,7 +95,11 @@ FEATURES = (
             "Drivers for add-on boards: NFC (PN532), iButton (1-Wire), sub-GHz (CC1101) and "
             "LoRa (SX1276), with the nfc, ibutton, subghz and lora commands and the NFC calls "
             "packages make (fw_nfc_*).",
-            BOARDS, aliases=("periph", "drivers", "addons")),
+            # Not in the Pico's standard image: the smallest slot, and the boards
+            # these add-ons are wired to (Nova D1) are the RP2350 ones. A Pico
+            # build can still have them: ./build.sh pico --with peripherals.
+            BOARDS, aliases=("periph", "drivers", "addons"),
+            default=lambda board: board != "pico"),
     Feature("devpkgs", "dev", "RPC_DEV_PACKAGES", "RPC_DEV_PACKAGES", "Development packages",
             "bench, probe, stress and havoc, baked into the image so a board can be tested "
             "before it has a network. For working on the OS; a release never has them.",
