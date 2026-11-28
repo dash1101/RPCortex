@@ -7,7 +7,7 @@
 // board, including the pins the radio owns on the wireless variants.
 #include "rpc_app.h"
 
-RPC_APP_VER("gpio", "2.0");
+RPC_APP_VER("gpio", "2.1");
 
 static bool streq(const char *a, const char *b) {
     while (*a && *a == *b) { a++; b++; }
@@ -31,7 +31,7 @@ static void usage(void) {
     fw_printf("  gpio write <pin> <0|1>     drive a pin\n");
     fw_printf("  gpio toggle <pin>          flip a pin\n");
     fw_printf("  gpio pull <pin> up|down|none\n");
-    fw_printf("  gpio adc <0-3>             read an ADC channel\n");
+    fw_printf("  gpio adc <0-3|26-29>       read an ADC channel (or its pin)\n");
     fw_printf("  gpio temp                  the on-chip temperature sensor\n");
     fw_printf("  gpio list                  which pins this board allows\n");
 }
@@ -91,9 +91,12 @@ static int gpio_cmd(int argc, char **argv) {
     }
 
     if (streq(sub, "adc")) {
-        if (argc < 3) { fw_printf("Usage: gpio adc <0-3>\n"); return 1; }
+        if (argc < 3) { fw_printf("Usage: gpio adc <0-3 | 26-29>\n"); return 1; }
         int ch = parse_pin(argv[2]);
-        if (ch < 0 || ch > 3) { fw_printf("ADC channels are 0-3.\n"); return 1; }
+        // The pin works as well as the channel: GPIO 26-29 are channels 0-3,
+        // and the pin number is the one printed on the board.
+        if (ch >= 26 && ch <= 29) ch -= 26;
+        if (ch < 0 || ch > 3) { fw_printf("ADC channels are 0-3 (GPIO 26-29).\n"); return 1; }
         if (fw_adc_init((unsigned)ch) != 0) { fw_printf("Could not start the ADC.\n"); return 1; }
         int raw = fw_adc_read((unsigned)ch);
         if (raw < 0) { fw_printf("Could not read channel %d.\n", ch); return 1; }

@@ -14,7 +14,14 @@ Summary:
 
 ### Improved
 
+- `fetch` shows the power source, and the clock when the governor has lowered it.
+
 ### Fixed
+
+- A package setting up I2C on pins that cannot carry that bus (`i2cscan 1` used GPIO 4/5, which
+  are I2C0's) hung until the stall guard stopped it. `fw_i2c_init` now refuses such pins (it
+  returns -2), and every I2C read and write gives up after about 20 ms plus 1 ms a byte instead of
+  waiting forever on a bus with no pull-ups.
 
 ### Security
 

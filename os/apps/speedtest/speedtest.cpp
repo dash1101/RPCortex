@@ -22,15 +22,17 @@
 // without any of it landing there.
 #include "rpc_app.h"
 
-RPC_APP_VER("speedtest", "2.0");
+RPC_APP_VER("speedtest", "2.1");
 
 // Cloudflare's resolver: anycast, so the reply comes from whichever site is
 // nearest, which is what a latency figure should reflect.
 #define DEFAULT_PING_HOST "1.1.1.1"
-// A megabyte of zeros over plain HTTP, from a host that exists to be downloaded
-// from. Small enough not to take a minute on a slow link, big enough that the
-// connection setup is not most of the measurement.
-#define DEFAULT_DOWN_URL  "http://speedtest.tele2.net/1MB.zip"
+// A megabyte over plain HTTP, from Cloudflare's speed-test endpoint, which
+// exists to be downloaded from and takes the size in the URL. Small enough not
+// to take a minute on a slow link, big enough that the connection setup is not
+// most of the measurement. (speedtest.tele2.net, the first choice, stopped
+// answering in 2026.)
+#define DEFAULT_DOWN_URL  "http://speed.cloudflare.com/__down?bytes=1000000"
 
 #define PING_COUNT   4
 #define PING_TIMEOUT 2000

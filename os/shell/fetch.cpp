@@ -8,6 +8,7 @@
 // The logo is the same RPC mark the boot banner draws, in the same gradient, so
 // the two look like they came from the same place.
 
+#include "clockuse.h"
 #include "command.h"
 #include "out.h"
 #include "kernel.h"
@@ -123,6 +124,14 @@ static int cmd_fetch(int, char **) {
     add("Disk",   "%u / %u KB  %s", (unsigned)((dtotal - dfree) / 1024),
         (unsigned)(dtotal / 1024), b);
 
+    {
+        int src = power_source();
+        GovStatus g;
+        governor_status(&g);
+        const char *what = src == 1 ? "USB" : src == 0 ? "battery" : "not known yet";
+        if (g.cur_mhz < g.base_mhz) add("Power", "%s  (idle: clock at %u of %u MHz)", what, g.cur_mhz, g.base_mhz);
+        else                        add("Power", "%s", what);
+    }
     if (net_is_connected()) add("Network", "%s", net_active_ssid());
     else                    add("Network", "offline");
 

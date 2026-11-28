@@ -37,6 +37,8 @@ struct CalcCtx {
 };
 
 static double parse_expr(CalcCtx *c);
+// The last answer, for `ans`: kept while the package stays loaded.
+static double g_ans;
 
 static void skip_ws(CalcCtx *c) { while (*c->p == ' ' || *c->p == '\t') c->p++; }
 
@@ -48,6 +50,26 @@ static bool name_char(char ch) {
 // strtod without the locale machinery, and without pulling in a dependency the
 // app would have to carry. Handles leading digits, a fraction, and an exponent.
 static double parse_number(CalcCtx *c) {
+    // 0x1f, 0b101, 0o17: whole numbers in another base, as `calc dec` takes them.
+    if (c->p[0] == '0' && (c->p[1] == 'x' || c->p[1] == 'X' || c->p[1] == 'b' || c->p[1] == 'B' ||
+                           c->p[1] == 'o' || c->p[1] == 'O')) {
+        char k = c->p[1] | 0x20;
+        unsigned base = k == 'x' ? 16 : k == 'b' ? 2 : 8;
+        const char *q = c->p + 2;
+        double v = 0.0;
+        bool any = false;
+        while (true) {
+            char ch = *q;
+            int d = (ch >= '0' && ch <= '9') ? ch - '0'
+                  : (ch >= 'a' && ch <= 'f') ? ch - 'a' + 10
+                  : (ch >= 'A' && ch <= 'F') ? ch - 'A' + 10 : -1;
+            if (d < 0 || d >= (int)base) break;
+            v = v * base + d; q++; any = true;
+        }
+        if (any) { c->p = q; return v; }
+        c->err = CALC_SYNTAX;
+        return 0;
+    }
     double v = 0.0;
     while (*c->p >= '0' && *c->p <= '9') v = v * 10.0 + (*c->p++ - '0');
     if (*c->p == '.') {
@@ -89,11 +111,83 @@ static double d_sqrt(double v) {
     return x;
 }
 
+// The rest of v1's `math`, without libm: range reduction to a small interval,
+// then a short series there. Good to about twelve significant figures, which
+// is more than the ten decimals printed. Each returns NAN-free values and
+// leaves the domain checks to call_fn.
+static const double kPi = 3.14159265358979323846, kLn2 = 0.69314718055994530942,
+                    kLn10 = 2.30258509299404568402;
+
+static double d_exp(double x) {
+    if (x > 709) return 1e308;                // past what a double holds
+    if (x < -745) return 0;
+    long long k = (long long)(x / kLn2 + (x < 0 ? -0.5 : 0.5));
+    double r = x - (double)k * kLn2, term = 1, sum = 1;
+    for (int i = 1; i < 24; i++) { term *= r / i; sum += term; }
+    // Times 2^k, by halving or doubling: no ldexp either.
+    while (k > 0)  { sum *= 2; k--; }
+    while (k < 0)  { sum *= 0.5; k++; }
+    return sum;
+}
+
+static double d_ln(double x) {               // x > 0, checked by call_fn
+    int k = 0;
+    while (x >= 2) { x *= 0.5; k++; }
+    while (x < 1)  { x *= 2; k--; }
+    double y = (x - 1) / (x + 1), y2 = y * y, term = y, sum = 0;   // ln x = 2 atanh y
+    for (int n = 1; n < 60; n += 2) { sum += term / n; term *= y2; }
+    return 2 * sum + k * kLn2;
+}
+static double d_log10(double x) { return d_ln(x) / kLn10; }
+static double d_log2(double x)  { return d_ln(x) / kLn2; }
+
+static double reduce_angle(double x) {        // to [-pi, pi]
+    double twopi = 2 * kPi;
+    long long k = (long long)(x / twopi);
+    x -= (double)k * twopi;
+    if (x > kPi)  x -= twopi;
+    if (x < -kPi) x += twopi;
+    return x;
+}
+static double sin_small(double x) {           // |x| <= pi/2
+    double x2 = x * x, term = x, sum = x;
+    for (int i = 1; i < 12; i++) { term *= -x2 / ((2 * i) * (2 * i + 1)); sum += term; }
+    return sum;
+}
+static double d_sin(double x) {
+    x = reduce_angle(x);
+    if (x > kPi / 2)  x = kPi - x;             // sin(pi - x) = sin x
+    if (x < -kPi / 2) x = -kPi - x;
+    return sin_small(x);
+}
+static double d_cos(double x) { return d_sin(x + kPi / 2); }
+static double d_tan(double x) { return d_sin(x) / d_cos(x); }   // cos == 0: call_fn
+static double atan_small(double x) {          // |x| <= 0.42
+    double x2 = x * x, term = x, sum = 0;
+    for (int n = 1; n < 61; n += 2) { sum += term / n; term *= -x2; }
+    return sum;
+}
+static double d_atan(double x) {
+    if (x < 0) return -d_atan(-x);
+    if (x > 1) return kPi / 2 - d_atan(1 / x);
+    // atan x = 2 atan(x / (1 + sqrt(1 + x^2))) brings x under about 0.42.
+    return 2 * atan_small(x / (1 + d_sqrt(1 + x * x)));
+}
+static double d_round(double v) { return v < 0 ? -d_floor(-v + 0.5) : d_floor(v + 0.5); }
+
 static double call_fn(CalcCtx *c, const char *name, double a) {
     struct Fn { const char *n; double (*f)(double); };
     static const Fn fns[] = {
         { "sqrt", d_sqrt }, { "abs", d_abs }, { "floor", d_floor }, { "ceil", d_ceil },
+        { "round", d_round }, { "exp", d_exp }, { "ln", d_ln }, { "log", d_log10 },
+        { "log2", d_log2 }, { "sin", d_sin }, { "cos", d_cos }, { "tan", d_tan },
+        { "atan", d_atan },
     };
+    bool is_log = name[0] == 'l' && (name[1] == 'n' || name[1] == 'o');
+    if (is_log && a <= 0) { c->err = CALC_DOMAIN; return 0; }
+    if (name[0] == 't' && name[1] == 'a' && name[2] == 'n' && name[3] == 0 && d_abs(d_cos(a)) < 1e-15) {
+        c->err = CALC_DOMAIN; return 0;
+    }
     for (unsigned i = 0; i < sizeof(fns) / sizeof(fns[0]); i++) {
         const char *n = fns[i].n;
         const char *m = name;
@@ -144,6 +238,7 @@ static double parse_atom(CalcCtx *c) {
         // A bare name: the two constants v1's `from math import *` put in scope.
         if (name[0] == 'p' && name[1] == 'i' && name[2] == 0) return 3.14159265358979323846;
         if (name[0] == 'e' && name[1] == 0)                   return 2.71828182845904523536;
+        if (name[0] == 'a' && name[1] == 'n' && name[2] == 's' && name[3] == 0) return g_ans;
 
         c->err = CALC_UNKNOWN_NAME;
         unsigned k = 0;
@@ -164,9 +259,12 @@ static double parse_power(CalcCtx *c) {
     if (*c->p == '^') {
         c->p++;
         double ex = parse_unary(c);          // right-associative
-        // Integer exponents only: repeated multiplication, no libm.
         long long n = (long long)ex;
-        if ((double)n != ex) { c->err = CALC_DOMAIN; return 0; }
+        if ((double)n != ex) {
+            // A fractional power: e^(ex ln base), for a positive base only.
+            if (base <= 0) { c->err = CALC_DOMAIN; return 0; }
+            return d_exp(ex * d_ln(base));
+        }
         double r = 1.0;
         bool neg = n < 0;
         if (neg) n = -n;
@@ -366,6 +464,12 @@ void calc_format_num(double v, char *out, unsigned cap) {
     if (neg) v = -v;
     long long ip = (long long)v;
     double fp = v - (double)ip;
+    // Rounded to the ten digits shown, not cut off: sin(pi/6) is
+    // 0.49999999999999994 in every language, and printing 0.4999999999 says
+    // something about the answer that is not true. The carry can reach the
+    // whole part (2.99999999999999996 is 3).
+    long long fs = (long long)(fp * 1e10 + 0.5);
+    if (fs >= 10000000000LL) { ip += 1; fs -= 10000000000LL; }
 
     char ipbuf[24];
     unsigned n = 0;
@@ -378,14 +482,8 @@ void calc_format_num(double v, char *out, unsigned cap) {
     while (n && k < cap - 1) out[k++] = ipbuf[--n];
 
     char frac[12];
-    unsigned fn = 0;
-    for (int i = 0; i < 10; i++) {
-        fp *= 10.0;
-        int d = (int)fp;
-        if (d > 9) d = 9;
-        frac[fn++] = (char)('0' + d);
-        fp -= d;
-    }
+    unsigned fn = 10;
+    for (int i = 9; i >= 0; i--) { frac[i] = (char)('0' + (int)(fs % 10)); fs /= 10; }
     while (fn && frac[fn - 1] == '0') fn--;
     if (fn && k < cap - 1) {
         out[k++] = '.';
@@ -397,7 +495,7 @@ void calc_format_num(double v, char *out, unsigned cap) {
 // --- the package ------------------------------------------------------------
 #ifndef CALC_HOST_TEST
 
-RPC_APP("calc");
+RPC_APP_VER("calc", "1.1");
 
 static bool streq(const char *a, const char *b) {
     while (*a && *a == *b) { a++; b++; }
@@ -411,7 +509,8 @@ static void usage(void) {
     fw_printf("  calc bin <value>       to binary\n");
     fw_printf("  calc oct <value>       to octal\n");
     fw_printf("  calc dec <value>       to decimal (accepts 0x / 0b / 0o)\n");
-    fw_printf("  Functions: sqrt abs floor ceil      Constants: pi e\n");
+    fw_printf("  Functions: sqrt abs floor ceil round exp ln log log2 sin cos tan atan\n");
+    fw_printf("  Constants: pi e ans (the last answer)   Numbers: 0x1f 0b101 0o17, 2^0.5\n");
 }
 
 static int calc_cmd(int argc, char **argv) {
@@ -456,7 +555,7 @@ static int calc_cmd(int argc, char **argv) {
             return 1;
         case CALC_UNKNOWN_NAME:
             fw_printf("Unknown name: '%s'\n", what);
-            fw_printf("  Available: sqrt abs floor ceil, and pi / e.\n");
+            fw_printf("  Available: sqrt abs floor ceil round exp ln log log2 sin cos tan atan, and pi / e / ans.\n");
             return 1;
         case CALC_DOMAIN:
             fw_printf("Outside what that operation accepts.\n");
@@ -466,6 +565,7 @@ static int calc_cmd(int argc, char **argv) {
             return 1;
     }
 
+    g_ans = v;
     char buf[48];
     calc_format_num(v, buf, sizeof(buf));
     fw_printf("%s\n", buf);

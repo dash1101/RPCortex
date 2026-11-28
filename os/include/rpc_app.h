@@ -418,7 +418,10 @@ unsigned fw_adc_temp_channel(void);
 
 // I2C. `bus` is 0 or 1. Returns the number of bytes moved, or negative on
 // error — which is what makes a bus scan possible: a write of zero bytes to an
-// address either acknowledges or does not.
+// address either acknowledges or does not. A transfer gives up after about
+// 20 ms (plus 1 ms a byte) rather than hanging on a bus with no pull-ups.
+// fw_i2c_init returns -2 when the pins cannot be that bus: GPIO n is
+// I2C((n / 2) % 2), SDA on an even pin and SCL on the odd one after it.
 int      fw_i2c_init(unsigned bus, unsigned sda, unsigned scl, unsigned baud);
 int      fw_i2c_write(unsigned bus, unsigned addr, const void *data, unsigned len, int nostop);
 int      fw_i2c_read(unsigned bus, unsigned addr, void *buf, unsigned len, int nostop);

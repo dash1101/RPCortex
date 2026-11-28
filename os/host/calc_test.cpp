@@ -190,6 +190,55 @@ int main(void) {
         lacks(999999999999.0, "e");
     }
 
+    // --- calc 1.1: the rest of v1's math, base literals, fractional powers ----
+    {
+        fmt(0.49999999999999994, "0.5");
+        fmt(2.9999999999999996, "3");
+        fmt(-0.49999999999999994, "-0.5");
+        fmt(1.23456789012, "1.2345678901");
+        num("0xff + 1", 256);
+        num("0b101 * 2", 10);
+        num("0o17", 15);
+        num("0X1F", 31);
+        bad("0x", CALC_SYNTAX);
+        bad("0b2", CALC_SYNTAX);
+        num("2^0.5", sqrt(2.0));
+        num("8^(1/3)", 2);
+        bad("(-8)^0.5", CALC_DOMAIN);
+        num("ln(e)", 1);
+        num("log(1000)", 3);
+        num("log2(1024)", 10);
+        num("exp(0)", 1);
+        num("sin(pi/2)", 1);
+        num("cos(pi)", -1);
+        num("tan(pi/4)", 1);
+        num("atan(1)*4", M_PI);
+        num("round(2.5) + round(-2.5)", 0);
+        bad("ln(0)", CALC_DOMAIN);
+        bad("log(-1)", CALC_DOMAIN);
+        bad("tan(pi/2)", CALC_DOMAIN);
+        // Against libm across each function's range, to twelve figures.
+        struct { const char *f; double (*ref)(double); double lo, hi; bool geo; } sweep[] = {
+            {"sin", ::sin, -50, 50, false}, {"cos", ::cos, -50, 50, false},
+            {"atan", ::atan, -1e3, 1e3, false}, {"exp", ::exp, -30, 30, false},
+            {"ln", ::log, 1e-6, 1e9, true}, {"log", ::log10, 1e-3, 1e6, true},
+        };
+        for (auto &w : sweep) {
+            double worst = 0;
+            for (int i = 0; i <= 400; i++) {
+                double x = w.lo + (w.hi - w.lo) * i / 400.0;
+                if (w.geo) x = w.lo * pow(w.hi / w.lo, i / 400.0);
+                char e[64]; snprintf(e, sizeof(e), "%s(%.17g)", w.f, x);
+                double got = 0; char what[24];
+                if (calc_eval(e, &got, what, sizeof(what)) != CALC_OK) { worst = 1e9; break; }
+                double want = w.ref(x), err = fabs(got - want) / (fabs(want) > 1 ? fabs(want) : 1);
+                if (err > worst) worst = err;
+            }
+            checks++;
+            if (worst > 1e-11) { printf("  FAIL: %s against libm, worst %.3g\n", w.f, worst); fails++; }
+        }
+    }
+
     printf("\n  %d checks, %d failed\n", checks, fails);
     return fails ? 1 : 0;
 }

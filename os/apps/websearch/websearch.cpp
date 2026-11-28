@@ -21,7 +21,7 @@
 // never holds two.
 #include "rpc_app.h"
 
-RPC_APP_VER("websearch", "2.3");
+RPC_APP_VER("websearch", "2.4");
 
 // One response at a time, and never more than this. Wikipedia summaries run to
 // two or three kilobytes and DuckDuckGo's answers to rather more; anything that
@@ -476,6 +476,8 @@ static int wiki_cmd(int argc, char **argv) {
 extern "C" int app_main(int arg) {
     (void)arg;
     rpc_register_command("search", "look something up over the network", search_cmd);
+    // The package's own name too: it is what someone who just installed it types.
+    rpc_register_command("websearch", "look something up over the network (as search)", search_cmd);
     rpc_register_command("wiki", "read a one-paragraph summary", wiki_cmd);
     return 0;
 }

@@ -6,7 +6,7 @@
 // straight through is what makes the same thing possible here.
 #include "rpc_app.h"
 
-RPC_APP_VER("i2cscan", "2.1");
+RPC_APP_VER("i2cscan", "2.2");
 
 // The device table v1 carried, because an address on its own tells you almost
 // nothing. Addresses that several parts share list them together rather than
@@ -65,15 +65,18 @@ static int i2cscan_cmd(int argc, char **argv) {
     for (int i = 1; i < argc; i++) {
         if (streq(argv[i], "--help") || streq(argv[i], "-h")) {
             fw_printf("Usage: i2cscan [bus] [sda] [scl] [baud]\n");
-            fw_printf("  Defaults: bus 0, SDA 4, SCL 5, 100000 baud.\n");
+            fw_printf("  Defaults: bus 0 on SDA 4 / SCL 5, bus 1 on SDA 6 / SCL 7, 100000 baud.\n");
             fw_printf("  Reports every address that acknowledges, and names it\n");
             fw_printf("  where the address is one a common part uses.\n");
             return 0;
         }
     }
     if (argc > 1) bus  = parse_uint(argv[1], 0);
-    if (argc > 2) sda  = parse_uint(argv[2], 4);
-    if (argc > 3) scl  = parse_uint(argv[3], 5);
+    // Each bus's own first pair by default: I2C1 cannot use GPIO 4/5 (those
+    // are I2C0), and asking it to used to hang the scan.
+    if (bus == 1) { sda = 6; scl = 7; }
+    if (argc > 2) sda  = parse_uint(argv[2], sda);
+    if (argc > 3) scl  = parse_uint(argv[3], scl);
     if (argc > 4) baud = parse_uint(argv[4], 100000);
 
     if (bus > 1) {
@@ -87,7 +90,14 @@ static int i2cscan_cmd(int argc, char **argv) {
         return 1;
     }
 
-    if (fw_i2c_init(bus, sda, scl, baud) != 0) {
+    int rc = fw_i2c_init(bus, sda, scl, baud);
+    if (rc == -2) {
+        fw_printf("GPIO %u/%u are not I2C%u's pins. I2C%u SDA is on GPIO %u, %u, %u...,\n",
+                  sda, scl, bus, bus, bus ? 2u : 0u, bus ? 6u : 4u, bus ? 10u : 8u);
+        fw_printf("  with its SCL on the next pin up (SDA even, SCL odd).\n");
+        return 1;
+    }
+    if (rc != 0) {
         fw_printf("Could not bring up I2C%u on SDA %u / SCL %u.\n", bus, sda, scl);
         return 1;
     }

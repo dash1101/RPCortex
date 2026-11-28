@@ -869,11 +869,24 @@ static i2c_inst_t *i2c_of(unsigned bus) {
 }
 static bool g_i2c_ready[2];
 
+// Which I2C block and line a pin can be: GPIO n is I2C((n/2) % 2), SDA when n
+// is even and SCL when it is odd, on the RP2040 and the RP2350 alike.
+static bool i2c_pins_fit(unsigned bus, unsigned sda, unsigned scl) {
+    return (sda / 2) % 2 == bus && sda % 2 == 0 && (scl / 2) % 2 == bus && scl % 2 == 1;
+}
+
+// A transfer's limit: generous for the slowest bus (10 kHz, 9 bits a byte)
+// plus clock stretching, and short enough that a bus with no pull-ups, or
+// wired to the wrong pins, answers with an error rather than hanging the task
+// until the stall guard ends it (it did, `i2cscan 1` on GPIO 4/5).
+static uint32_t i2c_timeout_us(unsigned len) { return 20000u + 1000u * len; }
+
 extern "C" int fw_i2c_init(unsigned bus, unsigned sda, unsigned scl, unsigned baud) {
     ClockUse _cu;        // clockuse.h: the clock at its base, and held there while this sets up
     i2c_inst_t *i = i2c_of(bus);
     if (!i) return -1;
     if (!fw_gpio_usable(sda) || !fw_gpio_usable(scl)) return -1;
+    if (!i2c_pins_fit(bus, sda, scl)) return -2;   // those pins are not this bus
     if (baud == 0) baud = 100000;
     task_alive();
     i2c_init(i, baud);
@@ -892,7 +905,8 @@ extern "C" int fw_i2c_write(unsigned bus, unsigned addr, const void *data,
     if (!i || !g_i2c_ready[bus] || addr > 0x7f) return -1;
     task_alive();
     I2cTxn txn(bus);        // one transfer at a time on the block; see core/i2clock.h
-    return i2c_write_blocking(i, (uint8_t)addr, (const uint8_t *)data, len, nostop != 0);
+    return i2c_write_timeout_us(i, (uint8_t)addr, (const uint8_t *)data, len, nostop != 0,
+                                i2c_timeout_us(len));
 }
 
 extern "C" int fw_i2c_read(unsigned bus, unsigned addr, void *buf,
@@ -902,7 +916,8 @@ extern "C" int fw_i2c_read(unsigned bus, unsigned addr, void *buf,
     task_alive();
     if (!ok_w(buf, len)) return -1;
     I2cTxn txn(bus);
-    return i2c_read_blocking(i, (uint8_t)addr, (uint8_t *)buf, len, nostop != 0);
+    return i2c_read_timeout_us(i, (uint8_t)addr, (uint8_t *)buf, len, nostop != 0,
+                               i2c_timeout_us(len));
 }
 
 extern "C" int fw_i2c_deinit(unsigned bus) {
