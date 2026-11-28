@@ -8,7 +8,7 @@ good notes is in `RELEASING.md`.
 
 ## Unreleased
 
-Summary: 
+Summary: htop, RPC Fetch with a live mode, and packages that load only while they run, so a well-stocked board keeps its memory free
 
 ### New
 
