@@ -199,3 +199,4 @@ fw_net_scan2
 fw_nfc_select
 fw_nfc_exchange
 fw_http_request
+fw_task_list

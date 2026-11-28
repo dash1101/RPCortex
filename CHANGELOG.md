@@ -12,11 +12,24 @@ Summary:
 
 ### New
 
+- **RPC Fetch.** `fetch` (also `rpcfetch`, `neofetch`, `picofetch`) takes `-w [secs]` to redraw
+  itself in place every few seconds until a key is pressed, and a colour (`fetch magenta`) as v1's
+  PicoFetch did.
+- **htop**, a package: the interactive process viewer laid out like the real one. A meter per
+  core, memory and flash, tasks and load, a list of every task with its CPU share, stack, run time
+  and where it came from, sorted by any column (F6, or P M T N, I to reverse), and F9 to stop a
+  task after asking. Also answers to `top`. `pkg install htop`.
+- Packages can list tasks (`fw_task_list`, API 1.29), and the header names the function keys
+  (`FW_KEY_F1` to `FW_KEY_F12`).
+
 ### Improved
 
 - `fetch` shows the power source, and the clock when the governor has lowered it.
 
 ### Fixed
+
+- The clock governor asked the radio chip for the power source four times a second on the W
+  boards, which was all of its CPU use (0.7% of a core). It asks every 5 seconds now.
 
 - A package setting up I2C on pins that cannot carry that bus (`i2cscan 1` used GPIO 4/5, which
   are I2C0's) hung until the stall guard stopped it. `fw_i2c_init` now refuses such pins (it
@@ -24,6 +37,10 @@ Summary:
   waiting forever on a bus with no pull-ups.
 
 ### Security
+
+- A package could stop any task, including the shell and the network task, whoever ran it.
+  `fw_task_kill` now follows `kill`'s rule: an admin may stop anything, anyone else only what is
+  theirs.
 
 ### Changed
 

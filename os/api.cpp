@@ -313,7 +313,38 @@ extern "C" int fw_line_read(char *buf, int cap) {
     buf[n] = 0;
     return n;
 }
-extern "C" int  fw_task_kill(int pid)          { return task_kill(pid) ? 1 : 0; }
+// The same rule `kill` applies (ident_may_stop): an admin may stop anything,
+// anyone else only what is theirs. Before 1.29 a package run by a guest could
+// stop the shell or the network task.
+extern "C" int  fw_task_kill(int pid) {
+    if (!ident_may_stop(pid)) return 0;
+    return task_kill(pid) ? 1 : 0;
+}
+
+extern "C" int fw_task_list(FwTaskInfo *out, int max) {
+    if (max <= 0 || !ok_w(out, (unsigned)max * sizeof(FwTaskInfo))) return 0;
+    task_alive();
+    int n = 0;
+    for (uint32_t i = 0; i < task_count() && n < max; i++) {
+        const TaskInfo *t = task_at(i);
+        if (!t || t->state == TASK_FREE) continue;
+        FwTaskInfo &o = out[n++];
+        memset(&o, 0, sizeof(o));
+        o.pid = t->pid;
+        snprintf(o.name, sizeof(o.name), "%s", t->name);
+        snprintf(o.path, sizeof(o.path), "%s", t->path);
+        o.state = t->state == TASK_RUNNING ? 'R' : t->state == TASK_READY ? 'r'
+                : t->state == TASK_SLEEPING ? 'S' : t->state == TASK_BLOCKED ? 'B' : 'D';
+        o.core = t->core;
+        o.affinity = (unsigned char)t->affinity;
+        o.stack_size = t->stack_size;
+        o.stack_used = t->stack_used;
+        o.heap_bytes = t->heap_bytes;
+        o.cpu_ms = t->cpu_ms;
+        o.switches = t->switches;
+    }
+    return n;
+}
 extern "C" uint32_t fw_cores(void)             { return task_core_count(); }
 
 // FILE ACCESS IS CHECKED AGAINST THE SESSION. A package runs with the rights of
@@ -2119,6 +2150,9 @@ static const ApiSymbol kSymbols[] = {
 
     // API 1.28 — one HTTP request, as a browser makes them.
     SYM(fw_http_request),
+
+    // API 1.29 — the task list, for a task manager.
+    SYM(fw_task_list),
 };
 static const uint32_t kSymbolCount = sizeof(kSymbols) / sizeof(kSymbols[0]);
 
@@ -2189,6 +2223,8 @@ uint32_t api_addr_at(uint32_t index) {
 // that back into a build error the day it happens rather than a key that does
 // nothing on a device nobody can debug.
 static_assert(FW_KEY_UP     == TUI_KEY_UP,     "FW_KEY_UP drifted from TuiKey");
+static_assert(FW_KEY_F1     == TUI_KEY_F1,     "FW_KEY_F1 drifted from TuiKey");
+static_assert(FW_KEY_F12    == TUI_KEY_F12,    "FW_KEY_F12 drifted from TuiKey");
 static_assert(FW_KEY_DOWN   == TUI_KEY_DOWN,   "FW_KEY_DOWN drifted from TuiKey");
 static_assert(FW_KEY_LEFT   == TUI_KEY_LEFT,   "FW_KEY_LEFT drifted from TuiKey");
 static_assert(FW_KEY_RIGHT  == TUI_KEY_RIGHT,  "FW_KEY_RIGHT drifted from TuiKey");

@@ -1245,6 +1245,7 @@ rpc_add_app(backup)
 rpc_add_app(fileexp)
 rpc_add_app(sysmon)
 rpc_add_app(selftest)
+rpc_add_app(htop)
 # novad1 is the package task #93 exists for: 114 KB of read-only half, more than
 # the 89 KB largest free block a booted board has, so it cannot be loaded onto a
 # running device. Built PIC, that half is a position-independent blob for a flash

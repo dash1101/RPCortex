@@ -23,7 +23,7 @@
 #include <stdio.h>
 #include <string.h>
 
-RPC_APP_VER("sysmon", "2.1");
+RPC_APP_VER("sysmon", "2.2");
 
 #define SM_REG_REFRESH "Apps.SysMon_Refresh"
 #define SM_DEFAULT_MS  750
@@ -396,7 +396,7 @@ static void sm_relayout(void) {
 }
 
 static void sm_usage(void) {
-    fw_printf("sysmon / htop - the live system monitor.\n\n");
+    fw_printf("sysmon - the live system monitor (htop, a package of its own, lists the tasks).\n\n");
     fw_printf("  sysmon         open it at the saved refresh interval\n");
     fw_printf("  sysmon <ms>    open it at that interval, just for this run\n\n");
     fw_printf("  r refresh now   +/- faster or slower (saved)   l log tail\n");
@@ -483,7 +483,5 @@ static int sm_cmd(int argc, char **argv) {
 extern "C" int app_main(int arg) {
     (void)arg;
     rpc_register_command("sysmon", "the live system monitor", sm_cmd);
-    // v1 registered both, and htop is what anyone coming from a desktop tries.
-    rpc_register_command("htop", "the live system monitor", sm_cmd);
     return 0;
 }

@@ -132,10 +132,24 @@ static unsigned gov_load(void) {
     return pct > 100 ? 100 : pct;
 }
 
+// The power source, read every POWER_EVERY_MS rather than every step. On the W
+// boards a reading is two commands to the radio chip (net.cpp chip_reads_try),
+// and four a second of those was the governor's whole CPU cost (0.7% of a core
+// in htop). A cable is plugged in on a human time scale; five seconds is soon.
+#define POWER_EVERY_MS 5000
+static int gov_power(void) {
+    static int cached = -1;
+    static bool have;
+    static uint32_t last;
+    uint32_t now = task_now_ms();
+    if (!have || now - last >= POWER_EVERY_MS) { cached = power_source(); last = now; have = true; }
+    return cached;
+}
+
 static void gov_step(void) {
     GovIn in;
     in.mode = g_mode;
-    in.power = power_source();
+    in.power = gov_power();
     in.load = gov_load();
     in.now_ms = task_now_ms();
     in.floor_mhz = floor_mhz();

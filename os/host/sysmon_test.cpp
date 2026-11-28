@@ -234,7 +234,7 @@ int main(void) {
     printf("sysmon_test - the arithmetic, and the panel it draws\n");
 
     app_main(0);
-    ck(g_cmds == 2, "the package registers sysmon and htop");
+    ck(g_cmds == 1, "the package registers sysmon (htop is a package of its own)");
     if (!g_cmd) return 1;
 
     // --- the refresh interval ----------------------------------------------

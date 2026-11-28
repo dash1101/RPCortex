@@ -1,4 +1,8 @@
-// fetch / neofetch — the ASCII-art system summary.
+// RPC Fetch (fetch, rpcfetch, neofetch, picofetch): the ASCII-art system summary.
+//
+//   fetch                 once
+//   fetch -w [secs]       redrawn in place every few seconds (2 by default) until a key
+//   fetch <colour>        another accent: cyan blue magenta green yellow red white
 //
 // v1 shipped this as the `picofetch` package and it was the first thing anyone
 // screenshotted. It is built in here rather than left to a package because it
@@ -18,9 +22,11 @@
 #include "users.h"
 #include "fmt.h"
 #include "task.h"
+#include "interrupt.h"
 
 #include <stdio.h>
 #include <stdarg.h>
+#include <stdlib.h>
 
 // Through the output layer, not printf, so a redirect, a pipe or a remote
 // login gets the picture rather than the serial port.
@@ -84,7 +90,61 @@ static void bar(char *out, uint32_t cap, uint32_t used, uint32_t total) {
              (unsigned)(total ? (uint64_t)used * 100 / total : 0));
 }
 
-static int cmd_fetch(int, char **) {
+// An accent replaces the gradient with one colour pair: bright for the top of
+// the mark and the labels, plain for the bottom. v1's `fetch <colour>`.
+struct Accent { const char *name; const char *hi; const char *lo; };
+static const Accent kAccents[] = {
+    {"cyan", "\033[96m", "\033[36m"},   {"blue", "\033[94m", "\033[34m"},
+    {"magenta", "\033[95m", "\033[35m"}, {"green", "\033[92m", "\033[32m"},
+    {"yellow", "\033[93m", "\033[33m"},  {"red", "\033[91m", "\033[31m"},
+    {"white", "\033[97m", "\033[37m"},
+};
+
+static void draw_fetch(const Accent *ac, uint32_t every);
+
+static int cmd_fetch(int argc, char **argv) {
+    const Accent *ac = nullptr;
+    uint32_t every = 0;
+    for (int i = 1; i < argc; i++) {
+        if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help") || !strcmp(argv[i], "help")) {
+            out_multi("RPC Fetch: what this device is and how it is doing.");
+            out_multi("  fetch                once");
+            out_multi("  fetch -w [secs]      redrawn every few seconds (2 by default) until a key");
+            out_multi("  fetch <colour>       cyan blue magenta green yellow red white");
+            return 0;
+        }
+        if (!strcmp(argv[i], "-w") || !strcmp(argv[i], "--watch") || !strcmp(argv[i], "watch")) {
+            every = 2;
+            if (i + 1 < argc && argv[i + 1][0] >= '0' && argv[i + 1][0] <= '9') {
+                every = (uint32_t)atoi(argv[++i]);
+                if (every < 1) every = 1;
+                if (every > 3600) every = 3600;
+            }
+            continue;
+        }
+        bool found = false;
+        for (const Accent &a : kAccents) if (!strcmp(argv[i], a.name)) { ac = &a; found = true; }
+        if (!found) { out_warn("fetch: '%s' is not an option or a colour. 'fetch -h' lists them.", argv[i]); return 1; }
+    }
+    if (!every) { draw_fetch(ac, 0); return 0; }
+
+    // Watch: redrawn in place, until Ctrl+C or any key.
+    intr_clear();
+    while (true) {
+        put("\033[2J\033[H");
+        draw_fetch(ac, every);
+        bool stop = false;
+        for (uint32_t i = 0; i < every * 10 && !stop; i++) {
+            task_sleep_ms(100);
+            if (intr_check() || intr_getkey() >= 0) stop = true;
+        }
+        if (stop) break;
+    }
+    intr_clear();
+    return 0;
+}
+
+static void draw_fetch(const Accent *ac, uint32_t every) {
     Row rows[16];
     uint32_t n = 0;
 
@@ -144,26 +204,29 @@ static int cmd_fetch(int, char **) {
 
     uint32_t lines = ART_ROWS > n + 1 ? ART_ROWS : n + 1;
     for (uint32_t i = 0; i < lines; i++) {
-        if (i < ART_ROWS) put("  %s%-*s%s ", kGradient[i % 7], ART_WIDTH, kArt[i], C_RESET);
+        const char *col = ac ? (i < 4 ? ac->hi : ac->lo) : kGradient[i % 7];
+        if (i < ART_ROWS) put("  %s%-*s%s ", col, ART_WIDTH, kArt[i], C_RESET);
         else              put("  %-*s ", ART_WIDTH, "");
 
         if (i == 0) {
             // The header line: user@host, then a rule as wide as it is.
-            put("%s%s%s@%s%s%s\n", C_CYAN, user, C_RESET, C_CYAN, host, C_RESET);
+            const char *hc = ac ? ac->hi : C_CYAN;
+            put("%s%s%s@%s%s%s\n", hc, user, C_RESET, hc, host, C_RESET);
         } else if (i - 1 < n) {
             const Row &r = rows[i - 1];
-            put("%s%-8s%s %s\n", C_HEADER, r.key, C_RESET, r.val);
+            put("%s%-8s%s %s\n", ac ? ac->hi : C_HEADER, r.key, C_RESET, r.val);
         } else {
             put("\n");
         }
     }
+    if (every) put("  %sRPC Fetch, every %us. Any key stops it.%s\n", C_GRAY, (unsigned)every, C_RESET);
     out_blank();
-    return 0;
 }
 
 void fetch_register(void) {
-    static const Command c{"fetch", "system summary with the logo", cmd_fetch, nullptr};
+    static const Command c{"fetch", "RPC Fetch: system summary with the logo", cmd_fetch, nullptr};
     cmd_register(&c);
+    cmd_alias("rpcfetch", "fetch");
     cmd_alias("neofetch", "fetch");
     cmd_alias("picofetch", "fetch");
 }

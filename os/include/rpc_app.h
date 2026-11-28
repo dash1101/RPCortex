@@ -23,7 +23,7 @@ extern "C" {
 // MINOR: a symbol added — older-minor apps still run (everything they want is
 //        present); newer-minor apps refused (they may want something absent).
 #define RPC_API_MAJOR 1
-#define RPC_API_MINOR 28
+#define RPC_API_MINOR 29
 
 typedef struct {
     uint32_t magic;          // RPC_APP_MAGIC
@@ -95,6 +95,19 @@ typedef struct {
 #define FW_KEY_INSERT 264
 #define FW_KEY_DELETE 265
 #define FW_KEY_ESC    282
+// The function keys (API 1.29 names them; the values were always these).
+#define FW_KEY_F1     266
+#define FW_KEY_F2     267
+#define FW_KEY_F3     268
+#define FW_KEY_F4     269
+#define FW_KEY_F5     270
+#define FW_KEY_F6     271
+#define FW_KEY_F7     272
+#define FW_KEY_F8     273
+#define FW_KEY_F9     274
+#define FW_KEY_F10    275
+#define FW_KEY_F11    276
+#define FW_KEY_F12    277
 
 // Enter and leave full-screen mode. ALWAYS pair them: a terminal left with
 // mouse reporting on sends escape sequences to the shell for every click
@@ -995,7 +1008,34 @@ void     fw_progress(const char *what);
 // its registration here and return; a foreground app can run its loop.
 int app_main(int arg);
 
+// --- the task list (API 1.29) ---------------------------------------------------
+//
+// What `ps` shows, for a task manager: every task, copied out at the moment of
+// asking. cpu_ms only grows, so a caller that wants a percentage keeps the last
+// reading and divides the difference by the time between. Returns how many
+// were written (at most `max`).
+typedef struct FwTaskInfo {
+    int      pid;
+    char     name[16];
+    char     path[48];       // what it was loaded from; "(kernel)" for the firmware's own
+    char     state;          // 'R' running, 'r' ready, 'S' sleeping, 'B' blocked, 'D' done
+    unsigned char core;      // the core it last ran on
+    unsigned char affinity;  // 0 either, 1 core 0 only, 2 core 1 only
+    unsigned char pad;
+    uint32_t stack_size;
+    uint32_t stack_used;     // the high-water mark
+    uint32_t heap_bytes;     // allocations attributed to it, when known
+    uint32_t cpu_ms;         // run time so far
+    uint32_t switches;       // times it has been scheduled
+} FwTaskInfo;
+
+int fw_task_list(FwTaskInfo *out, int max);
+
+// fw_task_kill follows `kill`'s rule from API 1.29: a package can stop only what
+// the person running it could. It returns 0 for a task that is not theirs.
+
 #ifdef __cplusplus
 }
 #endif
+
 #endif  // RPC_APP_H
