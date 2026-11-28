@@ -100,6 +100,8 @@ add_executable(rpcortex_v2
     ${OS_ROOT}/core/interrupt.cpp
     ${OS_ROOT}/shell/power.cpp
     ${OS_ROOT}/shell/governor.cpp
+    ${OS_ROOT}/shell/tips.cpp
+    ${OS_ROOT}/core/advice.cpp
     ${OS_ROOT}/core/governor.cpp
     ${OS_ROOT}/core/stagesink.cpp
     ${OS_ROOT}/core/svcpolicy.cpp

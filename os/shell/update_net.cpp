@@ -202,6 +202,8 @@ int update_check(bool quiet) {
     out_multi("  Available  %s", e.ver);
     if (e.size) out_multi("  Size       %lu KB", (unsigned long)(e.size / 1024));
 
+    // Remembered for `tips`, which says so without anyone having to ask again.
+    reg_set("System.Update_Available", cmp > 0 ? e.ver : "");
     if (cmp <= 0) {
         if (!quiet) out_ok("Already up to date.");
         return 0;

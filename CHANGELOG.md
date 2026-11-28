@@ -12,6 +12,12 @@ Summary:
 
 ### New
 
+- **Recommended actions.** `tips` lists what is worth doing about this device, most important
+  first, each with the command that does it: an admin account with no password, a crash on the
+  last run, storage filling up, a firmware update found by `update check`, Wi-Fi never set up, the
+  date not set, and power settings switched off while on battery. The login and the `settings` panel
+  say how many there are. `tips dismiss <id>` hides one for that person, `tips reset` brings them
+  back.
 - **A clock governor.** `power governor auto` (the default) lowers the CPU clock to 48 MHz once the
   board has been quiet for 5 seconds on battery, and puts it back the moment there is work: it looks
   four times a second, and anything over half a core's worth of load is work. It never lowers the

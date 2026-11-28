@@ -66,6 +66,7 @@ bool crashlog_save(const BlackBox *bb);
 void sys_apply_boot_clock(bool last_start_failed);
 void power_apply_settings(void);
 void governor_start(void);
+void tips_note_crash(bool crashed);
 
 // Everything that needs a real stack. Runs as pid 2.
 static int shell_task(void *) {
@@ -305,6 +306,7 @@ int main(void) {
     // core 1, the radio or the card depend on it.
     sys_apply_boot_clock(bb != nullptr);
     power_apply_settings();
+    tips_note_crash(bb != nullptr);
 
     // Before anything reads a file: put back any directory that is missing, so
     // a deleted /os is a repaired boot rather than a reflash.

@@ -8,6 +8,7 @@
 // Rows are declarative on purpose. Adding a setting means adding a line to the
 // table, not writing another screen.
 
+#include "tips.h"
 #include "command.h"
 #include "out.h"
 #include "tui.h"
@@ -149,12 +150,19 @@ static int cmd_settings(int, char **) {
     while (list.sel < N_ROWS && !row_selectable(list.sel)) list.sel++;
 
     bool dirty = true, running = true, changed = false;
+    // Recommended actions (tips.cpp), counted once: shown on the line above the
+    // list, which the box leaves empty.
+    char tips_line[64] = "";
+    unsigned ntips = tips_count();
+    if (ntips) snprintf(tips_line, sizeof(tips_line), "%u recommended action%s: 'tips' after quitting",
+                        ntips, ntips == 1 ? "" : "s");
     while (running) {
         if (dirty) {
             dirty = false;
             tui_clear(&s);
             tui_box(&s, 0, 0, s.w, s.h - 1, "Settings", TUI_NORMAL, TUI_CYAN);
             tuilist_draw(&list, &s, 1, 2, s.w - 2, label_cb, nullptr, TUI_DEFAULT);
+            if (tips_line[0]) tui_text_clip(&s, 2, 1, tips_line, s.w - 4, TUI_BOLD, TUI_YELLOW);
 
             // The help for whatever is selected, so the panel explains itself
             // rather than needing documentation beside it.

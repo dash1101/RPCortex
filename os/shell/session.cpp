@@ -13,6 +13,7 @@
 // password prompt at all, a wrong password backs off on an escalating delay, and
 // three misses return to the username prompt rather than locking the device.
 
+#include "tips.h"
 #include "session.h"
 #include "users.h"
 #include "registry.h"
@@ -388,6 +389,7 @@ static void accept(const char *name) {
     persist_scope_enter(ident_console());
     persist_save_dirty();
     out_ok("Welcome, %s!", ident_console());
+    tips_login_line();
 }
 
 void session_boot(void) {

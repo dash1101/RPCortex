@@ -5,6 +5,7 @@
 // existed to manage Python modules. A line is split into argv, the first token
 // is looked up in the registry, and the command runs. That is the whole engine.
 
+#include "tips.h"
 #include "shell.h"
 #include "sha256.h"
 #include "command.h"
@@ -744,6 +745,7 @@ void shell_register_builtins(void) {
     net_register();         // wifi, net, radio
     session_register();     // autonomy
     power_register();       // sleep
+    tips_register();        // recommended actions
     bt_register();          // bluetooth
     btaudio_register();     // a2dp sink
     nfc_register();         // pn532 reader
