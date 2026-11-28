@@ -8,6 +8,22 @@ good notes is in `RELEASING.md`.
 
 ## Unreleased
 
+Summary: 
+
+### New
+
+### Improved
+
+### Fixed
+
+### Security
+
+### Changed
+
+### Known issues
+
+## v2.0.736-beta, 2026-11-28
+
 Summary: Ask Claude from the console, and packages can send headers of their own (API 1.30)
 
 ### New

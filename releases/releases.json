@@ -2,6 +2,98 @@
   "schema": 1,
   "releases": [
     {
+      "tag": "v2.0.736-beta",
+      "display": "v2.0.736-beta",
+      "version": "2.0",
+      "build": 736,
+      "commit": "9ac58d59355abfd72d017124785e4be161139212",
+      "codename": "Vela II",
+      "date": "2026-11-28",
+      "prerelease": true,
+      "title": "RPCortex v2.0.736-beta",
+      "summary": "Ask Claude from the console, and packages can send headers of their own (API 1.30)",
+      "notes": {
+        "new": [
+          "**ask**, in the browse package (1.2): talk to Claude from the console, as v1's Ask did. `ask key` stores your API key in your home folder; `ask <question>` answers one question; `ask` alone is a conversation (`/new` starts over). It uses the Messages API with Claude Opus 5.5 by default (`ask model` changes it), works over Wi-Fi or through the computer, and asks for short answers so a reply arrives well within the device's 15-second wait. Tested end to end through the bridge against a stand-in with the API's shape, not yet against the real service.",
+          "Packages can send request headers of their own (`FwHttpRequest.headers`, API 1.30): what an API key or a JSON API needs. Each line is checked (no line breaks inside one, and Host, Content-Length, Transfer-Encoding and Connection stay the firmware's), and it works the same over Wi-Fi and through the computer. Packages built against API 1.28 or 1.29 keep working unchanged."
+        ],
+        "improved": [],
+        "fixed": [],
+        "security": [],
+        "changed": [
+          "`fw_task_kill` returns -1 for a task nothing may stop (the idle task, the shell, one already finished), so a package can tell that from a task that is not the caller's (0). htop 1.1 says which."
+        ],
+        "issues": []
+      },
+      "assets": [
+        {
+          "board": "pico2_w",
+          "kind": "bin",
+          "file": "rpcortex-v2.0.736-beta-pico2_w.bin",
+          "size": 925260,
+          "sha256": "094d44a980beda6f129996cbfa68b662e7ac76383fe9dfa8e8ee8c3c7ff1d232",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.736-beta/rpcortex-v2.0.736-beta-pico2_w.bin"
+        },
+        {
+          "board": "pico2_w",
+          "kind": "uf2",
+          "file": "rpcortex-v2.0.736-beta-pico2_w.uf2",
+          "size": 1875456,
+          "sha256": "aa023f5a36094cf92002941cc6eab1722be789ae03c9203466bf347bdaf723da",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.736-beta/rpcortex-v2.0.736-beta-pico2_w.uf2"
+        },
+        {
+          "board": "pico_w",
+          "kind": "bin",
+          "file": "rpcortex-v2.0.736-beta-pico_w.bin",
+          "size": 812120,
+          "sha256": "a1d2d101b6b69766bfbfcbc93c469e5e7e38b37e1f574519a3fc4e576f3658f9",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.736-beta/rpcortex-v2.0.736-beta-pico_w.bin"
+        },
+        {
+          "board": "pico_w",
+          "kind": "uf2",
+          "file": "rpcortex-v2.0.736-beta-pico_w.uf2",
+          "size": 1624576,
+          "sha256": "d05cd826051a2327c8a916d0ac5a0078e29ca2d53f398301f75f29633a2da96e",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.736-beta/rpcortex-v2.0.736-beta-pico_w.uf2"
+        },
+        {
+          "board": "pico2",
+          "kind": "bin",
+          "file": "rpcortex-v2.0.736-beta-pico2.bin",
+          "size": 422940,
+          "sha256": "a5f5a7c6052bc4ad1537d7ac8b6662dbcec564dd90f31d52c78fa9626dd4973e",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.736-beta/rpcortex-v2.0.736-beta-pico2.bin"
+        },
+        {
+          "board": "pico2",
+          "kind": "uf2",
+          "file": "rpcortex-v2.0.736-beta-pico2.uf2",
+          "size": 870912,
+          "sha256": "5a3125f03a02406cbde7aec78688aa2ee5f948d0d152d6dabd5427afd1c1a275",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.736-beta/rpcortex-v2.0.736-beta-pico2.uf2"
+        },
+        {
+          "board": "pico",
+          "kind": "bin",
+          "file": "rpcortex-v2.0.736-beta-pico.bin",
+          "size": 330628,
+          "sha256": "939159878ab4911b045c4962f7872f23187e36321f5d4609f9cc66d5e15b6d2d",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.736-beta/rpcortex-v2.0.736-beta-pico.bin"
+        },
+        {
+          "board": "pico",
+          "kind": "uf2",
+          "file": "rpcortex-v2.0.736-beta-pico.uf2",
+          "size": 661504,
+          "sha256": "8599fa1755d057fbc02bce3a8197b736e7b01914c4bcfd98e65f771b1ef74f62",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.736-beta/rpcortex-v2.0.736-beta-pico.uf2"
+        }
+      ],
+      "url": "https://github.com/dash1101/RPCortex/releases/tag/v2.0.736-beta"
+    },
+    {
       "tag": "v2.0.730-beta",
       "display": "v2.0.730-beta",
       "version": "2.0",
