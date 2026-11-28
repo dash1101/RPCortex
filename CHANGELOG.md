@@ -8,7 +8,7 @@ good notes is in `RELEASING.md`.
 
 ## Unreleased
 
-Summary: 
+Summary: The device looks after its own power: idle cores sleep, a clock governor slows the CPU while quiet on battery, and `tips` recommends what is worth doing
 
 ### New
 
