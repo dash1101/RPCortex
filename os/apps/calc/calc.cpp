@@ -37,7 +37,9 @@ struct CalcCtx {
 };
 
 static double parse_expr(CalcCtx *c);
-// The last answer, for `ans`: kept while the package stays loaded.
+// The last answer, for `ans`. calc loads on demand and is gone between
+// commands, so it is kept in the registry (RAM only; never saved to flash) as
+// the double's 64 bits in hex, which round-trips exactly.
 static double g_ans;
 
 static void skip_ws(CalcCtx *c) { while (*c->p == ' ' || *c->p == '\t') c->p++; }
@@ -495,7 +497,7 @@ void calc_format_num(double v, char *out, unsigned cap) {
 // --- the package ------------------------------------------------------------
 #ifndef CALC_HOST_TEST
 
-RPC_APP_VER("calc", "1.1");
+RPC_APP_VER_FLAGS("calc", "1.2", RPC_APP_F_ON_DEMAND);
 
 static bool streq(const char *a, const char *b) {
     while (*a && *a == *b) { a++; b++; }
@@ -545,6 +547,18 @@ static int calc_cmd(int argc, char **argv) {
     }
     expr[k] = 0;
 
+    {
+        char hx[24];
+        g_ans = 0;
+        if (fw_reg_get("Apps.Calc_Ans", hx, sizeof(hx))) {
+            union { double d; uint64_t u; } bits; bits.u = 0;
+            for (int i = 0; hx[i]; i++) {
+                char c = hx[i];
+                bits.u = (bits.u << 4) | (uint64_t)(c <= '9' ? c - '0' : c - 'a' + 10);
+            }
+            g_ans = bits.d;
+        }
+    }
     double v;
     char what[24];
     CalcErr e = calc_eval(expr, &v, what, sizeof(what));
@@ -565,7 +579,13 @@ static int calc_cmd(int argc, char **argv) {
             return 1;
     }
 
-    g_ans = v;
+    {
+        union { double d; uint64_t u; } bits; bits.d = v;
+        char hx[20];
+        for (int i = 0; i < 16; i++) hx[i] = "0123456789abcdef"[(bits.u >> (60 - 4 * i)) & 15];
+        hx[16] = 0;
+        fw_reg_set("Apps.Calc_Ans", hx);
+    }
     char buf[48];
     calc_format_num(v, buf, sizeof(buf));
     fw_printf("%s\n", buf);

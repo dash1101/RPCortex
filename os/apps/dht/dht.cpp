@@ -18,7 +18,7 @@
 // 40 us splits the two cleanly, and that is the whole decoder.
 #include "rpc_app.h"
 
-RPC_APP_VER("dht", "2.0");
+RPC_APP_VER_FLAGS("dht", "2.1", RPC_APP_F_ON_DEMAND);
 
 #define DHT_TIMEOUT_US 200      // no edge in this long means the sensor is gone
 

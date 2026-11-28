@@ -33,7 +33,7 @@
 #include <stdio.h>
 #include <string.h>
 
-RPC_APP_VER("fileexp", "2.1");
+RPC_APP_VER_FLAGS("fileexp", "2.2", RPC_APP_F_ON_DEMAND);
 
 #define FX_PATH_MAX   160
 #define FX_LINE_MAX   RPC_SHELL_LINE_MAX

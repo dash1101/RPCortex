@@ -24,9 +24,18 @@ Summary:
 
 ### Improved
 
+- Most packages now load only while their command runs (calc, gpio, dht, i2cscan, speedtest,
+  websearch, backup, sysmon, htop, fileexp, ws2812, selftest), as browse already did. With all of
+  them installed a Pico 2 W had 41 KB of memory free and HTTPS could not connect; now it has
+  130 KB. httpd and Nova D1, which keep running in the background, stay loaded.
+
 - `fetch` shows the power source, and the clock when the governor has lowered it.
 
 ### Fixed
+
+- A package's HTTP request that got no answer at all reported a status of 0xA5A5A5A5, the stack's
+  fill pattern, because the result was never initialised. It is 0 now, and selftest says "no
+  answer" with the reason.
 
 - The clock governor asked the radio chip for the power source four times a second on the W
   boards, which was all of its CPU use (0.7% of a core). It asks every 5 seconds now.

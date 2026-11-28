@@ -13,7 +13,7 @@
 // downloading a firmware update.
 #include "rpc_app.h"
 
-RPC_APP_VER("ws2812", "1.1");
+RPC_APP_VER_FLAGS("ws2812", "1.2", RPC_APP_F_ON_DEMAND);
 
 // The program. Four instructions, and all of the timing is in the delays.
 //

@@ -104,7 +104,7 @@ static bool download(const char *url, const char *dest, char *hex_out, uint64_t 
     uint32_t room = storage_free_bytes();
     o.max_bytes = room > 8192 ? room - 8192 : 1;
 
-    FetchResult r;
+    FetchResult r{};
     bool good = http_fetch(&t, url, dl_sink, &d, &o, &r);
     if (!storage_close_sink(d.fh) && good) { good = false; r.error = FETCH_ERR_SINK; }
     out_progress_done();

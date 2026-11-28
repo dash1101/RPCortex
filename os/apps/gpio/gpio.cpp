@@ -7,7 +7,7 @@
 // board, including the pins the radio owns on the wireless variants.
 #include "rpc_app.h"
 
-RPC_APP_VER("gpio", "2.1");
+RPC_APP_VER_FLAGS("gpio", "2.2", RPC_APP_F_ON_DEMAND);
 
 static bool streq(const char *a, const char *b) {
     while (*a && *a == *b) { a++; b++; }

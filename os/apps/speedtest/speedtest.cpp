@@ -22,7 +22,7 @@
 // without any of it landing there.
 #include "rpc_app.h"
 
-RPC_APP_VER("speedtest", "2.1");
+RPC_APP_VER_FLAGS("speedtest", "2.2", RPC_APP_F_ON_DEMAND);
 
 // Cloudflare's resolver: anycast, so the reply comes from whichever site is
 // nearest, which is what a latency figure should reflect.

@@ -17,7 +17,7 @@
 #include <stdio.h>
 #include <string.h>
 
-RPC_APP_VER("htop", "1.0");
+RPC_APP_VER_FLAGS("htop", "1.0", RPC_APP_F_ON_DEMAND);
 
 #define MAXT    32
 #define C_RED   1

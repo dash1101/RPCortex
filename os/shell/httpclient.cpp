@@ -143,7 +143,7 @@ int net_pkg_http_get(const char *url, void *buf, unsigned cap) {
     // filled it (and, since the early refusal, any body announced as larger),
     // so a reply bigger than the buffer came back as -1 instead of its start.
 
-    FetchResult r;
+    FetchResult r{};
     bool good = http_fetch(&t, url, mem_sink, &m, &o, &r);
     // A full buffer stops the transfer, which is not a failure — the caller
     // asked for that much and got it.
@@ -247,7 +247,10 @@ int net_pkg_http_request(FwHttpRequest *r) {
     o.final_url = final_url;
     o.final_url_cap = sizeof(final_url);
 
-    FetchResult res;
+    // Zeroed: http_fetch leaves fields it never reached as they were, and a
+    // failed connection never reaches the status. A package read 0xA5A5A5A5
+    // (the stack's fill pattern) back as "HTTP -1515870811".
+    FetchResult res{};
     bool good = http_fetch(&t, r->url, req_sink, &s, &o, &res);
     bool closed = storage_close_sink(s.h);
     r->status = res.status;
@@ -300,7 +303,7 @@ int net_pkg_http_measure(const char *url, uint32_t *bytes, uint32_t *ms) {
     FetchOpts o{};
     o.poll = poll_interrupt;
 
-    FetchResult r;
+    FetchResult r{};
     bool good = http_fetch(&t, url, count_sink, &c, &o, &r);
     if (!good && c.bytes == 0) return -1;
 
@@ -327,7 +330,7 @@ int net_pkg_http_download(const char *url, const char *path) {
     uint32_t room = storage_free_bytes();
     o.max_bytes = room > 8192 ? room - 8192 : 1;
 
-    FetchResult r;
+    FetchResult r{};
     bool good = http_fetch(&t, url, file_sink, &fs, &o, &r);
     if (!storage_close_sink(fs.h)) good = false;
     if (!good) { storage_remove(path); return -1; }
@@ -431,7 +434,7 @@ static int cmd_wget(int argc, char **argv) {
     uint32_t room = storage_free_bytes();
     o.max_bytes = room > 8192 ? room - 8192 : 1;
 
-    FetchResult r;
+    FetchResult r{};
     bool good = http_fetch(&t, argv[1], file_sink, &fs, &o, &r);
     // The close is where littlefs commits, so a failure there is a failure of
     // the download however well the transfer itself went.
@@ -574,7 +577,7 @@ static int cmd_curl(int argc, char **argv) {
     if (timeout_s) http_net_set_timeout_ms(timeout_s * 1000u);
     if (verbose && !quiet) out_info("%s %s", method[0] ? method : "GET", url);
 
-    FetchResult r;
+    FetchResult r{};
     bool good;
     if (save) {
         char full[128];

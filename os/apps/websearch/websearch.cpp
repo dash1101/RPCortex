@@ -21,7 +21,7 @@
 // never holds two.
 #include "rpc_app.h"
 
-RPC_APP_VER("websearch", "2.4");
+RPC_APP_VER_FLAGS("websearch", "2.5", RPC_APP_F_ON_DEMAND);
 
 // One response at a time, and never more than this. Wikipedia summaries run to
 // two or three kilobytes and DuckDuckGo's answers to rather more; anything that

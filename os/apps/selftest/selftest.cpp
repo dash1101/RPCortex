@@ -17,7 +17,7 @@
 #include "rpc_app.h"
 #include <stdio.h>
 
-RPC_APP_VER("selftest", "1.0");
+RPC_APP_VER_FLAGS("selftest", "1.1", RPC_APP_F_ON_DEMAND);
 
 static int g_pass, g_fail, g_skip;
 static char g_line[160];
@@ -209,7 +209,13 @@ static void check_network(void) {
     int got = n > 0 ? (int)fw_file_read("/tmp/selftest.http", g_back, sizeof(g_back) - 1) : 0;
     g_back[got > 0 ? got : 0] = 0;
     int ok = n > 0 && status == 200 && s_has((const char *)g_back, "\"packages\"");
-    snprintf(g_line, sizeof(g_line), "latest.json: HTTP %d, %d bytes in %u ms via %s%s%s", status, n, (unsigned)ms, via_wifi ? "Wi-Fi" : "the bridge", ok ? "" : " - ", ok ? "" : detail);
+    // A request that got no answer has no status to show (the field is not
+    // filled in), so it says so rather than printing whatever was there.
+    if (n < 0)
+        snprintf(g_line, sizeof(g_line), "latest.json: no answer after %u ms via %s - %s", (unsigned)ms,
+                 via_wifi ? "Wi-Fi" : "the bridge", detail);
+    else
+        snprintf(g_line, sizeof(g_line), "latest.json: HTTP %d, %d bytes in %u ms via %s%s%s", status, n, (unsigned)ms, via_wifi ? "Wi-Fi" : "the bridge", ok ? "" : " - ", ok ? "" : detail);
     report("https", ok);
     fw_file_remove("/tmp/selftest.http");
     // And a certificate nobody should trust has to be refused.
