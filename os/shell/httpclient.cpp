@@ -25,6 +25,7 @@
 #include "netport.h"
 
 #include <string.h>
+#include <strings.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -198,7 +199,39 @@ static void req_header(void *ctx, const char *line) {
         snprintf(r->final_url, sizeof(r->final_url), "%s", v);
 }
 
-int net_pkg_http_request(FwHttpRequest *r) {
+// A package's extra header lines, one at a time into the block. False (and
+// `why` set) for a line that is not "Name: value", one naming a header the
+// firmware owns, or a block that will not fit.
+static bool add_extra_headers(char *block, size_t cap, const char *extra, char *why, size_t wcap) {
+    static const char *const kOwned[] = {"host", "content-length", "transfer-encoding", "connection"};
+    for (const char *p = extra; p && *p;) {
+        const char *e = strchr(p, '\n');
+        size_t len = e ? (size_t)(e - p) : strlen(p);
+        char line[256];
+        if (len && p[len - 1] == '\r') len--;
+        if (len) {
+            if (len >= sizeof(line)) { snprintf(why, wcap, "A header line is too long."); return false; }
+            memcpy(line, p, len);
+            line[len] = 0;
+            const char *colon = strchr(line, ':');
+            size_t nlen = colon ? (size_t)(colon - line) : 0;
+            for (const char *o : kOwned)
+                if (nlen == strlen(o) && !strncasecmp(line, o, nlen)) {
+                    snprintf(why, wcap, "The %s header is the firmware's to send.", o);
+                    return false;
+                }
+            if (!http_add_header(block, cap, line)) {
+                snprintf(why, wcap, "A header is not 'Name: value', or they do not all fit.");
+                return false;
+            }
+        }
+        if (!e) break;
+        p = e + 1;
+    }
+    return true;
+}
+
+int net_pkg_http_request(FwHttpRequest *r, const char *extra_headers) {
     r->status = 0; r->bytes = 0; r->truncated = 0;
     r->final_url[0] = r->location[0] = r->content_type_out[0] = r->detail[0] = 0;
 
@@ -221,6 +254,9 @@ int net_pkg_http_request(FwHttpRequest *r) {
             return -1;
         }
     }
+    if (extra_headers && !add_extra_headers(headers, sizeof(headers), extra_headers,
+                                            r->detail, sizeof(r->detail)))
+        return -1;
 
     ReqSink s{nullptr, r->max_bytes, 0, false, false};
     s.h = storage_open_sink(r->path);

@@ -6,6 +6,7 @@
 // is a MINOR bump, changing one is MAJOR.
 
 #include "api.h"
+#include <stddef.h>
 #include "clockuse.h"
 #include "rpc_app.h"
 #include "pkgslot.h"   // pkgslot_crc32, for the ABI-table identity a slot records
@@ -1320,7 +1321,7 @@ int net_pkg_ssid(char *out, unsigned cap);
 int net_pkg_ip(char *out, unsigned cap);
 int net_pkg_resolve(const char *host, char *out, unsigned cap);
 int net_pkg_http_get(const char *url, void *buf, unsigned cap);
-int net_pkg_http_request(FwHttpRequest *r);
+int net_pkg_http_request(FwHttpRequest *r, const char *extra_headers);
 int net_pkg_http_download(const char *url, const char *path);
 int net_pkg_http_measure(const char *url, uint32_t *bytes, uint32_t *ms);
 int net_pkg_ping(const char *host, uint32_t timeout_ms);
@@ -1388,9 +1389,17 @@ extern "C" int fw_http_download(const char *url, const char *path) {
 extern "C" int fw_http_request(FwHttpRequest *r) {
     bb_note_phase("entered fw_http_request");
     // Everything the firmware reads through or writes to is checked first: the
-    // struct (and its size, so an older package's shorter one is refused rather
-    // than written past), then each string and the body.
-    if (!ok_w(r, sizeof(*r)) || r->size < sizeof(*r)) return -1;
+    // struct, as far as the package's own `size` says it goes (a package built
+    // against API 1.28 or 1.29 has no `headers` and a shorter struct, and is
+    // neither refused nor written past), then each string and the body.
+    const unsigned v128 = (unsigned)offsetof(FwHttpRequest, headers);
+    if (!ok_w(r, v128) || r->size < v128) return -1;
+    const char *extra = nullptr;
+    if (r->size >= sizeof(*r)) {
+        if (!ok_w(r, sizeof(*r))) return -1;
+        extra = r->headers;
+        if (extra && !ok_s(extra)) return -1;
+    }
     if (!ok_s(r->url) || !ok_s(r->path)) return -1;
     if (r->method && !ok_s(r->method)) return -1;
     if (r->user_agent && !ok_s(r->user_agent)) return -1;
@@ -1400,7 +1409,7 @@ extern "C" int fw_http_request(FwHttpRequest *r) {
     if (r->content_type && (strchr(r->content_type, '\r') || strchr(r->content_type, '\n'))) return -1;
     if (r->method && (strchr(r->method, ' ') || strchr(r->method, '\r') || strchr(r->method, '\n'))) return -1;
     task_alive();
-    return net_pkg_http_request(r);
+    return net_pkg_http_request(r, extra);
 }
 extern "C" int fw_http_measure(const char *url, uint32_t *bytes, uint32_t *ms) {
     bb_note_phase("entered fw_http_measure");

@@ -16,8 +16,9 @@
 // Every section prints a line even when it fails, because a missing line is
 // ambiguous and a failed one is data.
 #include "rpc_app.h"
+#include <string.h>
 
-RPC_APP_VER("probe", "1.1");
+RPC_APP_VER("probe", "1.2");
 
 #define RULE "----------------------------------------------------------"
 
@@ -333,7 +334,35 @@ static void probe_memory(void) {
     fw_printf("  largest block       %u bytes\n", (unsigned)fw_heap_largest());
 }
 
+// `probe headers <url>`: one request with a header of its own (API 1.30) and a
+// JSON body, to an echo service, and the start of what came back. The way to
+// see the header reach the far end over Wi-Fi and through the bridge alike.
+static void probe_headers(const char *url) {
+    static FwHttpRequest r;
+    memset(&r, 0, sizeof(r));
+    r.size = sizeof(r);
+    r.method = "POST";
+    r.url = url;
+    r.body = "{\"probe\":1}";
+    r.body_len = 11;
+    r.content_type = "application/json";
+    r.headers = "X-RPCortex-Probe: headers-ok\nAccept: application/json\n";
+    r.path = "/tmp/probe.http";
+    r.max_bytes = 1500;
+    int n = fw_http_request(&r);
+    if (n < 0) { fw_printf("no answer: %s\n", r.detail); return; }
+    static char buf[1501];
+    unsigned got = fw_file_read("/tmp/probe.http", buf, sizeof(buf) - 1);
+    buf[got] = 0;
+    fw_printf("HTTP %d, %d bytes\n%s\n", r.status, n, buf);
+    // And one the firmware must refuse: a header it owns.
+    r.headers = "Host: example.com\n";
+    n = fw_http_request(&r);
+    fw_printf("a Host header: %s\n", n < 0 ? r.detail : "SENT (it should have been refused)");
+}
+
 static int probe_cmd(int argc, char **argv) {
+    if (argc >= 3 && !strcmp(argv[1], "headers")) { probe_headers(argv[2]); return 0; }
     // `probe pio <out> <in>` runs the loopback and nothing else, because it
     // drives a pin and that is not something to do as part of a general report.
     if (argc >= 2 && argv[1][0] == 'p') {

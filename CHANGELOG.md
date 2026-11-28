@@ -12,6 +12,11 @@ Summary:
 
 ### New
 
+- Packages can send request headers of their own (`FwHttpRequest.headers`, API 1.30): what an API
+  key or a JSON API needs. Each line is checked (no line breaks inside one, and Host,
+  Content-Length, Transfer-Encoding and Connection stay the firmware's), and it works the same over
+  Wi-Fi and through the computer. Packages built against API 1.28 or 1.29 keep working unchanged.
+
 ### Improved
 
 ### Fixed

@@ -23,7 +23,7 @@ extern "C" {
 // MINOR: a symbol added — older-minor apps still run (everything they want is
 //        present); newer-minor apps refused (they may want something absent).
 #define RPC_API_MAJOR 1
-#define RPC_API_MINOR 29
+#define RPC_API_MINOR 30
 
 typedef struct {
     uint32_t magic;          // RPC_APP_MAGIC
@@ -776,6 +776,12 @@ typedef struct FwHttpRequest {
     char        location[256];    // a redirect that was NOT followed (a POST's 303), else ""
     char        content_type_out[64];
     char        detail[96];       // why, when the return is negative
+    // --- API 1.30 (a package built against 1.28 or 1.29 has a shorter struct,
+    //     and the firmware reads only as far as its `size`)
+    const char *headers;          // extra request headers: "Name: value" lines, each ending
+                                  // in \n (or \r\n), or null. Host, Content-Length,
+                                  // Transfer-Encoding and Connection are refused; with
+                                  // the firmware's own, about 300 bytes in all.
 } FwHttpRequest;
 
 // Returns the bytes written to `path` (any status), or negative when no answer
