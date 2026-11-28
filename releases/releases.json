@@ -2,6 +2,107 @@
   "schema": 1,
   "releases": [
     {
+      "tag": "v2.0.730-beta",
+      "display": "v2.0.730-beta",
+      "version": "2.0",
+      "build": 730,
+      "commit": "d78d2fd95714421bc2061ef9e57c32db1358ce62",
+      "codename": "Vela II",
+      "date": "2026-11-28",
+      "prerelease": true,
+      "title": "RPCortex v2.0.730-beta",
+      "summary": "htop, RPC Fetch with a live mode, and packages that load only while they run, so a well-stocked board keeps its memory free",
+      "notes": {
+        "new": [
+          "**RPC Fetch.** `fetch` (also `rpcfetch`, `neofetch`, `picofetch`) takes `-w [secs]` to redraw itself in place every few seconds until a key is pressed, and a colour (`fetch magenta`) as v1's PicoFetch did.",
+          "**htop**, a package: the interactive process viewer laid out like the real one. A meter per core, memory and flash, tasks and load, a list of every task with its CPU share, stack, run time and where it came from, sorted by any column (F6, or P M T N, I to reverse), and F9 to stop a task after asking. Also answers to `top`. `pkg install htop`.",
+          "Packages can list tasks (`fw_task_list`, API 1.29), and the header names the function keys (`FW_KEY_F1` to `FW_KEY_F12`)."
+        ],
+        "improved": [
+          "Most packages now load only while their command runs (calc, gpio, dht, i2cscan, speedtest, websearch, backup, sysmon, htop, fileexp, ws2812, selftest), as browse already did. With all of them installed a Pico 2 W had 41 KB of memory free and HTTPS could not connect; now it has 130 KB. httpd and Nova D1, which keep running in the background, stay loaded.",
+          "`fetch` shows the power source, and the clock when the governor has lowered it."
+        ],
+        "fixed": [
+          "With more than about a dozen packages that load when used, the next one's commands were dropped without a word and the package unloaded anyway, so its command simply did not exist (`selftest` vanished this way). The table holds 32 commands now, and a package whose commands do not fit stays loaded and says so in the log.",
+          "A package's HTTP request that got no answer at all reported a status of 0xA5A5A5A5, the stack's fill pattern, because the result was never initialised. It is 0 now, and selftest says \"no answer\" with the reason.",
+          "The clock governor asked the radio chip for the power source four times a second on the W boards, which was all of its CPU use (0.7% of a core). It asks every 5 seconds now.",
+          "A package setting up I2C on pins that cannot carry that bus (`i2cscan 1` used GPIO 4/5, which are I2C0's) hung until the stall guard stopped it. `fw_i2c_init` now refuses such pins (it returns -2), and every I2C read and write gives up after about 20 ms plus 1 ms a byte instead of waiting forever on a bus with no pull-ups."
+        ],
+        "security": [
+          "A package could stop any task, including the shell and the network task, whoever ran it. `fw_task_kill` now follows `kill`'s rule: an admin may stop anything, anyone else only what is theirs."
+        ],
+        "changed": [],
+        "issues": []
+      },
+      "assets": [
+        {
+          "board": "pico2_w",
+          "kind": "bin",
+          "file": "rpcortex-v2.0.730-beta-pico2_w.bin",
+          "size": 924348,
+          "sha256": "d7f7fc2429b71a4f0e2bbb1e022c0d9063bf20dee13ec774923c0db1ce9712a3",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.730-beta/rpcortex-v2.0.730-beta-pico2_w.bin"
+        },
+        {
+          "board": "pico2_w",
+          "kind": "uf2",
+          "file": "rpcortex-v2.0.730-beta-pico2_w.uf2",
+          "size": 1873408,
+          "sha256": "779aca377e0e023e3c13418f5f93d6126937597f890d1cf8b674dc8dfde0de03",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.730-beta/rpcortex-v2.0.730-beta-pico2_w.uf2"
+        },
+        {
+          "board": "pico_w",
+          "kind": "bin",
+          "file": "rpcortex-v2.0.730-beta-pico_w.bin",
+          "size": 811240,
+          "sha256": "e49395699d6505da1d3e796cd0bce6e51f10ef65c9272acee06268fa138e466e",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.730-beta/rpcortex-v2.0.730-beta-pico_w.bin"
+        },
+        {
+          "board": "pico_w",
+          "kind": "uf2",
+          "file": "rpcortex-v2.0.730-beta-pico_w.uf2",
+          "size": 1622528,
+          "sha256": "b97098321d9bcec1fabd371a582e4d57332d79ba8c9bb3e44d035421169000ea",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.730-beta/rpcortex-v2.0.730-beta-pico_w.uf2"
+        },
+        {
+          "board": "pico2",
+          "kind": "bin",
+          "file": "rpcortex-v2.0.730-beta-pico2.bin",
+          "size": 422028,
+          "sha256": "29fa450fbceb75f8a45a2efe0268e3e3dc35a5d3d03131f03ecc67be48c9fcf2",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.730-beta/rpcortex-v2.0.730-beta-pico2.bin"
+        },
+        {
+          "board": "pico2",
+          "kind": "uf2",
+          "file": "rpcortex-v2.0.730-beta-pico2.uf2",
+          "size": 868864,
+          "sha256": "05deaa22102187a40127f5eb4fe4373915b686ec66acb5019950334c69f035ad",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.730-beta/rpcortex-v2.0.730-beta-pico2.uf2"
+        },
+        {
+          "board": "pico",
+          "kind": "bin",
+          "file": "rpcortex-v2.0.730-beta-pico.bin",
+          "size": 330124,
+          "sha256": "94302ca162cdcfd8671a708b324a81f0e0998c4eaf86d0deceb58b02efb98c98",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.730-beta/rpcortex-v2.0.730-beta-pico.bin"
+        },
+        {
+          "board": "pico",
+          "kind": "uf2",
+          "file": "rpcortex-v2.0.730-beta-pico.uf2",
+          "size": 660480,
+          "sha256": "3582597e538764ffe0df00687bc398331d8ef85ae488595243cb7a29beab5677",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.730-beta/rpcortex-v2.0.730-beta-pico.uf2"
+        }
+      ],
+      "url": "https://github.com/dash1101/RPCortex/releases/tag/v2.0.730-beta"
+    },
+    {
       "tag": "v2.0.723-beta",
       "display": "v2.0.723-beta",
       "version": "2.0",

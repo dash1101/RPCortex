@@ -8,6 +8,22 @@ good notes is in `RELEASING.md`.
 
 ## Unreleased
 
+Summary: 
+
+### New
+
+### Improved
+
+### Fixed
+
+### Security
+
+### Changed
+
+### Known issues
+
+## v2.0.730-beta, 2026-11-28
+
 Summary: htop, RPC Fetch with a live mode, and packages that load only while they run, so a well-stocked board keeps its memory free
 
 ### New
