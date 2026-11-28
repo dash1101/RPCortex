@@ -259,6 +259,15 @@ static bool bus_sm(PIO *pio_out, uint *sm_out) {
 
 static uint32_t g_bus_div = CYW43_PIO_CLOCK_DIV_INT;
 
+bool radio_bus_sm(unsigned *pio_index, unsigned *sm_out) {
+    if (!g_radio_up) return false;
+    PIO pio; uint sm;
+    if (!bus_sm(&pio, &sm)) return false;
+    *pio_index = PIO_NUM(pio);
+    *sm_out = sm;
+    return true;
+}
+
 uint32_t radio_bus_hz(void) { return clock_get_hz(clk_sys) / g_bus_div; }
 
 uint32_t radio_clock_changed(void) {

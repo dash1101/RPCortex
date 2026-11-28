@@ -293,6 +293,17 @@ struct CpuSample { uint32_t busy_ms; uint32_t wall_ms; };
 static CpuSample g_cpu_last;
 static uint32_t   g_cpu_pct;
 
+uint32_t task_busy_ms(void) {
+    uint32_t busy = 0;
+    // Not pid 1: the idle task. Its time is the time nothing else wanted the
+    // core, asleep or spinning, and counting it read an idle board as a third
+    // busy.
+    for (uint32_t i = 0; i < TASK_MAX; i++)
+        if (g_tasks[i].info.state != TASK_FREE && g_tasks[i].info.pid != 1)
+            busy += g_tasks[i].info.cpu_ms;
+    return busy;
+}
+
 uint32_t task_cpu_percent(void) {
     uint32_t busy = 0;
     for (uint32_t i = 0; i < TASK_MAX; i++)

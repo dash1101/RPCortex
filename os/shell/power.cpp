@@ -37,6 +37,7 @@
 #include "blackbox.h"
 #include "persist.h"
 #include "powerpolicy.h"
+#include "clockuse.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -188,9 +189,36 @@ static int cmd_power(int argc, char **argv) {
         if (g_slept) out_multi("  Last sleep       about %u ms", (unsigned)g_slept_ms);
         else         out_multi("  Last sleep       none this boot");
         unsigned ic = task_idle_cores();
+        {
+            int src = power_source();
+            GovStatus g;
+            governor_status(&g);
+            out_multi("  Power source     %s", src == 1 ? "USB" : src == 0 ? "battery" : "not known yet");
+            out_multi("  Governor         %s, %s", g.mode, g.why);
+            out_multi("  Base / floor     %u / %u MHz%s", g.base_mhz, g.floor_mhz,
+                      g.cur_mhz < g.base_mhz ? "  (lowered now)" : "");
+            if (g.holder) out_multi("  Held by          %s (in use, so the clock stays at its base)", g.holder);
+            out_multi("  Clock changes    %u this boot", g.changes);
+        }
         out_multi("  Idle sleep       %s%s", task_idle_sleep_on() ? "on" : "off",
                   !task_idle_sleep_on() ? "" : ic == 3 ? " (both cores)" : ic == 1 ? " (core 0 only: core 1 had no spare alarm)"
                   : ic == 2 ? " (core 1 only: core 0 had no spare alarm)" : " (no spare alarm: spinning)");
+        return 0;
+    }
+
+    // power governor off|auto|on. auto (the default) lowers the clock only on
+    // battery; on lowers it whenever the device is quiet, plugged in or not.
+    if (!strcmp(sub, "governor")) {
+        if (argc > 2 && !governor_set_mode(argv[2])) {
+            out_multi("Usage: power governor [off|auto|on]");
+            out_multi("  auto  lower the clock while quiet, on battery only (the default)");
+            out_multi("  on    lower it while quiet, plugged in too");
+            out_multi("  off   leave the clock alone");
+            return 1;
+        }
+        GovStatus g;
+        governor_status(&g);
+        out_ok("Governor %s: %s.", g.mode, g.why);
         return 0;
     }
 
@@ -226,6 +254,7 @@ static int cmd_power(int argc, char **argv) {
     out_multi("Usage:");
     out_multi("  power status                   clock, limits, last sleep");
     out_multi("  power idle [on|off]            idle cores sleep (on) or spin");
+    out_multi("  power governor [off|auto|on]   lower the clock while quiet");
     out_multi("  power sleep <ms>               sleep, keeping memory and state");
     out_multi("  power sleep pin <gpio> [high|low]");
     out_multi("  power dormant <ms>             deeper; stops more clocks");

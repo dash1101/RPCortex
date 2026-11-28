@@ -41,6 +41,9 @@ void radio_quiesce_end(int token);
 uint32_t radio_clock_changed(void);
 // The bus clock now, in Hz, for `pulse status` (0 without a radio).
 uint32_t radio_bus_hz(void);
+// Which PIO state machine is the radio's bus (the governor leaves that one out
+// of "is anything clock-timed in use": radio_clock_changed re-times it).
+bool radio_bus_sm(unsigned *pio_index, unsigned *sm);
 
 // Whether the chip has been powered up. Written only by radio_up and radio_down.
 extern bool g_radio_up;

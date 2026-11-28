@@ -35,6 +35,7 @@
 // What it does NOT do is arbitrate: a package mid-transaction with a radio
 // while a read happens here is a collision, and the fix for that is a bus lock
 // in the SPI layer rather than something this file can do on its own.
+#include "clockuse.h"
 #include "sdcard.h"
 
 #if defined(RPC_HAS_SD) && RPC_HAS_SD
@@ -132,6 +133,7 @@ static bool bus_up(void) {
     if (g_bus.up && p.cs == g_bus.p.cs && p.sck == g_bus.p.sck &&
         p.mosi == g_bus.p.mosi && p.miso == g_bus.p.miso) return true;
 
+    ClockUse _cu;        // clockuse.h: the clock at its base while the bus is set up
     g_bus.p = p;
     g_bus.spi = spi_for(p.sck);
     g_bus.hz = 400000;

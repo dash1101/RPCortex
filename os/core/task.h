@@ -272,6 +272,12 @@ uint32_t task_core_count(void);
 // answer covers the interval since the last.
 uint32_t task_cpu_percent(void);
 
+// The CPU time every live task has used, in ms, summed: for a caller that keeps
+// its own window (the clock governor), so it neither shares task_cpu_percent's
+// window with `ps` nor reads two busy cores as 100% and one as 50%. Falls when
+// a task that used time exits; callers take a fall as no time.
+uint32_t task_busy_ms(void);
+
 // The core this code is running on, 0-based.
 uint32_t task_this_core(void);
 

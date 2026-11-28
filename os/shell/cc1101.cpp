@@ -249,6 +249,7 @@ static int cc_parse_file_timings(const char *text, uint16_t *out, int cap) {
 // spi_write_read_blocking, with CS driven by hand on a GPIO.
 // ===========================================================================
 
+#include "clockuse.h"
 #include "command.h"
 #include "out.h"
 #include "path.h"
@@ -319,6 +320,7 @@ static unsigned    cc_cs_gpio;
 static void cc_cs(int level) { gpio_put(cc_cs_gpio, level); }
 
 static void cc_bus_begin(const CcPins &p) {
+    ClockUse _cu;        // clockuse.h: the clock at its base while the bus is set up
     cc_bus = cc_spi_for(p.sck);
     cc_cs_gpio = p.cs;
 

@@ -35,6 +35,7 @@
 #include <stdio.h>
 
 #include "pico/stdio.h"
+#include "tusb.h"
 
 extern "C" void usb_task_start(void);
 
@@ -71,8 +72,18 @@ extern "C" void usbhid_service(void);
 // stack runs. This is the same shape as the two bugs already found in this
 // tree: flash writes that only worked from the core that had registered, and
 // cyw43's async_context being bound to the core that initialised it.
+// Spin while the bus is busy, sleep a millisecond at a time once it has been
+// quiet for USB_QUIET_MS. It used to yield in a loop forever: about a tenth of
+// a core on a board doing nothing, and a task that is always ready keeps the
+// core from ever sleeping (task_idle_wait_us). An event arriving while it sleeps
+// waits at most the millisecond, which is one USB frame; a transfer keeps the
+// events coming and so never sees the sleep.
+#define USB_QUIET_MS 20
+
 static int usb_task(void *) {
+    uint32_t last_event = task_now_ms();
     while (true) {
+        if (tud_task_event_ready()) last_event = task_now_ms();
         // Anything the drive needs that takes the filesystem lock for a while
         // happens HERE, before the device stack is entered — see usbmsc.cpp for
         // why the order matters.
@@ -88,7 +99,8 @@ static int usb_task(void *) {
         // its turn: enumeration, control transfers, and every mass-storage
         // callback happen inside here, in thread context.
         stdio_flush();
-        task_yield();
+        if ((uint32_t)(task_now_ms() - last_event) > USB_QUIET_MS) task_sleep_ms(1);
+        else task_yield();
     }
     return 0;
 }

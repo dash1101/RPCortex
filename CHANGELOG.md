@@ -12,6 +12,16 @@ Summary:
 
 ### New
 
+- **A clock governor.** `power governor auto` (the default) lowers the CPU clock to 48 MHz once the
+  board has been quiet for 5 seconds on battery, and puts it back the moment there is work: it looks
+  four times a second, and anything over half a core's worth of load is work. It never lowers the
+  clock while anything timed from it is in use (an SPI, I2C or UART bus, PWM, a PIO program, the SD
+  card): it reads the hardware for that, and setting any of them up puts the clock back first. `on`
+  lowers it whenever quiet, plugged in too; `off` leaves the clock alone. `power status` shows the
+  power source (USB or battery), what the governor is doing and why, and what is holding the clock.
+  Tested on a Pico 2 W and a Pico 2 with `on`: down to the floor when quiet, back up for pretest
+  (which passed at its usual speeds), and held by the SD card's bus. The battery reading and the
+  current saved have not been measured: both bench boards run on USB.
 - **Idle cores sleep.** A core with nothing to run used to spin at full clock: the idle task in a
   loop, core 1 with a 200 microsecond busy-wait, a sleeping task re-checking its deadline. Now it
   waits asleep until an interrupt, the other core, or at most a millisecond (200 microseconds on
@@ -21,6 +31,14 @@ Summary:
 
 ### Improved
 
+- An idle board no longer keeps a core busy. The USB task and the shell prompt both yielded in a
+  loop forever, about a quarter of a core between them at a prompt with nothing typed. Each now
+  sleeps a millisecond at a time once it has been quiet (20 ms for USB, 50 ms for the prompt), so
+  typing and transfers run as before: over 20 idle seconds the USB task used 56 ms and the shell
+  almost nothing.
+- `fw_clock_hz` gives packages the clock their peripherals are timed from (the governor's base),
+  not wherever the CPU happens to be this second.
+
 ### Fixed
 
 ### Security
@@ -28,6 +46,11 @@ Summary:
 ### Changed
 
 ### Known issues
+
+- A Pico 2 W can answer pings slowly (about 150 ms) for the first one to two minutes after starting,
+  with or without idle sleep and the governor; after that it is about 1 ms.
+- `sd` with no card leaves the SD bus set up, and the governor stays at the base clock until the next
+  start.
 
 ## v2.0.715-beta, 2026-11-27
 

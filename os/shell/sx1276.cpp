@@ -177,6 +177,7 @@ static void sx_format_rx(char *out, unsigned cap, const uint8_t *data, int n,
 // as os/api.cpp's fw_spi_*.
 // ===========================================================================
 
+#include "clockuse.h"
 #include "command.h"
 #include "out.h"
 #include "task.h"
@@ -220,6 +221,7 @@ static unsigned    sx_cs_gpio;
 static void sx_cs(int level) { gpio_put(sx_cs_gpio, level); }
 
 static void sx_bus_begin(const SxPins &p) {
+    ClockUse _cu;        // clockuse.h
     sx_bus = sx_spi_for(p.sck);
     sx_cs_gpio = p.cs;
 

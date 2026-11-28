@@ -23,6 +23,7 @@
 #include "logring.h"
 #include "imagefeatures.h"
 #include "radio.h"
+#include "clockuse.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -464,7 +465,9 @@ static int cmd_pulse(int argc, char **argv) {
             out_err("Use a whole number of MHz, %d-%d.", CLOCK_MHZ_MIN, CLOCK_MHZ_MAX);
             return 1;
         }
-        if (!apply_clock_mhz(mhz)) {
+        // The base too: the governor (power governor) lowers from here, never
+        // above it, and puts the clock back here whenever anything needs it.
+        if (!clock_set_base_mhz(mhz)) {
             out_err("%u MHz is not reachable from this crystal.", mhz);
             return 1;
         }

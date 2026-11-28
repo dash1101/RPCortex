@@ -65,6 +65,7 @@ int  shell_run_line_now(char *line);
 bool crashlog_save(const BlackBox *bb);
 void sys_apply_boot_clock(bool last_start_failed);
 void power_apply_settings(void);
+void governor_start(void);
 
 // Everything that needs a real stack. Runs as pid 2.
 static int shell_task(void *) {
@@ -348,6 +349,7 @@ int main(void) {
 
     // Become the idle task. Nothing else runs here, so this stack stays shallow
     // and the 4 KB it is stuck with is plenty.
+    governor_start();       // after the boot clock: it lowers from wherever that left it
     task_idle_init_core();
     while (true) { task_yield(); task_idle_wait_us(1000); }
 }

@@ -6,6 +6,7 @@
 // is a MINOR bump, changing one is MAJOR.
 
 #include "api.h"
+#include "clockuse.h"
 #include "rpc_app.h"
 #include "pkgslot.h"   // pkgslot_crc32, for the ABI-table identity a slot records
 #include "kernel.h"
@@ -869,6 +870,7 @@ static i2c_inst_t *i2c_of(unsigned bus) {
 static bool g_i2c_ready[2];
 
 extern "C" int fw_i2c_init(unsigned bus, unsigned sda, unsigned scl, unsigned baud) {
+    ClockUse _cu;        // clockuse.h: the clock at its base, and held there while this sets up
     i2c_inst_t *i = i2c_of(bus);
     if (!i) return -1;
     if (!fw_gpio_usable(sda) || !fw_gpio_usable(scl)) return -1;
@@ -911,7 +913,10 @@ extern "C" int fw_i2c_deinit(unsigned bus) {
     return 0;
 }
 
-extern "C" uint32_t fw_clock_hz(void) { return clock_get_hz(clk_sys); }
+// The clock peripherals are timed from, not wherever the governor has the CPU
+// this second: a package computes a PIO or PWM divider from this before it
+// claims the hardware, and claiming puts the clock back to this.
+extern "C" uint32_t fw_clock_hz(void) { return clock_base_hz(); }
 
 extern "C" uint32_t fw_micros(void) { return time_us_32(); }
 
@@ -1045,6 +1050,7 @@ extern "C" void fw_fb_scroll(FwFrameBuf *f, int dx, int dy) {
 // --- PWM --------------------------------------------------------------------
 
 extern "C" int fw_pwm_init(unsigned pin, unsigned freq_hz) {
+    ClockUse _cu;        // clockuse.h: the clock at its base, and held there while this sets up
     if (!fw_gpio_usable(pin) || freq_hz == 0) return -1;
     task_alive();
 
@@ -1100,6 +1106,7 @@ static uart_inst_t *uart_of(unsigned bus) {
 static bool g_uart_ready[2];
 
 extern "C" int fw_uart_init(unsigned bus, unsigned tx, unsigned rx, unsigned baud) {
+    ClockUse _cu;        // clockuse.h: the clock at its base, and held there while this sets up
     uart_inst_t *u = uart_of(bus);
     if (!u) return -1;
     if (!fw_gpio_usable(tx) || !fw_gpio_usable(rx)) return -1;
@@ -1505,6 +1512,7 @@ static bool g_spi_ready[2];
 
 extern "C" int fw_spi_init(unsigned bus, unsigned sck, unsigned mosi,
                            unsigned miso, unsigned baud) {
+    ClockUse _cu;        // clockuse.h
     spi_inst_t *s = spi_of(bus);
     if (!s) return -1;
     if (!fw_gpio_usable(sck) || !fw_gpio_usable(mosi)) return -1;
@@ -1610,6 +1618,7 @@ extern "C" unsigned fw_pio_free(void) {
 }
 
 extern "C" int fw_pio_claim(void) {
+    ClockUse _cu;        // clockuse.h: the clock at its base, and held there while this sets up
     for (int i = 0; i < PIO_SLOTS; i++) {
         if (g_pio[i].used) continue;
         PIO p = pio_block(i / PIO_SMS_PER_BLOCK);

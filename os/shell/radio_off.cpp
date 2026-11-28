@@ -30,6 +30,7 @@ int  radio_quiesce_begin(void) { return 1; }  // no bus to hold still
 void radio_quiesce_end(int) {}
 uint32_t radio_clock_changed(void) { return 0; }
 uint32_t radio_bus_hz(void) { return 0; }
+bool radio_bus_sm(unsigned *, unsigned *) { return false; }
 bool radio_up(void) { return false; }
 void radio_down(void) {}
 bool net_radio_up(void) { return false; }

@@ -102,6 +102,9 @@ static uint32_t g_idle_last_ms;     // when a key last arrived
 static uint32_t g_idle_polls;
 static bool     g_idle_fired;       // the limit passed; the prompt loop acts on it
 
+#define SHELL_QUIET_MS 50
+static uint32_t g_last_key_ms;
+
 static int shell_getch(void *, uint32_t timeout_us) {
     // Anything intr_check pulled off the wire while a command was running is
     // real input that arrived early — a pasted block, or someone typing ahead.
@@ -118,6 +121,7 @@ static int shell_getch(void *, uint32_t timeout_us) {
     }
 
     int c = getchar_timeout_us(timeout_us);
+    if (c != PICO_ERROR_TIMEOUT) g_last_key_ms = task_now_ms();
     if (c != PICO_ERROR_TIMEOUT && intr_filter_key(c) < 0) return LE_NO_KEY;
     if (c != PICO_ERROR_TIMEOUT) {
         if (g_idle_limit_ms) g_idle_last_ms = task_now_ms();
@@ -139,7 +143,14 @@ static int shell_getch(void *, uint32_t timeout_us) {
         // the shell's own 8 KB stack, and not in init, because the hooks it runs
         // can close a finished task's network connections.
         task_release_finished();
-        if (timeout_us == 0) task_yield();
+        // Yield while someone is typing (or pasting), sleep a millisecond at a
+        // time once nothing has come for SHELL_QUIET_MS. A prompt yielding in a
+        // loop was the shell's whole share of an idle board's CPU, and kept the
+        // core awake. A key typed into the sleep waits at most the millisecond.
+        if (timeout_us == 0) {
+            if ((uint32_t)(task_now_ms() - g_last_key_ms) > SHELL_QUIET_MS) task_sleep_ms(1);
+            else task_yield();
+        }
         return LE_NO_KEY;
     }
     return c;
