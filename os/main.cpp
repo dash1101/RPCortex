@@ -64,6 +64,7 @@ bool safeboot_consume(char *staged, uint32_t cap);
 int  shell_run_line_now(char *line);
 bool crashlog_save(const BlackBox *bb);
 void sys_apply_boot_clock(bool last_start_failed);
+void power_apply_settings(void);
 
 // Everything that needs a real stack. Runs as pid 2.
 static int shell_task(void *) {
@@ -302,6 +303,7 @@ int main(void) {
     // The clock `pulse boot` stored, now that the registry is loaded and before
     // core 1, the radio or the card depend on it.
     sys_apply_boot_clock(bb != nullptr);
+    power_apply_settings();
 
     // Before anything reads a file: put back any directory that is missing, so
     // a deleted /os is a repaired boot rather than a reflash.
@@ -346,5 +348,6 @@ int main(void) {
 
     // Become the idle task. Nothing else runs here, so this stack stays shallow
     // and the 4 KB it is stuck with is plenty.
-    while (true) task_yield();
+    task_idle_init_core();
+    while (true) { task_yield(); task_idle_wait_us(1000); }
 }

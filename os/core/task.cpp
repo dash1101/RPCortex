@@ -267,6 +267,13 @@ static Task *pick(uint32_t core, int after_pid) {
     return nullptr;
 }
 
+// The host has nothing to sleep; task_rp2.cpp has the real one.
+__attribute__((weak)) void task_idle_wait_us(uint32_t) {}
+
+// How long an idle core may sleep before it looks again. Task deadlines are in
+// whole milliseconds, so a millisecond adds no lateness that was not there.
+#define IDLE_WAIT_US 1000
+
 // --- how busy the machine is -------------------------------------------------
 //
 // Every task already accumulates cpu_ms; what was missing is a DENOMINATOR.
@@ -672,6 +679,7 @@ static void reschedule(TaskState park_as) {
             while (true) {
                 lock_hw_exit();
                 if (core == 0) task_watchdog_feed();
+                task_idle_wait_us(IDLE_WAIT_US);
                 lock_hw_enter();
 
                 if ((int32_t)(task_now_ms() - wake) >= 0) {
@@ -716,6 +724,7 @@ static void reschedule(TaskState park_as) {
             while (true) {
                 lock_hw_exit();
                 task_watchdog_feed();
+                task_idle_wait_us(IDLE_WAIT_US);
                 lock_hw_enter();
                 next = pick(core, 0);
                 if (next) break;

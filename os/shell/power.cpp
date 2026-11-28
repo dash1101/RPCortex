@@ -187,6 +187,25 @@ static int cmd_power(int argc, char **argv) {
         out_multi("  Shortest sleep   %u ms on this board", (unsigned)POWER_MIN_MS);
         if (g_slept) out_multi("  Last sleep       about %u ms", (unsigned)g_slept_ms);
         else         out_multi("  Last sleep       none this boot");
+        unsigned ic = task_idle_cores();
+        out_multi("  Idle sleep       %s%s", task_idle_sleep_on() ? "on" : "off",
+                  !task_idle_sleep_on() ? "" : ic == 3 ? " (both cores)" : ic == 1 ? " (core 0 only: core 1 had no spare alarm)"
+                  : ic == 2 ? " (core 1 only: core 0 had no spare alarm)" : " (no spare alarm: spinning)");
+        return 0;
+    }
+
+    // power idle on|off: whether an idle core sleeps or spins. On by default;
+    // off is for comparing, and for ruling it out when something seems slow.
+    if (!strcmp(sub, "idle")) {
+        if (argc > 2 && (!strcmp(argv[2], "on") || !strcmp(argv[2], "off"))) {
+            bool on = !strcmp(argv[2], "on");
+            reg_set("Power.Idle_Sleep", on ? "true" : "false");
+            task_idle_sleep_set(on);
+        } else if (argc > 2) {
+            out_multi("Usage: power idle [on|off]");
+            return 1;
+        }
+        out_ok("Idle sleep is %s.", task_idle_sleep_on() ? "on" : "off");
         return 0;
     }
 
@@ -206,6 +225,7 @@ static int cmd_power(int argc, char **argv) {
 
     out_multi("Usage:");
     out_multi("  power status                   clock, limits, last sleep");
+    out_multi("  power idle [on|off]            idle cores sleep (on) or spin");
     out_multi("  power sleep <ms>               sleep, keeping memory and state");
     out_multi("  power sleep pin <gpio> [high|low]");
     out_multi("  power dormant <ms>             deeper; stops more clocks");
@@ -217,4 +237,9 @@ void power_register(void) {
     static const Command c{"power", "sleep, and what the board draws", cmd_power,
                            nullptr, LEVEL_ADMIN};
     cmd_register(&c);
+}
+
+// At start, once the registry is loaded.
+void power_apply_settings(void) {
+    task_idle_sleep_set(strcmp(reg_get("Power.Idle_Sleep", "true"), "false") != 0);
 }

@@ -21,6 +21,7 @@
 #include "hardware/watchdog.h"
 #include "hardware/timer.h"
 #include "hardware/irq.h"
+#include "hardware/structs/scb.h"
 #include "pico/flash.h"
 #include "out.h"
 #include <stdio.h>
@@ -424,6 +425,61 @@ extern "C" void preempt_tick(uint32_t *frame) {
     bb_note_stuck(f.in_package ? BB_STUCK_PACKAGE : BB_STUCK_TASK);
 }
 
+// --- idle sleep -----------------------------------------------------------------
+//
+// A core with nothing to run used to spin: core 0's idle task yielding in a
+// loop, core 1 yielding with a 200 us busy-wait between, and a task sleeping
+// with nothing else runnable re-checking its deadline as fast as it could. All
+// of it at full clock, all the time the device sat at a prompt.
+//
+// Now it sleeps (WFE) until something happens. Each core has its own alarm,
+// armed for the longest it may sleep, so the wait is bounded whatever else is
+// going on: core 1 has no other periodic interrupt at all, and core 0's tick is
+// 100 ms, far too coarse to wake a sleeper on. SEVONPEND lets an interrupt that
+// is pending while masked end the wait, so arming the alarm and sleeping happen
+// with interrupts off and an alarm that fires in between cannot be lost.
+//
+// How much current this saves is DEVICE-UNCONFIRMED: there is no meter on the
+// bench. That it costs nothing is measured (pretest's transfer, ping, SSH).
+static int  g_idle_alarm[2] = {-1, -1};
+static bool g_idle_sleep = true;
+
+static void isr_idle_wake(void) {
+    int a = g_idle_alarm[get_core_num()];
+    if (a >= 0) timer_hw->intr = 1u << a;    // nothing else to do: waking was the point
+}
+
+void task_idle_init_core(void) {
+    uint core = get_core_num();
+    if (g_idle_alarm[core] >= 0) return;
+    int a = hardware_alarm_claim_unused(false);
+    if (a < 0) return;                        // none spare: this core keeps spinning
+    uint irq = timer_hardware_alarm_get_irq_num(timer_hw, (uint)a);
+    irq_set_exclusive_handler(irq, isr_idle_wake);
+    irq_set_enabled(irq, true);               // in THIS core's NVIC only
+    timer_hw->inte |= 1u << a;
+    scb_hw->scr |= 1u << 4;                   // SEVONPEND (bit 4 on ARMv6-M and ARMv8-M)
+    g_idle_alarm[core] = a;
+}
+
+void task_idle_sleep_set(bool on) { g_idle_sleep = on; }
+bool task_idle_sleep_on(void) { return g_idle_sleep; }
+// Which cores have their wake alarm: bit 0 core 0, bit 1 core 1. A core
+// without one spins as before, whatever the setting says.
+unsigned task_idle_cores(void) {
+    return (g_idle_alarm[0] >= 0 ? 1u : 0u) | (g_idle_alarm[1] >= 0 ? 2u : 0u);
+}
+
+void task_idle_wait_us(uint32_t us) {
+    int a = g_idle_alarm[get_core_num()];
+    if (a < 0 || !g_idle_sleep) { busy_wait_us(us < 200 ? us : 200); return; }
+    uint32_t save = save_and_disable_interrupts();
+    timer_hw->alarm[a] = time_us_32() + us;
+    __dsb();
+    __wfe();
+    restore_interrupts(save);
+}
+
 void task_preempt_start(void) {
     // Core 0 only, deliberately. The stall clock is fed by bb_note_yield, which
     // only core 0 calls, so core 0 is the only core whose idea of "nothing has
@@ -645,11 +701,12 @@ static void core1_main(void) {
     // core 0 would be refused — or, worse, done anyway.
     flash_safe_execute_core_init();
 
+    task_idle_init_core();
     while (true) {
         task_yield();
-        // Nothing runnable for this core right now. Sleeping briefly rather
-        // than spinning keeps it off the memory bus, which core 0 is using.
-        busy_wait_us(200);
+        // Nothing runnable for this core right now: sleep until something
+        // happens, or 200 us at most (the busy-wait this replaced).
+        task_idle_wait_us(200);
     }
 }
 

@@ -291,6 +291,20 @@ void task_preempt_start(void);
 void task_watchdog_start(void);
 void task_watchdog_feed(void);
 
+// Wait for up to `us` with the core asleep, for a core with nothing to run.
+// Woken early by any interrupt (USB, the radio, a timer) or by the other core;
+// returns at the latest when `us` is up, so a sleeping task's deadline is never
+// missed by more than that. The platform's (task_rp2.cpp); a weak default in
+// task.cpp returns at once, for the host. `power idle off` makes it return at
+// once on a device too.
+void task_idle_wait_us(uint32_t us);
+// Claim this core's wake alarm (task_rp2.cpp); called once on each core. The
+// switch is `power idle on|off` (Power.Idle_Sleep), for comparing.
+void task_idle_init_core(void);
+void task_idle_sleep_set(bool on);
+bool task_idle_sleep_on(void);
+unsigned task_idle_cores(void);
+
 // "Still working." For code that legitimately runs a long time WITHOUT yielding
 // — a benchmark loop, a flash write, a long computation inside a package.
 //

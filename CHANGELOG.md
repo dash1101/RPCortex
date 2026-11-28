@@ -12,6 +12,13 @@ Summary:
 
 ### New
 
+- **Idle cores sleep.** A core with nothing to run used to spin at full clock: the idle task in a
+  loop, core 1 with a 200 microsecond busy-wait, a sleeping task re-checking its deadline. Now it
+  waits asleep until an interrupt, the other core, or at most a millisecond (200 microseconds on
+  core 1). Measured on a Pico 2 W and a Pico 2 against the same build with it off: the 128 KB
+  transfer, command round trips, timers, HTTPS and ping all unchanged. How much current it saves
+  has not been measured. `power idle off` turns it off; `power status` says whether it is on.
+
 ### Improved
 
 ### Fixed
