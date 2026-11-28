@@ -9,7 +9,7 @@
       "filesystem_kb": 1792,
       "sandbox": true,
       "status": "verified",
-      "verified_build": 723,
+      "verified_build": 730,
       "notes": "The board every hardware result comes from."
     },
     {
@@ -20,7 +20,7 @@
       "filesystem_kb": 2816,
       "sandbox": true,
       "status": "verified",
-      "verified_build": 723,
+      "verified_build": 730,
       "notes": "Builds and passes the image checks; never booted."
     },
     {
