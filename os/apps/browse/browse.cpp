@@ -24,7 +24,7 @@
 
 // On demand: 78 KB while it runs (its code, when Nova D1 has the flash slot, and
 // the page), none the rest of the time.
-RPC_APP_VER_FLAGS("browse", "1.1", RPC_APP_F_ON_DEMAND);
+RPC_APP_VER_FLAGS("browse", "1.2", RPC_APP_F_ON_DEMAND);
 
 #define BROWSE_FILE  "/tmp/browse.html"
 #define TEXT_FILE    "/tmp/browse.txt"    // the laid-out page (page_store)
@@ -657,8 +657,11 @@ static int browse_cmd(int argc, char **argv) {
     return 0;
 }
 
+void ask_register(void);     // ask.cpp: talking to Claude, the other kind of network text
+
 extern "C" int app_main(int) {
     rpc_register_command("browse", "the web, as text", browse_cmd);
     rpc_register_command("www", "the web, as text", browse_cmd);
+    ask_register();
     return 0;
 }

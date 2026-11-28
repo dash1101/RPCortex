@@ -12,6 +12,13 @@ Summary:
 
 ### New
 
+- **ask**, in the browse package (1.2): talk to Claude from the console, as v1's Ask did. `ask key`
+  stores your API key in your home folder; `ask <question>` answers one question; `ask` alone is a
+  conversation (`/new` starts over). It uses the Messages API with Claude Opus 5.5 by default
+  (`ask model` changes it), works over Wi-Fi or through the computer, and asks for short answers so
+  a reply arrives well within the device's 15-second wait. Tested end to end through the bridge
+  against a stand-in with the API's shape, not yet against the real service.
+
 - Packages can send request headers of their own (`FwHttpRequest.headers`, API 1.30): what an API
   key or a JSON API needs. Each line is checked (no line breaks inside one, and Host,
   Content-Length, Transfer-Encoding and Connection stay the firmware's), and it works the same over

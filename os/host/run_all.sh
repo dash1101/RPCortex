@@ -82,6 +82,7 @@ declare -A SRC=(
     [clockcfg_test]="$CORE/clockcfg.cpp"
     [governor_test]="$CORE/governor.cpp"
     [advice_test]="$CORE/advice.cpp"
+    [ask_test]=""
     # Mutation fuzzing of the parsers that read other people's bytes: HTTP
     # responses, package indexes, the installed-package list and FAT volumes.
     # RPC_FUZZ_ITERS=2000000 for a long run; see the header of fuzz_test.cpp.
