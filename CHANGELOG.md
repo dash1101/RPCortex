@@ -20,6 +20,10 @@ Summary:
 
 ### Changed
 
+- `fw_task_kill` returns -1 for a task nothing may stop (the idle task, the shell, one already
+  finished), so a package can tell that from a task that is not the caller's (0). htop 1.1 says
+  which.
+
 ### Known issues
 
 ## v2.0.730-beta, 2026-11-28

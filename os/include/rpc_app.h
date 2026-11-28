@@ -1032,7 +1032,9 @@ typedef struct FwTaskInfo {
 int fw_task_list(FwTaskInfo *out, int max);
 
 // fw_task_kill follows `kill`'s rule from API 1.29: a package can stop only what
-// the person running it could. It returns 0 for a task that is not theirs.
+// the person running it could. It returns 1 when asked, 0 for a task that is not
+// theirs (or no such task), and -1 for one nothing may stop (the idle task, the
+// shell, a task already finished).
 
 #ifdef __cplusplus
 }

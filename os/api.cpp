@@ -316,7 +316,13 @@ extern "C" int fw_line_read(char *buf, int cap) {
 // The same rule `kill` applies (ident_may_stop): an admin may stop anything,
 // anyone else only what is theirs. Before 1.29 a package run by a guest could
 // stop the shell or the network task.
+// -1 for a task nothing may stop (the idle task, the shell, one already
+// finished): htop used to report those as "not yours", which sent an admin
+// looking for a permission they already had.
 extern "C" int  fw_task_kill(int pid) {
+    const TaskInfo *t = task_find(pid);
+    if (!t) return 0;
+    if (pid == 1 || pid == task_shell_pid() || t->state == TASK_DONE) return -1;
     if (!ident_may_stop(pid)) return 0;
     return task_kill(pid) ? 1 : 0;
 }

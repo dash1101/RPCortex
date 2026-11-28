@@ -17,7 +17,7 @@
 #include <stdio.h>
 #include <string.h>
 
-RPC_APP_VER_FLAGS("htop", "1.0", RPC_APP_F_ON_DEMAND);
+RPC_APP_VER_FLAGS("htop", "1.1", RPC_APP_F_ON_DEMAND);
 
 #define MAXT    32
 #define C_RED   1
@@ -329,8 +329,10 @@ static int htop_cmd(int argc, char **argv) {
             int pid = H.confirm_pid;
             H.confirm_pid = 0;
             if (k == 'y' || k == 'Y') {
-                if (fw_task_kill(pid)) snprintf(H.note, sizeof(H.note), "Asked pid %d to stop.", pid);
-                else snprintf(H.note, sizeof(H.note), "pid %d is not yours to stop. An admin can.", pid);
+                int rc = fw_task_kill(pid);
+                if (rc == 1)       snprintf(H.note, sizeof(H.note), "Asked pid %d to stop.", pid);
+                else if (rc < 0)   snprintf(H.note, sizeof(H.note), "pid %d cannot be stopped (the shell, the idle task, or already done).", pid);
+                else               snprintf(H.note, sizeof(H.note), "pid %d is not yours to stop. An admin can.", pid);
                 next = fw_millis() + 300;      // show it go
             }
             continue;
