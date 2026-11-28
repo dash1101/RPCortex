@@ -989,8 +989,13 @@ const void *apps_owner_of(const char *name) {
 // loads it again, runs the command, and unloads it after (apps_demand_*, from
 // shell.cpp's dispatch).
 
-#define DEMAND_MAX 16
-struct DemandCmd { char cmd[24]; char help[56]; char pkg[24]; };
+// Commands, not packages: websearch brings three, htop and browse two. At 16
+// the seventeenth was dropped without a word and its package unloaded anyway,
+// so `selftest` stopped existing on a board with a dozen packages installed.
+// A package whose commands do not all fit now stays resident instead (see
+// apps_load), and says so.
+#define DEMAND_MAX 32
+struct DemandCmd { char cmd[20]; char help[48]; char pkg[20]; };
 static DemandCmd g_demand[DEMAND_MAX];
 static uint32_t  g_demand_n;
 // The package a demand load is bringing in: launch_loaded keeps that one.
@@ -998,20 +1003,28 @@ static char      g_demand_keep[24];
 
 bool pkg_load_one(const char *name);        // pkg.cpp: the slot, else the file
 
-static void demand_note(const LoadedApp &app) {
+// False when its commands do not all fit; nothing of it is noted then.
+static bool demand_note(const LoadedApp &app) {
     // Forget what this package registered before (a reinstall may have changed it).
     uint32_t w = 0;
     for (uint32_t i = 0; i < g_demand_n; i++)
         if (strcmp(g_demand[i].pkg, app.header.name)) g_demand[w++] = g_demand[i];
     g_demand_n = w;
+    uint32_t need = 0;
     for (uint32_t i = 0; i < cmd_count(); i++) {
         const Command *c = cmd_at(i);
-        if (!c || c->owner != app.image || g_demand_n >= DEMAND_MAX) continue;
+        if (c && c->owner == app.image) need++;
+    }
+    if (g_demand_n + need > DEMAND_MAX) return false;
+    for (uint32_t i = 0; i < cmd_count(); i++) {
+        const Command *c = cmd_at(i);
+        if (!c || c->owner != app.image) continue;
         DemandCmd &d = g_demand[g_demand_n++];
         snprintf(d.cmd, sizeof(d.cmd), "%s", c->name);
         snprintf(d.help, sizeof(d.help), "%s", c->help ? c->help : "");
         snprintf(d.pkg, sizeof(d.pkg), "%s", app.header.name);
     }
+    return true;
 }
 
 bool apps_demand_load(const char *cmd, char *pkg, uint32_t cap) {
@@ -1109,9 +1122,15 @@ static int launch_loaded(LoadedApp *appp, int arg, bool quiet, uint32_t before) 
 
     // Loaded only while used: note its commands and give the memory back, unless
     // this IS the load for a use.
-    if (resident && (app.header.flags & RPC_APP_F_ON_DEMAND) &&
-        strcmp(g_demand_keep, app.header.name) != 0) {
-        demand_note(app);
+    bool demand = resident && (app.header.flags & RPC_APP_F_ON_DEMAND) &&
+                  strcmp(g_demand_keep, app.header.name) != 0;
+    if (demand && !demand_note(app)) {
+        // No room to remember its commands: keep it loaded rather than lose them.
+        log_addf(LOG_K_WARN, "pkg: %s stays loaded: the table of commands that load when used is full",
+                 app.header.name);
+        demand = false;
+    }
+    if (demand) {
         cmd_remove_owner(app.image);
         unload_image(&app);
         if (!quiet) out_ok("Package '%s' ready; it loads while its command runs.", app.header.name);

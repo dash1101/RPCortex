@@ -33,6 +33,11 @@ Summary:
 
 ### Fixed
 
+- With more than about a dozen packages that load when used, the next one's commands were dropped
+  without a word and the package unloaded anyway, so its command simply did not exist (`selftest`
+  vanished this way). The table holds 32 commands now, and a package whose commands do not fit
+  stays loaded and says so in the log.
+
 - A package's HTTP request that got no answer at all reported a status of 0xA5A5A5A5, the stack's
   fill pattern, because the result was never initialised. It is 0 now, and selftest says "no
   answer" with the reason.
