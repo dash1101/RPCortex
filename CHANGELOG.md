@@ -8,6 +8,22 @@ good notes is in `RELEASING.md`.
 
 ## Unreleased
 
+Summary: 
+
+### New
+
+### Improved
+
+### Fixed
+
+### Security
+
+### Changed
+
+### Known issues
+
+## v2.0.723-beta, 2026-11-28
+
 Summary: The device looks after its own power: idle cores sleep, a clock governor slows the CPU while quiet on battery, and `tips` recommends what is worth doing
 
 ### New

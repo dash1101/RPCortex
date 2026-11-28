@@ -2,6 +2,105 @@
   "schema": 1,
   "releases": [
     {
+      "tag": "v2.0.723-beta",
+      "display": "v2.0.723-beta",
+      "version": "2.0",
+      "build": 723,
+      "commit": "92f450243aa231618e7c93954c561c0756d21050",
+      "codename": "Vela II",
+      "date": "2026-11-28",
+      "prerelease": true,
+      "title": "RPCortex v2.0.723-beta",
+      "summary": "The device looks after its own power: idle cores sleep, a clock governor slows the CPU while quiet on battery, and `tips` recommends what is worth doing",
+      "notes": {
+        "new": [
+          "**Recommended actions.** `tips` lists what is worth doing about this device, most important first, each with the command that does it: an admin account with no password, a crash on the last run, storage filling up, a firmware update found by `update check`, Wi-Fi never set up, the date not set, and power settings switched off while on battery. The login and the `settings` panel say how many there are. `tips dismiss <id>` hides one for that person, `tips reset` brings them back.",
+          "**A clock governor.** `power governor auto` (the default) lowers the CPU clock to 48 MHz once the board has been quiet for 5 seconds on battery, and puts it back the moment there is work: it looks four times a second, and anything over half a core's worth of load is work. It never lowers the clock while anything timed from it is in use (an SPI, I2C or UART bus, PWM, a PIO program, the SD card): it reads the hardware for that, and setting any of them up puts the clock back first. `on` lowers it whenever quiet, plugged in too; `off` leaves the clock alone. `power status` shows the power source (USB or battery), what the governor is doing and why, and what is holding the clock. Tested on a Pico 2 W and a Pico 2 with `on`: down to the floor when quiet, back up for pretest (which passed at its usual speeds), and held by the SD card's bus. The battery reading and the current saved have not been measured: both bench boards run on USB.",
+          "**Idle cores sleep.** A core with nothing to run used to spin at full clock: the idle task in a loop, core 1 with a 200 microsecond busy-wait, a sleeping task re-checking its deadline. Now it waits asleep until an interrupt, the other core, or at most a millisecond. The idle task sleeps only when nothing else is ready, and core 1 only while core 0 is idle too: sleeping beside work cost a package on a Pico 2 up to a fifth of its speed, and with both rules it costs nothing measurable (pretest's SHA-256 2084 KB/s on and off). The 128 KB transfer, command round trips, timers, HTTPS and ping are unchanged too. How much current it saves has not been measured. `power idle off` turns it off; `power status` says whether it is on."
+        ],
+        "improved": [
+          "An idle board no longer keeps a core busy. The USB task and the shell prompt both yielded in a loop forever, about a quarter of a core between them at a prompt with nothing typed. Each now sleeps a millisecond at a time once it has been quiet (20 ms for USB, 50 ms for the prompt), so typing and transfers run as before: over 20 idle seconds the USB task used 56 ms and the shell almost nothing.",
+          "`fw_clock_hz` gives packages the clock their peripherals are timed from (the governor's base), not wherever the CPU happens to be this second."
+        ],
+        "fixed": [],
+        "security": [],
+        "changed": [
+          "The Pico (RP2040, no radio) standard image leaves out the add-on drivers (NFC, iButton, sub-GHz, LoRa) and the built-in package list, for 63 KB free in its firmware slot instead of 42. The drivers are for Nova D1, which runs on the Pico 2 W; `./build.sh pico --with peripherals` puts them back, and `pkg update` fetches the package list through the bridge the first time it is wanted. The other boards are unchanged."
+        ],
+        "issues": [
+          "A Pico 2 W can answer pings slowly (about 150 ms) for the first one to two minutes after starting, with or without idle sleep and the governor; after that it is about 1 ms.",
+          "`sd` with no card leaves the SD bus set up, and the governor stays at the base clock until the next start."
+        ]
+      },
+      "assets": [
+        {
+          "board": "pico2_w",
+          "kind": "bin",
+          "file": "rpcortex-v2.0.723-beta-pico2_w.bin",
+          "size": 922572,
+          "sha256": "61ffaa82550769154e28bfe92789006c217934f0ee33d666f64d972ed20b200f",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.723-beta/rpcortex-v2.0.723-beta-pico2_w.bin"
+        },
+        {
+          "board": "pico2_w",
+          "kind": "uf2",
+          "file": "rpcortex-v2.0.723-beta-pico2_w.uf2",
+          "size": 1869824,
+          "sha256": "db5d9f4b85deda24f6cd7b22a6e5fd6bf4b73f542279bf7c3640f3877fce422e",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.723-beta/rpcortex-v2.0.723-beta-pico2_w.uf2"
+        },
+        {
+          "board": "pico_w",
+          "kind": "bin",
+          "file": "rpcortex-v2.0.723-beta-pico_w.bin",
+          "size": 809256,
+          "sha256": "487d2bc19e1f72e66e468ecfe13a270162429c30c6343c93d6af28acb7ea5e40",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.723-beta/rpcortex-v2.0.723-beta-pico_w.bin"
+        },
+        {
+          "board": "pico_w",
+          "kind": "uf2",
+          "file": "rpcortex-v2.0.723-beta-pico_w.uf2",
+          "size": 1618944,
+          "sha256": "d360158a901e2eff6cede69adcc8242c1354b913d356b7b0986871e8ae565842",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.723-beta/rpcortex-v2.0.723-beta-pico_w.uf2"
+        },
+        {
+          "board": "pico2",
+          "kind": "bin",
+          "file": "rpcortex-v2.0.723-beta-pico2.bin",
+          "size": 420228,
+          "sha256": "9cfd6c64b4b0def7d88b42db1de7e29c555d36973449c71d435061157f0dc60b",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.723-beta/rpcortex-v2.0.723-beta-pico2.bin"
+        },
+        {
+          "board": "pico2",
+          "kind": "uf2",
+          "file": "rpcortex-v2.0.723-beta-pico2.uf2",
+          "size": 865280,
+          "sha256": "adf6dafda2c6acf4c8428f9836ef6a18c4d65e974b157b75ccd7b04d13672841",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.723-beta/rpcortex-v2.0.723-beta-pico2.uf2"
+        },
+        {
+          "board": "pico",
+          "kind": "bin",
+          "file": "rpcortex-v2.0.723-beta-pico.bin",
+          "size": 327980,
+          "sha256": "cda345c708f2f9e9642013bf018b7ed1f38597ee31037e6dbf9e7dd5d04a6c2e",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.723-beta/rpcortex-v2.0.723-beta-pico.bin"
+        },
+        {
+          "board": "pico",
+          "kind": "uf2",
+          "file": "rpcortex-v2.0.723-beta-pico.uf2",
+          "size": 656384,
+          "sha256": "cc908396a31c3b7b7bf6e86136fa9a2c334781c91d124d915d57fc0384db7e31",
+          "url": "https://github.com/dash1101/RPCortex/releases/download/v2.0.723-beta/rpcortex-v2.0.723-beta-pico.uf2"
+        }
+      ],
+      "url": "https://github.com/dash1101/RPCortex/releases/tag/v2.0.723-beta"
+    },
+    {
       "tag": "v2.0.715-beta",
       "display": "v2.0.715-beta",
       "version": "2.0",
