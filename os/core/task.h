@@ -303,11 +303,21 @@ void task_watchdog_feed(void);
 // missed by more than that. The platform's (task_rp2.cpp); a weak default in
 // task.cpp returns at once, for the host. `power idle off` makes it return at
 // once on a device too.
-void task_idle_wait_us(uint32_t us);
+void task_idle_wait_us(uint32_t us, unsigned site);
+// Where a wait is taken, for task_idle_sleep_mask: the idle task (core 0), core
+// 1's own loop, and the scheduler waiting out a sleeper's deadline.
+#define IDLE_SITE_IDLE_TASK 0
+#define IDLE_SITE_CORE1     1
+#define IDLE_SITE_SCHED     2
 // Claim this core's wake alarm (task_rp2.cpp); called once on each core. The
 // switch is `power idle on|off` (Power.Idle_Sleep), for comparing.
 void task_idle_init_core(void);
+// For the idle task: true when something else on this core is ready to run, so
+// it should yield rather than sleep.
+bool task_others_runnable(void);
 void task_idle_sleep_set(bool on);
+// Which sites may sleep, a bit each (all by default): for measuring one at a time.
+void task_idle_sleep_mask(unsigned mask);
 bool task_idle_sleep_on(void);
 unsigned task_idle_cores(void);
 

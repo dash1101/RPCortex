@@ -30,10 +30,12 @@ Summary: The device looks after its own power: idle cores sleep, a clock governo
   current saved have not been measured: both bench boards run on USB.
 - **Idle cores sleep.** A core with nothing to run used to spin at full clock: the idle task in a
   loop, core 1 with a 200 microsecond busy-wait, a sleeping task re-checking its deadline. Now it
-  waits asleep until an interrupt, the other core, or at most a millisecond (200 microseconds on
-  core 1). Measured on a Pico 2 W and a Pico 2 against the same build with it off: the 128 KB
-  transfer, command round trips, timers, HTTPS and ping all unchanged. How much current it saves
-  has not been measured. `power idle off` turns it off; `power status` says whether it is on.
+  waits asleep until an interrupt, the other core, or at most a millisecond. The idle task sleeps
+  only when nothing else is ready, and core 1 only while core 0 is idle too: sleeping beside work
+  cost a package on a Pico 2 up to a fifth of its speed, and with both rules it costs nothing
+  measurable (pretest's SHA-256 2084 KB/s on and off). The 128 KB transfer, command round trips,
+  timers, HTTPS and ping are unchanged too. How much current it saves has not been measured.
+  `power idle off` turns it off; `power status` says whether it is on.
 
 ### Improved
 

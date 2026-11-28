@@ -353,5 +353,8 @@ int main(void) {
     // and the 4 KB it is stuck with is plenty.
     governor_start();       // after the boot clock: it lowers from wherever that left it
     task_idle_init_core();
-    while (true) { task_yield(); task_idle_wait_us(1000); }
+    while (true) {
+        task_yield();
+        if (!task_others_runnable()) task_idle_wait_us(1000, IDLE_SITE_IDLE_TASK);
+    }
 }

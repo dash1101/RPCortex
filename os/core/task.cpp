@@ -267,8 +267,22 @@ static Task *pick(uint32_t core, int after_pid) {
     return nullptr;
 }
 
+// Is anything but the idle task (pid 1) ready to run on this core? The idle
+// task asks before it sleeps: it is always runnable, so the scheduler hands it
+// the core in turn even while other work is waiting, and a millisecond's sleep
+// taken then is a millisecond stolen from that work. A package calling the ABI
+// in a loop yields on every call, and lost a fifth of its speed to it.
+bool task_others_runnable(void) {
+    uint32_t core = task_this_core();
+    lock_hw_enter();
+    Task *t = pick(core, 1);
+    bool any = t && t->info.pid != 1;
+    lock_hw_exit();
+    return any;
+}
+
 // The host has nothing to sleep; task_rp2.cpp has the real one.
-__attribute__((weak)) void task_idle_wait_us(uint32_t) {}
+__attribute__((weak)) void task_idle_wait_us(uint32_t, unsigned) {}
 
 // How long an idle core may sleep before it looks again. Task deadlines are in
 // whole milliseconds, so a millisecond adds no lateness that was not there.
@@ -690,7 +704,7 @@ static void reschedule(TaskState park_as) {
             while (true) {
                 lock_hw_exit();
                 if (core == 0) task_watchdog_feed();
-                task_idle_wait_us(IDLE_WAIT_US);
+                task_idle_wait_us(IDLE_WAIT_US, IDLE_SITE_SCHED);
                 lock_hw_enter();
 
                 if ((int32_t)(task_now_ms() - wake) >= 0) {
@@ -735,7 +749,7 @@ static void reschedule(TaskState park_as) {
             while (true) {
                 lock_hw_exit();
                 task_watchdog_feed();
-                task_idle_wait_us(IDLE_WAIT_US);
+                task_idle_wait_us(IDLE_WAIT_US, IDLE_SITE_SCHED);
                 lock_hw_enter();
                 next = pick(core, 0);
                 if (next) break;

@@ -441,7 +441,10 @@ extern "C" void preempt_tick(uint32_t *frame) {
 //
 // How much current this saves is DEVICE-UNCONFIRMED: there is no meter on the
 // bench. That it costs nothing is measured (pretest's transfer, ping, SSH).
+#define CORE1_QUIET_US 50000
 static int  g_idle_alarm[2] = {-1, -1};
+// Set while core 0's idle task is in its wait: core 1 sleeps only then.
+static volatile bool g_core0_idle;
 static bool g_idle_sleep = true;
 
 static void isr_idle_wake(void) {
@@ -470,14 +473,19 @@ unsigned task_idle_cores(void) {
     return (g_idle_alarm[0] >= 0 ? 1u : 0u) | (g_idle_alarm[1] >= 0 ? 2u : 0u);
 }
 
-void task_idle_wait_us(uint32_t us) {
+static unsigned g_idle_mask = 7;
+void task_idle_sleep_mask(unsigned mask) { g_idle_mask = mask; }
+
+void task_idle_wait_us(uint32_t us, unsigned site) {
     int a = g_idle_alarm[get_core_num()];
-    if (a < 0 || !g_idle_sleep) { busy_wait_us(us < 200 ? us : 200); return; }
+    if (a < 0 || !g_idle_sleep || !(g_idle_mask & (1u << site))) { busy_wait_us(us < 200 ? us : 200); return; }
+    if (site == IDLE_SITE_IDLE_TASK) g_core0_idle = true;
     uint32_t save = save_and_disable_interrupts();
     timer_hw->alarm[a] = time_us_32() + us;
     __dsb();
     __wfe();
     restore_interrupts(save);
+    if (site == IDLE_SITE_IDLE_TASK) g_core0_idle = false;
 }
 
 void task_preempt_start(void) {
@@ -702,11 +710,23 @@ static void core1_main(void) {
     flash_safe_execute_core_init();
 
     task_idle_init_core();
+    // Sleep only once core 1 has had nothing to run for CORE1_QUIET_US, and only
+    // while core 0 is idle too (g_core0_idle). Core 1 asleep while core 0 was
+    // working still cost that work about 6% on a Pico 2 (1960 KB/s against
+    // 2084), so it sleeps when the whole device is idle, which is when the
+    // power matters, and busy-waits as it always did otherwise. While it
+    // is in use it waits as it always did, busy, 200 us at a time: sleeping
+    // between every task switch cost a package on a Pico 2 a tenth of its speed
+    // (pretest's SHA-256, 2084 KB/s against 1896 with this site asleep, the
+    // other two sites making no difference).
+    uint32_t last_ran = time_us_32();
     while (true) {
+        uint32_t t0 = time_us_32();
         task_yield();
-        // Nothing runnable for this core right now: sleep until something
-        // happens, or 200 us at most (the busy-wait this replaced).
-        task_idle_wait_us(200);
+        uint32_t now = time_us_32();
+        if (now - t0 > 50) last_ran = now;   // it ran something, not just looked
+        if (now - last_ran < CORE1_QUIET_US || !g_core0_idle) busy_wait_us(200);
+        else task_idle_wait_us(200, IDLE_SITE_CORE1);
     }
 }
 

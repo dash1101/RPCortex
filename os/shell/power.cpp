@@ -225,6 +225,13 @@ static int cmd_power(int argc, char **argv) {
     // power idle on|off: whether an idle core sleeps or spins. On by default;
     // off is for comparing, and for ruling it out when something seems slow.
     if (!strcmp(sub, "idle")) {
+        // power idle mask <n>: for measuring, which of the three places may sleep
+        // (1 the idle task, 2 core 1, 4 the scheduler). Not saved.
+        if (argc > 3 && !strcmp(argv[2], "mask")) {
+            task_idle_sleep_mask((unsigned)atoi(argv[3]) & 7u);
+            out_ok("Idle sleep mask %u.", (unsigned)atoi(argv[3]) & 7u);
+            return 0;
+        }
         if (argc > 2 && (!strcmp(argv[2], "on") || !strcmp(argv[2], "off"))) {
             bool on = !strcmp(argv[2], "on");
             reg_set("Power.Idle_Sleep", on ? "true" : "false");
